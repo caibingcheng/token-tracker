@@ -5,6 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "build:plugin": "cd packages/plugin && npm run build",
+    "build:all": "next build && npm run build:plugin",
     "start": "next start",
     "lint": "next lint",
     "db:generate": "drizzle-kit generate",
