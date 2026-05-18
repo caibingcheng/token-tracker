@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+
+# Next.js
+.next/
+
+# Environment variables
+.env.local
+
+# Drizzle
+drizzle/
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
