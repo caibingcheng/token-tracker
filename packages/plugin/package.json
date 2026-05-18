@@ -1,0 +1,22 @@
+{
+  "name": "@token-tracker/plugin",
+  "version": "0.1.0",
+  "description": "opencode plugin for token usage tracking",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": "*"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "latest",
+    "typescript": "^5.4.5"
+  }
+}
