@@ -1,6 +1,6 @@
-import type { TuiPluginModule } from "@opencode-ai/plugin/tui";
-declare const plugin: TuiPluginModule & {
-    id: string;
-};
-export default plugin;
+export declare const TokenTrackerPlugin: (_ref: any) => Promise<{
+    event?: undefined;
+} | {
+    event: (_ref2: any) => Promise<void>;
+}>;
 //# sourceMappingURL=index.d.ts.map
