@@ -50,6 +50,67 @@ export TOKEN_TRACKER_API_KEY="your-secret-key"
 
 Open `https://your-app.vercel.app` and enter your API Key.
 
+## Local Development & Testing
+
+### Start Development Server
+
+```bash
+npm run dev
+```
+
+访问 http://localhost:3000
+
+### Test API Endpoints
+
+**1. Test data ingestion:**
+
+```bash
+curl -X POST http://localhost:3000/api/ingest \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-local-dev-api-key" \
+  -d '{
+    "model": "gpt-4o",
+    "provider": "openai",
+    "inputTokens": 1500,
+    "outputTokens": 800,
+    "cacheRead": 1200,
+    "cacheWrite": 0
+  }'
+```
+
+**2. Test stats query:**
+
+```bash
+curl "http://localhost:3000/api/stats?groupBy=date&range=7d" \
+  -H "X-API-Key: your-local-dev-api-key"
+```
+
+**3. Test records query:**
+
+```bash
+curl "http://localhost:3000/api/records?page=1&limit=10" \
+  -H "X-API-Key: your-local-dev-api-key"
+```
+
+### Dashboard Testing
+
+1. Open http://localhost:3000
+2. Enter your API key (from `.env.local`)
+3. View token usage statistics and charts
+
+### Database Operations
+
+```bash
+# Open Drizzle Studio (GUI for database)
+npx drizzle-kit studio
+
+# Push schema changes to database
+npx drizzle-kit push
+
+# Generate migration files
+npx drizzle-kit generate
+```
+
 ## API Endpoints
 
 - `POST /api/ingest` - Report token usage
