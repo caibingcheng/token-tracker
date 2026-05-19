@@ -52,19 +52,32 @@ export default function Dashboard() {
   // Polling
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [nextRefreshIn, setNextRefreshIn] = useState(INITIAL_INTERVAL);
-  const [pollInterval, setPollInterval] = useState(INITIAL_INTERVAL);
-  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const lastDataRef = useRef<{ stats: string; top5: string; records: string } | null>(null);
 
-  // Visibility
+  // Refs to avoid stale closures and infinite loops
+  const statsRef = useRef<Stats | null>(null);
+  const topModelsRef = useRef<ModelStat[]>([]);
+  const recordsRef = useRef<Record[]>([]);
+  const recordsPageRef = useRef(1);
+  const pollIntervalRef = useRef(INITIAL_INTERVAL);
+  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
   const isVisibleRef = useRef(true);
+  const isFetchingRef = useRef(false);
+
+  // Keep refs in sync with states
+  statsRef.current = stats;
+  topModelsRef.current = topModels;
+  recordsRef.current = records;
+  recordsPageRef.current = recordsPage;
 
   const fetchAll = useCallback(async () => {
-    if (!isVisibleRef.current) return;
+    if (!isVisibleRef.current || isFetchingRef.current) return;
+    isFetchingRef.current = true;
+
+    const currentPage = recordsPageRef.current;
 
     setLoadingStats(true);
     setLoadingTop5(true);
-    if (recordsPage === 1) setLoadingRecords(true);
+    if (currentPage === 1) setLoadingRecords(true);
 
     setErrorStats(null);
     setErrorTop5(null);
@@ -74,22 +87,27 @@ export default function Dashboard() {
       const [statsRes, top5Res, recordsRes] = await Promise.all([
         fetch("/api/stats?groupBy=none&range=all"),
         fetch("/api/stats?groupBy=model"),
-        recordsPage === 1 ? fetch(`/api/records?page=1&limit=20`) : Promise.resolve(null),
+        currentPage === 1 ? fetch(`/api/records?page=1&limit=20`) : Promise.resolve(null),
       ]);
+
+      let newStats: Stats | null = null;
+      let newTop5: ModelStat[] = [];
+      let newRecords: Record[] = [];
 
       // Stats
       if (statsRes.ok) {
         const statsData = await statsRes.json();
         if (statsData.success && statsData.data.length > 0) {
           const item = statsData.data[0];
-          setStats({
+          newStats = {
             totalInput: Number(item.totalInput || 0),
             totalOutput: Number(item.totalOutput || 0),
             totalInputCached: Number(item.totalInputCached || 0),
             totalInputUncached: Number(item.totalInputUncached || 0),
             totalCacheWrite: Number(item.totalCacheWrite || 0),
             count: Number(item.count || 0),
-          });
+          };
+          setStats(newStats);
         }
       } else {
         setErrorStats(`HTTP ${statsRes.status}`);
@@ -99,7 +117,8 @@ export default function Dashboard() {
       if (top5Res.ok) {
         const top5Data = await top5Res.json();
         if (top5Data.success) {
-          setTopModels(top5Data.data.slice(0, 5));
+          newTop5 = top5Data.data.slice(0, 5);
+          setTopModels(newTop5);
         }
       } else {
         setErrorTop5(`HTTP ${top5Res.status}`);
@@ -110,7 +129,8 @@ export default function Dashboard() {
         if (recordsRes.ok) {
           const recordsData = await recordsRes.json();
           if (recordsData.success) {
-            setRecords(recordsData.data);
+            newRecords = recordsData.data;
+            setRecords(newRecords);
             setRecordsTotalPages(recordsData.pagination.totalPages);
           }
         } else {
@@ -120,27 +140,24 @@ export default function Dashboard() {
 
       setLastUpdated(new Date());
 
-      // Check if data changed
-      const currentData = {
-        stats: JSON.stringify(stats),
-        top5: JSON.stringify(topModels),
-        records: JSON.stringify(records),
-      };
+      // Dynamic interval: check if data changed vs previous fetch
+      const prevStats = JSON.stringify(statsRef.current);
+      const prevTop5 = JSON.stringify(topModelsRef.current);
+      const prevRecords = JSON.stringify(recordsRef.current);
+      const currStats = JSON.stringify(newStats);
+      const currTop5 = JSON.stringify(newTop5);
+      const currRecords = JSON.stringify(newRecords);
 
-      if (lastDataRef.current) {
-        const changed =
-          currentData.stats !== lastDataRef.current.stats ||
-          currentData.top5 !== lastDataRef.current.top5 ||
-          currentData.records !== lastDataRef.current.records;
+      const changed =
+        currStats !== prevStats ||
+        currTop5 !== prevTop5 ||
+        currRecords !== prevRecords;
 
-        if (changed) {
-          setPollInterval(INITIAL_INTERVAL);
-        } else {
-          setPollInterval((prev) => Math.min(prev * 2, MAX_INTERVAL));
-        }
+      if (changed) {
+        pollIntervalRef.current = INITIAL_INTERVAL;
+      } else {
+        pollIntervalRef.current = Math.min(pollIntervalRef.current * 2, MAX_INTERVAL);
       }
-
-      lastDataRef.current = currentData;
     } catch (err) {
       console.error("Fetch error:", err);
       setErrorStats("Network error");
@@ -150,27 +167,31 @@ export default function Dashboard() {
       setLoadingStats(false);
       setLoadingTop5(false);
       setLoadingRecords(false);
+      isFetchingRef.current = false;
     }
-  }, [recordsPage, stats, topModels, records]);
+  }, []); // No dependencies - refs handle everything
 
-  // Polling with dynamic interval
+  // Polling loop - runs once on mount
   useEffect(() => {
-    const scheduleNext = () => {
-      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    let mounted = true;
+
+    const runLoop = async () => {
+      if (!mounted) return;
+      await fetchAll();
+      if (!mounted) return;
+
       timeoutRef.current = setTimeout(() => {
-        fetchAll().then(() => {
-          scheduleNext();
-        });
-      }, pollInterval);
+        runLoop();
+      }, pollIntervalRef.current);
     };
 
-    // Initial fetch
-    fetchAll().then(() => scheduleNext());
+    runLoop();
 
     return () => {
+      mounted = false;
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
     };
-  }, [fetchAll, pollInterval]);
+  }, [fetchAll]);
 
   // Visibility change handler
   useEffect(() => {
@@ -180,8 +201,13 @@ export default function Dashboard() {
         if (timeoutRef.current) clearTimeout(timeoutRef.current);
       } else {
         isVisibleRef.current = true;
-        // Immediate refresh on tab focus
-        fetchAll();
+        // Immediate refresh on tab focus, then resume normal loop
+        fetchAll().then(() => {
+          if (timeoutRef.current) clearTimeout(timeoutRef.current);
+          timeoutRef.current = setTimeout(() => {
+            // The main loop will pick up from here
+          }, pollIntervalRef.current);
+        });
       }
     };
 
@@ -194,12 +220,12 @@ export default function Dashboard() {
     const interval = setInterval(() => {
       if (!lastUpdated) return;
       const elapsed = Date.now() - lastUpdated.getTime();
-      const remaining = Math.max(0, pollInterval - elapsed);
+      const remaining = Math.max(0, pollIntervalRef.current - elapsed);
       setNextRefreshIn(remaining);
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [lastUpdated, pollInterval]);
+  }, [lastUpdated]);
 
   const formatNumber = (num: number) => new Intl.NumberFormat("en-US").format(num);
 
