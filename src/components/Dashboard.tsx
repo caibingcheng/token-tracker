@@ -2,48 +2,13 @@
 
 import { useState } from "react";
 import StatsCards from "./StatsCards";
-import TrendChart from "./TrendChart";
+import ModelTrends from "./ModelTrends";
 import ModelDistributionChart from "./ModelDistributionChart";
 import ProviderDistributionChart from "./ProviderDistributionChart";
 import RecordsTable from "./RecordsTable";
 
 export default function Dashboard() {
-  const [apiKey, setApiKey] = useState("");
-  const [isConfigured, setIsConfigured] = useState(false);
   const [range, setRange] = useState("30d");
-
-  const handleConfigure = () => {
-    if (apiKey.trim()) {
-      localStorage.setItem("token-tracker-api-key", apiKey.trim());
-      setIsConfigured(true);
-    }
-  };
-
-  if (!isConfigured) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50">
-        <div className="bg-white rounded-lg shadow p-8 max-w-md w-full">
-          <h2 className="text-2xl font-bold mb-4">Token Tracker</h2>
-          <p className="text-gray-600 mb-4">
-            Enter your API Key to view your token usage dashboard.
-          </p>
-          <input
-            type="password"
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder="Enter API Key"
-            className="w-full px-4 py-2 border rounded-lg mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-          <button
-            onClick={handleConfigure}
-            className="w-full bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700 transition"
-          >
-            Connect
-          </button>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <main className="min-h-screen bg-gray-50 p-8">
@@ -63,7 +28,7 @@ export default function Dashboard() {
         </div>
 
         <StatsCards />
-        <TrendChart range={range} />
+        <ModelTrends range={range} />
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
           <ModelDistributionChart />
