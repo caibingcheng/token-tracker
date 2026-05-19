@@ -5,7 +5,6 @@ import { sql, desc, eq, and, gte, lte } from "drizzle-orm";
 
 export async function GET(request: NextRequest) {
   try {
-    const apiKey = request.headers.get("X-API-Key")!;
     const { searchParams } = new URL(request.url);
 
     // 分页参数
@@ -14,7 +13,7 @@ export async function GET(request: NextRequest) {
     const offset = (page - 1) * limit;
 
     // 筛选条件
-    const conditions = [eq(tokenRecords.apiKey, apiKey)];
+    const conditions: any[] = [];
 
     const model = searchParams.get("model");
     if (model) conditions.push(eq(tokenRecords.model, model));
@@ -32,22 +31,24 @@ export async function GET(request: NextRequest) {
       conditions.push(lte(tokenRecords.createdAt, end));
     }
 
-    const whereClause = and(...conditions);
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
     // 查询数据
-    const data = await db
+    const query = db
       .select()
       .from(tokenRecords)
-      .where(whereClause)
       .orderBy(desc(tokenRecords.createdAt))
       .limit(limit)
       .offset(offset);
+    const data = whereClause ? await query.where(whereClause) : await query;
 
     // 查询总数
-    const countResult = await db
+    const countQuery = db
       .select({ count: sql<number>`COUNT(*)` })
-      .from(tokenRecords)
-      .where(whereClause);
+      .from(tokenRecords);
+    const countResult = whereClause
+      ? await countQuery.where(whereClause)
+      : await countQuery;
 
     const total = countResult[0].count;
 
