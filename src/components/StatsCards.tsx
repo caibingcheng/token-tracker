@@ -1,8 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
-
-interface Stats {
+export interface Stats {
   totalInput: number;
   totalOutput: number;
   totalInputCached: number;
@@ -11,36 +9,13 @@ interface Stats {
   count: number;
 }
 
-export default function StatsCards() {
-  const [stats, setStats] = useState<Stats | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+interface StatsCardsProps {
+  stats: Stats | null;
+  loading: boolean;
+  error: string | null;
+}
 
-  useEffect(() => {
-    fetch("/api/stats?groupBy=none&range=all")
-      .then((res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.json();
-      })
-      .then((data) => {
-        if (data.success && data.data.length > 0) {
-          const item = data.data[0];
-          setStats({
-            totalInput: Number(item.totalInput || 0),
-            totalOutput: Number(item.totalOutput || 0),
-            totalInputCached: Number(item.totalInputCached || 0),
-            totalInputUncached: Number(item.totalInputUncached || 0),
-            totalCacheWrite: Number(item.totalCacheWrite || 0),
-            count: Number(item.count || 0),
-          });
-        } else {
-          setError(data.error || "Failed to load stats");
-        }
-      })
-      .catch((err) => setError(err.message))
-      .finally(() => setLoading(false));
-  }, []);
-
+export default function StatsCards({ stats, loading, error }: StatsCardsProps) {
   const formatNumber = (num: number) => new Intl.NumberFormat("en-US").format(num);
 
   if (loading) {
