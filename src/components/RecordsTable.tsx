@@ -17,25 +17,55 @@ export default function RecordsTable() {
   const [records, setRecords] = useState<Record[]>([]);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const apiKey = localStorage.getItem("token-tracker-api-key") || "";
-    if (!apiKey) return;
-
-    fetch(`/api/records?page=${page}&limit=20`, {
-      headers: { "X-API-Key": apiKey },
-    })
-      .then((res) => res.json())
+    setLoading(true);
+    setError(null);
+    fetch(`/api/records?page=${page}&limit=20`)
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
       .then((result) => {
         if (result.success) {
           setRecords(result.data);
           setTotalPages(result.pagination.totalPages);
+        } else {
+          setError(result.error || "Failed to load records");
         }
-      });
+      })
+      .catch((err) => setError(err.message))
+      .finally(() => setLoading(false));
   }, [page]);
 
   const formatNumber = (num: number) => new Intl.NumberFormat("en-US").format(num);
   const formatDate = (date: string) => new Date(date).toLocaleString();
+
+  if (loading) {
+    return (
+      <div className="bg-white rounded-lg shadow overflow-hidden">
+        <h3 className="text-lg font-semibold p-6 pb-0">Recent Records</h3>
+        <div className="p-6">
+          <div className="h-4 bg-gray-200 rounded w-full mb-4 animate-pulse"></div>
+          <div className="h-4 bg-gray-200 rounded w-full mb-4 animate-pulse"></div>
+          <div className="h-4 bg-gray-200 rounded w-full mb-4 animate-pulse"></div>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="bg-white rounded-lg shadow overflow-hidden">
+        <h3 className="text-lg font-semibold p-6 pb-0">Recent Records</h3>
+        <div className="p-6">
+          <p className="text-red-600">Error: {error}</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="bg-white rounded-lg shadow overflow-hidden">
@@ -47,9 +77,10 @@ export default function RecordsTable() {
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Model</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Provider</th>
-              <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Input</th>
+              <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Input (Uncached)</th>
+              <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Input (Cached)</th>
               <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Output</th>
-              <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Cache</th>
+              <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Cache Write</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200">
@@ -64,10 +95,13 @@ export default function RecordsTable() {
                   {formatNumber(record.inputTokens)}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
+                  {formatNumber(record.cacheRead)}
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
                   {formatNumber(record.outputTokens)}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
-                  {formatNumber(record.cacheRead + record.cacheWrite)}
+                  {formatNumber(record.cacheWrite)}
                 </td>
               </tr>
             ))}
