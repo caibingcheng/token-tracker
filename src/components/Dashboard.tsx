@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import StatsCards, { Stats } from "./StatsCards";
 import RecordsTable, { Record } from "./RecordsTable";
+import DailyUsageChart from "./DailyUsageChart";
 
 interface ModelStat {
   group: string;
@@ -244,6 +245,8 @@ export default function Dashboard() {
         </div>
 
         <StatsCards stats={stats} loading={loadingStats} error={errorStats} />
+
+        <DailyUsageChart />
 
         {/* Top 5 Models */}
         <div className="bg-white rounded-lg shadow p-6 mb-8">
