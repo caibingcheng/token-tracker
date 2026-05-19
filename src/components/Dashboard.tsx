@@ -8,7 +8,7 @@ interface ModelStat {
   group: string;
   totalInput: number;
   totalOutput: number;
-  totalCacheRead: number;
+  totalInputCached: number;
   totalCacheWrite: number;
   count: number;
 }
@@ -92,7 +92,7 @@ export default function Dashboard() {
                     <tr key={model.group}>
                       <td className="px-4 py-3 text-sm font-medium text-gray-900">{model.group}</td>
                       <td className="px-4 py-3 text-sm text-gray-600 text-right">{formatNumber(model.totalInput)}</td>
-                      <td className="px-4 py-3 text-sm text-gray-600 text-right">{formatNumber(model.totalCacheRead)}</td>
+                      <td className="px-4 py-3 text-sm text-gray-600 text-right">{formatNumber(model.totalInputCached)}</td>
                       <td className="px-4 py-3 text-sm text-gray-600 text-right">{formatNumber(model.totalOutput)}</td>
                       <td className="px-4 py-3 text-sm text-gray-600 text-right">{formatNumber(model.totalCacheWrite)}</td>
                       <td className="px-4 py-3 text-sm text-gray-600 text-right">{formatNumber(model.count)}</td>
