@@ -8,6 +8,8 @@ interface ModelStat {
   group: string;
   totalInput: number;
   totalOutput: number;
+  totalCacheRead: number;
+  totalCacheWrite: number;
   count: number;
 }
 
@@ -78,7 +80,9 @@ export default function Dashboard() {
                   <tr>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Model</th>
                     <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Input Tokens</th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Cache Read</th>
                     <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Output Tokens</th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Cache Write</th>
                     <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Requests</th>
                   </tr>
                 </thead>
@@ -87,7 +91,9 @@ export default function Dashboard() {
                     <tr key={model.group}>
                       <td className="px-4 py-3 text-sm font-medium text-gray-900">{model.group}</td>
                       <td className="px-4 py-3 text-sm text-gray-600 text-right">{formatNumber(model.totalInput)}</td>
+                      <td className="px-4 py-3 text-sm text-gray-600 text-right">{formatNumber(model.totalCacheRead)}</td>
                       <td className="px-4 py-3 text-sm text-gray-600 text-right">{formatNumber(model.totalOutput)}</td>
+                      <td className="px-4 py-3 text-sm text-gray-600 text-right">{formatNumber(model.totalCacheWrite)}</td>
                       <td className="px-4 py-3 text-sm text-gray-600 text-right">{formatNumber(model.count)}</td>
                     </tr>
                   ))}
