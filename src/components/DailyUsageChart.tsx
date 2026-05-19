@@ -2,8 +2,9 @@
 
 import { useMemo } from "react";
 import {
-  BarChart,
+  ComposedChart,
   Bar,
+  Line,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -30,11 +31,22 @@ const COLORS = {
   input: "#3B82F6",
   cache: "#93C5FD",
   output: "#1E40AF",
+  hitRate: "#F59E0B",
 };
 
 const WINDOW_DAYS = 30;
 
 function formatNumber(num: number) {
+  return new Intl.NumberFormat("en-US").format(num);
+}
+
+function formatAxisNumber(num: number) {
+  if (num >= 1000000) {
+    return (num / 1000000).toFixed(1).replace(/\.0$/, "") + "M";
+  }
+  if (num >= 1000) {
+    return (num / 1000).toFixed(1).replace(/\.0$/, "") + "K";
+  }
   return new Intl.NumberFormat("en-US").format(num);
 }
 
@@ -63,9 +75,22 @@ export default function DailyUsageChart({ rawData, loading, error }: DailyUsageC
     });
 
     const last30Days = getLast30Days();
-    return last30Days.map((date) => {
+    const mapped = last30Days.map((date) => {
       const existing = apiData.get(date);
-      if (existing) return existing;
+      if (existing) {
+        const cached = Number(existing.totalInputCached) || 0;
+        const uncached = Number(existing.totalInputUncached) || 0;
+        const totalInput = cached + uncached;
+        return {
+          ...existing,
+          totalInputCached: cached,
+          totalInputUncached: uncached,
+          totalOutput: Number(existing.totalOutput) || 0,
+          totalInput: Number(existing.totalInput) || 0,
+          count: Number(existing.count) || 0,
+          cacheHitRate: totalInput > 0 ? Number(((cached / totalInput) * 100).toFixed(1)) : 0,
+        };
+      }
       return {
         group: date,
         totalInput: 0,
@@ -73,8 +98,25 @@ export default function DailyUsageChart({ rawData, loading, error }: DailyUsageC
         totalInputUncached: 0,
         totalOutput: 0,
         count: 0,
+        cacheHitRate: 0,
       };
     });
+
+    // 隐藏前导0：将开头连续的 cacheHitRate === 0 设为 null
+    let firstNonZeroIndex = -1;
+    for (let i = 0; i < mapped.length; i++) {
+      if (mapped[i].cacheHitRate > 0) {
+        firstNonZeroIndex = i;
+        break;
+      }
+    }
+    if (firstNonZeroIndex > 0) {
+      for (let i = 0; i < firstNonZeroIndex; i++) {
+        (mapped[i] as Record<string, unknown>).cacheHitRate = null;
+      }
+    }
+
+    return mapped;
   }, [rawData]);
 
   const summary = useMemo(() => {
@@ -142,9 +184,9 @@ export default function DailyUsageChart({ rawData, loading, error }: DailyUsageC
 
       <h2 className="text-lg font-semibold mb-4">Daily Token Usage</h2>
       <ResponsiveContainer width="100%" height={280}>
-        <BarChart
+        <ComposedChart
           data={data}
-          margin={{ top: 10, right: 10, left: 0, bottom: 0 }}
+          margin={{ top: 10, right: 50, left: 0, bottom: 0 }}
           barCategoryGap="20%"
         >
           <CartesianGrid strokeDasharray="3 3" vertical={false} />
@@ -158,32 +200,70 @@ export default function DailyUsageChart({ rawData, loading, error }: DailyUsageC
             }}
           />
           <YAxis
+            yAxisId="left"
             tick={{ fontSize: 11 }}
-            tickFormatter={(v: number) => formatNumber(v)}
+            tickFormatter={(v: number) => formatAxisNumber(v)}
+            domain={[0, (dataMax: number) => {
+              if (dataMax === 0) return 100;
+              const magnitude = Math.pow(10, Math.floor(Math.log10(dataMax)));
+              const normalized = dataMax / magnitude;
+              let step: number;
+              if (normalized <= 2) step = magnitude / 2;
+              else if (normalized <= 5) step = magnitude;
+              else step = magnitude * 2;
+              return Math.max(step, Math.ceil(dataMax / step) * step);
+            }]}
+          />
+          <YAxis
+            yAxisId="right"
+            orientation="right"
+            tick={{ fontSize: 11, fill: COLORS.hitRate }}
+            tickFormatter={(v: number) => `${v}%`}
+            domain={[0, 100]}
           />
           <Tooltip
-            formatter={(value: number, name: string) => [formatNumber(value), name]}
+            formatter={(value, name) => {
+              if (name === "Cache Hit Rate") {
+                if (value === null || value === undefined) return ["—", name];
+                return [`${value}%`, name];
+              }
+              if (value === null || value === undefined) return ["—", name];
+              return [formatNumber(Number(value)), name];
+            }}
             labelFormatter={(label: string) => `Date: ${label}`}
           />
           <Bar
+            yAxisId="left"
             dataKey="totalInputUncached"
             stackId="tokens"
             fill={COLORS.input}
             name="Input"
           />
           <Bar
+            yAxisId="left"
             dataKey="totalInputCached"
             stackId="tokens"
             fill={COLORS.cache}
             name="Cache Read"
           />
           <Bar
+            yAxisId="left"
             dataKey="totalOutput"
             stackId="tokens"
             fill={COLORS.output}
             name="Output"
           />
-        </BarChart>
+          <Line
+            yAxisId="right"
+            type="monotone"
+            dataKey="cacheHitRate"
+            stroke={COLORS.hitRate}
+            strokeWidth={3}
+            dot={{ r: 4, fill: COLORS.hitRate, strokeWidth: 0 }}
+            activeDot={{ r: 6, fill: COLORS.hitRate, stroke: "#fff", strokeWidth: 2 }}
+            name="Cache Hit Rate"
+          />
+        </ComposedChart>
       </ResponsiveContainer>
     </div>
   );
