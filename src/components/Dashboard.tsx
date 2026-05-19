@@ -51,6 +51,7 @@ export default function Dashboard() {
   // Polling
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [nextRefreshIn, setNextRefreshIn] = useState(INITIAL_INTERVAL);
+  const [autoRefresh, setAutoRefresh] = useState(false);
 
   // Refs to avoid stale closures and infinite loops
   const statsRef = useRef<Stats | null>(null);
@@ -60,11 +61,13 @@ export default function Dashboard() {
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
   const isVisibleRef = useRef(true);
   const isFetchingRef = useRef(false);
+  const autoRefreshRef = useRef(false);
 
   // Keep refs in sync with states
   statsRef.current = stats;
   topModelsRef.current = topModels;
   dailyDataRef.current = dailyData;
+  autoRefreshRef.current = autoRefresh;
 
   const fetchAll = useCallback(async () => {
     if (!isVisibleRef.current || isFetchingRef.current) return;
@@ -172,12 +175,15 @@ export default function Dashboard() {
       await fetchAll();
       if (!mounted) return;
 
-      timeoutRef.current = setTimeout(() => {
-        runLoop();
-      }, pollIntervalRef.current);
+      if (autoRefreshRef.current) {
+        timeoutRef.current = setTimeout(() => {
+          runLoop();
+        }, pollIntervalRef.current);
+      }
     };
 
-    runLoop();
+    // Initial fetch on mount (always runs once)
+    fetchAll();
 
     return () => {
       mounted = false;
@@ -193,19 +199,44 @@ export default function Dashboard() {
         if (timeoutRef.current) clearTimeout(timeoutRef.current);
       } else {
         isVisibleRef.current = true;
-        // Immediate refresh on tab focus, then resume normal loop
-        fetchAll().then(() => {
-          if (timeoutRef.current) clearTimeout(timeoutRef.current);
-          timeoutRef.current = setTimeout(() => {
-            // The main loop will pick up from here
-          }, pollIntervalRef.current);
-        });
+        if (autoRefreshRef.current) {
+          // Immediate refresh on tab focus, then resume normal loop
+          fetchAll().then(() => {
+            if (!autoRefreshRef.current) return;
+            if (timeoutRef.current) clearTimeout(timeoutRef.current);
+            timeoutRef.current = setTimeout(() => {
+              // Triggered by autoRefresh effect below
+            }, pollIntervalRef.current);
+          });
+        }
       }
     };
 
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
   }, [fetchAll]);
+
+  // Start/stop polling when autoRefresh toggle changes
+  useEffect(() => {
+    if (autoRefresh) {
+      // Start polling: fetch now, then schedule next
+      fetchAll().then(() => {
+        if (timeoutRef.current) clearTimeout(timeoutRef.current);
+        timeoutRef.current = setTimeout(() => {
+          const runLoop = async () => {
+            await fetchAll();
+            if (autoRefreshRef.current) {
+              timeoutRef.current = setTimeout(runLoop, pollIntervalRef.current);
+            }
+          };
+          runLoop();
+        }, pollIntervalRef.current);
+      });
+    } else {
+      // Stop polling
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    }
+  }, [autoRefresh, fetchAll]);
 
   // Countdown timer for footer
   useEffect(() => {
@@ -226,6 +257,15 @@ export default function Dashboard() {
       <div className="max-w-7xl mx-auto">
         <div className="flex justify-between items-center mb-8">
           <h1 className="text-3xl font-bold">Token Tracker Dashboard</h1>
+          <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={autoRefresh}
+              onChange={(e) => setAutoRefresh(e.target.checked)}
+              className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+            />
+            Auto Refresh
+          </label>
         </div>
 
         <StatsCards stats={stats} loading={loadingStats} error={errorStats} />
