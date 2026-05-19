@@ -57,7 +57,7 @@ export default function DailyUsageChart() {
   useEffect(() => {
     setLoading(true);
     setError(null);
-    fetch("/api/stats?groupBy=date&range=all")
+    fetch("/api/stats?groupBy=date&range=30d")
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();

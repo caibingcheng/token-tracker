@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect, useState } from "react";
+
 export interface Record {
   id: number;
   model: string;
@@ -11,23 +13,33 @@ export interface Record {
   createdAt: string;
 }
 
-interface RecordsTableProps {
-  records: Record[];
-  page: number;
-  totalPages: number;
-  onPageChange: (page: number) => void;
-  loading: boolean;
-  error: string | null;
-}
+export default function RecordsTable() {
+  const [records, setRecords] = useState<Record[]>([]);
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-export default function RecordsTable({
-  records,
-  page,
-  totalPages,
-  onPageChange,
-  loading,
-  error,
-}: RecordsTableProps) {
+  useEffect(() => {
+    setLoading(true);
+    setError(null);
+    fetch(`/api/records?page=${page}&limit=20`)
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((result) => {
+        if (result.success) {
+          setRecords(result.data);
+          setTotalPages(result.pagination.totalPages);
+        } else {
+          setError(result.error || "Failed to load records");
+        }
+      })
+      .catch((err) => setError(err.message))
+      .finally(() => setLoading(false));
+  }, [page]);
+
   const formatNumber = (num: number) => new Intl.NumberFormat("en-US").format(num);
   const formatDate = (date: string) => new Date(date).toLocaleString();
 
@@ -86,11 +98,9 @@ export default function RecordsTable({
                   {formatNumber(record.cacheRead)}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
-                  {formatNumber(record.outputTokens)}
-                </td>
+                  {formatNumber(record.outputTokens)}</td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
-                  {formatNumber(record.cacheWrite)}
-                </td>
+                  {formatNumber(record.cacheWrite)}</td>
               </tr>
             ))}
           </tbody>
@@ -98,7 +108,7 @@ export default function RecordsTable({
       </div>
       <div className="px-6 py-4 flex justify-between items-center border-t">
         <button
-          onClick={() => onPageChange(Math.max(1, page - 1))}
+          onClick={() => setPage((p) => Math.max(1, p - 1))}
           disabled={page === 1}
           className="px-4 py-2 bg-gray-100 rounded disabled:opacity-50"
         >
@@ -108,7 +118,7 @@ export default function RecordsTable({
           Page {page} of {totalPages}
         </span>
         <button
-          onClick={() => onPageChange(Math.min(totalPages, page + 1))}
+          onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
           disabled={page === totalPages}
           className="px-4 py-2 bg-gray-100 rounded disabled:opacity-50"
         >

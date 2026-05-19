@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import StatsCards, { Stats } from "./StatsCards";
-import RecordsTable, { Record } from "./RecordsTable";
+import RecordsTable from "./RecordsTable";
 import DailyUsageChart from "./DailyUsageChart";
 
 interface ModelStat {
@@ -36,19 +36,14 @@ export default function Dashboard() {
   // Data states
   const [stats, setStats] = useState<Stats | null>(null);
   const [topModels, setTopModels] = useState<ModelStat[]>([]);
-  const [records, setRecords] = useState<Record[]>([]);
-  const [recordsPage, setRecordsPage] = useState(1);
-  const [recordsTotalPages, setRecordsTotalPages] = useState(1);
 
   // Loading states
   const [loadingStats, setLoadingStats] = useState(true);
   const [loadingTop5, setLoadingTop5] = useState(true);
-  const [loadingRecords, setLoadingRecords] = useState(true);
 
   // Error states
   const [errorStats, setErrorStats] = useState<string | null>(null);
   const [errorTop5, setErrorTop5] = useState<string | null>(null);
-  const [errorRecords, setErrorRecords] = useState<string | null>(null);
 
   // Polling
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
@@ -57,8 +52,6 @@ export default function Dashboard() {
   // Refs to avoid stale closures and infinite loops
   const statsRef = useRef<Stats | null>(null);
   const topModelsRef = useRef<ModelStat[]>([]);
-  const recordsRef = useRef<Record[]>([]);
-  const recordsPageRef = useRef(1);
   const pollIntervalRef = useRef(INITIAL_INTERVAL);
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
   const isVisibleRef = useRef(true);
@@ -67,33 +60,25 @@ export default function Dashboard() {
   // Keep refs in sync with states
   statsRef.current = stats;
   topModelsRef.current = topModels;
-  recordsRef.current = records;
-  recordsPageRef.current = recordsPage;
 
   const fetchAll = useCallback(async () => {
     if (!isVisibleRef.current || isFetchingRef.current) return;
     isFetchingRef.current = true;
 
-    const currentPage = recordsPageRef.current;
-
     setLoadingStats(true);
     setLoadingTop5(true);
-    if (currentPage === 1) setLoadingRecords(true);
 
     setErrorStats(null);
     setErrorTop5(null);
-    setErrorRecords(null);
 
     try {
-      const [statsRes, top5Res, recordsRes] = await Promise.all([
+      const [statsRes, top5Res] = await Promise.all([
         fetch("/api/stats?groupBy=none&range=all"),
         fetch("/api/stats?groupBy=model"),
-        currentPage === 1 ? fetch(`/api/records?page=1&limit=20`) : Promise.resolve(null),
       ]);
 
       let newStats: Stats | null = null;
       let newTop5: ModelStat[] = [];
-      let newRecords: Record[] = [];
 
       // Stats
       if (statsRes.ok) {
@@ -125,34 +110,15 @@ export default function Dashboard() {
         setErrorTop5(`HTTP ${top5Res.status}`);
       }
 
-      // Records (only page 1)
-      if (recordsRes) {
-        if (recordsRes.ok) {
-          const recordsData = await recordsRes.json();
-          if (recordsData.success) {
-            newRecords = recordsData.data;
-            setRecords(newRecords);
-            setRecordsTotalPages(recordsData.pagination.totalPages);
-          }
-        } else {
-          setErrorRecords(`HTTP ${recordsRes.status}`);
-        }
-      }
-
       setLastUpdated(new Date());
 
       // Dynamic interval: check if data changed vs previous fetch
       const prevStats = JSON.stringify(statsRef.current);
       const prevTop5 = JSON.stringify(topModelsRef.current);
-      const prevRecords = JSON.stringify(recordsRef.current);
       const currStats = JSON.stringify(newStats);
       const currTop5 = JSON.stringify(newTop5);
-      const currRecords = JSON.stringify(newRecords);
 
-      const changed =
-        currStats !== prevStats ||
-        currTop5 !== prevTop5 ||
-        currRecords !== prevRecords;
+      const changed = currStats !== prevStats || currTop5 !== prevTop5;
 
       if (changed) {
         pollIntervalRef.current = INITIAL_INTERVAL;
@@ -163,11 +129,9 @@ export default function Dashboard() {
       console.error("Fetch error:", err);
       setErrorStats("Network error");
       setErrorTop5("Network error");
-      setErrorRecords("Network error");
     } finally {
       setLoadingStats(false);
       setLoadingTop5(false);
-      setLoadingRecords(false);
       isFetchingRef.current = false;
     }
   }, []); // No dependencies - refs handle everything
@@ -235,13 +199,6 @@ export default function Dashboard() {
       <div className="max-w-7xl mx-auto">
         <div className="flex justify-between items-center mb-8">
           <h1 className="text-3xl font-bold">Token Tracker Dashboard</h1>
-          <select
-            className="px-4 py-2 border rounded-lg bg-white text-gray-700"
-            disabled
-            title="Range filter coming soon"
-          >
-            <option>All Time</option>
-          </select>
         </div>
 
         <StatsCards stats={stats} loading={loadingStats} error={errorStats} />
@@ -293,14 +250,7 @@ export default function Dashboard() {
           )}
         </div>
 
-        <RecordsTable
-          records={records}
-          page={recordsPage}
-          totalPages={recordsTotalPages}
-          onPageChange={setRecordsPage}
-          loading={loadingRecords}
-          error={errorRecords}
-        />
+        <RecordsTable />
 
         {/* Footer */}
         <div className="mt-8 py-4 border-t border-gray-200 flex justify-between items-center text-sm text-gray-500">
