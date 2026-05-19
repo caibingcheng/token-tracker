@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import StatsCards, { Stats } from "./StatsCards";
 import RecordsTable from "./RecordsTable";
-import DailyUsageChart from "./DailyUsageChart";
+import DailyUsageChart, { DailyData } from "./DailyUsageChart";
 
 interface ModelStat {
   group: string;
@@ -36,14 +36,17 @@ export default function Dashboard() {
   // Data states
   const [stats, setStats] = useState<Stats | null>(null);
   const [topModels, setTopModels] = useState<ModelStat[]>([]);
+  const [dailyData, setDailyData] = useState<DailyData[]>([]);
 
   // Loading states
   const [loadingStats, setLoadingStats] = useState(true);
   const [loadingTop5, setLoadingTop5] = useState(true);
+  const [loadingDaily, setLoadingDaily] = useState(true);
 
   // Error states
   const [errorStats, setErrorStats] = useState<string | null>(null);
   const [errorTop5, setErrorTop5] = useState<string | null>(null);
+  const [errorDaily, setErrorDaily] = useState<string | null>(null);
 
   // Polling
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
@@ -52,6 +55,7 @@ export default function Dashboard() {
   // Refs to avoid stale closures and infinite loops
   const statsRef = useRef<Stats | null>(null);
   const topModelsRef = useRef<ModelStat[]>([]);
+  const dailyDataRef = useRef<DailyData[]>([]);
   const pollIntervalRef = useRef(INITIAL_INTERVAL);
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
   const isVisibleRef = useRef(true);
@@ -60,6 +64,7 @@ export default function Dashboard() {
   // Keep refs in sync with states
   statsRef.current = stats;
   topModelsRef.current = topModels;
+  dailyDataRef.current = dailyData;
 
   const fetchAll = useCallback(async () => {
     if (!isVisibleRef.current || isFetchingRef.current) return;
@@ -67,18 +72,22 @@ export default function Dashboard() {
 
     setLoadingStats(true);
     setLoadingTop5(true);
+    setLoadingDaily(true);
 
     setErrorStats(null);
     setErrorTop5(null);
+    setErrorDaily(null);
 
     try {
-      const [statsRes, top5Res] = await Promise.all([
+      const [statsRes, top5Res, dailyRes] = await Promise.all([
         fetch("/api/stats?groupBy=none&range=all"),
         fetch("/api/stats?groupBy=model"),
+        fetch("/api/stats?groupBy=date&range=30d"),
       ]);
 
       let newStats: Stats | null = null;
       let newTop5: ModelStat[] = [];
+      let newDaily: DailyData[] = [];
 
       // Stats
       if (statsRes.ok) {
@@ -110,15 +119,31 @@ export default function Dashboard() {
         setErrorTop5(`HTTP ${top5Res.status}`);
       }
 
+      // Daily
+      if (dailyRes.ok) {
+        const dailyDataResult = await dailyRes.json();
+        if (dailyDataResult.success) {
+          newDaily = dailyDataResult.data;
+          setDailyData(newDaily);
+        }
+      } else {
+        setErrorDaily(`HTTP ${dailyRes.status}`);
+      }
+
       setLastUpdated(new Date());
 
       // Dynamic interval: check if data changed vs previous fetch
       const prevStats = JSON.stringify(statsRef.current);
       const prevTop5 = JSON.stringify(topModelsRef.current);
+      const prevDaily = JSON.stringify(dailyDataRef.current);
       const currStats = JSON.stringify(newStats);
       const currTop5 = JSON.stringify(newTop5);
+      const currDaily = JSON.stringify(newDaily);
 
-      const changed = currStats !== prevStats || currTop5 !== prevTop5;
+      const changed =
+        currStats !== prevStats ||
+        currTop5 !== prevTop5 ||
+        currDaily !== prevDaily;
 
       if (changed) {
         pollIntervalRef.current = INITIAL_INTERVAL;
@@ -129,9 +154,11 @@ export default function Dashboard() {
       console.error("Fetch error:", err);
       setErrorStats("Network error");
       setErrorTop5("Network error");
+      setErrorDaily("Network error");
     } finally {
       setLoadingStats(false);
       setLoadingTop5(false);
+      setLoadingDaily(false);
       isFetchingRef.current = false;
     }
   }, []); // No dependencies - refs handle everything
@@ -203,7 +230,7 @@ export default function Dashboard() {
 
         <StatsCards stats={stats} loading={loadingStats} error={errorStats} />
 
-        <DailyUsageChart />
+        <DailyUsageChart rawData={dailyData} loading={loadingDaily} error={errorDaily} />
 
         {/* Top 5 Models */}
         <div className="bg-white rounded-lg shadow p-6 mb-8">

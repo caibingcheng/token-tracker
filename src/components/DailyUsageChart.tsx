@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useMemo } from "react";
 import {
   BarChart,
   Bar,
@@ -11,13 +11,19 @@ import {
   ResponsiveContainer,
 } from "recharts";
 
-interface DailyData {
+export interface DailyData {
   group: string;
   totalInput: number;
   totalInputCached: number;
   totalInputUncached: number;
   totalOutput: number;
   count: number;
+}
+
+interface DailyUsageChartProps {
+  rawData: DailyData[];
+  loading: boolean;
+  error: string | null;
 }
 
 const COLORS = {
@@ -49,48 +55,27 @@ function getLast30Days(): string[] {
   return days;
 }
 
-export default function DailyUsageChart() {
-  const [data, setData] = useState<DailyData[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+export default function DailyUsageChart({ rawData, loading, error }: DailyUsageChartProps) {
+  const data = useMemo(() => {
+    const apiData = new Map<string, DailyData>();
+    rawData.forEach((item) => {
+      apiData.set(item.group, item);
+    });
 
-  useEffect(() => {
-    setLoading(true);
-    setError(null);
-    fetch("/api/stats?groupBy=date&range=30d")
-      .then((res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.json();
-      })
-      .then((result) => {
-        if (result.success) {
-          const apiData = new Map<string, DailyData>();
-          result.data.forEach((item: DailyData) => {
-            apiData.set(item.group, item);
-          });
-
-          const last30Days = getLast30Days();
-          const merged = last30Days.map((date) => {
-            const existing = apiData.get(date);
-            if (existing) return existing;
-            return {
-              group: date,
-              totalInput: 0,
-              totalInputCached: 0,
-              totalInputUncached: 0,
-              totalOutput: 0,
-              count: 0,
-            };
-          });
-
-          setData(merged);
-        } else {
-          setError(result.error || "Failed to load data");
-        }
-      })
-      .catch((err) => setError(err.message))
-      .finally(() => setLoading(false));
-  }, []);
+    const last30Days = getLast30Days();
+    return last30Days.map((date) => {
+      const existing = apiData.get(date);
+      if (existing) return existing;
+      return {
+        group: date,
+        totalInput: 0,
+        totalInputCached: 0,
+        totalInputUncached: 0,
+        totalOutput: 0,
+        count: 0,
+      };
+    });
+  }, [rawData]);
 
   const summary = useMemo(() => {
     if (data.length === 0) return null;
