@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo, useCallback } from "react";
+import { useEffect, useState, useMemo } from "react";
 import {
   BarChart,
   Bar,
@@ -9,8 +9,6 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  Brush,
-  Cell,
 } from "recharts";
 
 interface DailyData {
@@ -22,32 +20,39 @@ interface DailyData {
   count: number;
 }
 
-interface Summary {
-  startDate: string;
-  endDate: string;
-  totalInput: number;
-  totalOutput: number;
-  totalCacheRead: number;
-  totalRequests: number;
-}
-
 const COLORS = {
   input: "#3B82F6",
   cache: "#93C5FD",
   output: "#1E40AF",
 };
 
-const DEFAULT_WINDOW = 30;
+const WINDOW_DAYS = 30;
 
 function formatNumber(num: number) {
   return new Intl.NumberFormat("en-US").format(num);
+}
+
+function formatDate(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function getLast30Days(): string[] {
+  const days: string[] = [];
+  for (let i = WINDOW_DAYS - 1; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    days.push(formatDate(d));
+  }
+  return days;
 }
 
 export default function DailyUsageChart() {
   const [data, setData] = useState<DailyData[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [brushRange, setBrushRange] = useState<{ startIndex: number; endIndex: number } | null>(null);
 
   useEffect(() => {
     setLoading(true);
@@ -59,14 +64,26 @@ export default function DailyUsageChart() {
       })
       .then((result) => {
         if (result.success) {
-          const sorted = result.data.sort((a: DailyData, b: DailyData) =>
-            a.group.localeCompare(b.group)
-          );
-          setData(sorted);
-          // Default: last 30 days
-          const end = sorted.length - 1;
-          const start = Math.max(0, end - DEFAULT_WINDOW + 1);
-          setBrushRange({ startIndex: start, endIndex: end });
+          const apiData = new Map<string, DailyData>();
+          result.data.forEach((item: DailyData) => {
+            apiData.set(item.group, item);
+          });
+
+          const last30Days = getLast30Days();
+          const merged = last30Days.map((date) => {
+            const existing = apiData.get(date);
+            if (existing) return existing;
+            return {
+              group: date,
+              totalInput: 0,
+              totalInputCached: 0,
+              totalInputUncached: 0,
+              totalOutput: 0,
+              count: 0,
+            };
+          });
+
+          setData(merged);
         } else {
           setError(result.error || "Failed to load data");
         }
@@ -75,26 +92,15 @@ export default function DailyUsageChart() {
       .finally(() => setLoading(false));
   }, []);
 
-  const summary = useMemo<Summary | null>(() => {
-    if (!brushRange || data.length === 0) return null;
-    const { startIndex, endIndex } = brushRange;
-    const slice = data.slice(startIndex, endIndex + 1);
-    if (slice.length === 0) return null;
+  const summary = useMemo(() => {
+    if (data.length === 0) return null;
     return {
-      startDate: slice[0].group,
-      endDate: slice[slice.length - 1].group,
-      totalInput: slice.reduce((s, d) => s + d.totalInput, 0),
-      totalOutput: slice.reduce((s, d) => s + d.totalOutput, 0),
-      totalCacheRead: slice.reduce((s, d) => s + d.totalInputCached, 0),
-      totalRequests: slice.reduce((s, d) => s + d.count, 0),
+      totalInput: data.reduce((s, d) => s + d.totalInput, 0),
+      totalOutput: data.reduce((s, d) => s + d.totalOutput, 0),
+      totalCacheRead: data.reduce((s, d) => s + d.totalInputCached, 0),
+      totalRequests: data.reduce((s, d) => s + d.count, 0),
     };
-  }, [brushRange, data]);
-
-  const handleBrushChange = useCallback((range: { startIndex?: number; endIndex?: number }) => {
-    if (typeof range.startIndex === "number" && typeof range.endIndex === "number") {
-      setBrushRange({ startIndex: range.startIndex, endIndex: range.endIndex });
-    }
-  }, []);
+  }, [data]);
 
   if (loading) {
     return (
@@ -125,11 +131,9 @@ export default function DailyUsageChart() {
       {/* Summary Card */}
       {summary && (
         <div className="mb-6 p-4 bg-gray-50 rounded-lg">
-          <div className="flex justify-between items-center mb-3">
-            <h3 className="text-sm font-medium text-gray-500">
-              Summary ({summary.startDate} ~ {summary.endDate})
-            </h3>
-          </div>
+          <h3 className="text-sm font-medium text-gray-500 mb-3">
+            Last {WINDOW_DAYS} Days Summary
+          </h3>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div>
               <p className="text-xs text-gray-400">Total Input</p>
@@ -152,33 +156,47 @@ export default function DailyUsageChart() {
       )}
 
       <h2 className="text-lg font-semibold mb-4">Daily Token Usage</h2>
-      <ResponsiveContainer width="100%" height={350}>
-        <BarChart data={data} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+      <ResponsiveContainer width="100%" height={280}>
+        <BarChart
+          data={data}
+          margin={{ top: 10, right: 10, left: 0, bottom: 0 }}
+          barCategoryGap="20%"
+        >
           <CartesianGrid strokeDasharray="3 3" vertical={false} />
           <XAxis
             dataKey="group"
-            tick={{ fontSize: 12 }}
+            tick={{ fontSize: 11 }}
+            interval={4}
             tickFormatter={(value: string) => {
               const parts = value.split("-");
-              return parts.length >= 2 ? `${parts[1]}-${parts[2] || parts[1]}` : value;
+              return parts.length >= 3 ? `${Number(parts[1])}-${Number(parts[2])}` : value;
             }}
           />
-          <YAxis tick={{ fontSize: 12 }} tickFormatter={(v: number) => formatNumber(v)} />
+          <YAxis
+            tick={{ fontSize: 11 }}
+            tickFormatter={(v: number) => formatNumber(v)}
+          />
           <Tooltip
             formatter={(value: number, name: string) => [formatNumber(value), name]}
             labelFormatter={(label: string) => `Date: ${label}`}
           />
-          <Bar dataKey="totalInputUncached" stackId="tokens" fill={COLORS.input} name="Input" />
-          <Bar dataKey="totalInputCached" stackId="tokens" fill={COLORS.cache} name="Cache Read" />
-          <Bar dataKey="totalOutput" stackId="tokens" fill={COLORS.output} name="Output" />
-          <Brush
-            dataKey="group"
-            height={30}
-            stroke="#3B82F6"
-            startIndex={brushRange?.startIndex}
-            endIndex={brushRange?.endIndex}
-            onChange={handleBrushChange}
-            travellerWidth={8}
+          <Bar
+            dataKey="totalInputUncached"
+            stackId="tokens"
+            fill={COLORS.input}
+            name="Input"
+          />
+          <Bar
+            dataKey="totalInputCached"
+            stackId="tokens"
+            fill={COLORS.cache}
+            name="Cache Read"
+          />
+          <Bar
+            dataKey="totalOutput"
+            stackId="tokens"
+            fill={COLORS.output}
+            name="Output"
           />
         </BarChart>
       </ResponsiveContainer>
