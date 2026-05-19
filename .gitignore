@@ -16,3 +16,4 @@ drizzle/
 # IDE
 .vscode/
 .idea/
+*.tsbuildinfo

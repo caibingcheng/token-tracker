@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { db, initDatabase } from "@/lib/db";
 import { tokenRecords } from "@/lib/db/schema";
 import { sql } from "drizzle-orm";
 
 export async function GET(request: NextRequest) {
+  await initDatabase();
   try {
     const { searchParams } = new URL(request.url);
     const groupBy = searchParams.get("groupBy") || "date";

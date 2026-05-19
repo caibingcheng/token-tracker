@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { db, initDatabase } from "@/lib/db";
 import { tokenRecords } from "@/lib/db/schema";
 
 export async function POST(request: NextRequest) {
+  await initDatabase();
   try {
     const body = await request.json();
     const apiKey = request.headers.get("X-API-Key")!;
