@@ -107,29 +107,31 @@ export async function GET(request: NextRequest) {
       query = db
         .select({
           group: tokenRecords.model,
-          totalInput: sql<number>`SUM(${tokenRecords.inputTokens})`,
+          totalInput: sql<number>`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead})`,
+          totalInputCached: sql<number>`SUM(${tokenRecords.cacheRead})`,
+          totalInputUncached: sql<number>`SUM(${tokenRecords.inputTokens})`,
           totalOutput: sql<number>`SUM(${tokenRecords.outputTokens})`,
-          totalCacheRead: sql<number>`SUM(${tokenRecords.cacheRead})`,
           totalCacheWrite: sql<number>`SUM(${tokenRecords.cacheWrite})`,
           count: sql<number>`COUNT(*)`,
         })
         .from(tokenRecords)
         .groupBy(tokenRecords.model)
-        .orderBy(sql`SUM(${tokenRecords.inputTokens}) DESC`);
+        .orderBy(sql`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead}) DESC`);
     } else {
       // provider
       query = db
         .select({
           group: tokenRecords.provider,
-          totalInput: sql<number>`SUM(${tokenRecords.inputTokens})`,
+          totalInput: sql<number>`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead})`,
+          totalInputCached: sql<number>`SUM(${tokenRecords.cacheRead})`,
+          totalInputUncached: sql<number>`SUM(${tokenRecords.inputTokens})`,
           totalOutput: sql<number>`SUM(${tokenRecords.outputTokens})`,
-          totalCacheRead: sql<number>`SUM(${tokenRecords.cacheRead})`,
           totalCacheWrite: sql<number>`SUM(${tokenRecords.cacheWrite})`,
           count: sql<number>`COUNT(*)`,
         })
         .from(tokenRecords)
         .groupBy(tokenRecords.provider)
-        .orderBy(sql`SUM(${tokenRecords.inputTokens}) DESC`);
+        .orderBy(sql`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead}) DESC`);
     }
 
     const data = await query;
