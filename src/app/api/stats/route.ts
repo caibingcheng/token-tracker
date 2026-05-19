@@ -5,7 +5,6 @@ import { sql } from "drizzle-orm";
 
 export async function GET(request: NextRequest) {
   try {
-    const apiKey = request.headers.get("X-API-Key")!;
     const { searchParams } = new URL(request.url);
     const groupBy = searchParams.get("groupBy") || "date";
     const range = searchParams.get("range") || "30d";
@@ -20,7 +19,25 @@ export async function GET(request: NextRequest) {
 
     let query;
 
-    if (groupBy === "date") {
+    if (groupBy === "none") {
+      query = db
+        .select({
+          group: sql<string>`'total'`,
+          totalInput: sql<number>`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead})`,
+          totalInputCached: sql<number>`SUM(${tokenRecords.cacheRead})`,
+          totalInputUncached: sql<number>`SUM(${tokenRecords.inputTokens})`,
+          totalOutput: sql<number>`SUM(${tokenRecords.outputTokens})`,
+          totalCacheWrite: sql<number>`SUM(${tokenRecords.cacheWrite})`,
+          count: sql<number>`COUNT(*)`,
+        })
+        .from(tokenRecords);
+
+      if (dateFilter) {
+        query = query.where(
+          sql`${tokenRecords.createdAt} >= ${dateFilter.toISOString()}`
+        );
+      }
+    } else if (groupBy === "date") {
       const granularity = searchParams.get("granularity") || "day";
       let dateFormat: string;
 
@@ -32,23 +49,58 @@ export async function GET(request: NextRequest) {
         dateFormat = "YYYY-MM-DD";
       }
 
+      // 使用 sql.raw 内联格式字符串，避免 GROUP BY 参数化问题
+      const groupExpr = sql<string>`TO_CHAR(${tokenRecords.createdAt}, ${sql.raw(`'${dateFormat}'`)})`;
+
       query = db
         .select({
-          group: sql<string>`TO_CHAR(${tokenRecords.createdAt}, ${dateFormat})`,
-          totalInput: sql<number>`SUM(${tokenRecords.inputTokens})`,
+          group: groupExpr,
+          totalInput: sql<number>`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead})`,
+          totalInputCached: sql<number>`SUM(${tokenRecords.cacheRead})`,
+          totalInputUncached: sql<number>`SUM(${tokenRecords.inputTokens})`,
           totalOutput: sql<number>`SUM(${tokenRecords.outputTokens})`,
-          totalCacheRead: sql<number>`SUM(${tokenRecords.cacheRead})`,
           totalCacheWrite: sql<number>`SUM(${tokenRecords.cacheWrite})`,
           count: sql<number>`COUNT(*)`,
         })
         .from(tokenRecords)
-        .where(sql`${tokenRecords.apiKey} = ${apiKey}`)
-        .groupBy(sql`TO_CHAR(${tokenRecords.createdAt}, ${dateFormat})`)
-        .orderBy(sql`TO_CHAR(${tokenRecords.createdAt}, ${dateFormat})`);
+        .groupBy(groupExpr)
+        .orderBy(groupExpr);
 
       if (dateFilter) {
         query = query.where(
-          sql`${tokenRecords.apiKey} = ${apiKey} AND ${tokenRecords.createdAt} >= ${dateFilter.toISOString()}`
+          sql`${tokenRecords.createdAt} >= ${dateFilter.toISOString()}`
+        );
+      }
+    } else if (groupBy === "date-model") {
+      const granularity = searchParams.get("granularity") || "day";
+      let dateFormat: string;
+      if (granularity === "week") {
+        dateFormat = "YYYY-WW";
+      } else if (granularity === "month") {
+        dateFormat = "YYYY-MM";
+      } else {
+        dateFormat = "YYYY-MM-DD";
+      }
+      const groupExpr = sql<string>`TO_CHAR(${tokenRecords.createdAt}, ${sql.raw(`'${dateFormat}'`)})`;
+
+      query = db
+        .select({
+          group: groupExpr,
+          model: tokenRecords.model,
+          totalInput: sql<number>`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead})`,
+          totalInputCached: sql<number>`SUM(${tokenRecords.cacheRead})`,
+          totalInputUncached: sql<number>`SUM(${tokenRecords.inputTokens})`,
+          totalOutput: sql<number>`SUM(${tokenRecords.outputTokens})`,
+          totalCacheWrite: sql<number>`SUM(${tokenRecords.cacheWrite})`,
+          count: sql<number>`COUNT(*)`,
+        })
+        .from(tokenRecords)
+        .groupBy(groupExpr, tokenRecords.model)
+        .orderBy(groupExpr, tokenRecords.model);
+
+      if (dateFilter) {
+        query = query.where(
+          sql`${tokenRecords.createdAt} >= ${dateFilter.toISOString()}`
         );
       }
     } else if (groupBy === "model") {
@@ -62,7 +114,6 @@ export async function GET(request: NextRequest) {
           count: sql<number>`COUNT(*)`,
         })
         .from(tokenRecords)
-        .where(sql`${tokenRecords.apiKey} = ${apiKey}`)
         .groupBy(tokenRecords.model)
         .orderBy(sql`SUM(${tokenRecords.inputTokens}) DESC`);
     } else {
@@ -77,7 +128,6 @@ export async function GET(request: NextRequest) {
           count: sql<number>`COUNT(*)`,
         })
         .from(tokenRecords)
-        .where(sql`${tokenRecords.apiKey} = ${apiKey}`)
         .groupBy(tokenRecords.provider)
         .orderBy(sql`SUM(${tokenRecords.inputTokens}) DESC`);
     }
