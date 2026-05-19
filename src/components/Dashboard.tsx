@@ -322,7 +322,11 @@ export default function Dashboard() {
         {/* Footer */}
         <div className="mt-8 py-4 border-t border-gray-200 flex justify-between items-center text-sm text-gray-500">
           <span>Updated {formatTimeAgo(lastUpdated)}</span>
-          <span>Next refresh in {formatDuration(nextRefreshIn)}</span>
+          {autoRefresh ? (
+            <span>Next refresh in {formatDuration(nextRefreshIn)}</span>
+          ) : (
+            <span>Auto refresh disabled</span>
+          )}
         </div>
       </div>
     </main>
