@@ -29,24 +29,28 @@ npx drizzle-kit push
 
 ### 4. Install Plugin
 
-```bash
-# In your opencode plugins directory
-cd ~/.my-opencode/plugins
-git clone https://github.com/your-repo/token-tracker.git token-tracker-plugin
-cd token-tracker-plugin/packages/plugin
-npm install
-npm run build
+插件仓库：[token-tracker-opencode](https://github.com/caibingcheng/token-tracker-opencode)
+
+在 `~/.my-opencode/opencode.jsonc` 中配置（opencode 会自动从 GitHub 安装）：
+
+```jsonc
+{
+  "plugin": [
+    ["github:caibingcheng/token-tracker-opencode", {
+      "endpoint": "https://your-app.vercel.app/api/ingest",
+      "apiKey": "your-secret-key"
+    }]
+  ]
+}
 ```
 
-### 5. Configure Plugin
-
-Set environment variables:
+也支持环境变量配置（优先级低于 options）：
 ```bash
 export TOKEN_TRACKER_ENDPOINT="https://your-app.vercel.app/api/ingest"
 export TOKEN_TRACKER_API_KEY="your-secret-key"
 ```
 
-### 6. Access Dashboard
+### 5. Access Dashboard
 
 Open `https://your-app.vercel.app` and enter your API Key.
 
