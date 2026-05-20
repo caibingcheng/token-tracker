@@ -40,7 +40,6 @@ export async function GET(request: NextRequest) {
     const query = db
       .select({
         id: tokenRecords.id,
-        apiKey: tokenRecords.apiKey,
         model: tokenRecords.model,
         inputTokens: tokenRecords.inputTokens,
         outputTokens: tokenRecords.outputTokens,
