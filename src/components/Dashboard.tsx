@@ -275,7 +275,6 @@ export default function Dashboard() {
         {/* Top 5 Models */}
         <div className="bg-white rounded-lg shadow p-6 mb-8">
           <h2 className="text-lg font-semibold mb-1">Top 5 Model Families</h2>
-          <p className="text-xs text-gray-400 mb-4">Input Tokens includes Cache Read</p>
           {loadingTop5 && (
             <div className="space-y-3">
               {[1, 2, 3, 4, 5].map((i) => (
@@ -289,30 +288,44 @@ export default function Dashboard() {
           )}
           {!loadingTop5 && !errorTop5 && topModels.length > 0 && (
             <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead className="bg-gray-50">
-                  <tr>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Model</th>
-                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Input Tokens</th>
-                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Cache Read</th>
-                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Output Tokens</th>
-                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Cache Write</th>
-                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Requests</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-200">
-                  {topModels.map((model) => (
-                    <tr key={model.group}>
-                      <td className="px-4 py-3 text-sm font-medium text-gray-900">{model.group}</td>
-                      <td className="px-4 py-3 text-sm text-gray-600 text-right">{formatNumber(model.totalInput)}</td>
-                      <td className="px-4 py-3 text-sm text-gray-600 text-right">{formatNumber(model.totalInputCached)}</td>
-                      <td className="px-4 py-3 text-sm text-gray-600 text-right">{formatNumber(model.totalOutput)}</td>
-                      <td className="px-4 py-3 text-sm text-gray-600 text-right">{formatNumber(model.totalCacheWrite)}</td>
-                      <td className="px-4 py-3 text-sm text-gray-600 text-right">{formatNumber(model.count)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              {(() => {
+                const maxAllTokens = Math.max(...topModels.map(m => m.totalInput + m.totalOutput));
+                return (
+                  <table className="w-full">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Model</th>
+                        <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Total Input</th>
+                        <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Cache Read</th>
+                        <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Total Output</th>
+                        <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Cache Write</th>
+                        <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Requests</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200">
+                      {topModels.map((model) => {
+                        const allTokens = model.totalInput + model.totalOutput;
+                        const percentage = maxAllTokens > 0 ? (allTokens / maxAllTokens) * 100 : 0;
+                        return (
+                          <tr
+                            key={model.group}
+                            style={{
+                              background: `linear-gradient(to right, rgb(239 246 255) ${percentage}%, transparent ${percentage}%)`
+                            }}
+                          >
+                            <td className="px-4 py-3 text-sm font-medium text-gray-900">{model.group}</td>
+                            <td className="px-4 py-3 text-sm text-gray-600 text-right">{formatNumber(model.totalInput)}</td>
+                            <td className="px-4 py-3 text-sm text-gray-600 text-right">{formatNumber(model.totalInputCached)}</td>
+                            <td className="px-4 py-3 text-sm text-gray-600 text-right">{formatNumber(model.totalOutput)}</td>
+                            <td className="px-4 py-3 text-sm text-gray-600 text-right">{formatNumber(model.totalCacheWrite)}</td>
+                            <td className="px-4 py-3 text-sm text-gray-600 text-right">{formatNumber(model.count)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                );
+              })()}
             </div>
           )}
         </div>

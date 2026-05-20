@@ -168,14 +168,14 @@ export default function DailyUsageChart({ rawData, loading, error }: DailyUsageC
             </div>
             <div>
               <p className="text-xs text-gray-400">Cache Read</p>
-              <p className="text-lg font-bold text-blue-600">{formatNumber(summary.totalCacheRead)}</p>
+              <p className="text-lg font-bold text-gray-900">{formatNumber(summary.totalCacheRead)}</p>
             </div>
             <div>
               <p className="text-xs text-gray-400">Total Output</p>
               <p className="text-lg font-bold text-gray-900">{formatNumber(summary.totalOutput)}</p>
             </div>
             <div>
-              <p className="text-xs text-gray-400">Requests</p>
+              <p className="text-xs text-gray-400">Total Requests</p>
               <p className="text-lg font-bold text-gray-900">{formatNumber(summary.totalRequests)}</p>
             </div>
           </div>
