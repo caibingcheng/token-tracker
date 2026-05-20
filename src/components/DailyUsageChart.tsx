@@ -132,7 +132,7 @@ export default function DailyUsageChart({ rawData, loading, error }: DailyUsageC
   if (loading) {
     return (
       <div className="bg-white rounded-lg shadow p-6 mb-8">
-        <div className="h-[300px] bg-gray-100 rounded animate-pulse" />
+        <div className="h-[280px] bg-gray-100 rounded animate-pulse" />
       </div>
     );
   }
@@ -187,7 +187,7 @@ export default function DailyUsageChart({ rawData, loading, error }: DailyUsageC
         <ComposedChart
           data={data}
           margin={{ top: 10, right: 50, left: 0, bottom: 0 }}
-          barCategoryGap="20%"
+          barCategoryGap="40%"
         >
           <CartesianGrid strokeDasharray="3 3" vertical={false} />
           <XAxis
@@ -223,7 +223,7 @@ export default function DailyUsageChart({ rawData, loading, error }: DailyUsageC
           />
           <Tooltip
             formatter={(value, name) => {
-              if (name === "Cache Hit Rate") {
+              if (name === "Cache Hit Ratio") {
                 if (value === null || value === undefined) return ["—", name];
                 return [`${value}%`, name];
               }
@@ -231,20 +231,10 @@ export default function DailyUsageChart({ rawData, loading, error }: DailyUsageC
               return [formatNumber(Number(value)), name];
             }}
             labelFormatter={(label: string) => `Date: ${label}`}
-          />
-          <Bar
-            yAxisId="left"
-            dataKey="totalInputUncached"
-            stackId="tokens"
-            fill={COLORS.input}
-            name="Input"
-          />
-          <Bar
-            yAxisId="left"
-            dataKey="totalInputCached"
-            stackId="tokens"
-            fill={COLORS.cache}
-            name="Cache Read"
+            itemSorter={(item) => {
+              const order = ["Cache", "UnCache", "Output", "Cache Hit Ratio"];
+              return order.indexOf(String(item.name));
+            }}
           />
           <Bar
             yAxisId="left"
@@ -252,6 +242,20 @@ export default function DailyUsageChart({ rawData, loading, error }: DailyUsageC
             stackId="tokens"
             fill={COLORS.output}
             name="Output"
+          />
+          <Bar
+            yAxisId="left"
+            dataKey="totalInputUncached"
+            stackId="tokens"
+            fill={COLORS.input}
+            name="UnCache"
+          />
+          <Bar
+            yAxisId="left"
+            dataKey="totalInputCached"
+            stackId="tokens"
+            fill={COLORS.cache}
+            name="Cache"
           />
           <Line
             yAxisId="right"
@@ -261,7 +265,7 @@ export default function DailyUsageChart({ rawData, loading, error }: DailyUsageC
             strokeWidth={3}
             dot={{ r: 4, fill: COLORS.hitRate, strokeWidth: 0 }}
             activeDot={{ r: 6, fill: COLORS.hitRate, stroke: "#fff", strokeWidth: 2 }}
-            name="Cache Hit Rate"
+            name="Cache Hit Ratio"
           />
         </ComposedChart>
       </ResponsiveContainer>
