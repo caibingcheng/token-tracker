@@ -2,6 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { db, initDatabase } from "@/lib/db";
 import { tokenRecords } from "@/lib/db/schema";
 import { sql } from "drizzle-orm";
+import {
+  TOP_N_RAW_MODELS,
+  TOP_N_DISPLAY,
+  aggregateByNormalizedModel,
+  type StatItem,
+} from "@/lib/model-utils";
 
 export async function GET(request: NextRequest) {
   await initDatabase();
@@ -105,10 +111,12 @@ export async function GET(request: NextRequest) {
         );
       }
     } else if (groupBy === "model") {
-      query = db
+      // 先按原始 model 分组取 Top 20，再应用层归一化合并取 Top 5
+      const rawQuery = db
         .select({
           group: tokenRecords.model,
-          totalInput: sql<number>`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead})`,
+          totalInput:
+            sql<number>`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead})`,
           totalInputCached: sql<number>`SUM(${tokenRecords.cacheRead})`,
           totalInputUncached: sql<number>`SUM(${tokenRecords.inputTokens})`,
           totalOutput: sql<number>`SUM(${tokenRecords.outputTokens})`,
@@ -117,7 +125,22 @@ export async function GET(request: NextRequest) {
         })
         .from(tokenRecords)
         .groupBy(tokenRecords.model)
-        .orderBy(sql`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead}) DESC`);
+        .orderBy(
+          sql`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead}) DESC`
+        )
+        .limit(TOP_N_RAW_MODELS);
+
+      const rawData = dateFilter
+        ? await rawQuery.where(
+            sql`${tokenRecords.createdAt} >= ${dateFilter.toISOString()}`
+          )
+        : await rawQuery;
+
+      const data = aggregateByNormalizedModel(
+        rawData as unknown as StatItem[]
+      ).slice(0, TOP_N_DISPLAY);
+
+      return NextResponse.json({ success: true, data });
     } else {
       // provider
       query = db

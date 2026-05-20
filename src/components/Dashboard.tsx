@@ -274,7 +274,7 @@ export default function Dashboard() {
 
         {/* Top 5 Models */}
         <div className="bg-white rounded-lg shadow p-6 mb-8">
-          <h2 className="text-lg font-semibold mb-1">Top 5 Models</h2>
+          <h2 className="text-lg font-semibold mb-1">Top 5 Model Families</h2>
           <p className="text-xs text-gray-400 mb-4">Input Tokens includes Cache Read</p>
           {loadingTop5 && (
             <div className="space-y-3">

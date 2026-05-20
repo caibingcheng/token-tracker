@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db, initDatabase } from "@/lib/db";
 import { tokenRecords } from "@/lib/db/schema";
-import { sql, desc, eq, and, gte, lte } from "drizzle-orm";
+import { sql, desc, eq, and, gte, lte, SQL } from "drizzle-orm";
 
 export async function GET(request: NextRequest) {
   await initDatabase();
@@ -14,7 +14,7 @@ export async function GET(request: NextRequest) {
     const offset = (page - 1) * limit;
 
     // 筛选条件
-    const conditions: any[] = [];
+    const conditions: SQL[] = [];
 
     const model = searchParams.get("model");
     if (model) conditions.push(eq(tokenRecords.model, model));
@@ -35,8 +35,19 @@ export async function GET(request: NextRequest) {
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
     // 查询数据
+    // 注意：2025-05-20 - 移除 provider 字段返回
+    // Top 5 已按归一化 model 聚合不区分 provider，RecordsTable 也不再显示 provider 列
     const query = db
-      .select()
+      .select({
+        id: tokenRecords.id,
+        apiKey: tokenRecords.apiKey,
+        model: tokenRecords.model,
+        inputTokens: tokenRecords.inputTokens,
+        outputTokens: tokenRecords.outputTokens,
+        cacheRead: tokenRecords.cacheRead,
+        cacheWrite: tokenRecords.cacheWrite,
+        createdAt: tokenRecords.createdAt,
+      })
       .from(tokenRecords)
       .orderBy(desc(tokenRecords.createdAt))
       .limit(limit)

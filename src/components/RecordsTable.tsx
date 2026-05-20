@@ -1,11 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { normalizeModel } from "@/lib/model-utils";
 
 export interface Record {
   id: number;
   model: string;
-  provider: string;
   inputTokens: number;
   outputTokens: number;
   cacheRead: number;
@@ -76,7 +76,6 @@ export default function RecordsTable() {
             <tr>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Model</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Provider</th>
               <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Input (Uncached)</th>
               <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Input (Cached)</th>
               <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Output</th>
@@ -89,8 +88,12 @@ export default function RecordsTable() {
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                   {formatDate(record.createdAt)}
                 </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{record.model}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{record.provider}</td>
+                <td
+                  className="px-6 py-4 whitespace-nowrap text-sm text-gray-900"
+                  title={`Original Model: ${record.model}`}
+                >
+                  {normalizeModel(record.model)}
+                </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
                   {formatNumber(record.inputTokens)}
                 </td>
@@ -107,13 +110,22 @@ export default function RecordsTable() {
         </table>
       </div>
       <div className="px-6 py-4 flex justify-between items-center border-t">
-        <button
-          onClick={() => setPage((p) => Math.max(1, p - 1))}
-          disabled={page === 1}
-          className="px-4 py-2 bg-gray-100 rounded disabled:opacity-50"
-        >
-          Previous
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setPage(1)}
+            disabled={page === 1}
+            className="px-4 py-2 bg-gray-100 rounded disabled:opacity-50"
+          >
+            Home
+          </button>
+          <button
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            disabled={page === 1}
+            className="px-4 py-2 bg-gray-100 rounded disabled:opacity-50"
+          >
+            Previous
+          </button>
+        </div>
         <span className="text-sm text-gray-600">
           Page {page} of {totalPages}
         </span>
