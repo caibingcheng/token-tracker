@@ -61,6 +61,9 @@ export default function Dashboard() {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [recordsRefreshKey, setRecordsRefreshKey] = useState(0);
 
+  // Recent Records visibility
+  const [recordsVisible, setRecordsVisible] = useState(false);
+
   // Refs to avoid stale closures and infinite loops
   const statsRef = useRef<Stats | null>(null);
   const topModelsRef = useRef<ModelStat[]>([]);
@@ -201,21 +204,6 @@ export default function Dashboard() {
   // Initial fetch on mount
   useEffect(() => {
     fetchAll();
-  }, [fetchAll]);
-
-  // Visibility change handler
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.hidden) {
-        isVisibleRef.current = false;
-      } else {
-        isVisibleRef.current = true;
-        fetchAll({ skipLoading: true });
-      }
-    };
-
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
   }, [fetchAll]);
 
   // Handle provider selection change
@@ -396,7 +384,33 @@ export default function Dashboard() {
           )}
         </div>
 
-        <RecordsTable selectedProvider={selectedProvider} refreshKey={recordsRefreshKey} />
+        {/* Recent Records Toggle */}
+        <div className="bg-white rounded-lg shadow overflow-hidden mb-8">
+          <button
+            onClick={() => setRecordsVisible(!recordsVisible)}
+            className="w-full px-6 py-4 flex justify-between items-center hover:bg-gray-50 transition-colors"
+          >
+            <div className="text-left">
+              <h2 className="text-lg font-semibold">Recent Records</h2>
+              {selectedProvider !== "all" && (
+                <p className="text-xs text-gray-400 mt-1">
+                  Filtered by {selectedProvider}
+                </p>
+              )}
+            </div>
+            <span className="text-gray-400">
+              {recordsVisible ? "▼" : "▶"}
+            </span>
+          </button>
+
+          {recordsVisible && (
+            <RecordsTable
+              selectedProvider={selectedProvider}
+              refreshKey={recordsRefreshKey}
+              showHeader={false}
+            />
+          )}
+        </div>
 
         {/* Footer */}
         <div className="mt-8 py-4 border-t border-gray-200 flex flex-col md:flex-row justify-between items-start md:items-center gap-2 text-sm text-gray-500">

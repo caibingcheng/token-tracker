@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db, initDatabase } from "@/lib/db";
 import { tokenRecords } from "@/lib/db/schema";
+import {
+  invalidateStatsCache,
+  invalidateProvidersCache,
+  rebuildCommonCaches,
+} from "@/lib/cache";
 
 export async function POST(request: NextRequest) {
   await initDatabase();
@@ -42,6 +47,12 @@ export async function POST(request: NextRequest) {
         cacheWrite,
       })
       .returning();
+
+    // 插入成功后刷新缓存
+    invalidateStatsCache();
+    invalidateProvidersCache();
+    // 触发后台重建常用缓存键（fire-and-forget，不阻塞 ingest 响应）
+    void rebuildCommonCaches();
 
     return NextResponse.json({ success: true, id: result[0].id });
   } catch (error) {

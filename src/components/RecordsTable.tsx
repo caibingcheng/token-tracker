@@ -16,9 +16,10 @@ export interface Record {
 interface RecordsTableProps {
   selectedProvider?: string;
   refreshKey?: number;
+  showHeader?: boolean;
 }
 
-export default function RecordsTable({ selectedProvider = "all", refreshKey = 0 }: RecordsTableProps) {
+export default function RecordsTable({ selectedProvider = "all", refreshKey = 0, showHeader = true }: RecordsTableProps) {
   const [records, setRecords] = useState<Record[]>([]);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -64,10 +65,12 @@ export default function RecordsTable({ selectedProvider = "all", refreshKey = 0 
   if (loading) {
     return (
       <div className="bg-white rounded-lg shadow overflow-hidden">
-        <div className="p-6 pb-0">
-          <h3 className="text-lg font-semibold">Recent Records</h3>
-          <ProviderHint />
-        </div>
+        {showHeader && (
+          <div className="p-6 pb-0">
+            <h3 className="text-lg font-semibold">Recent Records</h3>
+            <ProviderHint />
+          </div>
+        )}
         <div className="p-6">
           <div className="h-4 bg-gray-200 rounded w-full mb-4 animate-pulse"></div>
           <div className="h-4 bg-gray-200 rounded w-full mb-4 animate-pulse"></div>
@@ -80,10 +83,12 @@ export default function RecordsTable({ selectedProvider = "all", refreshKey = 0 
   if (error) {
     return (
       <div className="bg-white rounded-lg shadow overflow-hidden">
-        <div className="p-6 pb-0">
-          <h3 className="text-lg font-semibold">Recent Records</h3>
-          <ProviderHint />
-        </div>
+        {showHeader && (
+          <div className="p-6 pb-0">
+            <h3 className="text-lg font-semibold">Recent Records</h3>
+            <ProviderHint />
+          </div>
+        )}
         <div className="p-6">
           <p className="text-red-600">Error: {error}</p>
         </div>
@@ -93,10 +98,12 @@ export default function RecordsTable({ selectedProvider = "all", refreshKey = 0 
 
   return (
     <div className="bg-white rounded-lg shadow overflow-hidden">
-      <div className="p-6 pb-0">
-        <h3 className="text-lg font-semibold">Recent Records</h3>
-        <ProviderHint />
-      </div>
+      {showHeader && (
+        <div className="p-6 pb-0">
+          <h3 className="text-lg font-semibold">Recent Records</h3>
+          <ProviderHint />
+        </div>
+      )}
       
       {/* Desktop Table */}
       <div className="hidden md:block overflow-x-auto">
