@@ -5,7 +5,7 @@
  * anonymize/deanonymize provider names for the dashboard UI.
  *
  * Hidden providers are mapped to "Provider A", "Provider B", etc.
- * based on alphabetical sorting of the hidden providers list.
+ * based on the order of the hidden providers list.
  */
 
 /**
@@ -31,7 +31,7 @@ export function getHiddenProviders(): string[] {
  *
  * - If the provider is NOT in the hidden list, returns the provider name as-is.
  * - If the provider IS in the hidden list, maps it to "Provider A", "Provider B", etc.
- *   The mapping is based on alphabetical sorting of all hidden providers.
+ *   The mapping is based on the original order of all hidden providers.
  *
  * @param provider - The real provider name to anonymize
  * @param allProviders - The complete list of all known provider names (used for context)
@@ -54,8 +54,7 @@ export function anonymizeProvider(
     return provider;
   }
 
-  // Sort hidden providers alphabetically for deterministic mapping
-  const sortedHidden = [...hiddenProviders].sort();
+  const sortedHidden = [...hiddenProviders];
 
   // Find the index of this provider in the sorted hidden list
   const index = sortedHidden.indexOf(provider);
@@ -101,7 +100,7 @@ export function deanonymizeProvider(
   const letter = match[1];
   const index = letter.charCodeAt(0) - 65; // 'A' -> 0, 'B' -> 1, etc.
 
-  const sortedHidden = [...hiddenProviders].sort();
+  const sortedHidden = [...hiddenProviders];
 
   if (index < 0 || index >= sortedHidden.length) {
     return null;
