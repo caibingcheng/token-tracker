@@ -208,13 +208,13 @@ export default function DailyUsageChart({ rawData, loading, error, range, onRang
             <SummarySection summary={summary} />
           )}
 
-          {/* Mobile: single Y-axis, no line */}
-          <div className="md:hidden h-[220px]">
+          {/* Mobile: compact dual Y-axis with hit rate line */}
+          <div className="md:hidden h-[240px]">
             <ResponsiveContainer width="100%" height="100%">
               <ComposedChart
                 data={data}
                 margin={{ top: 10, right: 10, left: 5, bottom: 10 }}
-                barCategoryGap="40%"
+                barCategoryGap="20%"
               >
                 <CartesianGrid strokeDasharray="3 3" vertical={false} />
                 <XAxis
@@ -229,7 +229,8 @@ export default function DailyUsageChart({ rawData, loading, error, range, onRang
                 />
                 <YAxis
                   yAxisId="left"
-                  tick={{ fontSize: 11 }}
+                  tick={{ fontSize: 10 }}
+                  width={35}
                   tickFormatter={(v: number) => formatAxisNumber(v)}
                   domain={[0, (dataMax: number) => {
                     if (dataMax === 0) return 100;
@@ -242,14 +243,26 @@ export default function DailyUsageChart({ rawData, loading, error, range, onRang
                     return Math.max(step, Math.ceil(dataMax / step) * step);
                   }]}
                 />
+                <YAxis
+                  yAxisId="right"
+                  orientation="right"
+                  tick={{ fontSize: 10, fill: COLORS.hitRate }}
+                  width={30}
+                  tickFormatter={(v: number) => `${v}%`}
+                  domain={[0, 100]}
+                />
                 <Tooltip
                   formatter={(value, name) => {
+                    if (name === "Cache Hit Ratio") {
+                      if (value === null || value === undefined) return ["—", name];
+                      return [`${value}%`, name];
+                    }
                     if (value === null || value === undefined) return ["—", name];
                     return [formatNumber(Number(value)), name];
                   }}
                   labelFormatter={(label: string) => `Date: ${label}`}
                   itemSorter={(item) => {
-                    const order = ["Cache", "UnCache", "Output"];
+                    const order = ["Cache", "UnCache", "Output", "Cache Hit Ratio"];
                     return order.indexOf(String(item.name));
                   }}
                 />
@@ -273,6 +286,16 @@ export default function DailyUsageChart({ rawData, loading, error, range, onRang
                   stackId="tokens"
                   fill={COLORS.cache}
                   name="Cache"
+                />
+                <Line
+                  yAxisId="right"
+                  type="monotone"
+                  dataKey="cacheHitRate"
+                  stroke={COLORS.hitRate}
+                  strokeWidth={2}
+                  dot={false}
+                  activeDot={{ r: 4, fill: COLORS.hitRate, stroke: "#fff", strokeWidth: 1 }}
+                  name="Cache Hit Ratio"
                 />
               </ComposedChart>
             </ResponsiveContainer>

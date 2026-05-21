@@ -350,10 +350,10 @@ export default function Dashboard() {
               {/* Mobile Cards */}
               <div className="md:hidden space-y-3">
                 {(() => {
-                  const maxAllTokens = Math.max(...topModels.map(m => m.totalInput + m.totalOutput));
+                  const totalAllTokens = topModels.reduce((sum, m) => sum + m.totalInput + m.totalOutput, 0);
                   return topModels.map((model) => {
                     const allTokens = model.totalInput + model.totalOutput;
-                    const percentage = maxAllTokens > 0 ? (allTokens / maxAllTokens) * 100 : 0;
+                    const percentage = totalAllTokens > 0 ? (allTokens / totalAllTokens) * 100 : 0;
                     return (
                       <div
                         key={model.group}
