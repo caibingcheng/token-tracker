@@ -38,6 +38,11 @@ export default function Dashboard() {
   const [topModels, setTopModels] = useState<ModelStat[]>([]);
   const [dailyData, setDailyData] = useState<DailyData[]>([]);
 
+  // NEW: Provider filter states
+  const [providers, setProviders] = useState<Array<{ id: string; name: string }>>([]);
+  const [selectedProvider, setSelectedProvider] = useState<string>("all");
+  const selectedProviderRef = useRef<string>("all");
+
   // Loading states
   const [loadingStats, setLoadingStats] = useState(true);
   const [loadingTop5, setLoadingTop5] = useState(true);
@@ -69,6 +74,27 @@ export default function Dashboard() {
   dailyDataRef.current = dailyData;
   autoRefreshRef.current = autoRefresh;
 
+  // Keep provider ref in sync with state
+  useEffect(() => {
+    selectedProviderRef.current = selectedProvider;
+  }, [selectedProvider]);
+
+  // Fetch provider list on mount
+  useEffect(() => {
+    async function fetchProviders() {
+      try {
+        const res = await fetch("/api/providers");
+        const json = await res.json();
+        if (json.success && Array.isArray(json.data)) {
+          setProviders(json.data);
+        }
+      } catch (err) {
+        console.error("Failed to fetch providers:", err);
+      }
+    }
+    fetchProviders();
+  }, []); // Empty deps — fetch once on mount
+
   const fetchAll = useCallback(async () => {
     if (!isVisibleRef.current || isFetchingRef.current) return;
     isFetchingRef.current = true;
@@ -82,10 +108,23 @@ export default function Dashboard() {
     setErrorDaily(null);
 
     try {
+      const currentProvider = selectedProviderRef.current;
+
+      // Build URLs with provider filter
+      const statsUrl = new URL("/api/stats?groupBy=none&range=all", window.location.origin);
+      const top5Url = new URL("/api/stats?groupBy=model", window.location.origin);
+      const dailyUrl = new URL("/api/stats?groupBy=date&range=30d", window.location.origin);
+
+      if (currentProvider !== "all") {
+        statsUrl.searchParams.set("provider", currentProvider);
+        top5Url.searchParams.set("provider", currentProvider);
+        dailyUrl.searchParams.set("provider", currentProvider);
+      }
+
       const [statsRes, top5Res, dailyRes] = await Promise.all([
-        fetch("/api/stats?groupBy=none&range=all"),
-        fetch("/api/stats?groupBy=model"),
-        fetch("/api/stats?groupBy=date&range=30d"),
+        fetch(statsUrl.toString()),
+        fetch(top5Url.toString()),
+        fetch(dailyUrl.toString()),
       ]);
 
       let newStats: Stats | null = null;
@@ -250,6 +289,16 @@ export default function Dashboard() {
     return () => clearInterval(interval);
   }, [lastUpdated]);
 
+  // Handle provider selection change
+  const handleProviderChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
+    const value = e.target.value;
+    setSelectedProvider(value);
+    // Note: fetchAll reads from selectedProviderRef.current, so we need
+    // to ensure the ref is updated before calling fetchAll
+    selectedProviderRef.current = value;
+    fetchAll();
+  }, [fetchAll]);
+
   const formatNumber = (num: number) => new Intl.NumberFormat("en-US").format(num);
 
   return (
@@ -257,15 +306,38 @@ export default function Dashboard() {
       <div className="max-w-7xl mx-auto">
         <div className="flex justify-between items-center mb-8">
           <h1 className="text-3xl font-bold">Token Tracker Dashboard</h1>
-          <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={autoRefresh}
-              onChange={(e) => setAutoRefresh(e.target.checked)}
-              className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-            />
-            Auto Refresh
-          </label>
+          <div className="flex items-center gap-4">
+            {/* Provider Filter */}
+            <div className="flex items-center gap-2">
+              <label htmlFor="provider-select" className="text-sm text-gray-600">
+                Provider:
+              </label>
+              <select
+                id="provider-select"
+                value={selectedProvider}
+                onChange={handleProviderChange}
+                className="rounded border border-gray-300 bg-white px-3 py-1.5 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              >
+                <option value="all">All Providers</option>
+                {providers.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Auto Refresh */}
+            <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={autoRefresh}
+                onChange={(e) => setAutoRefresh(e.target.checked)}
+                className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+              Auto Refresh
+            </label>
+          </div>
         </div>
 
         <StatsCards stats={stats} loading={loadingStats} error={errorStats} />
