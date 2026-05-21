@@ -13,7 +13,11 @@ export interface Record {
   createdAt: string;
 }
 
-export default function RecordsTable() {
+interface RecordsTableProps {
+  selectedProvider?: string;
+}
+
+export default function RecordsTable({ selectedProvider = "all" }: RecordsTableProps) {
   const [records, setRecords] = useState<Record[]>([]);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -43,10 +47,21 @@ export default function RecordsTable() {
   const formatNumber = (num: number) => new Intl.NumberFormat("en-US").format(num);
   const formatDate = (date: string) => new Date(date).toLocaleString();
 
+  const ProviderHint = () => (
+    <p className="text-xs text-gray-400 mt-1">
+      {selectedProvider === "all"
+        ? "Showing records for all providers"
+        : `Showing records for ${selectedProvider}`}
+    </p>
+  );
+
   if (loading) {
     return (
       <div className="bg-white rounded-lg shadow overflow-hidden">
-        <h3 className="text-lg font-semibold p-6 pb-0">Recent Records</h3>
+        <div className="p-6 pb-0">
+          <h3 className="text-lg font-semibold">Recent Records</h3>
+          <ProviderHint />
+        </div>
         <div className="p-6">
           <div className="h-4 bg-gray-200 rounded w-full mb-4 animate-pulse"></div>
           <div className="h-4 bg-gray-200 rounded w-full mb-4 animate-pulse"></div>
@@ -59,7 +74,10 @@ export default function RecordsTable() {
   if (error) {
     return (
       <div className="bg-white rounded-lg shadow overflow-hidden">
-        <h3 className="text-lg font-semibold p-6 pb-0">Recent Records</h3>
+        <div className="p-6 pb-0">
+          <h3 className="text-lg font-semibold">Recent Records</h3>
+          <ProviderHint />
+        </div>
         <div className="p-6">
           <p className="text-red-600">Error: {error}</p>
         </div>
@@ -69,7 +87,10 @@ export default function RecordsTable() {
 
   return (
     <div className="bg-white rounded-lg shadow overflow-hidden">
-      <h3 className="text-lg font-semibold p-6 pb-0">Recent Records</h3>
+      <div className="p-6 pb-0">
+        <h3 className="text-lg font-semibold">Recent Records</h3>
+        <ProviderHint />
+      </div>
       <div className="overflow-x-auto">
         <table className="w-full">
           <thead className="bg-gray-50">

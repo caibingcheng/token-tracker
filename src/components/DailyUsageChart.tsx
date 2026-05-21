@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
+import { useAnimatedNumber } from "@/hooks/useAnimatedNumber";
 import {
   ComposedChart,
   Bar,
@@ -67,6 +68,39 @@ function getLast30Days(): string[] {
   return days;
 }
 
+function SummarySection({ summary }: { summary: { totalInput: number; totalOutput: number; totalCacheRead: number; totalRequests: number } }) {
+  const animatedTotalInput = useAnimatedNumber(summary.totalInput, 600);
+  const animatedTotalOutput = useAnimatedNumber(summary.totalOutput, 600);
+  const animatedTotalCacheRead = useAnimatedNumber(summary.totalCacheRead, 600);
+  const animatedTotalRequests = useAnimatedNumber(summary.totalRequests, 600);
+
+  return (
+    <div className="mb-6 p-4 bg-gray-50 rounded-lg">
+      <h3 className="text-sm font-medium text-gray-500 mb-3">
+        Last {WINDOW_DAYS} Days Summary
+      </h3>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div>
+          <p className="text-xs text-gray-400">Total Input</p>
+          <p className="text-lg font-bold text-gray-900">{formatNumber(animatedTotalInput)}</p>
+        </div>
+        <div>
+          <p className="text-xs text-gray-400">Cache Read</p>
+          <p className="text-lg font-bold text-gray-900">{formatNumber(animatedTotalCacheRead)}</p>
+        </div>
+        <div>
+          <p className="text-xs text-gray-400">Total Output</p>
+          <p className="text-lg font-bold text-gray-900">{formatNumber(animatedTotalOutput)}</p>
+        </div>
+        <div>
+          <p className="text-xs text-gray-400">Total Requests</p>
+          <p className="text-lg font-bold text-gray-900">{formatNumber(animatedTotalRequests)}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function DailyUsageChart({ rawData, loading, error }: DailyUsageChartProps) {
   const data = useMemo(() => {
     const apiData = new Map<string, DailyData>();
@@ -101,20 +135,6 @@ export default function DailyUsageChart({ rawData, loading, error }: DailyUsageC
         cacheHitRate: 0,
       };
     });
-
-    // 隐藏前导0：将开头连续的 cacheHitRate === 0 设为 null
-    let firstNonZeroIndex = -1;
-    for (let i = 0; i < mapped.length; i++) {
-      if (mapped[i].cacheHitRate > 0) {
-        firstNonZeroIndex = i;
-        break;
-      }
-    }
-    if (firstNonZeroIndex > 0) {
-      for (let i = 0; i < firstNonZeroIndex; i++) {
-        (mapped[i] as Record<string, unknown>).cacheHitRate = null;
-      }
-    }
 
     return mapped;
   }, [rawData]);
@@ -157,29 +177,7 @@ export default function DailyUsageChart({ rawData, loading, error }: DailyUsageC
     <div className="bg-white rounded-lg shadow p-6 mb-8">
       {/* Summary Card */}
       {summary && (
-        <div className="mb-6 p-4 bg-gray-50 rounded-lg">
-          <h3 className="text-sm font-medium text-gray-500 mb-3">
-            Last {WINDOW_DAYS} Days Summary
-          </h3>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div>
-              <p className="text-xs text-gray-400">Total Input</p>
-              <p className="text-lg font-bold text-gray-900">{formatNumber(summary.totalInput)}</p>
-            </div>
-            <div>
-              <p className="text-xs text-gray-400">Cache Read</p>
-              <p className="text-lg font-bold text-gray-900">{formatNumber(summary.totalCacheRead)}</p>
-            </div>
-            <div>
-              <p className="text-xs text-gray-400">Total Output</p>
-              <p className="text-lg font-bold text-gray-900">{formatNumber(summary.totalOutput)}</p>
-            </div>
-            <div>
-              <p className="text-xs text-gray-400">Total Requests</p>
-              <p className="text-lg font-bold text-gray-900">{formatNumber(summary.totalRequests)}</p>
-            </div>
-          </div>
-        </div>
+        <SummarySection summary={summary} />
       )}
 
       <h2 className="text-lg font-semibold mb-4">Daily Token Usage</h2>
@@ -224,7 +222,6 @@ export default function DailyUsageChart({ rawData, loading, error }: DailyUsageC
           <Tooltip
             formatter={(value, name) => {
               if (name === "Cache Hit Ratio") {
-                if (value === null || value === undefined) return ["—", name];
                 return [`${value}%`, name];
               }
               if (value === null || value === undefined) return ["—", name];
@@ -263,8 +260,8 @@ export default function DailyUsageChart({ rawData, loading, error }: DailyUsageC
             dataKey="cacheHitRate"
             stroke={COLORS.hitRate}
             strokeWidth={3}
-            dot={{ r: 4, fill: COLORS.hitRate, strokeWidth: 0 }}
-            activeDot={{ r: 6, fill: COLORS.hitRate, stroke: "#fff", strokeWidth: 2 }}
+            dot={false}
+            activeDot={false}
             name="Cache Hit Ratio"
           />
         </ComposedChart>

@@ -1,5 +1,7 @@
 "use client";
 
+import { useAnimatedNumber } from "@/hooks/useAnimatedNumber";
+
 export interface Stats {
   totalInput: number;
   totalOutput: number;
@@ -15,8 +17,17 @@ interface StatsCardsProps {
   error: string | null;
 }
 
+function formatNumber(num: number): string {
+  return new Intl.NumberFormat("en-US").format(Math.round(num));
+}
+
 export default function StatsCards({ stats, loading, error }: StatsCardsProps) {
-  const formatNumber = (num: number) => new Intl.NumberFormat("en-US").format(num);
+  const animatedTotalInput = useAnimatedNumber(stats?.totalInput || 0, 600);
+  const animatedTotalOutput = useAnimatedNumber(stats?.totalOutput || 0, 600);
+  const animatedTotalInputCached = useAnimatedNumber(stats?.totalInputCached || 0, 600);
+  const animatedTotalInputUncached = useAnimatedNumber(stats?.totalInputUncached || 0, 600);
+  const animatedTotalCacheWrite = useAnimatedNumber(stats?.totalCacheWrite || 0, 600);
+  const animatedCount = useAnimatedNumber(stats?.count || 0, 600);
 
   if (loading) {
     return (
@@ -42,16 +53,16 @@ export default function StatsCards({ stats, loading, error }: StatsCardsProps) {
   const cards = [
     {
       label: "Total Input",
-      value: stats?.totalInput || 0,
+      value: animatedTotalInput,
       color: "blue",
       breakdown: [
-        { label: "Cached", value: stats?.totalInputCached || 0 },
-        { label: "Uncached", value: stats?.totalInputUncached || 0 },
+        { label: "Cached", value: animatedTotalInputCached },
+        { label: "Uncached", value: animatedTotalInputUncached },
       ],
     },
-    { label: "Total Output", value: stats?.totalOutput || 0, color: "green" },
-    { label: "Cache Write", value: stats?.totalCacheWrite || 0, color: "purple" },
-    { label: "Total Requests", value: stats?.count || 0, color: "orange" },
+    { label: "Total Output", value: animatedTotalOutput, color: "green" },
+    { label: "Cache Write", value: animatedTotalCacheWrite, color: "purple" },
+    { label: "Total Requests", value: animatedCount, color: "orange" },
   ];
 
   return (

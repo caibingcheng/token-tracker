@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import StatsCards, { Stats } from "./StatsCards";
 import RecordsTable from "./RecordsTable";
 import DailyUsageChart, { DailyData } from "./DailyUsageChart";
+import { useAnimatedNumber } from "@/hooks/useAnimatedNumber";
 
 interface ModelStat {
   group: string;
@@ -30,6 +31,11 @@ function formatTimeAgo(date: Date | null): string {
 function formatDuration(ms: number): string {
   if (ms < 60_000) return `${Math.ceil(ms / 1000)}s`;
   return `${Math.ceil(ms / 60_000)}min`;
+}
+
+function AnimatedCell({ value }: { value: number }) {
+  const animated = useAnimatedNumber(value, 600);
+  return <span>{new Intl.NumberFormat("en-US").format(Math.round(animated))}</span>;
 }
 
 export default function Dashboard() {
@@ -95,13 +101,16 @@ export default function Dashboard() {
     fetchProviders();
   }, []); // Empty deps — fetch once on mount
 
-  const fetchAll = useCallback(async () => {
+  const fetchAll = useCallback(async (options?: { skipLoading?: boolean }) => {
     if (!isVisibleRef.current || isFetchingRef.current) return;
     isFetchingRef.current = true;
 
-    setLoadingStats(true);
-    setLoadingTop5(true);
-    setLoadingDaily(true);
+    const isFirstLoad = !statsRef.current && !topModelsRef.current && !dailyDataRef.current;
+    if (!options?.skipLoading && isFirstLoad) {
+      setLoadingStats(true);
+      setLoadingTop5(true);
+      setLoadingDaily(true);
+    }
 
     setErrorStats(null);
     setErrorTop5(null);
@@ -198,9 +207,11 @@ export default function Dashboard() {
       setErrorTop5("Network error");
       setErrorDaily("Network error");
     } finally {
-      setLoadingStats(false);
-      setLoadingTop5(false);
-      setLoadingDaily(false);
+      if (!options?.skipLoading) {
+        setLoadingStats(false);
+        setLoadingTop5(false);
+        setLoadingDaily(false);
+      }
       isFetchingRef.current = false;
     }
   }, []); // No dependencies - refs handle everything
@@ -296,7 +307,7 @@ export default function Dashboard() {
     // Note: fetchAll reads from selectedProviderRef.current, so we need
     // to ensure the ref is updated before calling fetchAll
     selectedProviderRef.current = value;
-    fetchAll();
+    fetchAll({ skipLoading: true });
   }, [fetchAll]);
 
   const formatNumber = (num: number) => new Intl.NumberFormat("en-US").format(num);
@@ -386,11 +397,11 @@ export default function Dashboard() {
                             }}
                           >
                             <td className="px-4 py-3 text-sm font-medium text-gray-900">{model.group}</td>
-                            <td className="px-4 py-3 text-sm text-gray-600 text-right">{formatNumber(model.totalInput)}</td>
-                            <td className="px-4 py-3 text-sm text-gray-600 text-right">{formatNumber(model.totalInputCached)}</td>
-                            <td className="px-4 py-3 text-sm text-gray-600 text-right">{formatNumber(model.totalOutput)}</td>
-                            <td className="px-4 py-3 text-sm text-gray-600 text-right">{formatNumber(model.totalCacheWrite)}</td>
-                            <td className="px-4 py-3 text-sm text-gray-600 text-right">{formatNumber(model.count)}</td>
+                            <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.totalInput} /></td>
+                            <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.totalInputCached} /></td>
+                            <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.totalOutput} /></td>
+                            <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.totalCacheWrite} /></td>
+                            <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.count} /></td>
                           </tr>
                         );
                       })}
@@ -402,7 +413,7 @@ export default function Dashboard() {
           )}
         </div>
 
-        <RecordsTable />
+        <RecordsTable selectedProvider={selectedProvider} />
 
         {/* Footer */}
         <div className="mt-8 py-4 border-t border-gray-200 flex justify-between items-center text-sm text-gray-500">
