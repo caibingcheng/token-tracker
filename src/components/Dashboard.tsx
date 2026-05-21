@@ -250,10 +250,10 @@ export default function Dashboard() {
   const formatNumber = (num: number) => new Intl.NumberFormat("en-US").format(num);
 
   return (
-    <main className="min-h-screen bg-gray-50 p-8">
+    <main className="min-h-screen bg-gray-50 p-4 md:p-8">
       <div className="max-w-7xl mx-auto">
-        <div className="flex justify-between items-center mb-8">
-          <h1 className="text-3xl font-bold">Token Tracker Dashboard</h1>
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 gap-2">
+          <h1 className="text-xl md:text-3xl font-bold">Token Tracker Dashboard</h1>
           <div className="flex items-center gap-4">
             {/* Provider Filter */}
             <div className="flex items-center gap-2">
@@ -304,53 +304,102 @@ export default function Dashboard() {
             <p className="text-gray-500">No data available</p>
           )}
           {!loadingTop5 && !errorTop5 && topModels.length > 0 && (
-            <div className="overflow-x-auto">
-              {(() => {
-                const totalAllTokens = topModels.reduce((sum, m) => sum + m.totalInput + m.totalOutput, 0);
-                return (
-                  <table className="w-full">
-                    <thead className="bg-gray-50">
-                      <tr>
-                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Model</th>
-                        <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Total Input</th>
-                        <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Cache Read</th>
-                        <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Total Output</th>
-                        <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Cache Write</th>
-                        <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Requests</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-200">
-                      {topModels.map((model) => {
-                        const allTokens = model.totalInput + model.totalOutput;
-                        const percentage = totalAllTokens > 0 ? (allTokens / totalAllTokens) * 100 : 0;
-                        return (
-                          <tr
-                            key={model.group}
-                            style={{
-                              background: `linear-gradient(to right, rgb(239 246 255) ${percentage}%, transparent ${percentage}%)`
-                            }}
-                          >
-                            <td className="px-4 py-3 text-sm font-medium text-gray-900">{model.group}</td>
-                            <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.totalInput} /></td>
-                            <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.totalInputCached} /></td>
-                            <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.totalOutput} /></td>
-                            <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.totalCacheWrite} /></td>
-                            <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.count} /></td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                );
-              })()}
-            </div>
+            <>
+              {/* Desktop Table */}
+              <div className="hidden md:block overflow-x-auto">
+                {(() => {
+                  const totalAllTokens = topModels.reduce((sum, m) => sum + m.totalInput + m.totalOutput, 0);
+                  return (
+                    <table className="w-full">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Model</th>
+                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Total Input</th>
+                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Cache Read</th>
+                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Total Output</th>
+                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Cache Write</th>
+                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Requests</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-200">
+                        {topModels.map((model) => {
+                          const allTokens = model.totalInput + model.totalOutput;
+                          const percentage = totalAllTokens > 0 ? (allTokens / totalAllTokens) * 100 : 0;
+                          return (
+                            <tr
+                              key={model.group}
+                              style={{
+                                background: `linear-gradient(to right, rgb(239 246 255) ${percentage}%, transparent ${percentage}%)`
+                              }}
+                            >
+                              <td className="px-4 py-3 text-sm font-medium text-gray-900">{model.group}</td>
+                              <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.totalInput} /></td>
+                              <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.totalInputCached} /></td>
+                              <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.totalOutput} /></td>
+                              <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.totalCacheWrite} /></td>
+                              <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.count} /></td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  );
+                })()}
+              </div>
+
+              {/* Mobile Cards */}
+              <div className="md:hidden space-y-3">
+                {(() => {
+                  const maxAllTokens = Math.max(...topModels.map(m => m.totalInput + m.totalOutput));
+                  return topModels.map((model) => {
+                    const allTokens = model.totalInput + model.totalOutput;
+                    const percentage = maxAllTokens > 0 ? (allTokens / maxAllTokens) * 100 : 0;
+                    return (
+                      <div
+                        key={model.group}
+                        className="rounded-lg border border-gray-200 overflow-hidden"
+                        style={{
+                          background: `linear-gradient(to right, rgb(239 246 255) ${percentage}%, transparent ${percentage}%)`
+                        }}
+                      >
+                        <div className="px-4 py-3 font-medium text-gray-900 border-b border-gray-100">
+                          {model.group}
+                        </div>
+                        <div className="px-4 py-3 grid grid-cols-2 gap-3">
+                          <div>
+                            <p className="text-xs text-gray-500">Total Input</p>
+                            <p className="text-sm font-semibold text-gray-900">{formatNumber(model.totalInput)}</p>
+                          </div>
+                          <div>
+                            <p className="text-xs text-gray-500">Cache Read</p>
+                            <p className="text-sm font-semibold text-gray-900">{formatNumber(model.totalInputCached)}</p>
+                          </div>
+                          <div>
+                            <p className="text-xs text-gray-500">Total Output</p>
+                            <p className="text-sm font-semibold text-gray-900">{formatNumber(model.totalOutput)}</p>
+                          </div>
+                          <div>
+                            <p className="text-xs text-gray-500">Cache Write</p>
+                            <p className="text-sm font-semibold text-gray-900">{formatNumber(model.totalCacheWrite)}</p>
+                          </div>
+                          <div className="col-span-2">
+                            <p className="text-xs text-gray-500">Requests</p>
+                            <p className="text-sm font-semibold text-gray-900">{formatNumber(model.count)}</p>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  });
+                })()}
+              </div>
+            </>
           )}
         </div>
 
         <RecordsTable selectedProvider={selectedProvider} refreshKey={recordsRefreshKey} />
 
         {/* Footer */}
-        <div className="mt-8 py-4 border-t border-gray-200 flex justify-between items-center text-sm text-gray-500">
+        <div className="mt-8 py-4 border-t border-gray-200 flex flex-col md:flex-row justify-between items-start md:items-center gap-2 text-sm text-gray-500">
           <span>Updated {formatTimeAgo(lastUpdated)}</span>
         </div>
       </div>

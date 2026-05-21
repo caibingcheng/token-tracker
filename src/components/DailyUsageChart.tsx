@@ -73,7 +73,7 @@ function getLastNDays(days: number): string[] {
 function SummarySection({
   summary,
 }: {
-  summary: { totalInput: number; totalOutput: number; totalCacheRead: number; totalRequests: number };
+  summary: { totalInput: number; totalOutput: number; totalCacheRead: number; totalRequests: number; cacheHitRate: number };
 }) {
   const animatedTotalInput = useAnimatedNumber(summary.totalInput, 600);
   const animatedTotalOutput = useAnimatedNumber(summary.totalOutput, 600);
@@ -82,7 +82,7 @@ function SummarySection({
 
   return (
     <div className="mb-6 p-4 bg-gray-50 rounded-lg">
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         <div>
           <p className="text-xs text-gray-400">Total Input</p>
           <p className="text-lg font-bold text-gray-900">{formatNumber(animatedTotalInput)}</p>
@@ -98,6 +98,10 @@ function SummarySection({
         <div>
           <p className="text-xs text-gray-400">Total Requests</p>
           <p className="text-lg font-bold text-gray-900">{formatNumber(animatedTotalRequests)}</p>
+        </div>
+        <div>
+          <p className="text-xs text-gray-400">Avg Hit Rate</p>
+          <p className="text-lg font-bold" style={{ color: COLORS.hitRate }}>{summary.cacheHitRate}%</p>
         </div>
       </div>
     </div>
@@ -167,11 +171,14 @@ export default function DailyUsageChart({ rawData, loading, error, range, onRang
 
   const summary = useMemo(() => {
     if (data.length === 0) return null;
+    const totalInput = data.reduce((s, d) => s + d.totalInput, 0);
+    const totalCacheRead = data.reduce((s, d) => s + d.totalInputCached, 0);
     return {
-      totalInput: data.reduce((s, d) => s + d.totalInput, 0),
+      totalInput,
       totalOutput: data.reduce((s, d) => s + d.totalOutput, 0),
-      totalCacheRead: data.reduce((s, d) => s + d.totalInputCached, 0),
+      totalCacheRead,
       totalRequests: data.reduce((s, d) => s + d.count, 0),
+      cacheHitRate: totalInput > 0 ? Number(((totalCacheRead / totalInput) * 100).toFixed(1)) : 0,
     };
   }, [data]);
 
@@ -201,91 +208,164 @@ export default function DailyUsageChart({ rawData, loading, error, range, onRang
             <SummarySection summary={summary} />
           )}
 
-          <ResponsiveContainer width="100%" height={280}>
-            <ComposedChart
-              data={data}
-              margin={{ top: 10, right: 50, left: 0, bottom: 0 }}
-              barCategoryGap="40%"
-            >
-              <CartesianGrid strokeDasharray="3 3" vertical={false} />
-              <XAxis
-                dataKey="group"
-                tick={{ fontSize: 11 }}
-                interval={4}
-                tickFormatter={(value: string) => {
-                  const parts = value.split("-");
-                  return parts.length >= 3 ? `${Number(parts[1])}-${Number(parts[2])}` : value;
-                }}
-              />
-              <YAxis
-                yAxisId="left"
-                tick={{ fontSize: 11 }}
-                tickFormatter={(v: number) => formatAxisNumber(v)}
-                domain={[0, (dataMax: number) => {
-                  if (dataMax === 0) return 100;
-                  const magnitude = Math.pow(10, Math.floor(Math.log10(dataMax)));
-                  const normalized = dataMax / magnitude;
-                  let step: number;
-                  if (normalized <= 2) step = magnitude / 2;
-                  else if (normalized <= 5) step = magnitude;
-                  else step = magnitude * 2;
-                  return Math.max(step, Math.ceil(dataMax / step) * step);
-                }]}
-              />
-              <YAxis
-                yAxisId="right"
-                orientation="right"
-                tick={{ fontSize: 11, fill: COLORS.hitRate }}
-                tickFormatter={(v: number) => `${v}%`}
-                domain={[0, 100]}
-              />
-              <Tooltip
-                formatter={(value, name) => {
-                  if (name === "Cache Hit Ratio") {
-                    return [`${value}%`, name];
-                  }
-                  if (value === null || value === undefined) return ["—", name];
-                  return [formatNumber(Number(value)), name];
-                }}
-                labelFormatter={(label: string) => `Date: ${label}`}
-                itemSorter={(item) => {
-                  const order = ["Cache", "UnCache", "Output", "Cache Hit Ratio"];
-                  return order.indexOf(String(item.name));
-                }}
-              />
-              <Bar
-                yAxisId="left"
-                dataKey="totalOutput"
-                stackId="tokens"
-                fill={COLORS.output}
-                name="Output"
-              />
-              <Bar
-                yAxisId="left"
-                dataKey="totalInputUncached"
-                stackId="tokens"
-                fill={COLORS.input}
-                name="UnCache"
-              />
-              <Bar
-                yAxisId="left"
-                dataKey="totalInputCached"
-                stackId="tokens"
-                fill={COLORS.cache}
-                name="Cache"
-              />
-              <Line
-                yAxisId="right"
-                type="monotone"
-                dataKey="cacheHitRate"
-                stroke={COLORS.hitRate}
-                strokeWidth={3}
-                dot={false}
-                activeDot={false}
-                name="Cache Hit Ratio"
-              />
-            </ComposedChart>
-          </ResponsiveContainer>
+          {/* Mobile: single Y-axis, no line */}
+          <div className="md:hidden h-[220px]">
+            <ResponsiveContainer width="100%" height="100%">
+              <ComposedChart
+                data={data}
+                margin={{ top: 10, right: 10, left: 5, bottom: 10 }}
+                barCategoryGap="40%"
+              >
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis
+                  dataKey="group"
+                  tick={{ fontSize: 10 }}
+                  interval="preserveStartEnd"
+                  minTickGap={15}
+                  tickFormatter={(value: string) => {
+                    const parts = value.split("-");
+                    return parts.length >= 3 ? `${Number(parts[1])}-${Number(parts[2])}` : value;
+                  }}
+                />
+                <YAxis
+                  yAxisId="left"
+                  tick={{ fontSize: 11 }}
+                  tickFormatter={(v: number) => formatAxisNumber(v)}
+                  domain={[0, (dataMax: number) => {
+                    if (dataMax === 0) return 100;
+                    const magnitude = Math.pow(10, Math.floor(Math.log10(dataMax)));
+                    const normalized = dataMax / magnitude;
+                    let step: number;
+                    if (normalized <= 2) step = magnitude / 2;
+                    else if (normalized <= 5) step = magnitude;
+                    else step = magnitude * 2;
+                    return Math.max(step, Math.ceil(dataMax / step) * step);
+                  }]}
+                />
+                <Tooltip
+                  formatter={(value, name) => {
+                    if (value === null || value === undefined) return ["—", name];
+                    return [formatNumber(Number(value)), name];
+                  }}
+                  labelFormatter={(label: string) => `Date: ${label}`}
+                  itemSorter={(item) => {
+                    const order = ["Cache", "UnCache", "Output"];
+                    return order.indexOf(String(item.name));
+                  }}
+                />
+                <Bar
+                  yAxisId="left"
+                  dataKey="totalOutput"
+                  stackId="tokens"
+                  fill={COLORS.output}
+                  name="Output"
+                />
+                <Bar
+                  yAxisId="left"
+                  dataKey="totalInputUncached"
+                  stackId="tokens"
+                  fill={COLORS.input}
+                  name="UnCache"
+                />
+                <Bar
+                  yAxisId="left"
+                  dataKey="totalInputCached"
+                  stackId="tokens"
+                  fill={COLORS.cache}
+                  name="Cache"
+                />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+
+          {/* Desktop: dual Y-axis with line */}
+          <div className="hidden md:block h-[280px]">
+            <ResponsiveContainer width="100%" height="100%">
+              <ComposedChart
+                data={data}
+                margin={{ top: 10, right: 50, left: 0, bottom: 0 }}
+                barCategoryGap="40%"
+              >
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis
+                  dataKey="group"
+                  tick={{ fontSize: 11 }}
+                  interval={4}
+                  tickFormatter={(value: string) => {
+                    const parts = value.split("-");
+                    return parts.length >= 3 ? `${Number(parts[1])}-${Number(parts[2])}` : value;
+                  }}
+                />
+                <YAxis
+                  yAxisId="left"
+                  tick={{ fontSize: 11 }}
+                  tickFormatter={(v: number) => formatAxisNumber(v)}
+                  domain={[0, (dataMax: number) => {
+                    if (dataMax === 0) return 100;
+                    const magnitude = Math.pow(10, Math.floor(Math.log10(dataMax)));
+                    const normalized = dataMax / magnitude;
+                    let step: number;
+                    if (normalized <= 2) step = magnitude / 2;
+                    else if (normalized <= 5) step = magnitude;
+                    else step = magnitude * 2;
+                    return Math.max(step, Math.ceil(dataMax / step) * step);
+                  }]}
+                />
+                <YAxis
+                  yAxisId="right"
+                  orientation="right"
+                  tick={{ fontSize: 11, fill: COLORS.hitRate }}
+                  tickFormatter={(v: number) => `${v}%`}
+                  domain={[0, 100]}
+                />
+                <Tooltip
+                  formatter={(value, name) => {
+                    if (name === "Cache Hit Ratio") {
+                      return [`${value}%`, name];
+                    }
+                    if (value === null || value === undefined) return ["—", name];
+                    return [formatNumber(Number(value)), name];
+                  }}
+                  labelFormatter={(label: string) => `Date: ${label}`}
+                  itemSorter={(item) => {
+                    const order = ["Cache", "UnCache", "Output", "Cache Hit Ratio"];
+                    return order.indexOf(String(item.name));
+                  }}
+                />
+                <Bar
+                  yAxisId="left"
+                  dataKey="totalOutput"
+                  stackId="tokens"
+                  fill={COLORS.output}
+                  name="Output"
+                />
+                <Bar
+                  yAxisId="left"
+                  dataKey="totalInputUncached"
+                  stackId="tokens"
+                  fill={COLORS.input}
+                  name="UnCache"
+                />
+                <Bar
+                  yAxisId="left"
+                  dataKey="totalInputCached"
+                  stackId="tokens"
+                  fill={COLORS.cache}
+                  name="Cache"
+                />
+                <Line
+                  yAxisId="right"
+                  type="monotone"
+                  dataKey="cacheHitRate"
+                  stroke={COLORS.hitRate}
+                  strokeWidth={3}
+                  dot={false}
+                  activeDot={false}
+                  name="Cache Hit Ratio"
+                />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
         </>
       )}
     </div>

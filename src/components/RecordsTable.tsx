@@ -97,7 +97,9 @@ export default function RecordsTable({ selectedProvider = "all", refreshKey = 0 
         <h3 className="text-lg font-semibold">Recent Records</h3>
         <ProviderHint />
       </div>
-      <div className="overflow-x-auto">
+      
+      {/* Desktop Table */}
+      <div className="hidden md:block overflow-x-auto">
         <table className="w-full">
           <thead className="bg-gray-50">
             <tr>
@@ -136,19 +138,58 @@ export default function RecordsTable({ selectedProvider = "all", refreshKey = 0 
           </tbody>
         </table>
       </div>
-      <div className="px-6 py-4 flex justify-between items-center border-t">
+
+      {/* Mobile Cards */}
+      <div className="md:hidden p-4 space-y-3">
+        {records.map((record) => (
+          <div key={record.id} className="border border-gray-200 rounded-lg p-4">
+            <div className="flex justify-between items-start mb-3">
+              <div>
+                <p className="text-xs text-gray-500">Date</p>
+                <p className="text-sm font-medium text-gray-900">{formatDate(record.createdAt)}</p>
+              </div>
+              <div className="text-right">
+                <p className="text-xs text-gray-500">Model</p>
+                <p className="text-sm font-medium text-gray-900" title={`Original: ${record.model}`}>
+                  {normalizeModel(record.model)}
+                </p>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <p className="text-xs text-gray-500">Input (Uncached)</p>
+                <p className="text-sm font-semibold text-gray-900">{formatNumber(record.inputTokens)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500">Input (Cached)</p>
+                <p className="text-sm font-semibold text-gray-900">{formatNumber(record.cacheRead)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500">Output</p>
+                <p className="text-sm font-semibold text-gray-900">{formatNumber(record.outputTokens)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500">Cache Write</p>
+                <p className="text-sm font-semibold text-gray-900">{formatNumber(record.cacheWrite)}</p>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="px-4 md:px-6 py-4 flex justify-between items-center border-t">
         <div className="flex gap-2">
           <button
             onClick={() => setPage(1)}
             disabled={page === 1}
-            className="px-4 py-2 bg-gray-100 rounded disabled:opacity-50"
+            className="px-2 md:px-4 py-1 md:py-2 text-sm bg-gray-100 rounded disabled:opacity-50"
           >
             Home
           </button>
           <button
             onClick={() => setPage((p) => Math.max(1, p - 1))}
             disabled={page === 1}
-            className="px-4 py-2 bg-gray-100 rounded disabled:opacity-50"
+            className="px-2 md:px-4 py-1 md:py-2 text-sm bg-gray-100 rounded disabled:opacity-50"
           >
             Previous
           </button>
@@ -159,7 +200,7 @@ export default function RecordsTable({ selectedProvider = "all", refreshKey = 0 
         <button
           onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
           disabled={page === totalPages}
-          className="px-4 py-2 bg-gray-100 rounded disabled:opacity-50"
+          className="px-2 md:px-4 py-1 md:py-2 text-sm bg-gray-100 rounded disabled:opacity-50"
         >
           Next
         </button>
