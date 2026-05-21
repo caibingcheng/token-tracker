@@ -361,7 +361,7 @@ export default function Dashboard() {
           {!loadingTop5 && !errorTop5 && topModels.length > 0 && (
             <div className="overflow-x-auto">
               {(() => {
-                const maxAllTokens = Math.max(...topModels.map(m => m.totalInput + m.totalOutput));
+                const totalAllTokens = topModels.reduce((sum, m) => sum + m.totalInput + m.totalOutput, 0);
                 return (
                   <table className="w-full">
                     <thead className="bg-gray-50">
@@ -377,7 +377,7 @@ export default function Dashboard() {
                     <tbody className="divide-y divide-gray-200">
                       {topModels.map((model) => {
                         const allTokens = model.totalInput + model.totalOutput;
-                        const percentage = maxAllTokens > 0 ? (allTokens / maxAllTokens) * 100 : 0;
+                        const percentage = totalAllTokens > 0 ? (allTokens / totalAllTokens) * 100 : 0;
                         return (
                           <tr
                             key={model.group}
