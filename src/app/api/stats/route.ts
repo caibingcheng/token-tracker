@@ -8,6 +8,22 @@ import {
   aggregateByNormalizedModel,
   type StatItem,
 } from "@/lib/model-utils";
+import { deanonymizeProvider } from "@/lib/provider-utils";
+
+// Helper to build combined WHERE clause
+function buildWhereClause(
+  dateFilter: Date | null,
+  providerFilter: string | null
+) {
+  if (dateFilter && providerFilter) {
+    return sql`${tokenRecords.createdAt} >= ${dateFilter.toISOString()} AND ${tokenRecords.provider} = ${providerFilter}`;
+  } else if (dateFilter) {
+    return sql`${tokenRecords.createdAt} >= ${dateFilter.toISOString()}`;
+  } else if (providerFilter) {
+    return sql`${tokenRecords.provider} = ${providerFilter}`;
+  }
+  return null;
+}
 
 export async function GET(request: NextRequest) {
   await initDatabase();
@@ -15,6 +31,7 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const groupBy = searchParams.get("groupBy") || "date";
     const range = searchParams.get("range") || "30d";
+    const providerParam = searchParams.get("provider") || "all";
 
     // 计算时间范围
     let dateFilter: Date | null = null;
@@ -22,6 +39,27 @@ export async function GET(request: NextRequest) {
       const days = parseInt(range);
       dateFilter = new Date();
       dateFilter.setDate(dateFilter.getDate() - days);
+    }
+
+    // Deanonymize provider if a specific one is selected
+    let providerFilter: string | null = null;
+    if (providerParam !== "all") {
+      // We need the full provider list to deanonymize; fetch it
+      const allProviderRows = await db
+        .selectDistinct({ provider: tokenRecords.provider })
+        .from(tokenRecords);
+      const allProviderNames: string[] = allProviderRows
+        .map((r) => r.provider)
+        .filter((n): n is string => n !== null && n !== undefined);
+
+      providerFilter = deanonymizeProvider(providerParam, allProviderNames);
+
+      if (!providerFilter) {
+        return NextResponse.json(
+          { success: false, error: `Unknown provider: ${providerParam}` },
+          { status: 400 }
+        );
+      }
     }
 
     let query;
@@ -39,10 +77,9 @@ export async function GET(request: NextRequest) {
         })
         .from(tokenRecords);
 
-      if (dateFilter) {
-        query = query.where(
-          sql`${tokenRecords.createdAt} >= ${dateFilter.toISOString()}`
-        );
+      const whereClause = buildWhereClause(dateFilter, providerFilter);
+      if (whereClause) {
+        query = query.where(whereClause);
       }
     } else if (groupBy === "date") {
       const granularity = searchParams.get("granularity") || "day";
@@ -73,10 +110,9 @@ export async function GET(request: NextRequest) {
         .groupBy(groupExpr)
         .orderBy(groupExpr);
 
-      if (dateFilter) {
-        query = query.where(
-          sql`${tokenRecords.createdAt} >= ${dateFilter.toISOString()}`
-        );
+      const whereClause = buildWhereClause(dateFilter, providerFilter);
+      if (whereClause) {
+        query = query.where(whereClause);
       }
     } else if (groupBy === "date-model") {
       const granularity = searchParams.get("granularity") || "day";
@@ -105,10 +141,9 @@ export async function GET(request: NextRequest) {
         .groupBy(groupExpr, tokenRecords.model)
         .orderBy(groupExpr, tokenRecords.model);
 
-      if (dateFilter) {
-        query = query.where(
-          sql`${tokenRecords.createdAt} >= ${dateFilter.toISOString()}`
-        );
+      const whereClause = buildWhereClause(dateFilter, providerFilter);
+      if (whereClause) {
+        query = query.where(whereClause);
       }
     } else if (groupBy === "model") {
       // 先按原始 model 分组取 Top 20，再应用层归一化合并取 Top 5
@@ -130,10 +165,9 @@ export async function GET(request: NextRequest) {
         )
         .limit(TOP_N_RAW_MODELS);
 
-      const rawData = dateFilter
-        ? await rawQuery.where(
-            sql`${tokenRecords.createdAt} >= ${dateFilter.toISOString()}`
-          )
+      const whereClause = buildWhereClause(dateFilter, providerFilter);
+      const rawData = whereClause
+        ? await rawQuery.where(whereClause)
         : await rawQuery;
 
       const data = aggregateByNormalizedModel(
@@ -156,6 +190,11 @@ export async function GET(request: NextRequest) {
         .from(tokenRecords)
         .groupBy(tokenRecords.provider)
         .orderBy(sql`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead}) DESC`);
+
+      const whereClause = buildWhereClause(dateFilter, providerFilter);
+      if (whereClause) {
+        query = query.where(whereClause);
+      }
     }
 
     const data = await query;
