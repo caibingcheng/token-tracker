@@ -16,6 +16,19 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const inputTokens = Math.max(0, Number(body.inputTokens) || 0);
+    const outputTokens = Math.max(0, Number(body.outputTokens) || 0);
+    const cacheRead = Math.max(0, Number(body.cacheRead) || 0);
+    const cacheWrite = Math.max(0, Number(body.cacheWrite) || 0);
+
+    // 如果所有 token 数都为 0，则丢弃无效数据
+    if (inputTokens === 0 && outputTokens === 0 && cacheRead === 0 && cacheWrite === 0) {
+      return NextResponse.json(
+        { success: true, skipped: true, message: "All token values are zero, record discarded" },
+        { status: 200 }
+      );
+    }
+
     // 插入记录
     const result = await db
       .insert(tokenRecords)
@@ -23,10 +36,10 @@ export async function POST(request: NextRequest) {
         apiKey,
         model: String(body.model),
         provider: String(body.provider),
-        inputTokens: Math.max(0, Number(body.inputTokens) || 0),
-        outputTokens: Math.max(0, Number(body.outputTokens) || 0),
-        cacheRead: Math.max(0, Number(body.cacheRead) || 0),
-        cacheWrite: Math.max(0, Number(body.cacheWrite) || 0),
+        inputTokens,
+        outputTokens,
+        cacheRead,
+        cacheWrite,
       })
       .returning();
 
