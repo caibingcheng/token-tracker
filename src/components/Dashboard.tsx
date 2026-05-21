@@ -17,6 +17,7 @@ interface ModelStat {
 
 const INITIAL_INTERVAL = 60_000; // 60s
 const MAX_INTERVAL = 300_000; // 5min
+const MIN_RETRY_INTERVAL = 5_000; // 5s
 
 function formatTimeAgo(date: Date | null): string {
   if (!date) return "Never";
@@ -63,6 +64,7 @@ export default function Dashboard() {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [nextRefreshIn, setNextRefreshIn] = useState(INITIAL_INTERVAL);
   const [autoRefresh, setAutoRefresh] = useState(false);
+  const [recordsRefreshKey, setRecordsRefreshKey] = useState(0);
 
   // Refs to avoid stale closures and infinite loops
   const statsRef = useRef<Stats | null>(null);
@@ -73,6 +75,7 @@ export default function Dashboard() {
   const isVisibleRef = useRef(true);
   const isFetchingRef = useRef(false);
   const autoRefreshRef = useRef(false);
+  const runLoopRef = useRef<(() => void) | null>(null);
 
   // Keep refs in sync with states
   statsRef.current = stats;
@@ -213,6 +216,7 @@ export default function Dashboard() {
         setLoadingDaily(false);
       }
       isFetchingRef.current = false;
+      setRecordsRefreshKey(k => k + 1);
     }
   }, []); // No dependencies - refs handle everything
 
@@ -222,15 +226,23 @@ export default function Dashboard() {
 
     const runLoop = async () => {
       if (!mounted) return;
+
+      // Minimum retry interval: if already fetching, wait and retry
+      if (isFetchingRef.current) {
+        timeoutRef.current = setTimeout(runLoop, MIN_RETRY_INTERVAL);
+        return;
+      }
+
       await fetchAll();
       if (!mounted) return;
 
       if (autoRefreshRef.current) {
-        timeoutRef.current = setTimeout(() => {
-          runLoop();
-        }, pollIntervalRef.current);
+        timeoutRef.current = setTimeout(runLoop, pollIntervalRef.current);
       }
     };
+
+    // Expose runLoop via ref so other effects can use it
+    runLoopRef.current = runLoop;
 
     // Initial fetch on mount (always runs once)
     fetchAll();
@@ -254,9 +266,9 @@ export default function Dashboard() {
           fetchAll().then(() => {
             if (!autoRefreshRef.current) return;
             if (timeoutRef.current) clearTimeout(timeoutRef.current);
-            timeoutRef.current = setTimeout(() => {
-              // Triggered by autoRefresh effect below
-            }, pollIntervalRef.current);
+            if (runLoopRef.current) {
+              timeoutRef.current = setTimeout(runLoopRef.current, pollIntervalRef.current);
+            }
           });
         }
       }
@@ -272,15 +284,9 @@ export default function Dashboard() {
       // Start polling: fetch now, then schedule next
       fetchAll().then(() => {
         if (timeoutRef.current) clearTimeout(timeoutRef.current);
-        timeoutRef.current = setTimeout(() => {
-          const runLoop = async () => {
-            await fetchAll();
-            if (autoRefreshRef.current) {
-              timeoutRef.current = setTimeout(runLoop, pollIntervalRef.current);
-            }
-          };
-          runLoop();
-        }, pollIntervalRef.current);
+        if (runLoopRef.current) {
+          timeoutRef.current = setTimeout(runLoopRef.current, pollIntervalRef.current);
+        }
       });
     } else {
       // Stop polling
@@ -413,7 +419,7 @@ export default function Dashboard() {
           )}
         </div>
 
-        <RecordsTable selectedProvider={selectedProvider} />
+        <RecordsTable selectedProvider={selectedProvider} refreshKey={recordsRefreshKey} />
 
         {/* Footer */}
         <div className="mt-8 py-4 border-t border-gray-200 flex justify-between items-center text-sm text-gray-500">

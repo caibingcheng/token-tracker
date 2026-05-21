@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db, initDatabase } from "@/lib/db";
 import { tokenRecords } from "@/lib/db/schema";
 import { sql, desc, eq, and, gte, lte, SQL } from "drizzle-orm";
+import { deanonymizeProvider } from "@/lib/provider-utils";
 
 export async function GET(request: NextRequest) {
   await initDatabase();
@@ -14,13 +15,34 @@ export async function GET(request: NextRequest) {
     const offset = (page - 1) * limit;
 
     // 筛选条件
-    const conditions: SQL[] = [];
-
     const model = searchParams.get("model");
-    if (model) conditions.push(eq(tokenRecords.model, model));
 
     const provider = searchParams.get("provider");
-    if (provider) conditions.push(eq(tokenRecords.provider, provider));
+    // Deanonymize provider if a specific one is selected
+    let realProvider: string | null = null;
+    if (provider) {
+      // We need the full provider list to deanonymize
+      const allProviderRows = await db
+        .selectDistinct({ provider: tokenRecords.provider })
+        .from(tokenRecords);
+      const allProviderNames: string[] = allProviderRows
+        .map((r) => r.provider)
+        .filter((n): n is string => n !== null && n !== undefined);
+
+      realProvider = deanonymizeProvider(provider, allProviderNames);
+
+      if (!realProvider) {
+        return NextResponse.json(
+          { success: false, error: `Unknown provider: ${provider}` },
+          { status: 400 }
+        );
+      }
+    }
+
+    const conditions: SQL[] = [];
+
+    if (model) conditions.push(eq(tokenRecords.model, model));
+    if (realProvider) conditions.push(eq(tokenRecords.provider, realProvider));
 
     const startDate = searchParams.get("startDate");
     if (startDate) conditions.push(gte(tokenRecords.createdAt, new Date(startDate)));

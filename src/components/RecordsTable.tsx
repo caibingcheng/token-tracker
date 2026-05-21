@@ -15,9 +15,10 @@ export interface Record {
 
 interface RecordsTableProps {
   selectedProvider?: string;
+  refreshKey?: number;
 }
 
-export default function RecordsTable({ selectedProvider = "all" }: RecordsTableProps) {
+export default function RecordsTable({ selectedProvider = "all", refreshKey = 0 }: RecordsTableProps) {
   const [records, setRecords] = useState<Record[]>([]);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -27,7 +28,7 @@ export default function RecordsTable({ selectedProvider = "all" }: RecordsTableP
   useEffect(() => {
     setLoading(true);
     setError(null);
-    fetch(`/api/records?page=${page}&limit=20`)
+    fetch(`/api/records?page=${page}&limit=20${selectedProvider !== "all" ? `&provider=${selectedProvider}` : ""}`)
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();
@@ -42,18 +43,23 @@ export default function RecordsTable({ selectedProvider = "all" }: RecordsTableP
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
-  }, [page]);
+  }, [page, refreshKey, selectedProvider]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [selectedProvider]);
 
   const formatNumber = (num: number) => new Intl.NumberFormat("en-US").format(num);
   const formatDate = (date: string) => new Date(date).toLocaleString();
 
-  const ProviderHint = () => (
-    <p className="text-xs text-gray-400 mt-1">
-      {selectedProvider === "all"
-        ? "Showing records for all providers"
-        : `Showing records for ${selectedProvider}`}
-    </p>
-  );
+  const ProviderHint = () => {
+    if (selectedProvider === "all") return null;
+    return (
+      <p className="text-xs text-gray-400 mt-1">
+        Filtered by {selectedProvider}
+      </p>
+    );
+  };
 
   if (loading) {
     return (
