@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useRef, useEffect } from "react";
 import { useAnimatedNumber } from "@/hooks/useAnimatedNumber";
 import {
   ComposedChart,
@@ -26,6 +26,8 @@ interface DailyUsageChartProps {
   rawData: DailyData[];
   loading: boolean;
   error: string | null;
+  range: number;
+  onRangeChange: (range: number) => void;
 }
 
 const COLORS = {
@@ -35,7 +37,7 @@ const COLORS = {
   hitRate: "#F59E0B",
 };
 
-const WINDOW_DAYS = 30;
+const RANGE_OPTIONS = [3, 7, 14, 30];
 
 function formatNumber(num: number) {
   return new Intl.NumberFormat("en-US").format(num);
@@ -58,17 +60,21 @@ function formatDate(date: Date): string {
   return `${y}-${m}-${d}`;
 }
 
-function getLast30Days(): string[] {
-  const days: string[] = [];
-  for (let i = WINDOW_DAYS - 1; i >= 0; i--) {
+function getLastNDays(days: number): string[] {
+  const result: string[] = [];
+  for (let i = days - 1; i >= 0; i--) {
     const d = new Date();
     d.setDate(d.getDate() - i);
-    days.push(formatDate(d));
+    result.push(formatDate(d));
   }
-  return days;
+  return result;
 }
 
-function SummarySection({ summary }: { summary: { totalInput: number; totalOutput: number; totalCacheRead: number; totalRequests: number } }) {
+function SummarySection({
+  summary,
+}: {
+  summary: { totalInput: number; totalOutput: number; totalCacheRead: number; totalRequests: number };
+}) {
   const animatedTotalInput = useAnimatedNumber(summary.totalInput, 600);
   const animatedTotalOutput = useAnimatedNumber(summary.totalOutput, 600);
   const animatedTotalCacheRead = useAnimatedNumber(summary.totalCacheRead, 600);
@@ -76,9 +82,6 @@ function SummarySection({ summary }: { summary: { totalInput: number; totalOutpu
 
   return (
     <div className="mb-6 p-4 bg-gray-50 rounded-lg">
-      <h3 className="text-sm font-medium text-gray-500 mb-3">
-        Last {WINDOW_DAYS} Days Summary
-      </h3>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div>
           <p className="text-xs text-gray-400">Total Input</p>
@@ -101,15 +104,38 @@ function SummarySection({ summary }: { summary: { totalInput: number; totalOutpu
   );
 }
 
-export default function DailyUsageChart({ rawData, loading, error }: DailyUsageChartProps) {
+export default function DailyUsageChart({ rawData, loading, error, range, onRangeChange }: DailyUsageChartProps) {
+  const h2Ref = useRef<HTMLHeadingElement>(null);
+
+  useEffect(() => {
+    const el = h2Ref.current;
+    if (!el) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      // 注意：不使用 stopPropagation，避免意外阻止事件
+
+      const currentIndex = RANGE_OPTIONS.indexOf(range);
+      let newIndex: number;
+      if (e.deltaY < 0) {
+        newIndex = (currentIndex + 1) % RANGE_OPTIONS.length;
+      } else {
+        newIndex = (currentIndex - 1 + RANGE_OPTIONS.length) % RANGE_OPTIONS.length;
+      }
+      onRangeChange(RANGE_OPTIONS[newIndex]);
+    };
+
+    el.addEventListener('wheel', handleWheel, { passive: false });
+    return () => el.removeEventListener('wheel', handleWheel);
+  }, [range, onRangeChange]);
   const data = useMemo(() => {
     const apiData = new Map<string, DailyData>();
     rawData.forEach((item) => {
       apiData.set(item.group, item);
     });
 
-    const last30Days = getLast30Days();
-    const mapped = last30Days.map((date) => {
+    const lastNDays = getLastNDays(range);
+    const mapped = lastNDays.map((date) => {
       const existing = apiData.get(date);
       if (existing) {
         const cached = Number(existing.totalInputCached) || 0;
@@ -137,7 +163,7 @@ export default function DailyUsageChart({ rawData, loading, error }: DailyUsageC
     });
 
     return mapped;
-  }, [rawData]);
+  }, [rawData, range]);
 
   const summary = useMemo(() => {
     if (data.length === 0) return null;
@@ -149,123 +175,119 @@ export default function DailyUsageChart({ rawData, loading, error }: DailyUsageC
     };
   }, [data]);
 
-  if (loading) {
-    return (
-      <div className="bg-white rounded-lg shadow p-6 mb-8">
-        <div className="h-[280px] bg-gray-100 rounded animate-pulse" />
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="bg-white rounded-lg shadow p-6 mb-8">
-        <p className="text-red-600">Error: {error}</p>
-      </div>
-    );
-  }
-
-  if (data.length === 0) {
-    return (
-      <div className="bg-white rounded-lg shadow p-6 mb-8">
-        <p className="text-gray-500">No data available</p>
-      </div>
-    );
-  }
-
   return (
     <div className="bg-white rounded-lg shadow p-6 mb-8">
-      {/* Summary Card */}
-      {summary && (
-        <SummarySection summary={summary} />
+      {/* 标题始终渲染，确保 ref 有效 */}
+      <h2
+        ref={h2Ref}
+        className="text-lg font-semibold mb-4 cursor-ns-resize select-none"
+      >
+        Last {range} Daily Usage
+      </h2>
+
+      {loading && (
+        <div className="h-[280px] bg-gray-100 rounded animate-pulse" />
       )}
 
-      <h2 className="text-lg font-semibold mb-4">Daily Token Usage</h2>
-      <ResponsiveContainer width="100%" height={280}>
-        <ComposedChart
-          data={data}
-          margin={{ top: 10, right: 50, left: 0, bottom: 0 }}
-          barCategoryGap="40%"
-        >
-          <CartesianGrid strokeDasharray="3 3" vertical={false} />
-          <XAxis
-            dataKey="group"
-            tick={{ fontSize: 11 }}
-            interval={4}
-            tickFormatter={(value: string) => {
-              const parts = value.split("-");
-              return parts.length >= 3 ? `${Number(parts[1])}-${Number(parts[2])}` : value;
-            }}
-          />
-          <YAxis
-            yAxisId="left"
-            tick={{ fontSize: 11 }}
-            tickFormatter={(v: number) => formatAxisNumber(v)}
-            domain={[0, (dataMax: number) => {
-              if (dataMax === 0) return 100;
-              const magnitude = Math.pow(10, Math.floor(Math.log10(dataMax)));
-              const normalized = dataMax / magnitude;
-              let step: number;
-              if (normalized <= 2) step = magnitude / 2;
-              else if (normalized <= 5) step = magnitude;
-              else step = magnitude * 2;
-              return Math.max(step, Math.ceil(dataMax / step) * step);
-            }]}
-          />
-          <YAxis
-            yAxisId="right"
-            orientation="right"
-            tick={{ fontSize: 11, fill: COLORS.hitRate }}
-            tickFormatter={(v: number) => `${v}%`}
-            domain={[0, 100]}
-          />
-          <Tooltip
-            formatter={(value, name) => {
-              if (name === "Cache Hit Ratio") {
-                return [`${value}%`, name];
-              }
-              if (value === null || value === undefined) return ["—", name];
-              return [formatNumber(Number(value)), name];
-            }}
-            labelFormatter={(label: string) => `Date: ${label}`}
-            itemSorter={(item) => {
-              const order = ["Cache", "UnCache", "Output", "Cache Hit Ratio"];
-              return order.indexOf(String(item.name));
-            }}
-          />
-          <Bar
-            yAxisId="left"
-            dataKey="totalOutput"
-            stackId="tokens"
-            fill={COLORS.output}
-            name="Output"
-          />
-          <Bar
-            yAxisId="left"
-            dataKey="totalInputUncached"
-            stackId="tokens"
-            fill={COLORS.input}
-            name="UnCache"
-          />
-          <Bar
-            yAxisId="left"
-            dataKey="totalInputCached"
-            stackId="tokens"
-            fill={COLORS.cache}
-            name="Cache"
-          />
-          <Line
-            yAxisId="right"
-            type="monotone"
-            dataKey="cacheHitRate"
-            stroke={COLORS.hitRate}
-            strokeWidth={3}
-            dot={false}
-            activeDot={false}
-            name="Cache Hit Ratio"
-          />
-        </ComposedChart>
-      </ResponsiveContainer>
+      {error && <p className="text-red-600">Error: {error}</p>}
+
+      {!loading && !error && data.length === 0 && (
+        <p className="text-gray-500">No data available</p>
+      )}
+
+      {!loading && !error && data.length > 0 && (
+        <>
+          {summary && (
+            <SummarySection summary={summary} />
+          )}
+
+          <ResponsiveContainer width="100%" height={280}>
+            <ComposedChart
+              data={data}
+              margin={{ top: 10, right: 50, left: 0, bottom: 0 }}
+              barCategoryGap="40%"
+            >
+              <CartesianGrid strokeDasharray="3 3" vertical={false} />
+              <XAxis
+                dataKey="group"
+                tick={{ fontSize: 11 }}
+                interval={4}
+                tickFormatter={(value: string) => {
+                  const parts = value.split("-");
+                  return parts.length >= 3 ? `${Number(parts[1])}-${Number(parts[2])}` : value;
+                }}
+              />
+              <YAxis
+                yAxisId="left"
+                tick={{ fontSize: 11 }}
+                tickFormatter={(v: number) => formatAxisNumber(v)}
+                domain={[0, (dataMax: number) => {
+                  if (dataMax === 0) return 100;
+                  const magnitude = Math.pow(10, Math.floor(Math.log10(dataMax)));
+                  const normalized = dataMax / magnitude;
+                  let step: number;
+                  if (normalized <= 2) step = magnitude / 2;
+                  else if (normalized <= 5) step = magnitude;
+                  else step = magnitude * 2;
+                  return Math.max(step, Math.ceil(dataMax / step) * step);
+                }]}
+              />
+              <YAxis
+                yAxisId="right"
+                orientation="right"
+                tick={{ fontSize: 11, fill: COLORS.hitRate }}
+                tickFormatter={(v: number) => `${v}%`}
+                domain={[0, 100]}
+              />
+              <Tooltip
+                formatter={(value, name) => {
+                  if (name === "Cache Hit Ratio") {
+                    return [`${value}%`, name];
+                  }
+                  if (value === null || value === undefined) return ["—", name];
+                  return [formatNumber(Number(value)), name];
+                }}
+                labelFormatter={(label: string) => `Date: ${label}`}
+                itemSorter={(item) => {
+                  const order = ["Cache", "UnCache", "Output", "Cache Hit Ratio"];
+                  return order.indexOf(String(item.name));
+                }}
+              />
+              <Bar
+                yAxisId="left"
+                dataKey="totalOutput"
+                stackId="tokens"
+                fill={COLORS.output}
+                name="Output"
+              />
+              <Bar
+                yAxisId="left"
+                dataKey="totalInputUncached"
+                stackId="tokens"
+                fill={COLORS.input}
+                name="UnCache"
+              />
+              <Bar
+                yAxisId="left"
+                dataKey="totalInputCached"
+                stackId="tokens"
+                fill={COLORS.cache}
+                name="Cache"
+              />
+              <Line
+                yAxisId="right"
+                type="monotone"
+                dataKey="cacheHitRate"
+                stroke={COLORS.hitRate}
+                strokeWidth={3}
+                dot={false}
+                activeDot={false}
+                name="Cache Hit Ratio"
+              />
+            </ComposedChart>
+          </ResponsiveContainer>
+        </>
+      )}
     </div>
   );
 }

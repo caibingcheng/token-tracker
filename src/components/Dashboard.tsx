@@ -15,9 +15,7 @@ interface ModelStat {
   count: number;
 }
 
-const INITIAL_INTERVAL = 60_000; // 60s
-const MAX_INTERVAL = 300_000; // 5min
-const MIN_RETRY_INTERVAL = 5_000; // 5s
+const DAILY_RANGE_OPTIONS = [3, 7, 14, 30];
 
 function formatTimeAgo(date: Date | null): string {
   if (!date) return "Never";
@@ -27,11 +25,6 @@ function formatTimeAgo(date: Date | null): string {
   if (minutes < 60) return `${minutes}m ago`;
   const hours = Math.floor(minutes / 60);
   return `${hours}h ago`;
-}
-
-function formatDuration(ms: number): string {
-  if (ms < 60_000) return `${Math.ceil(ms / 1000)}s`;
-  return `${Math.ceil(ms / 60_000)}min`;
 }
 
 function AnimatedCell({ value }: { value: number }) {
@@ -45,7 +38,7 @@ export default function Dashboard() {
   const [topModels, setTopModels] = useState<ModelStat[]>([]);
   const [dailyData, setDailyData] = useState<DailyData[]>([]);
 
-  // NEW: Provider filter states
+  // Provider filter states
   const [providers, setProviders] = useState<Array<{ id: string; name: string }>>([]);
   const [selectedProvider, setSelectedProvider] = useState<string>("all");
   const selectedProviderRef = useRef<string>("all");
@@ -60,33 +53,34 @@ export default function Dashboard() {
   const [errorTop5, setErrorTop5] = useState<string | null>(null);
   const [errorDaily, setErrorDaily] = useState<string | null>(null);
 
+  // Daily range state
+  const [dailyRange, setDailyRange] = useState(7);
+  const dailyRangeRef = useRef(7);
+
   // Polling
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-  const [nextRefreshIn, setNextRefreshIn] = useState(INITIAL_INTERVAL);
-  const [autoRefresh, setAutoRefresh] = useState(false);
   const [recordsRefreshKey, setRecordsRefreshKey] = useState(0);
 
   // Refs to avoid stale closures and infinite loops
   const statsRef = useRef<Stats | null>(null);
   const topModelsRef = useRef<ModelStat[]>([]);
   const dailyDataRef = useRef<DailyData[]>([]);
-  const pollIntervalRef = useRef(INITIAL_INTERVAL);
-  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
   const isVisibleRef = useRef(true);
   const isFetchingRef = useRef(false);
-  const autoRefreshRef = useRef(false);
-  const runLoopRef = useRef<(() => void) | null>(null);
 
   // Keep refs in sync with states
   statsRef.current = stats;
   topModelsRef.current = topModels;
   dailyDataRef.current = dailyData;
-  autoRefreshRef.current = autoRefresh;
+  dailyRangeRef.current = dailyRange;
 
   // Keep provider ref in sync with state
   useEffect(() => {
     selectedProviderRef.current = selectedProvider;
   }, [selectedProvider]);
+
+  // Debounce refs
+  const dailyRangeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Fetch provider list on mount
   useEffect(() => {
@@ -102,9 +96,9 @@ export default function Dashboard() {
       }
     }
     fetchProviders();
-  }, []); // Empty deps — fetch once on mount
+  }, []);
 
-  const fetchAll = useCallback(async (options?: { skipLoading?: boolean }) => {
+  const fetchAll = useCallback(async (options?: { skipLoading?: boolean; skipRecordsRefresh?: boolean }) => {
     if (!isVisibleRef.current || isFetchingRef.current) return;
     isFetchingRef.current = true;
 
@@ -121,11 +115,12 @@ export default function Dashboard() {
 
     try {
       const currentProvider = selectedProviderRef.current;
+      const currentDailyRange = dailyRangeRef.current;
 
       // Build URLs with provider filter
       const statsUrl = new URL("/api/stats?groupBy=none&range=all", window.location.origin);
-      const top5Url = new URL("/api/stats?groupBy=model", window.location.origin);
-      const dailyUrl = new URL("/api/stats?groupBy=date&range=30d", window.location.origin);
+      const top5Url = new URL(`/api/stats?groupBy=model&range=${currentDailyRange}d`, window.location.origin);
+      const dailyUrl = new URL(`/api/stats?groupBy=date&range=${currentDailyRange}d`, window.location.origin);
 
       if (currentProvider !== "all") {
         statsUrl.searchParams.set("provider", currentProvider);
@@ -162,7 +157,7 @@ export default function Dashboard() {
         setErrorStats(`HTTP ${statsRes.status}`);
       }
 
-      // Top 5
+      // Top N
       if (top5Res.ok) {
         const top5Data = await top5Res.json();
         if (top5Data.success) {
@@ -185,25 +180,6 @@ export default function Dashboard() {
       }
 
       setLastUpdated(new Date());
-
-      // Dynamic interval: check if data changed vs previous fetch
-      const prevStats = JSON.stringify(statsRef.current);
-      const prevTop5 = JSON.stringify(topModelsRef.current);
-      const prevDaily = JSON.stringify(dailyDataRef.current);
-      const currStats = JSON.stringify(newStats);
-      const currTop5 = JSON.stringify(newTop5);
-      const currDaily = JSON.stringify(newDaily);
-
-      const changed =
-        currStats !== prevStats ||
-        currTop5 !== prevTop5 ||
-        currDaily !== prevDaily;
-
-      if (changed) {
-        pollIntervalRef.current = INITIAL_INTERVAL;
-      } else {
-        pollIntervalRef.current = Math.min(pollIntervalRef.current * 2, MAX_INTERVAL);
-      }
     } catch (err) {
       console.error("Fetch error:", err);
       setErrorStats("Network error");
@@ -216,41 +192,15 @@ export default function Dashboard() {
         setLoadingDaily(false);
       }
       isFetchingRef.current = false;
-      setRecordsRefreshKey(k => k + 1);
+      if (!options?.skipRecordsRefresh) {
+        setRecordsRefreshKey(k => k + 1);
+      }
     }
-  }, []); // No dependencies - refs handle everything
+  }, []);
 
-  // Polling loop - runs once on mount
+  // Initial fetch on mount
   useEffect(() => {
-    let mounted = true;
-
-    const runLoop = async () => {
-      if (!mounted) return;
-
-      // Minimum retry interval: if already fetching, wait and retry
-      if (isFetchingRef.current) {
-        timeoutRef.current = setTimeout(runLoop, MIN_RETRY_INTERVAL);
-        return;
-      }
-
-      await fetchAll();
-      if (!mounted) return;
-
-      if (autoRefreshRef.current) {
-        timeoutRef.current = setTimeout(runLoop, pollIntervalRef.current);
-      }
-    };
-
-    // Expose runLoop via ref so other effects can use it
-    runLoopRef.current = runLoop;
-
-    // Initial fetch on mount (always runs once)
     fetchAll();
-
-    return () => {
-      mounted = false;
-      if (timeoutRef.current) clearTimeout(timeoutRef.current);
-    };
   }, [fetchAll]);
 
   // Visibility change handler
@@ -258,19 +208,9 @@ export default function Dashboard() {
     const handleVisibilityChange = () => {
       if (document.hidden) {
         isVisibleRef.current = false;
-        if (timeoutRef.current) clearTimeout(timeoutRef.current);
       } else {
         isVisibleRef.current = true;
-        if (autoRefreshRef.current) {
-          // Immediate refresh on tab focus, then resume normal loop
-          fetchAll().then(() => {
-            if (!autoRefreshRef.current) return;
-            if (timeoutRef.current) clearTimeout(timeoutRef.current);
-            if (runLoopRef.current) {
-              timeoutRef.current = setTimeout(runLoopRef.current, pollIntervalRef.current);
-            }
-          });
-        }
+        fetchAll({ skipLoading: true });
       }
     };
 
@@ -278,43 +218,34 @@ export default function Dashboard() {
     return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
   }, [fetchAll]);
 
-  // Start/stop polling when autoRefresh toggle changes
-  useEffect(() => {
-    if (autoRefresh) {
-      // Start polling: fetch now, then schedule next
-      fetchAll().then(() => {
-        if (timeoutRef.current) clearTimeout(timeoutRef.current);
-        if (runLoopRef.current) {
-          timeoutRef.current = setTimeout(runLoopRef.current, pollIntervalRef.current);
-        }
-      });
-    } else {
-      // Stop polling
-      if (timeoutRef.current) clearTimeout(timeoutRef.current);
-    }
-  }, [autoRefresh, fetchAll]);
-
-  // Countdown timer for footer
-  useEffect(() => {
-    const interval = setInterval(() => {
-      if (!lastUpdated) return;
-      const elapsed = Date.now() - lastUpdated.getTime();
-      const remaining = Math.max(0, pollIntervalRef.current - elapsed);
-      setNextRefreshIn(remaining);
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [lastUpdated]);
-
   // Handle provider selection change
   const handleProviderChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
     const value = e.target.value;
     setSelectedProvider(value);
-    // Note: fetchAll reads from selectedProviderRef.current, so we need
-    // to ensure the ref is updated before calling fetchAll
     selectedProviderRef.current = value;
     fetchAll({ skipLoading: true });
   }, [fetchAll]);
+
+  // Handle daily range change
+  const handleDailyRangeChange = useCallback((newRange: number) => {
+    setDailyRange(newRange);
+    dailyRangeRef.current = newRange;
+    if (dailyRangeTimeoutRef.current) {
+      clearTimeout(dailyRangeTimeoutRef.current);
+    }
+    dailyRangeTimeoutRef.current = setTimeout(() => {
+      fetchAll({ skipLoading: true, skipRecordsRefresh: true });
+    }, 300);
+  }, [fetchAll]);
+
+  // Cleanup timeouts on unmount
+  useEffect(() => {
+    return () => {
+      if (dailyRangeTimeoutRef.current) {
+        clearTimeout(dailyRangeTimeoutRef.current);
+      }
+    };
+  }, []);
 
   const formatNumber = (num: number) => new Intl.NumberFormat("en-US").format(num);
 
@@ -343,30 +274,27 @@ export default function Dashboard() {
                 ))}
               </select>
             </div>
-
-            {/* Auto Refresh */}
-            <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={autoRefresh}
-                onChange={(e) => setAutoRefresh(e.target.checked)}
-                className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-              />
-              Auto Refresh
-            </label>
           </div>
         </div>
 
         <StatsCards stats={stats} loading={loadingStats} error={errorStats} />
 
-        <DailyUsageChart rawData={dailyData} loading={loadingDaily} error={errorDaily} />
+        <DailyUsageChart
+          rawData={dailyData}
+          loading={loadingDaily}
+          error={errorDaily}
+          range={dailyRange}
+          onRangeChange={handleDailyRangeChange}
+        />
 
-        {/* Top 5 Models */}
+        {/* Top N Models */}
         <div className="bg-white rounded-lg shadow p-6 mb-8">
-          <h2 className="text-lg font-semibold mb-1">Top 5 Model Families</h2>
+          <h2 className="text-lg font-semibold mb-1">
+            Top 5 Model Families
+          </h2>
           {loadingTop5 && (
             <div className="space-y-3">
-              {[1, 2, 3, 4, 5].map((i) => (
+              {Array.from({ length: 5 }, (_, i) => (
                 <div key={i} className="h-12 bg-gray-100 rounded animate-pulse"></div>
               ))}
             </div>
@@ -424,11 +352,6 @@ export default function Dashboard() {
         {/* Footer */}
         <div className="mt-8 py-4 border-t border-gray-200 flex justify-between items-center text-sm text-gray-500">
           <span>Updated {formatTimeAgo(lastUpdated)}</span>
-          {autoRefresh ? (
-            <span>Next refresh in {formatDuration(nextRefreshIn)}</span>
-          ) : (
-            <span>Auto refresh disabled</span>
-          )}
         </div>
       </div>
     </main>
