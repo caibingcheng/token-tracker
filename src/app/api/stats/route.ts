@@ -71,6 +71,7 @@ async function executeStatsQuery(params: {
         totalOutput: sql<number>`SUM(${tokenRecords.outputTokens})`,
         totalCacheWrite: sql<number>`SUM(${tokenRecords.cacheWrite})`,
         count: sql<number>`COUNT(*)`,
+        lastActiveAt: sql<string>`MAX(${tokenRecords.createdAt})`,
       })
       .from(tokenRecords);
 

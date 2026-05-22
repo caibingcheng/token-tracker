@@ -20,7 +20,7 @@ const DAILY_RANGE_OPTIONS = [3, 7, 14, 30];
 function formatTimeAgo(date: Date | null): string {
   if (!date) return "Never";
   const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
-  if (seconds < 60) return "Just now";
+  if (seconds < 60) return `${seconds}s ago`;
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes}m ago`;
   const hours = Math.floor(minutes / 60);
@@ -37,6 +37,7 @@ export default function Dashboard() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [topModels, setTopModels] = useState<ModelStat[]>([]);
   const [dailyData, setDailyData] = useState<DailyData[]>([]);
+  const [lastActiveAt, setLastActiveAt] = useState<Date | null>(null);
 
   // Provider filter states
   const [providers, setProviders] = useState<Array<{ id: string; name: string }>>([]);
@@ -60,6 +61,9 @@ export default function Dashboard() {
   // Polling
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [recordsRefreshKey, setRecordsRefreshKey] = useState(0);
+
+  // Tick for updating footer time display
+  const [, setTick] = useState(0);
 
   // Recent Records visibility
   const [recordsVisible, setRecordsVisible] = useState(false);
@@ -154,6 +158,9 @@ export default function Dashboard() {
             totalCacheWrite: Number(item.totalCacheWrite || 0),
             count: Number(item.count || 0),
           };
+          if (item.lastActiveAt) {
+            setLastActiveAt(new Date(item.lastActiveAt));
+          }
           setStats(newStats);
         }
       } else {
@@ -235,13 +242,50 @@ export default function Dashboard() {
     };
   }, []);
 
+  // Auto polling every 120s
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        fetchAll({ skipLoading: true, skipRecordsRefresh: true });
+      }
+    }, 120000);
+    return () => clearInterval(interval);
+  }, [fetchAll]);
+
+  // Visibility change listener
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      isVisibleRef.current = document.visibilityState === 'visible';
+      if (document.visibilityState === 'visible') {
+        fetchAll({ skipLoading: true, skipRecordsRefresh: true });
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [fetchAll]);
+
+  // Update footer time every 1s
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setTick(n => n + 1);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
   const formatNumber = (num: number) => new Intl.NumberFormat("en-US").format(num);
 
   return (
     <main className="min-h-screen bg-gray-50 p-4 md:p-8">
       <div className="max-w-7xl mx-auto">
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 gap-2">
-          <h1 className="text-xl md:text-3xl font-bold">Token Tracker Dashboard</h1>
+          <div>
+            <h1 className="text-xl md:text-3xl font-bold">Token Tracker Dashboard</h1>
+            {lastActiveAt && (
+              <p className="text-sm text-gray-500 mt-1">
+                Last active token at {lastActiveAt.toLocaleString()}
+              </p>
+            )}
+          </div>
           <div className="flex items-center gap-4">
             {/* Provider Filter */}
             <div className="flex items-center gap-2">
@@ -398,9 +442,28 @@ export default function Dashboard() {
                 </p>
               )}
             </div>
-            <span className="text-gray-400">
-              {recordsVisible ? "▼" : "▶"}
-            </span>
+            <div className="flex items-center gap-2">
+              {recordsVisible && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setRecordsRefreshKey((k) => k + 1);
+                  }}
+                  className="text-gray-400 hover:text-gray-600 p-1"
+                  title="Refresh records"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                    <path d="M3 3v5h5" />
+                    <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
+                    <path d="M16 21h5v-5" />
+                  </svg>
+                </button>
+              )}
+              <span className="text-gray-400">
+                {recordsVisible ? "▼" : "▶"}
+              </span>
+            </div>
           </button>
 
           {recordsVisible && (
