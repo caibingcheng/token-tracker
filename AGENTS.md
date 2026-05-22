@@ -91,3 +91,8 @@ HIDDEN_PROVIDERS="openai,google"    # 需要匿名的 provider 列表
 - **写入后读取一致性**：POST /api/ingest 成功后立即 `revalidateTag()`，确保后续读取看到最新数据
 - **缓存与数据库一致性**：无后台定时任务，一致性完全由写入触发失效保证
 - **多实例一致性**：Vercel 多实例部署时，缓存标签失效通过 Next.js 自动传播
+
+## Git Commit
+
+- DO NOT and MUST NOT commit plan/spec files to the repository.
+- Commit message must in English.
