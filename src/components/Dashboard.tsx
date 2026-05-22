@@ -124,69 +124,57 @@ export default function Dashboard() {
       const currentProvider = selectedProviderRef.current;
       const currentDailyRange = dailyRangeRef.current;
 
-      // Build URLs with provider filter
-      const statsUrl = new URL("/api/stats?groupBy=none&range=all", window.location.origin);
-      const top5Url = new URL(`/api/stats?groupBy=model&range=${currentDailyRange}d`, window.location.origin);
-      const dailyUrl = new URL(`/api/stats?groupBy=date&range=${currentDailyRange}d`, window.location.origin);
-
+      // Build Dashboard URL
+      const dashboardUrl = new URL("/api/dashboard", window.location.origin);
+      dashboardUrl.searchParams.set("range", `${currentDailyRange}d`);
       if (currentProvider !== "all") {
-        statsUrl.searchParams.set("provider", currentProvider);
-        top5Url.searchParams.set("provider", currentProvider);
-        dailyUrl.searchParams.set("provider", currentProvider);
+        dashboardUrl.searchParams.set("provider", currentProvider);
       }
 
-      const [statsRes, top5Res, dailyRes] = await Promise.all([
-        fetch(statsUrl.toString()),
-        fetch(top5Url.toString()),
-        fetch(dailyUrl.toString()),
-      ]);
+      const dashboardRes = await fetch(dashboardUrl.toString());
 
       let newStats: Stats | null = null;
       let newTop5: ModelStat[] = [];
       let newDaily: DailyData[] = [];
 
-      // Stats
-      if (statsRes.ok) {
-        const statsData = await statsRes.json();
-        if (statsData.success && statsData.data.length > 0) {
-          const item = statsData.data[0];
-          newStats = {
-            totalInput: Number(item.totalInput || 0),
-            totalOutput: Number(item.totalOutput || 0),
-            totalInputCached: Number(item.totalInputCached || 0),
-            totalInputUncached: Number(item.totalInputUncached || 0),
-            totalCacheWrite: Number(item.totalCacheWrite || 0),
-            count: Number(item.count || 0),
-          };
-          if (item.lastActiveAt) {
-            setLastActiveAt(new Date(item.lastActiveAt));
+      if (dashboardRes.ok) {
+        const dashboardData = await dashboardRes.json();
+        if (dashboardData.success) {
+          const { total, daily, models } = dashboardData.data;
+
+          // Stats
+          if (total && total.length > 0) {
+            const item = total[0];
+            newStats = {
+              totalInput: Number(item.totalInput || 0),
+              totalOutput: Number(item.totalOutput || 0),
+              totalInputCached: Number(item.totalInputCached || 0),
+              totalInputUncached: Number(item.totalInputUncached || 0),
+              totalCacheWrite: Number(item.totalCacheWrite || 0),
+              count: Number(item.count || 0),
+            };
+            if (item.lastActiveAt) {
+              setLastActiveAt(new Date(item.lastActiveAt));
+            }
+            setStats(newStats);
           }
-          setStats(newStats);
-        }
-      } else {
-        setErrorStats(`HTTP ${statsRes.status}`);
-      }
 
-      // Top N
-      if (top5Res.ok) {
-        const top5Data = await top5Res.json();
-        if (top5Data.success) {
-          newTop5 = top5Data.data.slice(0, 5);
-          setTopModels(newTop5);
-        }
-      } else {
-        setErrorTop5(`HTTP ${top5Res.status}`);
-      }
+          // Top N
+          if (models) {
+            newTop5 = models.slice(0, 5);
+            setTopModels(newTop5);
+          }
 
-      // Daily
-      if (dailyRes.ok) {
-        const dailyDataResult = await dailyRes.json();
-        if (dailyDataResult.success) {
-          newDaily = dailyDataResult.data;
-          setDailyData(newDaily);
+          // Daily
+          if (daily) {
+            newDaily = daily;
+            setDailyData(newDaily);
+          }
         }
       } else {
-        setErrorDaily(`HTTP ${dailyRes.status}`);
+        setErrorStats(`HTTP ${dashboardRes.status}`);
+        setErrorTop5(`HTTP ${dashboardRes.status}`);
+        setErrorDaily(`HTTP ${dashboardRes.status}`);
       }
 
       setLastUpdated(new Date());

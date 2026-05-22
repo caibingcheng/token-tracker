@@ -29,8 +29,9 @@ export async function executeStatsQuery(params: {
   range: string;
   provider: string;
   granularity?: string;
+  providerFilter?: string | null;
 }): Promise<unknown> {
-  const { groupBy, range, provider, granularity } = params;
+  const { groupBy, range, provider, granularity, providerFilter: precomputedFilter } = params;
 
   // 计算时间范围
   let dateFilter: Date | null = null;
@@ -41,8 +42,8 @@ export async function executeStatsQuery(params: {
   }
 
   // Deanonymize provider if a specific one is selected
-  let providerFilter: string | null = null;
-  if (provider !== "all") {
+  let providerFilter: string | null = precomputedFilter ?? null;
+  if (provider !== "all" && !providerFilter) {
     const allProviderRows = await db
       .selectDistinct({ provider: tokenRecords.provider })
       .from(tokenRecords);
