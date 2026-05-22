@@ -4,7 +4,6 @@ import { tokenRecords } from "@/lib/db/schema";
 import {
   invalidateStatsCache,
   invalidateProvidersCache,
-  rebuildCommonCaches,
 } from "@/lib/cache";
 
 export async function POST(request: NextRequest) {
@@ -48,11 +47,9 @@ export async function POST(request: NextRequest) {
       })
       .returning();
 
-    // 插入成功后刷新缓存
-    invalidateStatsCache();
-    invalidateProvidersCache();
-    // 触发后台重建常用缓存键（fire-and-forget，不阻塞 ingest 响应）
-    void rebuildCommonCaches();
+    // 插入成功后使缓存失效（debounce 重建自动触发）
+    await invalidateStatsCache();
+    await invalidateProvidersCache();
 
     return NextResponse.json({ success: true, id: result[0].id });
   } catch (error) {

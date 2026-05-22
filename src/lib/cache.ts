@@ -1,38 +1,25 @@
 import { unstable_cache } from "next/cache";
 import { revalidateTag } from "next/cache";
+import { executeStatsQuery } from "@/lib/stats-query";
 
-// ── 缓存条目元数据 ──
+// ── 缓存条目 ──
 interface CacheEntry<T> {
   data: T;
-  isValid: boolean; // true = 有效，false = 已失效（等待 ingest 后清除）
+  isValid: boolean;
 }
 
-// ── 全局热缓存 Map（实例级别，不跨实例共享） ──
-const hotCache = new Map<string, CacheEntry<unknown>>();
+// ── AB 面双缓冲 ──
+let activeCache = new Map<string, CacheEntry<unknown>>();
+let standbyCache = new Map<string, CacheEntry<unknown>>();
 
-// ── 后台刷新锁，防止缓存雪崩（cache stampede） ──
-const pendingRefreshes = new Map<string, Promise<unknown>>();
+// ── 版本号与定时器 ──
+let rebuildVersion = 0;
+let rebuildTimer: ReturnType<typeof setTimeout> | null = null;
+const REBUILD_DELAY_MS = 2000;
 
-// ── 持久缓存标签（用于 unstable_cache + revalidateTag） ──
+// ── 持久缓存标签 ──
 const STATS_CACHE_TAG = "api-stats";
 const PROVIDERS_CACHE_TAG = "api-providers";
-
-// ── 热缓存键生成 ──
-function hotKey(...parts: string[]): string {
-  return parts.join(":");
-}
-
-// ── 从热缓存读取（永久有效，无 SWR） ──
-function getHot<T>(key: string): T | null {
-  const entry = hotCache.get(key) as CacheEntry<T> | undefined;
-  if (!entry || !entry.isValid) return null;
-  return entry.data;
-}
-
-// ── 写入热缓存（永久存储，直到被显式清除） ──
-function setHot<T>(key: string, data: T): void {
-  hotCache.set(key, { data, isValid: true });
-}
 
 // ── Stats 参数接口 ──
 export interface StatsParams {
@@ -44,152 +31,156 @@ export interface StatsParams {
 
 // ── 生成 Stats 缓存键 ──
 function statsHotKey(params: StatsParams): string {
-  return hotKey(
+  return [
     "stats",
     params.groupBy,
     params.range,
     params.provider,
-    params.granularity ?? "none"
-  );
+    params.granularity ?? "none",
+  ].join(":");
 }
 
-// ── 后台刷新函数（防缓存雪崩） ──
-async function refreshInBackground<T>(
-  key: string,
-  queryFn: () => Promise<T>
-): Promise<void> {
-  // 如果已有相同 key 的刷新在进行中，跳过
-  if (pendingRefreshes.has(key)) return;
+// ── 模块级预定义 unstable_cache ──
+const statsCacheFn = unstable_cache(
+  async (groupBy: string, range: string, provider: string, granularity?: string) => {
+    return await executeStatsQuery({ groupBy, range, provider, granularity });
+  },
+  ["stats"],
+  { tags: [STATS_CACHE_TAG], revalidate: false }
+);
 
-  const promise = (async () => {
-    try {
-      const freshData = await queryFn();
-      setHot(key, freshData);
-    } catch (err) {
-      console.error(`[Cache] Background refresh failed for key "${key}":`, err);
-    } finally {
-      pendingRefreshes.delete(key);
-    }
-  })();
+const providersCacheFn = unstable_cache(
+  async (queryFn: () => Promise<unknown>) => {
+    return await queryFn();
+  },
+  ["providers:list"],
+  { tags: [PROVIDERS_CACHE_TAG], revalidate: false }
+);
 
-  pendingRefreshes.set(key, promise);
-  // fire-and-forget，不阻塞请求
-  void promise;
-}
-
-// ── 持久缓存包装（unstable_cache） ──
-async function getPersistentStats<T>(
-  params: StatsParams,
-  queryFn: () => Promise<T>
-): Promise<T> {
-  const key = statsHotKey(params);
-  const cachedFn = unstable_cache(
-    async () => {
-      return await queryFn();
-    },
-    [key],
-    { tags: [STATS_CACHE_TAG], revalidate: false }
-  );
-  return cachedFn();
-}
-
-// ── 获取缓存的 Stats（含持久缓存回退） ──
+// ── 获取缓存的 Stats（从活跃面读取）──
 export async function getCachedStats<T>(
   params: StatsParams,
   queryFn: () => Promise<T>
 ): Promise<T> {
   const key = statsHotKey(params);
 
-  // 1. 尝试热缓存（永久有效，除非被 ingest 失效）
-  const hot = getHot<T>(key);
-  if (hot) return hot;
+  // 1. 活跃面
+  const entry = activeCache.get(key) as CacheEntry<T> | undefined;
+  if (entry?.isValid) return entry.data;
 
-  // 2. 热缓存未命中 → 尝试持久缓存（unstable_cache）
+  // 2. 持久缓存回退
   try {
-    const data = await getPersistentStats(params, queryFn);
-    setHot(key, data);
+    const data = await statsCacheFn(params.groupBy, params.range, params.provider, params.granularity) as T;
+    activeCache.set(key, { data, isValid: true });
     return data;
-  } catch {
-    // 持久缓存失败 → 直接查库
+  } catch (err) {
+    console.warn("[Cache] Persistent cache miss, falling back to query:", err);
     const data = await queryFn();
-    setHot(key, data);
+    activeCache.set(key, { data, isValid: true });
     return data;
   }
 }
 
-// ── 获取缓存的 Providers ──
+// ── 获取缓存的 Providers（从活跃面读取）──
 export async function getCachedProviders<T>(
   queryFn: () => Promise<T>
 ): Promise<T> {
   const key = "providers:list";
+  const entry = activeCache.get(key) as CacheEntry<T> | undefined;
+  if (entry?.isValid) return entry.data;
 
-  // 1. 热缓存（永久有效，除非被 ingest 失效）
-  const hot = getHot<T>(key);
-  if (hot) return hot;
-
-  // 2. 持久缓存
   try {
-    const cachedFn = unstable_cache(
-      async () => queryFn(),
-      [key],
-      { tags: [PROVIDERS_CACHE_TAG], revalidate: false }
-    );
-    const data = await cachedFn();
-    setHot(key, data);
+    const data = await providersCacheFn(queryFn as () => Promise<unknown>) as T;
+    activeCache.set(key, { data, isValid: true });
     return data;
-  } catch {
+  } catch (err) {
+    console.warn("[Cache] Providers persistent cache miss:", err);
     const data = await queryFn();
-    setHot(key, data);
+    activeCache.set(key, { data, isValid: true });
     return data;
   }
 }
 
-// ── 使 Stats 缓存失效 ──
-export function invalidateStatsCache(): void {
-  // 1. 通知 Vercel Data Cache 清除所有带 STATS_CACHE_TAG 的条目
-  revalidateTag(STATS_CACHE_TAG);
+// ── 使 Stats 缓存失效（Debounce 触发重建）──
+export async function invalidateStatsCache(): Promise<void> {
+  rebuildVersion++;
+  const currentVersion = rebuildVersion;
 
-  // 2. 清除本实例热缓存中的 stats 条目
-  const keysToDelete: string[] = [];
-  hotCache.forEach((_entry, key) => {
-    if (key.startsWith("stats:")) {
-      keysToDelete.push(key);
-    }
-  });
-  for (const key of keysToDelete) {
-    hotCache.delete(key);
+  // 清除旧定时器
+  if (rebuildTimer) {
+    clearTimeout(rebuildTimer);
+    rebuildTimer = null;
   }
-  console.log("[Cache] Stats cache invalidated");
+
+  // 新增：清除所有内存缓存
+  activeCache.clear();
+
+  // 标记持久缓存失效
+  await revalidateTag(STATS_CACHE_TAG);
+
+  // 2 秒后重建（Debounce）
+  rebuildTimer = setTimeout(() => {
+    void rebuildStatsCaches(currentVersion);
+  }, REBUILD_DELAY_MS);
+
+  console.log("[Cache] Stats cache invalidated and cleared");
 }
 
 // ── 使 Providers 缓存失效 ──
-export function invalidateProvidersCache(): void {
-  revalidateTag(PROVIDERS_CACHE_TAG);
-  hotCache.delete("providers:list");
+export async function invalidateProvidersCache(): Promise<void> {
+  await revalidateTag(PROVIDERS_CACHE_TAG);
+  activeCache.delete("providers:list");
   console.log("[Cache] Providers cache invalidated");
 }
 
-// ── 重建常用缓存键（ingest 后触发，确保 Dashboard 即时加载） ──
-export async function rebuildCommonCaches(): Promise<void> {
-  const baseUrl =
-    process.env.NEXT_PUBLIC_APP_URL ||
-    `http://localhost:${process.env.PORT || 3000}`;
-
-  const commonQueries = [
-    { endpoint: "/api/stats?groupBy=none&range=all", key: "stats:none:all:none" },
-    { endpoint: "/api/stats?groupBy=date&range=7d", key: "stats:date:7d:all:none" },
-    { endpoint: "/api/stats?groupBy=model&range=7d", key: "stats:model:7d:all:none" },
-    { endpoint: "/api/stats?groupBy=provider&range=7d", key: "stats:provider:7d:all:none" },
-    { endpoint: "/api/providers", key: "providers:list" },
+// ── 重建 Stats 缓存（内部，串行 + 版本号保护）──
+async function rebuildStatsCaches(expectedVersion: number): Promise<void> {
+  const queries = [
+    { params: { groupBy: "none", range: "all", provider: "all" }, key: statsHotKey({ groupBy: "none", range: "all", provider: "all" }) },
+    { params: { groupBy: "date", range: "7d", provider: "all" }, key: statsHotKey({ groupBy: "date", range: "7d", provider: "all" }) },
+    { params: { groupBy: "model", range: "7d", provider: "all" }, key: statsHotKey({ groupBy: "model", range: "7d", provider: "all" }) },
+    { params: { groupBy: "provider", range: "7d", provider: "all" }, key: statsHotKey({ groupBy: "provider", range: "7d", provider: "all" }) },
   ];
 
-  for (const { endpoint, key } of commonQueries) {
-    void refreshInBackground(key, async () => {
-      const res = await fetch(`${baseUrl}${endpoint}`);
-      if (!res.ok)
-        throw new Error(`Failed to rebuild cache for ${endpoint}`);
-      const json = await res.json();
-      return json.data;
-    });
+  try {
+    if (expectedVersion !== rebuildVersion) {
+      return;
+    }
+
+    // 串行重建（避免并发竞争）
+    for (const { params, key } of queries) {
+      if (expectedVersion !== rebuildVersion) {
+        standbyCache.clear();
+        return;
+      }
+
+      const data = await executeStatsQuery(params);
+      standbyCache.set(key, { data, isValid: true });
+    }
+
+    // 版本检查（切换前）
+    if (expectedVersion !== rebuildVersion) {
+      standbyCache.clear();
+      return;
+    }
+
+    // 原子切换：备用面 → 活跃面
+    [activeCache, standbyCache] = [standbyCache, activeCache];
+
+    // 清除旧的备用面（现在包含旧数据）
+    standbyCache.clear();
+
+    console.log("[Cache] Stats cache rebuilt and switched successfully");
+  } catch (err) {
+    console.error("[Cache] Stats cache rebuild failed:", err);
+    standbyCache.clear();
+  } finally {
+    rebuildTimer = null;
   }
+}
+
+// ── 兼容接口：触发 invalidate 即可（重建已由 debounce 自动处理）──
+/** @deprecated 使用 invalidateStatsCache() 替代 */
+export function rebuildCommonCaches(): void {
+  void invalidateStatsCache();
 }
