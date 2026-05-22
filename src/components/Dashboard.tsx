@@ -336,6 +336,7 @@ export default function Dashboard() {
                           <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Model</th>
                           <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Total Input</th>
                           <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Cache Read</th>
+                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Cache Hit Rate</th>
                           <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Total Output</th>
                           <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Cache Write</th>
                           <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Requests</th>
@@ -345,6 +346,9 @@ export default function Dashboard() {
                         {topModels.map((model) => {
                           const allTokens = model.totalInput + model.totalOutput;
                           const percentage = totalAllTokens > 0 ? (allTokens / totalAllTokens) * 100 : 0;
+                          const cacheHitRate = model.totalInput > 0
+                            ? (model.totalInputCached / model.totalInput * 100).toFixed(1) + '%'
+                            : '0%';
                           return (
                             <tr
                               key={model.group}
@@ -355,6 +359,7 @@ export default function Dashboard() {
                               <td className="px-4 py-3 text-sm font-medium text-gray-900">{model.group}</td>
                               <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.totalInput} /></td>
                               <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.totalInputCached} /></td>
+                              <td className="px-4 py-3 text-sm text-gray-600 text-right">{cacheHitRate}</td>
                               <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.totalOutput} /></td>
                               <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.totalCacheWrite} /></td>
                               <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.count} /></td>
@@ -395,6 +400,12 @@ export default function Dashboard() {
                             <p className="text-sm font-semibold text-gray-900">{formatNumber(model.totalInputCached)}</p>
                           </div>
                           <div>
+                            <p className="text-xs text-gray-500">Cache Hit Rate</p>
+                            <p className="text-sm font-semibold text-gray-900">
+                              {model.totalInput > 0 ? (model.totalInputCached / model.totalInput * 100).toFixed(1) + '%' : '0%'}
+                            </p>
+                          </div>
+                          <div>
                             <p className="text-xs text-gray-500">Total Output</p>
                             <p className="text-sm font-semibold text-gray-900">{formatNumber(model.totalOutput)}</p>
                           </div>
@@ -402,7 +413,7 @@ export default function Dashboard() {
                             <p className="text-xs text-gray-500">Cache Write</p>
                             <p className="text-sm font-semibold text-gray-900">{formatNumber(model.totalCacheWrite)}</p>
                           </div>
-                          <div className="col-span-2">
+                          <div>
                             <p className="text-xs text-gray-500">Requests</p>
                             <p className="text-sm font-semibold text-gray-900">{formatNumber(model.count)}</p>
                           </div>
