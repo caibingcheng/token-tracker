@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useEffect } from "react";
+import { useMemo } from "react";
 import { useAnimatedNumber } from "@/hooks/useAnimatedNumber";
 import {
   ComposedChart,
@@ -70,6 +70,12 @@ function getLastNDays(days: number): string[] {
   return result;
 }
 
+function getXAxisInterval(range: number): number {
+  if (range <= 7) return 0;     // 3天、7天：全部显示
+  if (range <= 14) return 1;    // 14天：每2个显示1个
+  return 4;                      // 30天：每5个显示1个
+}
+
 function SummarySection({
   summary,
 }: {
@@ -109,29 +115,6 @@ function SummarySection({
 }
 
 export default function DailyUsageChart({ rawData, loading, error, range, onRangeChange }: DailyUsageChartProps) {
-  const h2Ref = useRef<HTMLHeadingElement>(null);
-
-  useEffect(() => {
-    const el = h2Ref.current;
-    if (!el) return;
-
-    const handleWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      // 注意：不使用 stopPropagation，避免意外阻止事件
-
-      const currentIndex = RANGE_OPTIONS.indexOf(range);
-      let newIndex: number;
-      if (e.deltaY < 0) {
-        newIndex = (currentIndex + 1) % RANGE_OPTIONS.length;
-      } else {
-        newIndex = (currentIndex - 1 + RANGE_OPTIONS.length) % RANGE_OPTIONS.length;
-      }
-      onRangeChange(RANGE_OPTIONS[newIndex]);
-    };
-
-    el.addEventListener('wheel', handleWheel, { passive: false });
-    return () => el.removeEventListener('wheel', handleWheel);
-  }, [range, onRangeChange]);
   const data = useMemo(() => {
     const apiData = new Map<string, DailyData>();
     rawData.forEach((item) => {
@@ -184,13 +167,29 @@ export default function DailyUsageChart({ rawData, loading, error, range, onRang
 
   return (
     <div className="bg-white rounded-lg shadow p-6 mb-8">
-      {/* 标题始终渲染，确保 ref 有效 */}
-      <h2
-        ref={h2Ref}
-        className="text-lg font-semibold mb-4 cursor-ns-resize select-none"
-      >
-        Last {range} Daily Usage
-      </h2>
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-4 gap-2">
+        <h2 className="text-lg font-semibold">Last {range} Daily Usage</h2>
+        <div className="inline-flex rounded-md overflow-hidden flex-shrink-0">
+          {RANGE_OPTIONS.map((days, index) => (
+            <button
+              key={days}
+              type="button"
+              onClick={() => onRangeChange(days)}
+              aria-pressed={range === days}
+              className={`
+                px-2 md:px-3 py-1 text-xs md:text-sm font-medium transition-all active:scale-95
+                ${range === days 
+                  ? "bg-blue-600 text-white md:hover:bg-blue-700" 
+                  : "bg-gray-100 text-gray-600 md:hover:bg-blue-50 md:hover:text-blue-700"
+                }
+                ${index !== RANGE_OPTIONS.length - 1 ? "border-r border-gray-200" : ""}
+              `}
+            >
+              {days}d
+            </button>
+          ))}
+        </div>
+      </div>
 
       {loading && (
         <div className="h-[280px] bg-gray-100 rounded animate-pulse" />
@@ -203,7 +202,7 @@ export default function DailyUsageChart({ rawData, loading, error, range, onRang
       )}
 
       {!loading && !error && data.length > 0 && (
-        <>
+        <div>
           {summary && (
             <SummarySection summary={summary} />
           )}
@@ -220,7 +219,7 @@ export default function DailyUsageChart({ rawData, loading, error, range, onRang
                 <XAxis
                   dataKey="group"
                   tick={{ fontSize: 10 }}
-                  interval="preserveStartEnd"
+                  interval={getXAxisInterval(range)}
                   minTickGap={15}
                   tickFormatter={(value: string) => {
                     const parts = value.split("-");
@@ -272,6 +271,7 @@ export default function DailyUsageChart({ rawData, loading, error, range, onRang
                   stackId="tokens"
                   fill={COLORS.output}
                   name="Output"
+
                 />
                 <Bar
                   yAxisId="left"
@@ -279,6 +279,7 @@ export default function DailyUsageChart({ rawData, loading, error, range, onRang
                   stackId="tokens"
                   fill={COLORS.input}
                   name="UnCache"
+
                 />
                 <Bar
                   yAxisId="left"
@@ -286,6 +287,7 @@ export default function DailyUsageChart({ rawData, loading, error, range, onRang
                   stackId="tokens"
                   fill={COLORS.cache}
                   name="Cache"
+
                 />
                 <Line
                   yAxisId="right"
@@ -296,6 +298,7 @@ export default function DailyUsageChart({ rawData, loading, error, range, onRang
                   dot={false}
                   activeDot={{ r: 4, fill: COLORS.hitRate, stroke: "#fff", strokeWidth: 1 }}
                   name="Cache Hit Ratio"
+
                 />
               </ComposedChart>
             </ResponsiveContainer>
@@ -313,7 +316,7 @@ export default function DailyUsageChart({ rawData, loading, error, range, onRang
                 <XAxis
                   dataKey="group"
                   tick={{ fontSize: 11 }}
-                  interval={4}
+                  interval={getXAxisInterval(range)}
                   tickFormatter={(value: string) => {
                     const parts = value.split("-");
                     return parts.length >= 3 ? `${Number(parts[1])}-${Number(parts[2])}` : value;
@@ -361,6 +364,7 @@ export default function DailyUsageChart({ rawData, loading, error, range, onRang
                   stackId="tokens"
                   fill={COLORS.output}
                   name="Output"
+
                 />
                 <Bar
                   yAxisId="left"
@@ -368,6 +372,7 @@ export default function DailyUsageChart({ rawData, loading, error, range, onRang
                   stackId="tokens"
                   fill={COLORS.input}
                   name="UnCache"
+
                 />
                 <Bar
                   yAxisId="left"
@@ -375,6 +380,7 @@ export default function DailyUsageChart({ rawData, loading, error, range, onRang
                   stackId="tokens"
                   fill={COLORS.cache}
                   name="Cache"
+
                 />
                 <Line
                   yAxisId="right"
@@ -385,11 +391,12 @@ export default function DailyUsageChart({ rawData, loading, error, range, onRang
                   dot={false}
                   activeDot={false}
                   name="Cache Hit Ratio"
+
                 />
               </ComposedChart>
             </ResponsiveContainer>
           </div>
-        </>
+        </div>
       )}
     </div>
   );

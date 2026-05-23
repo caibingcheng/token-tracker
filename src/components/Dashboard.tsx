@@ -57,6 +57,7 @@ export default function Dashboard() {
   // Daily range state
   const [dailyRange, setDailyRange] = useState(7);
   const dailyRangeRef = useRef(7);
+  const [isRangeInitialized, setIsRangeInitialized] = useState(false);
 
   // Polling
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
@@ -196,10 +197,25 @@ export default function Dashboard() {
     }
   }, []);
 
-  // Initial fetch on mount
+  // Read saved daily range from localStorage on mount
   useEffect(() => {
-    fetchAll();
-  }, [fetchAll]);
+    const saved = localStorage.getItem('token-tracker-daily-range');
+    if (saved) {
+      const parsed = Number(saved);
+      if (DAILY_RANGE_OPTIONS.includes(parsed)) {
+        setDailyRange(parsed);
+        dailyRangeRef.current = parsed;
+      }
+    }
+    setIsRangeInitialized(true);
+  }, []);
+
+  // Initial fetch after range is initialized
+  useEffect(() => {
+    if (isRangeInitialized) {
+      fetchAll();
+    }
+  }, [isRangeInitialized, fetchAll]);
 
   // Handle provider selection change
   const handleProviderChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -213,6 +229,7 @@ export default function Dashboard() {
   const handleDailyRangeChange = useCallback((newRange: number) => {
     setDailyRange(newRange);
     dailyRangeRef.current = newRange;
+    localStorage.setItem('token-tracker-daily-range', String(newRange));
     if (dailyRangeTimeoutRef.current) {
       clearTimeout(dailyRangeTimeoutRef.current);
     }
