@@ -5,6 +5,7 @@ import StatsCards, { Stats } from "./StatsCards";
 import RecordsTable from "./RecordsTable";
 import DailyUsageChart, { DailyData } from "./DailyUsageChart";
 import { useAnimatedNumber } from "@/hooks/useAnimatedNumber";
+import TodayOverview, { TodayData } from "./TodayOverview";
 
 interface ModelStat {
   group: string;
@@ -37,6 +38,8 @@ export default function Dashboard() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [topModels, setTopModels] = useState<ModelStat[]>([]);
   const [dailyData, setDailyData] = useState<DailyData[]>([]);
+  const [todayData, setTodayData] = useState<TodayData | null>(null);
+  const [yesterdayData, setYesterdayData] = useState<TodayData | null>(null);
   const [lastActiveAt, setLastActiveAt] = useState<Date | null>(null);
 
   // Provider filter states
@@ -169,6 +172,34 @@ export default function Dashboard() {
           // Daily
           if (daily) {
             newDaily = daily;
+            
+            // Extract today and yesterday data
+            const todayStr = new Date().toISOString().split('T')[0];
+            const yesterdayDate = new Date();
+            yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+            const yesterdayStr = yesterdayDate.toISOString().split('T')[0];
+            
+            const todayItem = daily.find((d: DailyData) => d.group === todayStr);
+            const yesterdayItem = daily.find((d: DailyData) => d.group === yesterdayStr);
+            
+            setTodayData(todayItem ? {
+              totalInput: Number(todayItem.totalInput || 0),
+              totalOutput: Number(todayItem.totalOutput || 0),
+              totalInputCached: Number(todayItem.totalInputCached || 0),
+              totalInputUncached: Number(todayItem.totalInputUncached || 0),
+              totalCacheWrite: Number(todayItem.totalCacheWrite || 0),
+              count: Number(todayItem.count || 0),
+            } : null);
+            
+            setYesterdayData(yesterdayItem ? {
+              totalInput: Number(yesterdayItem.totalInput || 0),
+              totalOutput: Number(yesterdayItem.totalOutput || 0),
+              totalInputCached: Number(yesterdayItem.totalInputCached || 0),
+              totalInputUncached: Number(yesterdayItem.totalInputUncached || 0),
+              totalCacheWrite: Number(yesterdayItem.totalCacheWrite || 0),
+              count: Number(yesterdayItem.count || 0),
+            } : null);
+            
             setDailyData(newDaily);
           }
         }
@@ -316,6 +347,12 @@ export default function Dashboard() {
 
         <StatsCards stats={stats} loading={loadingStats} error={errorStats} />
 
+        <TodayOverview 
+          today={todayData} 
+          yesterday={yesterdayData} 
+          loading={loadingDaily} 
+        />
+
         <DailyUsageChart
           rawData={dailyData}
           loading={loadingDaily}
@@ -327,7 +364,7 @@ export default function Dashboard() {
         {/* Top N Models */}
         <div className="bg-white rounded-lg shadow p-6 mb-8">
           <h2 className="text-lg font-semibold mb-1">
-            Top 5 Model Families
+            Last {dailyRange} Days Top 5 Model Families
           </h2>
           {loadingTop5 && (
             <div className="space-y-3">
