@@ -1,27 +1,36 @@
 import { db } from "@/lib/db";
 import { tokenRecords } from "@/lib/db/schema";
-import { sql } from "drizzle-orm";
+import { sql, and, eq, inArray } from "drizzle-orm";
 import {
   TOP_N_RAW_MODELS,
   TOP_N_DISPLAY,
   aggregateByNormalizedModel,
   type StatItem,
 } from "@/lib/model-utils";
-import { deanonymizeProvider } from "@/lib/provider-utils";
+import { resolveProviderFilter } from "@/lib/provider-utils";
 
 // Helper to build combined WHERE clause
 function buildWhereClause(
   dateFilter: Date | null,
-  providerFilter: string | null
+  providerFilter: string[] | null
 ) {
-  if (dateFilter && providerFilter) {
-    return sql`${tokenRecords.createdAt} >= ${dateFilter.toISOString()} AND ${tokenRecords.provider} = ${providerFilter}`;
-  } else if (dateFilter) {
-    return sql`${tokenRecords.createdAt} >= ${dateFilter.toISOString()}`;
-  } else if (providerFilter) {
-    return sql`${tokenRecords.provider} = ${providerFilter}`;
+  const conditions = [];
+
+  if (dateFilter) {
+    conditions.push(
+      sql`${tokenRecords.createdAt} >= ${dateFilter.toISOString()}`
+    );
   }
-  return null;
+
+  if (providerFilter && providerFilter.length > 0) {
+    if (providerFilter.length === 1) {
+      conditions.push(eq(tokenRecords.provider, providerFilter[0]));
+    } else {
+      conditions.push(inArray(tokenRecords.provider, providerFilter));
+    }
+  }
+
+  return conditions.length > 0 ? and(...conditions) : null;
 }
 
 export async function executeStatsQuery(params: {
@@ -29,9 +38,15 @@ export async function executeStatsQuery(params: {
   range: string;
   provider: string;
   granularity?: string;
-  providerFilter?: string | null;
+  providerFilter?: string[] | null;
 }): Promise<unknown> {
-  const { groupBy, range, provider, granularity, providerFilter: precomputedFilter } = params;
+  const {
+    groupBy,
+    range,
+    provider,
+    granularity,
+    providerFilter: precomputedFilter,
+  } = params;
 
   // 计算时间范围
   let dateFilter: Date | null = null;
@@ -41,8 +56,8 @@ export async function executeStatsQuery(params: {
     dateFilter.setDate(dateFilter.getDate() - days);
   }
 
-  // Deanonymize provider if a specific one is selected
-  let providerFilter: string | null = precomputedFilter ?? null;
+  // Resolve provider filter if a specific one is selected
+  let providerFilter: string[] | null = precomputedFilter ?? null;
   if (provider !== "all" && !providerFilter) {
     const allProviderRows = await db
       .selectDistinct({ provider: tokenRecords.provider })
@@ -51,9 +66,9 @@ export async function executeStatsQuery(params: {
       .map((r) => r.provider)
       .filter((n): n is string => n !== null && n !== undefined);
 
-    providerFilter = deanonymizeProvider(provider, allProviderNames);
+    providerFilter = resolveProviderFilter(provider, allProviderNames);
 
-    if (!providerFilter) {
+    if (!providerFilter || providerFilter.length === 0) {
       throw new Error(`Unknown provider: ${provider}`);
     }
   }
@@ -64,7 +79,8 @@ export async function executeStatsQuery(params: {
     query = db
       .select({
         group: sql<string>`'total'`,
-        totalInput: sql<number>`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead})`,
+        totalInput:
+          sql<number>`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead})`,
         totalInputCached: sql<number>`SUM(${tokenRecords.cacheRead})`,
         totalInputUncached: sql<number>`SUM(${tokenRecords.inputTokens})`,
         totalOutput: sql<number>`SUM(${tokenRecords.outputTokens})`,
@@ -96,7 +112,8 @@ export async function executeStatsQuery(params: {
     query = db
       .select({
         group: groupExpr,
-        totalInput: sql<number>`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead})`,
+        totalInput:
+          sql<number>`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead})`,
         totalInputCached: sql<number>`SUM(${tokenRecords.cacheRead})`,
         totalInputUncached: sql<number>`SUM(${tokenRecords.inputTokens})`,
         totalOutput: sql<number>`SUM(${tokenRecords.outputTokens})`,
@@ -127,7 +144,8 @@ export async function executeStatsQuery(params: {
       .select({
         group: groupExpr,
         model: tokenRecords.model,
-        totalInput: sql<number>`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead})`,
+        totalInput:
+          sql<number>`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead})`,
         totalInputCached: sql<number>`SUM(${tokenRecords.cacheRead})`,
         totalInputUncached: sql<number>`SUM(${tokenRecords.inputTokens})`,
         totalOutput: sql<number>`SUM(${tokenRecords.outputTokens})`,
@@ -177,7 +195,8 @@ export async function executeStatsQuery(params: {
     query = db
       .select({
         group: tokenRecords.provider,
-        totalInput: sql<number>`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead})`,
+        totalInput:
+          sql<number>`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead})`,
         totalInputCached: sql<number>`SUM(${tokenRecords.cacheRead})`,
         totalInputUncached: sql<number>`SUM(${tokenRecords.inputTokens})`,
         totalOutput: sql<number>`SUM(${tokenRecords.outputTokens})`,
@@ -186,7 +205,9 @@ export async function executeStatsQuery(params: {
       })
       .from(tokenRecords)
       .groupBy(tokenRecords.provider)
-      .orderBy(sql`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead}) DESC`);
+      .orderBy(
+        sql`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead}) DESC`
+      );
 
     const whereClause = buildWhereClause(dateFilter, providerFilter);
     if (whereClause) {

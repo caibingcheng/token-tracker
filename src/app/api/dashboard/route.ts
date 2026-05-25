@@ -3,12 +3,12 @@ import { initDatabase, db } from "@/lib/db";
 import { tokenRecords } from "@/lib/db/schema";
 import { executeStatsQuery } from "@/lib/stats-query";
 import { unstable_cache } from "next/cache";
-import { deanonymizeProvider } from "@/lib/provider-utils";
+import { resolveProviderFilter } from "@/lib/provider-utils";
 
 const DASHBOARD_CACHE_TAG = "api-dashboard";
 
 const dashboardCacheFn = unstable_cache(
-  async (range: string, provider: string, providerFilter: string | null) => {
+  async (range: string, provider: string, providerFilter: string[] | null) => {
     const [total, daily, models] = await Promise.all([
       executeStatsQuery({ groupBy: "none", range: "all", provider, providerFilter }),
       executeStatsQuery({ groupBy: "date", range, provider, granularity: "day", providerFilter }),
@@ -38,7 +38,7 @@ export async function GET(request: NextRequest) {
     }
 
     // 预先查询 provider mapping（避免 N+1 查询）
-    let providerFilter: string | null = null;
+    let providerFilter: string[] | null = null;
     if (provider !== "all") {
       const allProviderRows = await db
         .selectDistinct({ provider: tokenRecords.provider })
@@ -47,9 +47,9 @@ export async function GET(request: NextRequest) {
         .map((r) => r.provider)
         .filter((n): n is string => n !== null && n !== undefined);
 
-      providerFilter = deanonymizeProvider(provider, allProviderNames);
+      providerFilter = resolveProviderFilter(provider, allProviderNames);
 
-      if (!providerFilter) {
+      if (!providerFilter || providerFilter.length === 0) {
         return NextResponse.json(
           { success: false, error: `Unknown provider: ${provider}` },
           { status: 400 }
