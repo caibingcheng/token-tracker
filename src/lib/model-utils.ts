@@ -4,37 +4,74 @@
 export const TOP_N_RAW_MODELS = 20;
 export const TOP_N_DISPLAY = 5;
 
-const MODEL_RULES: Array<[string, string]> = [
+/**
+ * 从环境变量 MODEL_RULES 读取规则，格式：
+ *   MODEL_RULES="target:pattern,target2:pattern2"
+ *
+ * 例如：MODEL_RULES="k2p6:kimi-k2.6*,gpt-4o:gpt-4o*"
+ *
+ * - 逗号分隔规则
+ * - 每个规则用冒号分隔 target 和 pattern
+ * - target 在前，pattern 在后（与代码中硬编码顺序一致）
+ * - * 后缀表示前缀匹配
+ *
+ * 环境变量规则追加到硬编码规则前面，优先级更高。
+ */
+function getEnvModelRules(): Array<[string, string]> {
+  const raw = process.env.MODEL_RULES;
+  if (!raw || raw.trim() === "") {
+    return [];
+  }
+
+  return raw
+    .split(",")
+    .map((rule) => {
+      const parts = rule.split(":");
+      if (parts.length !== 2) return null;
+      const [target, pattern] = parts.map((s) => s.trim());
+      if (!target || !pattern) return null;
+      return [target, pattern] as [string, string];
+    })
+    .filter((r): r is [string, string] => r !== null);
+}
+
+const HARDCODED_MODEL_RULES: Array<[string, string]> = [
   // 规则按优先级排序，排在前面的优先匹配
   // * 结尾表示前缀匹配，否则为精确匹配
 
   // Kimi
-  ["kimi-k2.6*", "k2p6"],
-  ["kimi-k2.5*", "k2p5"],
+  ["k2p6", "kimi-k2.6*"],
+  ["k2p5", "kimi-k2.5*"],
 
   // OpenAI（长的放前面，避免误匹配）
-  ["gpt-4o-mini*", "gpt-4o-mini"],
-  ["gpt-4o*", "gpt-4o"],
-  ["gpt-4-turbo*", "gpt-4-turbo"],
-  ["gpt-4*", "gpt-4"],
+  ["gpt-4o-mini", "gpt-4o-mini*"],
+  ["gpt-4o", "gpt-4o*"],
+  ["gpt-4-turbo", "gpt-4-turbo*"],
+  ["gpt-4", "gpt-4*"],
 
   // Anthropic
-  ["claude-3-5-sonnet*", "claude-3.5-sonnet"],
-  ["claude-3-5-haiku*", "claude-3.5-haiku"],
-  ["claude-3-opus*", "claude-3-opus"],
-  ["claude-3-sonnet*", "claude-3-sonnet"],
-  ["claude-3-haiku*", "claude-3-haiku"],
+  ["claude-3.5-sonnet", "claude-3-5-sonnet*"],
+  ["claude-3.5-haiku", "claude-3-5-haiku*"],
+  ["claude-3-opus", "claude-3-opus*"],
+  ["claude-3-sonnet", "claude-3-sonnet*"],
+  ["claude-3-haiku", "claude-3-haiku*"],
 
   // Google
-  ["gemini-1.5-pro*", "gemini-1.5-pro"],
-  ["gemini-1.5-flash*", "gemini-1.5-flash"],
+  ["gemini-1.5-pro", "gemini-1.5-pro*"],
+  ["gemini-1.5-flash", "gemini-1.5-flash*"],
 
   // DeepSeek
-  ["deepseek-chat*", "deepseek-v3"],
+  ["deepseek-v3", "deepseek-chat*"],
+];
+
+// 环境变量规则在前，优先级更高
+const ALL_MODEL_RULES: Array<[string, string]> = [
+  ...getEnvModelRules(),
+  ...HARDCODED_MODEL_RULES,
 ];
 
 export function normalizeModel(model: string): string {
-  for (const [pattern, target] of MODEL_RULES) {
+  for (const [target, pattern] of ALL_MODEL_RULES) {
     if (pattern.endsWith("*")) {
       const prefix = pattern.slice(0, -1);
       if (model.startsWith(prefix)) return target;

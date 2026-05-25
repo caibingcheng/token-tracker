@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db, initDatabase } from "@/lib/db";
 import { tokenRecords } from "@/lib/db/schema";
-import { sql, desc, eq, and, gte, lte, SQL } from "drizzle-orm";
-import { deanonymizeProvider } from "@/lib/provider-utils";
+import { sql, desc, eq, and, gte, lte, inArray, SQL } from "drizzle-orm";
+import { resolveProviderFilter } from "@/lib/provider-utils";
 
 export async function GET(request: NextRequest) {
   await initDatabase();
@@ -18,10 +18,10 @@ export async function GET(request: NextRequest) {
     const model = searchParams.get("model");
 
     const provider = searchParams.get("provider");
-    // Deanonymize provider if a specific one is selected
-    let realProvider: string | null = null;
+    // Resolve provider filter if a specific one is selected
+    let providerFilter: string[] | null = null;
     if (provider) {
-      // We need the full provider list to deanonymize
+      // We need the full provider list to resolve
       const allProviderRows = await db
         .selectDistinct({ provider: tokenRecords.provider })
         .from(tokenRecords);
@@ -29,9 +29,9 @@ export async function GET(request: NextRequest) {
         .map((r) => r.provider)
         .filter((n): n is string => n !== null && n !== undefined);
 
-      realProvider = deanonymizeProvider(provider, allProviderNames);
+      providerFilter = resolveProviderFilter(provider, allProviderNames);
 
-      if (!realProvider) {
+      if (!providerFilter || providerFilter.length === 0) {
         return NextResponse.json(
           { success: false, error: `Unknown provider: ${provider}` },
           { status: 400 }
@@ -42,7 +42,13 @@ export async function GET(request: NextRequest) {
     const conditions: SQL[] = [];
 
     if (model) conditions.push(eq(tokenRecords.model, model));
-    if (realProvider) conditions.push(eq(tokenRecords.provider, realProvider));
+    if (providerFilter) {
+      if (providerFilter.length === 1) {
+        conditions.push(eq(tokenRecords.provider, providerFilter[0]));
+      } else {
+        conditions.push(inArray(tokenRecords.provider, providerFilter));
+      }
+    }
 
     const startDate = searchParams.get("startDate");
     if (startDate) conditions.push(gte(tokenRecords.createdAt, new Date(startDate)));
