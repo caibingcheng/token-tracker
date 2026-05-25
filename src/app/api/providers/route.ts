@@ -47,7 +47,15 @@ export async function GET(request: NextRequest) {
       // Sort alphabetically by display name for consistent ordering
       anonymizedList.sort((a, b) => a.name.localeCompare(b.name));
 
-      return anonymizedList;
+      // Deduplicate: multiple real providers may map to the same anonymized name
+      const seen = new Set<string>();
+      const uniqueList = anonymizedList.filter((item) => {
+        if (seen.has(item.name)) return false;
+        seen.add(item.name);
+        return true;
+      });
+
+      return uniqueList;
     });
 
     return NextResponse.json({
