@@ -2,8 +2,11 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 export function middleware(request: NextRequest) {
-  // 只对 /api/ingest 路由进行认证（写入操作）
-  if (!request.nextUrl.pathname.startsWith("/api/ingest")) {
+  // 对 /api/ingest（写入操作）和 /api/records（读取操作）进行认证
+  if (
+    !request.nextUrl.pathname.startsWith("/api/ingest") &&
+    !request.nextUrl.pathname.startsWith("/api/records")
+  ) {
     return NextResponse.next();
   }
 
