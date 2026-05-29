@@ -33,7 +33,7 @@ export function useAnimatedNumber(target: number, duration: number = 600): numbe
       const eased = 1 - Math.pow(1 - progress, 3);
       const value = fromRef.current + (target - fromRef.current) * eased;
 
-      setCurrent(value);
+      setCurrent(Math.round(value));
 
       if (progress < 1) {
         rafRef.current = requestAnimationFrame(animate);
