@@ -29,7 +29,6 @@ export async function initDatabase() {
       await client`
         CREATE TABLE token_records (
           id SERIAL PRIMARY KEY,
-          api_key VARCHAR(255) NOT NULL,
           model VARCHAR(255) NOT NULL,
           provider VARCHAR(255) NOT NULL,
           input_tokens INTEGER NOT NULL DEFAULT 0,

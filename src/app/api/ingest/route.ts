@@ -11,7 +11,6 @@ export async function POST(request: NextRequest) {
   await initDatabase();
   try {
     const body = await request.json();
-    const apiKey = request.headers.get("X-API-Key")!;
 
     // 验证必填字段
     if (!body.model || !body.provider) {
@@ -47,7 +46,6 @@ export async function POST(request: NextRequest) {
     const result = await db
       .insert(tokenRecords)
       .values({
-        apiKey,
         model: String(body.model),
         provider,
         inputTokens,

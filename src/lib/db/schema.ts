@@ -2,7 +2,6 @@ import { pgTable, serial, varchar, integer, timestamp } from "drizzle-orm/pg-cor
 
 export const tokenRecords = pgTable("token_records", {
   id: serial("id").primaryKey(),
-  apiKey: varchar("api_key", { length: 255 }).notNull(),
   model: varchar("model", { length: 255 }).notNull(),
   provider: varchar("provider", { length: 255 }).notNull(),
   inputTokens: integer("input_tokens").notNull().default(0),
