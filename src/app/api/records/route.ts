@@ -3,6 +3,7 @@ import { db, initDatabase } from "@/lib/db";
 import { tokenRecords } from "@/lib/db/schema";
 import { sql, desc, eq, and, gte, lte, inArray, SQL } from "drizzle-orm";
 import { resolveProviderFilter } from "@/lib/provider-utils";
+import { normalizeModel, resolveNormalizedModelFilter } from "@/lib/model-utils";
 
 export async function GET(request: NextRequest) {
   await initDatabase();
@@ -15,13 +16,12 @@ export async function GET(request: NextRequest) {
     const offset = (page - 1) * limit;
 
     // 筛选条件
-    const model = searchParams.get("model");
+    const modelParam = searchParams.get("model");
 
     const provider = searchParams.get("provider");
     // Resolve provider filter if a specific one is selected
     let providerFilter: string[] | null = null;
     if (provider) {
-      // We need the full provider list to resolve
       const allProviderRows = await db
         .selectDistinct({ provider: tokenRecords.provider })
         .from(tokenRecords);
@@ -39,9 +39,35 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    // Resolve model filter if a specific one is selected
+    let modelFilter: string[] | null = null;
+    if (modelParam) {
+      const allModelRows = await db
+        .selectDistinct({ model: tokenRecords.model })
+        .from(tokenRecords);
+      const allRawModels: string[] = allModelRows
+        .map((r) => r.model)
+        .filter((n): n is string => n !== null && n !== undefined);
+
+      modelFilter = resolveNormalizedModelFilter(modelParam, allRawModels);
+
+      if (!modelFilter || modelFilter.length === 0) {
+        return NextResponse.json(
+          { success: false, error: `Unknown model: ${modelParam}` },
+          { status: 400 }
+        );
+      }
+    }
+
     const conditions: SQL[] = [];
 
-    if (model) conditions.push(eq(tokenRecords.model, model));
+    if (modelFilter) {
+      if (modelFilter.length === 1) {
+        conditions.push(eq(tokenRecords.model, modelFilter[0]));
+      } else {
+        conditions.push(inArray(tokenRecords.model, modelFilter));
+      }
+    }
     if (providerFilter) {
       if (providerFilter.length === 1) {
         conditions.push(eq(tokenRecords.provider, providerFilter[0]));
@@ -63,8 +89,6 @@ export async function GET(request: NextRequest) {
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
     // 查询数据
-    // 注意：2025-05-20 - 移除 provider 字段返回
-    // Top 5 已按归一化 model 聚合不区分 provider，RecordsTable 也不再显示 provider 列
     const query = db
       .select({
         id: tokenRecords.id,
@@ -79,7 +103,11 @@ export async function GET(request: NextRequest) {
       .orderBy(desc(tokenRecords.createdAt))
       .limit(limit)
       .offset(offset);
-    const data = whereClause ? await query.where(whereClause) : await query;
+    const rawData = whereClause ? await query.where(whereClause) : await query;
+    const data = rawData.map((record) => ({
+      ...record,
+      normalizedModel: normalizeModel(record.model),
+    }));
 
     // 查询总数
     const countQuery = db

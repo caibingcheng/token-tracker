@@ -4,15 +4,22 @@ import { tokenRecords } from "@/lib/db/schema";
 import { executeStatsQuery } from "@/lib/stats-query";
 import { unstable_cache } from "next/cache";
 import { resolveProviderFilter } from "@/lib/provider-utils";
+import { normalizeModel, resolveNormalizedModelFilter } from "@/lib/model-utils";
 
 const DASHBOARD_CACHE_TAG = "api-dashboard";
 
 const dashboardCacheFn = unstable_cache(
-  async (range: string, provider: string, providerFilter: string[] | null) => {
+  async (
+    range: string,
+    provider: string,
+    providerFilter: string[] | null,
+    model: string,
+    modelFilter: string[] | null
+  ) => {
     const [total, daily, models] = await Promise.all([
-      executeStatsQuery({ groupBy: "none", range: "all", provider, providerFilter }),
-      executeStatsQuery({ groupBy: "date", range, provider, granularity: "day", providerFilter }),
-      executeStatsQuery({ groupBy: "model", range, provider, providerFilter }),
+      executeStatsQuery({ groupBy: "none", range: "all", provider, providerFilter, model, modelFilter }),
+      executeStatsQuery({ groupBy: "date", range, provider, granularity: "day", providerFilter, model, modelFilter }),
+      executeStatsQuery({ groupBy: "model", range, provider, providerFilter, model, modelFilter }),
     ]);
     return { total, daily, models };
   },
@@ -28,6 +35,7 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const range = searchParams.get("range") || "7d";
     const provider = searchParams.get("provider") || "all";
+    const model = searchParams.get("model") || "all";
 
     // 参数校验
     if (!VALID_RANGES.includes(range)) {
@@ -57,7 +65,27 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    const data = await dashboardCacheFn(range, provider, providerFilter);
+    // 预先查询 model mapping（避免 N+1 查询）
+    let modelFilter: string[] | null = null;
+    if (model !== "all") {
+      const allModelRows = await db
+        .selectDistinct({ model: tokenRecords.model })
+        .from(tokenRecords);
+      const allRawModels = allModelRows
+        .map((r) => r.model)
+        .filter((n): n is string => n !== null && n !== undefined);
+
+      modelFilter = resolveNormalizedModelFilter(model, allRawModels);
+
+      if (!modelFilter || modelFilter.length === 0) {
+        return NextResponse.json(
+          { success: false, error: `Unknown model: ${model}` },
+          { status: 400 }
+        );
+      }
+    }
+
+    const data = await dashboardCacheFn(range, provider, providerFilter, model, modelFilter);
     return NextResponse.json({ success: true, data });
   } catch (error) {
     console.error("Dashboard error:", error);
