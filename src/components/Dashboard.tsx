@@ -47,6 +47,11 @@ export default function Dashboard() {
   const [selectedProvider, setSelectedProvider] = useState<string>("all");
   const selectedProviderRef = useRef<string>("all");
 
+  // Model filter states
+  const [models, setModels] = useState<Array<{ id: string; name: string }>>([]);
+  const [selectedModel, setSelectedModel] = useState<string>("all");
+  const selectedModelRef = useRef<string>("all");
+
   // Loading states
   const [loadingStats, setLoadingStats] = useState(true);
   const [loadingTop5, setLoadingTop5] = useState(true);
@@ -85,6 +90,11 @@ export default function Dashboard() {
   dailyDataRef.current = dailyData;
   dailyRangeRef.current = dailyRange;
 
+  // Keep model ref in sync with state
+  useEffect(() => {
+    selectedModelRef.current = selectedModel;
+  }, [selectedModel]);
+
   // Keep provider ref in sync with state
   useEffect(() => {
     selectedProviderRef.current = selectedProvider;
@@ -93,7 +103,7 @@ export default function Dashboard() {
   // Debounce refs
   const dailyRangeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Fetch provider list on mount
+  // Fetch provider and model lists on mount
   useEffect(() => {
     async function fetchProviders() {
       try {
@@ -106,7 +116,19 @@ export default function Dashboard() {
         console.error("Failed to fetch providers:", err);
       }
     }
+    async function fetchModels() {
+      try {
+        const res = await fetch("/api/models");
+        const json = await res.json();
+        if (json.success && Array.isArray(json.data)) {
+          setModels(json.data);
+        }
+      } catch (err) {
+        console.error("Failed to fetch models:", err);
+      }
+    }
     fetchProviders();
+    fetchModels();
   }, []);
 
   const fetchAll = useCallback(async (options?: { skipLoading?: boolean; skipRecordsRefresh?: boolean }) => {
@@ -128,11 +150,16 @@ export default function Dashboard() {
       const currentProvider = selectedProviderRef.current;
       const currentDailyRange = dailyRangeRef.current;
 
+      const currentModel = selectedModelRef.current;
+
       // Build Dashboard URL
       const dashboardUrl = new URL("/api/dashboard", window.location.origin);
       dashboardUrl.searchParams.set("range", `${currentDailyRange}d`);
       if (currentProvider !== "all") {
         dashboardUrl.searchParams.set("provider", currentProvider);
+      }
+      if (currentModel !== "all") {
+        dashboardUrl.searchParams.set("model", currentModel);
       }
 
       const dashboardRes = await fetch(dashboardUrl.toString());
@@ -256,6 +283,14 @@ export default function Dashboard() {
     fetchAll({ skipLoading: true });
   }, [fetchAll]);
 
+  // Handle model selection change
+  const handleModelChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
+    const value = e.target.value;
+    setSelectedModel(value);
+    selectedModelRef.current = value;
+    fetchAll({ skipLoading: true });
+  }, [fetchAll]);
+
   // Handle daily range change
   const handleDailyRangeChange = useCallback((newRange: number) => {
     setDailyRange(newRange);
@@ -338,6 +373,25 @@ export default function Dashboard() {
                 {providers.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {/* Model Filter */}
+            <div className="flex items-center gap-2">
+              <label htmlFor="model-select" className="text-sm text-gray-600">
+                Model:
+              </label>
+              <select
+                id="model-select"
+                value={selectedModel}
+                onChange={handleModelChange}
+                className="rounded border border-gray-300 bg-white px-3 py-1.5 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              >
+                <option value="all">All Models</option>
+                {models.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name}
                   </option>
                 ))}
               </select>
@@ -491,24 +545,31 @@ export default function Dashboard() {
               <h2 className="text-lg font-semibold">Recent Records</h2>
               {selectedProvider !== "all" && (
                 <p className="text-xs text-gray-400 mt-1">
-                  Filtered by {selectedProvider}
-                </p>
-              )}
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-gray-400">
-                {recordsVisible ? "▼" : "▶"}
-              </span>
-            </div>
-          </button>
-
-          {recordsVisible && (
-            <RecordsTable
-              selectedProvider={selectedProvider}
-              refreshKey={recordsRefreshKey}
-              showHeader={false}
-            />
+              {selectedProvider !== "all" && selectedModel !== "all"
+                ? `Filtered by ${selectedProvider} + ${selectedModel}`
+                : selectedProvider !== "all"
+                ? `Filtered by ${selectedProvider}`
+                : selectedModel !== "all"
+                ? `Filtered by ${selectedModel}`
+                : ""}
+            </p>
           )}
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-gray-400">
+            {recordsVisible ? "▼" : "▶"}
+          </span>
+        </div>
+      </button>
+
+      {recordsVisible && (
+        <RecordsTable
+          selectedProvider={selectedProvider}
+          selectedModel={selectedModel}
+          refreshKey={recordsRefreshKey}
+          showHeader={false}
+        />
+      )}
         </div>
 
         {/* Footer */}

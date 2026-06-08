@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { db, initDatabase } from "@/lib/db";
 import { tokenRecords } from "@/lib/db/schema";
 import { revalidateTag } from "next/cache";
-import { sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
+import { MODELS_CACHE_TAG } from "@/lib/cache";
 
 const DASHBOARD_CACHE_TAG = "api-dashboard";
 const PROVIDERS_CACHE_TAG = "api-providers";
@@ -34,19 +35,27 @@ export async function POST(request: NextRequest) {
     }
 
     const provider = String(body.provider);
+    const model = String(body.model);
 
     // 检查是否为新 provider（使 providers 缓存失效）
     const existingProviders = await db
       .selectDistinct({ provider: tokenRecords.provider })
       .from(tokenRecords)
-      .where(sql`${tokenRecords.provider} = ${provider}`);
+      .where(eq(tokenRecords.provider, provider));
     const isNewProvider = existingProviders.length === 0;
+
+    // 检查是否为新 model（使 models 缓存失效）
+    const existingModels = await db
+      .selectDistinct({ model: tokenRecords.model })
+      .from(tokenRecords)
+      .where(eq(tokenRecords.model, model));
+    const isNewModel = existingModels.length === 0;
 
     // 插入记录
     const result = await db
       .insert(tokenRecords)
       .values({
-        model: String(body.model),
+        model,
         provider,
         inputTokens,
         outputTokens,
@@ -61,6 +70,11 @@ export async function POST(request: NextRequest) {
     // 如果是新 provider，使 Providers 缓存失效
     if (isNewProvider) {
       revalidateTag(PROVIDERS_CACHE_TAG);
+    }
+
+    // 如果是新 model，使 Models 缓存失效
+    if (isNewModel) {
+      revalidateTag(MODELS_CACHE_TAG);
     }
 
     return NextResponse.json({ success: true, id: result[0].id });

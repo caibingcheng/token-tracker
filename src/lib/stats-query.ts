@@ -5,6 +5,7 @@ import {
   TOP_N_RAW_MODELS,
   TOP_N_DISPLAY,
   aggregateByNormalizedModel,
+  normalizeModel,
   type StatItem,
 } from "@/lib/model-utils";
 import { resolveProviderFilter } from "@/lib/provider-utils";
@@ -12,7 +13,8 @@ import { resolveProviderFilter } from "@/lib/provider-utils";
 // Helper to build combined WHERE clause
 function buildWhereClause(
   dateFilter: Date | null,
-  providerFilter: string[] | null
+  providerFilter: string[] | null,
+  modelFilter: string[] | null
 ) {
   const conditions = [];
 
@@ -30,6 +32,14 @@ function buildWhereClause(
     }
   }
 
+  if (modelFilter && modelFilter.length > 0) {
+    if (modelFilter.length === 1) {
+      conditions.push(eq(tokenRecords.model, modelFilter[0]));
+    } else {
+      conditions.push(inArray(tokenRecords.model, modelFilter));
+    }
+  }
+
   return conditions.length > 0 ? and(...conditions) : null;
 }
 
@@ -39,13 +49,17 @@ export async function executeStatsQuery(params: {
   provider: string;
   granularity?: string;
   providerFilter?: string[] | null;
+  model?: string;
+  modelFilter?: string[] | null;
 }): Promise<unknown> {
   const {
     groupBy,
     range,
     provider,
     granularity,
-    providerFilter: precomputedFilter,
+    providerFilter: precomputedProviderFilter,
+    model,
+    modelFilter: precomputedModelFilter,
   } = params;
 
   // 计算时间范围
@@ -57,7 +71,7 @@ export async function executeStatsQuery(params: {
   }
 
   // Resolve provider filter if a specific one is selected
-  let providerFilter: string[] | null = precomputedFilter ?? null;
+  let providerFilter: string[] | null = precomputedProviderFilter ?? null;
   if (provider !== "all" && !providerFilter) {
     const allProviderRows = await db
       .selectDistinct({ provider: tokenRecords.provider })
@@ -71,6 +85,30 @@ export async function executeStatsQuery(params: {
     if (!providerFilter || providerFilter.length === 0) {
       throw new Error(`Unknown provider: ${provider}`);
     }
+  }
+
+  // Resolve model filter if a specific one is selected
+  let modelFilter: string[] | null = precomputedModelFilter ?? null;
+  if (model && model !== "all" && !modelFilter) {
+    const allModelRows = await db
+      .selectDistinct({ model: tokenRecords.model })
+      .from(tokenRecords);
+    const allRawModels: string[] = allModelRows
+      .map((r) => r.model)
+      .filter((n): n is string => n !== null && n !== undefined);
+
+    // 找到所有原始 model 名称中归一化后等于所选 model 的
+    const matchedRawModels: string[] = [];
+    for (const raw of allRawModels) {
+      if (normalizeModel(raw) === model) {
+        matchedRawModels.push(raw);
+      }
+    }
+
+    if (matchedRawModels.length === 0) {
+      throw new Error(`Unknown model: ${model}`);
+    }
+    modelFilter = matchedRawModels;
   }
 
   let query;
@@ -90,7 +128,7 @@ export async function executeStatsQuery(params: {
       })
       .from(tokenRecords);
 
-    const whereClause = buildWhereClause(dateFilter, providerFilter);
+    const whereClause = buildWhereClause(dateFilter, providerFilter, modelFilter);
     if (whereClause) {
       query = query.where(whereClause);
     }
@@ -124,7 +162,7 @@ export async function executeStatsQuery(params: {
       .groupBy(groupExpr)
       .orderBy(groupExpr);
 
-    const whereClause = buildWhereClause(dateFilter, providerFilter);
+    const whereClause = buildWhereClause(dateFilter, providerFilter, modelFilter);
     if (whereClause) {
       query = query.where(whereClause);
     }
@@ -156,34 +194,56 @@ export async function executeStatsQuery(params: {
       .groupBy(groupExpr, tokenRecords.model)
       .orderBy(groupExpr, tokenRecords.model);
 
-    const whereClause = buildWhereClause(dateFilter, providerFilter);
+    const whereClause = buildWhereClause(dateFilter, providerFilter, modelFilter);
     if (whereClause) {
       query = query.where(whereClause);
     }
   } else if (groupBy === "model") {
     // 先按原始 model 分组取 Top 20，再应用层归一化合并取 Top 5
-    const rawQuery = db
-      .select({
-        group: tokenRecords.model,
-        totalInput:
-          sql<number>`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead})`,
-        totalInputCached: sql<number>`SUM(${tokenRecords.cacheRead})`,
-        totalInputUncached: sql<number>`SUM(${tokenRecords.inputTokens})`,
-        totalOutput: sql<number>`SUM(${tokenRecords.outputTokens})`,
-        totalCacheWrite: sql<number>`SUM(${tokenRecords.cacheWrite})`,
-        count: sql<number>`COUNT(*)`,
-      })
-      .from(tokenRecords)
-      .groupBy(tokenRecords.model)
-      .orderBy(
-        sql`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead}) DESC`
-      )
-      .limit(TOP_N_RAW_MODELS);
+    // 当 modelFilter 生效时（按特定归一化 model 筛选），不限制原始 model 数量
+    const whereClause = buildWhereClause(dateFilter, providerFilter, modelFilter);
 
-    const whereClause = buildWhereClause(dateFilter, providerFilter);
-    const rawData = whereClause
-      ? await rawQuery.where(whereClause)
-      : await rawQuery;
+    let rawData;
+    if (modelFilter) {
+      // 有 modelFilter 时不限制数量
+      const query = db
+        .select({
+          group: tokenRecords.model,
+          totalInput:
+            sql<number>`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead})`,
+          totalInputCached: sql<number>`SUM(${tokenRecords.cacheRead})`,
+          totalInputUncached: sql<number>`SUM(${tokenRecords.inputTokens})`,
+          totalOutput: sql<number>`SUM(${tokenRecords.outputTokens})`,
+          totalCacheWrite: sql<number>`SUM(${tokenRecords.cacheWrite})`,
+          count: sql<number>`COUNT(*)`,
+        })
+        .from(tokenRecords)
+        .groupBy(tokenRecords.model)
+        .orderBy(
+          sql`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead}) DESC`
+        );
+      rawData = whereClause ? await query.where(whereClause) : await query;
+    } else {
+      // 无 modelFilter 时限制 Top 20 原始 model
+      const query = db
+        .select({
+          group: tokenRecords.model,
+          totalInput:
+            sql<number>`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead})`,
+          totalInputCached: sql<number>`SUM(${tokenRecords.cacheRead})`,
+          totalInputUncached: sql<number>`SUM(${tokenRecords.inputTokens})`,
+          totalOutput: sql<number>`SUM(${tokenRecords.outputTokens})`,
+          totalCacheWrite: sql<number>`SUM(${tokenRecords.cacheWrite})`,
+          count: sql<number>`COUNT(*)`,
+        })
+        .from(tokenRecords)
+        .groupBy(tokenRecords.model)
+        .orderBy(
+          sql`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead}) DESC`
+        )
+        .limit(TOP_N_RAW_MODELS);
+      rawData = whereClause ? await query.where(whereClause) : await query;
+    }
 
     const data = aggregateByNormalizedModel(
       rawData as unknown as StatItem[]
@@ -209,7 +269,7 @@ export async function executeStatsQuery(params: {
         sql`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead}) DESC`
       );
 
-    const whereClause = buildWhereClause(dateFilter, providerFilter);
+    const whereClause = buildWhereClause(dateFilter, providerFilter, modelFilter);
     if (whereClause) {
       query = query.where(whereClause);
     }

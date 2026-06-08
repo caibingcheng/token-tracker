@@ -101,6 +101,21 @@ function toNum(value: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+/**
+ * 将归一化后的 model 名称解析为所有匹配的原始 model 列表。
+ *
+ * 对 allRawModels 中的每个原始 model 执行 normalizeModel()，
+ * 返回所有归一化后等于 normalizedModel 的原始 model 名称。
+ */
+export function resolveNormalizedModelFilter(
+  normalizedModel: string,
+  allRawModels: string[]
+): string[] {
+  return allRawModels.filter(
+    (raw) => normalizeModel(raw) === normalizedModel
+  );
+}
+
 export function aggregateByNormalizedModel(items: StatItem[]): StatItem[] {
   const map = new Map<string, StatItem>();
 

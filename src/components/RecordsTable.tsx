@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { normalizeModel } from "@/lib/model-utils";
+import { useEffect, useRef, useState } from "react";
 
 export interface Record {
   id: number;
   model: string;
+  normalizedModel: string;
   inputTokens: number;
   outputTokens: number;
   cacheRead: number;
@@ -15,6 +15,7 @@ export interface Record {
 
 interface RecordsTableProps {
   selectedProvider?: string;
+  selectedModel?: string;
   refreshKey?: number;
   showHeader?: boolean;
 }
@@ -117,16 +118,20 @@ function AuthStatus({ onHome, onRefresh, onLogout, canGoHome }: AuthStatusProps)
   );
 }
 
-function ProviderHint({ selectedProvider }: { selectedProvider: string }) {
-  if (selectedProvider === "all") return null;
+function FilterHint({ selectedProvider, selectedModel }: { selectedProvider?: string; selectedModel?: string }) {
+  if (selectedProvider === "all" && (!selectedModel || selectedModel === "all")) return null;
   return (
     <p className="text-xs text-gray-400 mt-1">
-      Filtered by {selectedProvider}
+      {selectedProvider !== "all" && selectedModel && selectedModel !== "all"
+        ? `Filtered by ${selectedProvider} + ${selectedModel}`
+        : selectedProvider !== "all"
+        ? `Filtered by ${selectedProvider}`
+        : `Filtered by ${selectedModel}`}
     </p>
   );
 }
 
-export default function RecordsTable({ selectedProvider = "all", refreshKey = 0, showHeader = true }: RecordsTableProps) {
+export default function RecordsTable({ selectedProvider = "all", selectedModel = "all", refreshKey = 0, showHeader = true }: RecordsTableProps) {
   const [records, setRecords] = useState<Record[]>([]);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -155,8 +160,29 @@ export default function RecordsTable({ selectedProvider = "all", refreshKey = 0,
     }
   }, [apiKey]);
 
+  const lastFilterRef = useRef({ provider: selectedProvider, model: selectedModel });
+  const skipNextFetchRef = useRef(false);
+
   useEffect(() => {
     if (!apiKey) return;
+
+    const filterChanged =
+      lastFilterRef.current.provider !== selectedProvider ||
+      lastFilterRef.current.model !== selectedModel;
+
+    if (filterChanged) {
+      lastFilterRef.current = { provider: selectedProvider, model: selectedModel };
+      if (page !== 1) {
+        skipNextFetchRef.current = true;
+        setPage(1);
+        return;
+      }
+    }
+
+    if (skipNextFetchRef.current) {
+      skipNextFetchRef.current = false;
+      return;
+    }
 
     setLoading(true);
     setError(null);
@@ -166,7 +192,17 @@ export default function RecordsTable({ selectedProvider = "all", refreshKey = 0,
       "X-API-Key": apiKey,
     };
 
-    fetch(`/api/records?page=${page}&limit=20${selectedProvider !== "all" ? `&provider=${selectedProvider}` : ""}`, { headers })
+    const url = new URL("/api/records", window.location.origin);
+    url.searchParams.set("page", String(page));
+    url.searchParams.set("limit", "20");
+    if (selectedProvider !== "all") {
+      url.searchParams.set("provider", selectedProvider);
+    }
+    if (selectedModel !== "all") {
+      url.searchParams.set("model", selectedModel);
+    }
+
+    fetch(url.toString(), { headers })
       .then((res) => {
         if (res.status === 401) {
           setApiKey(null);
@@ -190,11 +226,7 @@ export default function RecordsTable({ selectedProvider = "all", refreshKey = 0,
         }
       })
       .finally(() => setLoading(false));
-  }, [page, refreshKey, selectedProvider, apiKey, fetchTrigger]);
-
-  useEffect(() => {
-    setPage(1);
-  }, [selectedProvider]);
+  }, [page, refreshKey, selectedProvider, selectedModel, apiKey, fetchTrigger]);
 
   const formatNumber = (num: number) => new Intl.NumberFormat("en-US").format(num);
   const formatDate = (date: string) => new Date(date).toLocaleString();
@@ -230,15 +262,15 @@ export default function RecordsTable({ selectedProvider = "all", refreshKey = 0,
         {showHeader && (
           <div className="p-6 pb-0">
             <h3 className="text-lg font-semibold">Recent Records</h3>
-            <ProviderHint selectedProvider={selectedProvider} />
-          </div>
-        )}
-        <AuthCard
-          inputKey={inputKey}
-          setInputKey={setInputKey}
-          onSubmit={handleSubmitKey}
-          authError={authError}
-        />
+        <FilterHint selectedProvider={selectedProvider} selectedModel={selectedModel} />
+      </div>
+    )}
+    <AuthCard
+      inputKey={inputKey}
+      setInputKey={setInputKey}
+      onSubmit={handleSubmitKey}
+      authError={authError}
+    />
       </div>
     );
   }
@@ -250,7 +282,7 @@ export default function RecordsTable({ selectedProvider = "all", refreshKey = 0,
         {showHeader && (
           <div className="p-6 pb-0">
             <h3 className="text-lg font-semibold">Recent Records</h3>
-            <ProviderHint selectedProvider={selectedProvider} />
+            <FilterHint selectedProvider={selectedProvider} selectedModel={selectedModel} />
           </div>
         )}
         <div className="p-6">
@@ -269,7 +301,7 @@ export default function RecordsTable({ selectedProvider = "all", refreshKey = 0,
         {showHeader && (
           <div className="p-6 pb-0">
             <h3 className="text-lg font-semibold">Recent Records</h3>
-            <ProviderHint selectedProvider={selectedProvider} />
+            <FilterHint selectedProvider={selectedProvider} selectedModel={selectedModel} />
           </div>
         )}
         <div className="p-6">
@@ -285,7 +317,7 @@ export default function RecordsTable({ selectedProvider = "all", refreshKey = 0,
       {showHeader && (
         <div className="p-6 pb-0">
           <h3 className="text-lg font-semibold">Recent Records</h3>
-          <ProviderHint selectedProvider={selectedProvider} />
+          <FilterHint selectedProvider={selectedProvider} selectedModel={selectedModel} />
         </div>
       )}
 
@@ -311,7 +343,7 @@ export default function RecordsTable({ selectedProvider = "all", refreshKey = 0,
                   className="px-6 py-4 whitespace-nowrap text-sm text-gray-900"
                   title={`Original Model: ${record.model}`}
                 >
-                  {normalizeModel(record.model)}
+                  {record.normalizedModel}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
                   {formatNumber(record.inputTokens)}
@@ -340,7 +372,7 @@ export default function RecordsTable({ selectedProvider = "all", refreshKey = 0,
               <div className="text-right">
                 <p className="text-xs text-gray-500">Model</p>
                 <p className="text-sm font-medium text-gray-900" title={`Original: ${record.model}`}>
-                  {normalizeModel(record.model)}
+                  {record.normalizedModel}
                 </p>
               </div>
             </div>
