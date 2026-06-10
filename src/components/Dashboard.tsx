@@ -357,17 +357,17 @@ export default function Dashboard() {
               </p>
             )}
           </div>
-          <div className="flex items-center gap-4">
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full sm:w-auto">
             {/* Provider Filter */}
-            <div className="flex items-center gap-2">
-              <label htmlFor="provider-select" className="text-sm text-gray-600">
+            <div className="flex items-center gap-2 w-full sm:w-auto">
+              <label htmlFor="provider-select" className="text-sm text-gray-600 shrink-0">
                 Provider:
               </label>
               <select
                 id="provider-select"
                 value={selectedProvider}
                 onChange={handleProviderChange}
-                className="rounded border border-gray-300 bg-white px-3 py-1.5 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="w-full rounded border border-gray-300 bg-white px-3 py-1.5 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
               >
                 <option value="all">All Providers</option>
                 {providers.map((p) => (
@@ -378,15 +378,15 @@ export default function Dashboard() {
               </select>
             </div>
             {/* Model Filter */}
-            <div className="flex items-center gap-2">
-              <label htmlFor="model-select" className="text-sm text-gray-600">
+            <div className="flex items-center gap-2 w-full sm:w-auto">
+              <label htmlFor="model-select" className="text-sm text-gray-600 shrink-0">
                 Model:
               </label>
               <select
                 id="model-select"
                 value={selectedModel}
                 onChange={handleModelChange}
-                className="rounded border border-gray-300 bg-white px-3 py-1.5 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="w-full rounded border border-gray-300 bg-white px-3 py-1.5 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
               >
                 <option value="all">All Models</option>
                 {models.map((m) => (
