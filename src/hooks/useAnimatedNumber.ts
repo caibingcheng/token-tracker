@@ -12,6 +12,8 @@ import { useState, useEffect, useRef } from "react";
  */
 export function useAnimatedNumber(target: number, duration: number = 600): number {
   const [current, setCurrent] = useState(target);
+  const currentRef = useRef(current);
+  currentRef.current = current;
   const startRef = useRef<number | null>(null);
   const fromRef = useRef(target);
   const targetRef = useRef(target);
@@ -20,7 +22,7 @@ export function useAnimatedNumber(target: number, duration: number = 600): numbe
   useEffect(() => {
     if (target === targetRef.current) return;
 
-    fromRef.current = current;
+    fromRef.current = currentRef.current;
     targetRef.current = target;
     startRef.current = null;
 
@@ -33,7 +35,7 @@ export function useAnimatedNumber(target: number, duration: number = 600): numbe
       const eased = 1 - Math.pow(1 - progress, 3);
       const value = fromRef.current + (target - fromRef.current) * eased;
 
-      setCurrent(Math.round(value));
+      setCurrent(value);
 
       if (progress < 1) {
         rafRef.current = requestAnimationFrame(animate);

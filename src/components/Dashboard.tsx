@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import StatsCards, { Stats } from "./StatsCards";
 import RecordsTable from "./RecordsTable";
 import DailyUsageChart, { DailyData } from "./DailyUsageChart";
@@ -9,11 +9,20 @@ import TodayOverview, { TodayData } from "./TodayOverview";
 
 interface ModelStat {
   group: string;
+  canonicalId: string;
+  displayName: string;
   totalInput: number;
   totalOutput: number;
   totalInputCached: number;
+  totalInputUncached: number;
   totalCacheWrite: number;
   count: number;
+  totalCost: number;
+  costPerMillionTokens: number;
+  costPerMillionInput: number;
+  costPerMillionCacheRead: number;
+  costPerMillionCacheWrite: number;
+  costPerMillionOutput: number;
 }
 
 const DAILY_RANGE_OPTIONS = [3, 7, 14, 30];
@@ -33,7 +42,11 @@ function AnimatedCell({ value }: { value: number }) {
   return <span>{new Intl.NumberFormat("en-US").format(Math.round(animated))}</span>;
 }
 
-export default function Dashboard() {
+interface DashboardProps {
+  priceUpdateTime?: React.ReactNode;
+}
+
+export default function Dashboard({ priceUpdateTime }: DashboardProps) {
   // Data states
   const [stats, setStats] = useState<Stats | null>(null);
   const [topModels, setTopModels] = useState<ModelStat[]>([]);
@@ -84,11 +97,22 @@ export default function Dashboard() {
   const isVisibleRef = useRef(true);
   const isFetchingRef = useRef(false);
 
-  // Keep refs in sync with states
-  statsRef.current = stats;
-  topModelsRef.current = topModels;
-  dailyDataRef.current = dailyData;
-  dailyRangeRef.current = dailyRange;
+  // Keep refs in sync with states (useEffect for React Concurrent Mode safety)
+  useEffect(() => {
+    statsRef.current = stats;
+  }, [stats]);
+
+  useEffect(() => {
+    topModelsRef.current = topModels;
+  }, [topModels]);
+
+  useEffect(() => {
+    dailyDataRef.current = dailyData;
+  }, [dailyData]);
+
+  useEffect(() => {
+    dailyRangeRef.current = dailyRange;
+  }, [dailyRange]);
 
   // Keep model ref in sync with state
   useEffect(() => {
@@ -183,6 +207,12 @@ export default function Dashboard() {
               totalInputUncached: Number(item.totalInputUncached || 0),
               totalCacheWrite: Number(item.totalCacheWrite || 0),
               count: Number(item.count || 0),
+              totalCost: Number(item.totalCost || 0),
+              costPerMillionTokens: Number(item.costPerMillionTokens || 0),
+              costPerMillionInput: Number(item.costPerMillionInput || 0),
+              costPerMillionCacheRead: Number(item.costPerMillionCacheRead || 0),
+              costPerMillionCacheWrite: Number(item.costPerMillionCacheWrite || 0),
+              costPerMillionOutput: Number(item.costPerMillionOutput || 0),
             };
             if (item.lastActiveAt) {
               setLastActiveAt(new Date(item.lastActiveAt));
@@ -192,7 +222,23 @@ export default function Dashboard() {
 
           // Top N
           if (models) {
-            newTop5 = models.slice(0, 5);
+            newTop5 = models.slice(0, 5).map((m: ModelStat) => ({
+              group: m.group,
+              canonicalId: m.canonicalId || m.group,
+              displayName: m.displayName || m.group,
+              totalInput: Number(m.totalInput || 0),
+              totalOutput: Number(m.totalOutput || 0),
+              totalInputCached: Number(m.totalInputCached || 0),
+              totalInputUncached: Number(m.totalInputUncached || 0),
+              totalCacheWrite: Number(m.totalCacheWrite || 0),
+              count: Number(m.count || 0),
+              totalCost: Number(m.totalCost || 0),
+              costPerMillionTokens: Number(m.costPerMillionTokens || 0),
+              costPerMillionInput: Number(m.costPerMillionInput || 0),
+              costPerMillionCacheRead: Number(m.costPerMillionCacheRead || 0),
+              costPerMillionCacheWrite: Number(m.costPerMillionCacheWrite || 0),
+              costPerMillionOutput: Number(m.costPerMillionOutput || 0),
+            }));
             setTopModels(newTop5);
           }
 
@@ -200,9 +246,10 @@ export default function Dashboard() {
           if (daily) {
             newDaily = daily;
             
-            // Extract today and yesterday data
-            const todayStr = new Date().toISOString().split('T')[0];
-            const yesterdayDate = new Date();
+            // Extract today and yesterday data using a single Date instance
+            const now = new Date();
+            const todayStr = now.toISOString().split('T')[0];
+            const yesterdayDate = new Date(now);
             yesterdayDate.setDate(yesterdayDate.getDate() - 1);
             const yesterdayStr = yesterdayDate.toISOString().split('T')[0];
             
@@ -216,6 +263,12 @@ export default function Dashboard() {
               totalInputUncached: Number(todayItem.totalInputUncached || 0),
               totalCacheWrite: Number(todayItem.totalCacheWrite || 0),
               count: Number(todayItem.count || 0),
+              totalCost: Number(todayItem.totalCost || 0),
+              costPerMillionTokens: Number(todayItem.costPerMillionTokens || 0),
+              costPerMillionInput: Number(todayItem.costPerMillionInput || 0),
+              costPerMillionCacheRead: Number(todayItem.costPerMillionCacheRead || 0),
+              costPerMillionCacheWrite: Number(todayItem.costPerMillionCacheWrite || 0),
+              costPerMillionOutput: Number(todayItem.costPerMillionOutput || 0),
             } : null);
             
             setYesterdayData(yesterdayItem ? {
@@ -225,6 +278,12 @@ export default function Dashboard() {
               totalInputUncached: Number(yesterdayItem.totalInputUncached || 0),
               totalCacheWrite: Number(yesterdayItem.totalCacheWrite || 0),
               count: Number(yesterdayItem.count || 0),
+              totalCost: Number(yesterdayItem.totalCost || 0),
+              costPerMillionTokens: Number(yesterdayItem.costPerMillionTokens || 0),
+              costPerMillionInput: Number(yesterdayItem.costPerMillionInput || 0),
+              costPerMillionCacheRead: Number(yesterdayItem.costPerMillionCacheRead || 0),
+              costPerMillionCacheWrite: Number(yesterdayItem.costPerMillionCacheWrite || 0),
+              costPerMillionOutput: Number(yesterdayItem.costPerMillionOutput || 0),
             } : null);
             
             setDailyData(newDaily);
@@ -343,7 +402,17 @@ export default function Dashboard() {
     return () => clearInterval(interval);
   }, []);
 
+  const selectedModelName = useMemo(
+    () => models.find((m) => m.id === selectedModel)?.name || selectedModel,
+    [models, selectedModel]
+  );
+
   const formatNumber = (num: number) => new Intl.NumberFormat("en-US").format(num);
+
+  const formatCost = (num: number) => {
+    if (num <= 0) return "$0.00";
+    return `$${num.toFixed(2)}`;
+  };
 
   return (
     <main className="min-h-screen bg-gray-50 p-4 md:p-8">
@@ -446,7 +515,7 @@ export default function Dashboard() {
                           <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Cache Read</th>
                           <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Cache Hit Rate</th>
                           <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Total Output</th>
-                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Cache Write</th>
+                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase" title="Pricing from models.dev">Avg cost / 1M tokens</th>
                           <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Requests</th>
                         </tr>
                       </thead>
@@ -464,12 +533,16 @@ export default function Dashboard() {
                                 background: `linear-gradient(to right, rgb(239 246 255) ${percentage}%, transparent ${percentage}%)`
                               }}
                             >
-                              <td className="px-4 py-3 text-sm font-medium text-gray-900">{model.group}</td>
+                              <td className="px-4 py-3 text-sm font-medium text-gray-900">{model.displayName}</td>
                               <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.totalInput} /></td>
                               <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.totalInputCached} /></td>
                               <td className="px-4 py-3 text-sm text-gray-600 text-right">{cacheHitRate}</td>
                               <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.totalOutput} /></td>
-                              <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.totalCacheWrite} /></td>
+                              <td className="px-4 py-3 text-sm text-gray-600 text-right">
+                                <div className="flex flex-col items-end">
+                                  <span>{formatCost(model.costPerMillionTokens)}</span>
+                                </div>
+                              </td>
                               <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.count} /></td>
                             </tr>
                           );
@@ -488,45 +561,45 @@ export default function Dashboard() {
                     const allTokens = model.totalInput + model.totalOutput;
                     const percentage = totalAllTokens > 0 ? (allTokens / totalAllTokens) * 100 : 0;
                     return (
-                      <div
-                        key={model.group}
-                        className="rounded-lg border border-gray-200 overflow-hidden"
-                        style={{
-                          background: `linear-gradient(to right, rgb(239 246 255) ${percentage}%, transparent ${percentage}%)`
-                        }}
-                      >
-                        <div className="px-4 py-3 font-medium text-gray-900 border-b border-gray-100">
-                          {model.group}
+                        <div
+                          key={model.group}
+                          className="rounded-lg border border-gray-200 overflow-hidden"
+                          style={{
+                            background: `linear-gradient(to right, rgb(239 246 255) ${percentage}%, transparent ${percentage}%)`
+                          }}
+                        >
+                          <div className="px-4 py-3 font-medium text-gray-900 border-b border-gray-100">
+                            {model.displayName}
+                          </div>
+                          <div className="px-4 py-3 grid grid-cols-2 gap-3">
+                            <div>
+                              <p className="text-xs text-gray-500">Total Input</p>
+                              <p className="text-sm font-semibold text-gray-900">{formatNumber(model.totalInput)}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-gray-500">Cache Read</p>
+                              <p className="text-sm font-semibold text-gray-900">{formatNumber(model.totalInputCached)}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-gray-500">Cache Hit Rate</p>
+                              <p className="text-sm font-semibold text-gray-900">
+                                {model.totalInput > 0 ? (model.totalInputCached / model.totalInput * 100).toFixed(1) + '%' : '0%'}
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-gray-500">Total Output</p>
+                              <p className="text-sm font-semibold text-gray-900">{formatNumber(model.totalOutput)}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-gray-500" title="Pricing from models.dev">Avg cost / 1M tokens</p>
+                              <p className="text-sm font-semibold text-gray-900">{formatCost(model.costPerMillionTokens)}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-gray-500">Requests</p>
+                              <p className="text-sm font-semibold text-gray-900">{formatNumber(model.count)}</p>
+                            </div>
+                          </div>
                         </div>
-                        <div className="px-4 py-3 grid grid-cols-2 gap-3">
-                          <div>
-                            <p className="text-xs text-gray-500">Total Input</p>
-                            <p className="text-sm font-semibold text-gray-900">{formatNumber(model.totalInput)}</p>
-                          </div>
-                          <div>
-                            <p className="text-xs text-gray-500">Cache Read</p>
-                            <p className="text-sm font-semibold text-gray-900">{formatNumber(model.totalInputCached)}</p>
-                          </div>
-                          <div>
-                            <p className="text-xs text-gray-500">Cache Hit Rate</p>
-                            <p className="text-sm font-semibold text-gray-900">
-                              {model.totalInput > 0 ? (model.totalInputCached / model.totalInput * 100).toFixed(1) + '%' : '0%'}
-                            </p>
-                          </div>
-                          <div>
-                            <p className="text-xs text-gray-500">Total Output</p>
-                            <p className="text-sm font-semibold text-gray-900">{formatNumber(model.totalOutput)}</p>
-                          </div>
-                          <div>
-                            <p className="text-xs text-gray-500">Cache Write</p>
-                            <p className="text-sm font-semibold text-gray-900">{formatNumber(model.totalCacheWrite)}</p>
-                          </div>
-                          <div>
-                            <p className="text-xs text-gray-500">Requests</p>
-                            <p className="text-sm font-semibold text-gray-900">{formatNumber(model.count)}</p>
-                          </div>
-                        </div>
-                      </div>
                     );
                   });
                 })()}
@@ -543,18 +616,12 @@ export default function Dashboard() {
           >
             <div className="text-left">
               <h2 className="text-lg font-semibold">Recent Records</h2>
-              {selectedProvider !== "all" && (
+              {selectedModel !== "all" && (
                 <p className="text-xs text-gray-400 mt-1">
-              {selectedProvider !== "all" && selectedModel !== "all"
-                ? `Filtered by ${selectedProvider} + ${selectedModel}`
-                : selectedProvider !== "all"
-                ? `Filtered by ${selectedProvider}`
-                : selectedModel !== "all"
-                ? `Filtered by ${selectedModel}`
-                : ""}
-            </p>
-          )}
-        </div>
+                  Filtered by {selectedModelName}
+                </p>
+              )}
+            </div>
         <div className="flex items-center gap-2">
           <span className="text-gray-400">
             {recordsVisible ? "▼" : "▶"}
@@ -566,6 +633,7 @@ export default function Dashboard() {
         <RecordsTable
           selectedProvider={selectedProvider}
           selectedModel={selectedModel}
+          selectedModelName={selectedModelName}
           refreshKey={recordsRefreshKey}
           showHeader={false}
         />
@@ -575,6 +643,7 @@ export default function Dashboard() {
         {/* Footer */}
         <div className="mt-8 py-4 border-t border-gray-200 flex flex-col md:flex-row justify-between items-start md:items-center gap-2 text-sm text-gray-500">
           <span>Updated {formatTimeAgo(lastUpdated)}</span>
+          {priceUpdateTime}
         </div>
       </div>
     </main>

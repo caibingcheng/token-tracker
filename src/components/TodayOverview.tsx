@@ -9,6 +9,12 @@ export interface TodayData {
   totalInputUncached: number;
   totalCacheWrite: number;
   count: number;
+  totalCost: number;
+  costPerMillionTokens: number;
+  costPerMillionInput: number;
+  costPerMillionCacheRead: number;
+  costPerMillionCacheWrite: number;
+  costPerMillionOutput: number;
 }
 
 interface TodayOverviewProps {
@@ -19,6 +25,20 @@ interface TodayOverviewProps {
 
 function formatNumber(num: number): string {
   return new Intl.NumberFormat("en-US").format(Math.round(num));
+}
+
+function formatCost(num: number): string {
+  if (num <= 0) return "$0.00";
+  return `$${num.toFixed(2)}`;
+}
+
+function formatValue(num: number, isCost: boolean, isRatio?: boolean): string {
+  if (isRatio) return formatRatio(num);
+  return isCost ? formatCost(num) : formatNumber(num);
+}
+
+function formatRatio(num: number): string {
+  return `${num.toFixed(1)}%`;
 }
 
 function ChangeBadge({ today, yesterday }: { today: number; yesterday: number }) {
@@ -38,11 +58,83 @@ function ChangeBadge({ today, yesterday }: { today: number; yesterday: number })
   );
 }
 
+interface TodayItem {
+  label: string;
+  value: number;
+  isCost: boolean;
+  today: number;
+  yesterday: number;
+  breakdown?: { label: string; value: number; isCost?: boolean; isRatio?: boolean }[];
+}
+
 export default function TodayOverview({ today, yesterday, loading }: TodayOverviewProps) {
   const animatedInput = useAnimatedNumber(today?.totalInput || 0, 600);
   const animatedOutput = useAnimatedNumber(today?.totalOutput || 0, 600);
   const animatedCount = useAnimatedNumber(today?.count || 0, 600);
-  const animatedCacheWrite = useAnimatedNumber(today?.totalCacheWrite || 0, 600);
+  const animatedCostPerMillion = useAnimatedNumber(today?.costPerMillionTokens || 0, 600);
+
+  const outputRatio =
+    today && today.totalInput + today.totalOutput > 0
+      ? (today.totalOutput / (today.totalInput + today.totalOutput)) * 100
+      : 0;
+
+  const avgInputPerReq = today && today.count > 0 ? today.totalInput / today.count : 0;
+  const avgOutputPerReq = today && today.count > 0 ? today.totalOutput / today.count : 0;
+  const avgCostPerReq = today && today.count > 0 ? today.totalCost / today.count : 0;
+
+  const cacheHitRate =
+    today && today.totalInput > 0
+      ? (today.totalInputCached / today.totalInput) * 100
+      : 0;
+
+  const items: TodayItem[] = [
+    {
+      label: "Total Input",
+      value: animatedInput,
+      isCost: false,
+      today: today?.totalInput || 0,
+      yesterday: yesterday?.totalInput || 0,
+      breakdown: [
+        { label: "Cached", value: today?.totalInputCached || 0 },
+        { label: "Uncached", value: today?.totalInputUncached || 0 },
+        { label: "Hit Rate", value: cacheHitRate, isRatio: true },
+      ],
+    },
+    {
+      label: "Total Output",
+      value: animatedOutput,
+      isCost: false,
+      today: today?.totalOutput || 0,
+      yesterday: yesterday?.totalOutput || 0,
+      breakdown: [
+        { label: "Of tokens", value: outputRatio, isRatio: true },
+      ],
+    },
+    {
+      label: "Requests",
+      value: animatedCount,
+      isCost: false,
+      today: today?.count || 0,
+      yesterday: yesterday?.count || 0,
+      breakdown: [
+        { label: "Avg input / req", value: Math.round(avgInputPerReq), isCost: false },
+        { label: "Avg output / req", value: Math.round(avgOutputPerReq), isCost: false },
+        { label: "Avg cost / req", value: avgCostPerReq, isCost: true },
+      ],
+    },
+    {
+      label: "Avg cost / 1M tokens",
+      value: animatedCostPerMillion,
+      isCost: true,
+      today: today?.costPerMillionTokens || 0,
+      yesterday: yesterday?.costPerMillionTokens || 0,
+      breakdown: [
+        { label: "Input / 1M", value: today?.costPerMillionInput || 0, isCost: true },
+        { label: "Cache read / 1M", value: today?.costPerMillionCacheRead || 0, isCost: true },
+        { label: "Output / 1M", value: today?.costPerMillionOutput || 0, isCost: true },
+      ],
+    },
+  ];
 
   const todayDate = new Date().toLocaleDateString("en-US", {
     month: "short",
@@ -53,7 +145,7 @@ export default function TodayOverview({ today, yesterday, loading }: TodayOvervi
     return (
       <div className="bg-white rounded-lg shadow p-6 mb-8 border-l-4 border-blue-500 animate-pulse">
         <div className="h-6 bg-gray-200 rounded w-32 mb-4"></div>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           {[1, 2, 3, 4].map((i) => (
             <div key={i} className="bg-gray-50 rounded-lg p-4">
               <div className="h-3 bg-gray-200 rounded w-16 mb-2"></div>
@@ -66,54 +158,25 @@ export default function TodayOverview({ today, yesterday, loading }: TodayOvervi
     );
   }
 
-  const items = [
-    {
-      label: "Total Input",
-      value: animatedInput,
-      today: today?.totalInput || 0,
-      yesterday: yesterday?.totalInput || 0,
-      breakdown: [
-        { label: "Cached", value: today?.totalInputCached || 0 },
-        { label: "Uncached", value: today?.totalInputUncached || 0 },
-      ],
-    },
-    {
-      label: "Total Output",
-      value: animatedOutput,
-      today: today?.totalOutput || 0,
-      yesterday: yesterday?.totalOutput || 0,
-    },
-    {
-      label: "Cache Write",
-      value: animatedCacheWrite,
-      today: today?.totalCacheWrite || 0,
-      yesterday: yesterday?.totalCacheWrite || 0,
-    },
-    {
-      label: "Requests",
-      value: animatedCount,
-      today: today?.count || 0,
-      yesterday: yesterday?.count || 0,
-    },
-  ];
-
   return (
     <div className="bg-white rounded-lg shadow p-6 mb-8 border-l-4 border-blue-500">
       <h2 className="text-lg font-semibold mb-4">Today ({todayDate})</h2>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {items.map((item) => (
-          <div key={item.label} className="bg-gray-50 rounded-lg p-4">
-            <p className="text-xs text-gray-500 mb-1">{item.label}</p>
-            <p className="text-xl md:text-2xl font-bold text-gray-900">{formatNumber(item.value)}</p>
+          <div key={item.label} className="bg-gray-50 rounded-lg p-4 flex flex-col">
+            <p className="text-xs text-gray-500 mb-1" title={item.label === "Avg cost / 1M tokens" ? "Pricing from models.dev" : undefined}>
+              {item.label}
+            </p>
+            <p className="text-xl md:text-2xl font-bold text-gray-900">{item.isCost ? formatCost(item.value) : formatNumber(item.value)}</p>
             <div className="mt-1">
               <ChangeBadge today={item.today} yesterday={item.yesterday} />
             </div>
             {item.breakdown && (
               <div className="mt-2 pt-2 border-t border-gray-200 grid grid-cols-2 gap-2">
                 {item.breakdown.map((b) => (
-                  <div key={b.label}>
-                    <p className="text-[10px] text-gray-400">{b.label}</p>
-                    <p className="text-xs font-medium text-gray-700">{formatNumber(b.value)}</p>
+                  <div key={b.label} className="min-w-0">
+                    <p className="text-[10px] text-gray-400 truncate">{b.label}</p>
+                    <p className="text-xs font-medium text-gray-700 break-words">{formatValue(b.value, b.isCost ?? false, b.isRatio)}</p>
                   </div>
                 ))}
               </div>

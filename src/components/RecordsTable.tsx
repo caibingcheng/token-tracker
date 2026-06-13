@@ -16,6 +16,7 @@ export interface Record {
 interface RecordsTableProps {
   selectedProvider?: string;
   selectedModel?: string;
+  selectedModelName?: string;
   refreshKey?: number;
   showHeader?: boolean;
 }
@@ -118,20 +119,16 @@ function AuthStatus({ onHome, onRefresh, onLogout, canGoHome }: AuthStatusProps)
   );
 }
 
-function FilterHint({ selectedProvider, selectedModel }: { selectedProvider?: string; selectedModel?: string }) {
-  if (selectedProvider === "all" && (!selectedModel || selectedModel === "all")) return null;
+function FilterHint({ selectedModelName }: { selectedModelName?: string }) {
+  if (!selectedModelName || selectedModelName === "all") return null;
   return (
     <p className="text-xs text-gray-400 mt-1">
-      {selectedProvider !== "all" && selectedModel && selectedModel !== "all"
-        ? `Filtered by ${selectedProvider} + ${selectedModel}`
-        : selectedProvider !== "all"
-        ? `Filtered by ${selectedProvider}`
-        : `Filtered by ${selectedModel}`}
+      Filtered by {selectedModelName}
     </p>
   );
 }
 
-export default function RecordsTable({ selectedProvider = "all", selectedModel = "all", refreshKey = 0, showHeader = true }: RecordsTableProps) {
+export default function RecordsTable({ selectedProvider = "all", selectedModel = "all", selectedModelName, refreshKey = 0, showHeader = true }: RecordsTableProps) {
   const [records, setRecords] = useState<Record[]>([]);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -160,29 +157,17 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
     }
   }, [apiKey]);
 
-  const lastFilterRef = useRef({ provider: selectedProvider, model: selectedModel });
-  const skipNextFetchRef = useRef(false);
+  const [queryKey, setQueryKey] = useState(0);
 
+  // Reset page and bump queryKey when filters change
+  useEffect(() => {
+    setPage(1);
+    setQueryKey(k => k + 1);
+  }, [selectedProvider, selectedModel]);
+
+  // Fetch records
   useEffect(() => {
     if (!apiKey) return;
-
-    const filterChanged =
-      lastFilterRef.current.provider !== selectedProvider ||
-      lastFilterRef.current.model !== selectedModel;
-
-    if (filterChanged) {
-      lastFilterRef.current = { provider: selectedProvider, model: selectedModel };
-      if (page !== 1) {
-        skipNextFetchRef.current = true;
-        setPage(1);
-        return;
-      }
-    }
-
-    if (skipNextFetchRef.current) {
-      skipNextFetchRef.current = false;
-      return;
-    }
 
     setLoading(true);
     setError(null);
@@ -226,7 +211,8 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
         }
       })
       .finally(() => setLoading(false));
-  }, [page, refreshKey, selectedProvider, selectedModel, apiKey, fetchTrigger]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, queryKey, refreshKey, apiKey]);
 
   const formatNumber = (num: number) => new Intl.NumberFormat("en-US").format(num);
   const formatDate = (date: string) => new Date(date).toLocaleString();
@@ -262,7 +248,7 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
         {showHeader && (
           <div className="p-6 pb-0">
             <h3 className="text-lg font-semibold">Recent Records</h3>
-        <FilterHint selectedProvider={selectedProvider} selectedModel={selectedModel} />
+        <FilterHint selectedModelName={selectedModelName} />
       </div>
     )}
     <AuthCard
@@ -282,7 +268,7 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
         {showHeader && (
           <div className="p-6 pb-0">
             <h3 className="text-lg font-semibold">Recent Records</h3>
-            <FilterHint selectedProvider={selectedProvider} selectedModel={selectedModel} />
+            <FilterHint selectedModelName={selectedModelName} />
           </div>
         )}
         <div className="p-6">
@@ -301,7 +287,7 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
         {showHeader && (
           <div className="p-6 pb-0">
             <h3 className="text-lg font-semibold">Recent Records</h3>
-            <FilterHint selectedProvider={selectedProvider} selectedModel={selectedModel} />
+            <FilterHint selectedModelName={selectedModelName} />
           </div>
         )}
         <div className="p-6">
@@ -317,7 +303,7 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
       {showHeader && (
         <div className="p-6 pb-0">
           <h3 className="text-lg font-semibold">Recent Records</h3>
-          <FilterHint selectedProvider={selectedProvider} selectedModel={selectedModel} />
+          <FilterHint selectedModelName={selectedModelName} />
         </div>
       )}
 
@@ -330,7 +316,6 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
               <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Input (Uncached)</th>
               <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Input (Cached)</th>
               <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Output</th>
-              <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Cache Write</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200">
@@ -353,8 +338,6 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
                   {formatNumber(record.outputTokens)}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
-                  {formatNumber(record.cacheWrite)}</td>
               </tr>
             ))}
           </tbody>
@@ -388,10 +371,6 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
               <div>
                 <p className="text-xs text-gray-500">Output</p>
                 <p className="text-sm font-semibold text-gray-900">{formatNumber(record.outputTokens)}</p>
-              </div>
-              <div>
-                <p className="text-xs text-gray-500">Cache Write</p>
-                <p className="text-sm font-semibold text-gray-900">{formatNumber(record.cacheWrite)}</p>
               </div>
             </div>
           </div>

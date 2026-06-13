@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db, initDatabase } from "@/lib/db";
 import { tokenRecords } from "@/lib/db/schema";
 import { normalizeModel } from "@/lib/model-utils";
+import { getDisplayName } from "@/lib/model-registry";
 import { getCachedModels } from "@/lib/cache";
 
 /**
@@ -42,9 +43,9 @@ export async function GET(request: NextRequest) {
 
       const normalizedList = Array.from(normalizedSet).sort();
 
-      return normalizedList.map((name) => ({
-        id: name,
-        name: name,
+      return normalizedList.map((id) => ({
+        id,
+        name: getDisplayName(id),
       }));
     });
 
