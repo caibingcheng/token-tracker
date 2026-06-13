@@ -4,7 +4,6 @@ import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import StatsCards, { Stats } from "./StatsCards";
 import RecordsTable from "./RecordsTable";
 import DailyUsageChart, { DailyData } from "./DailyUsageChart";
-import { useAnimatedNumber } from "@/hooks/useAnimatedNumber";
 import TodayOverview, { TodayData } from "./TodayOverview";
 
 interface ModelStat {
@@ -37,11 +36,6 @@ function formatTimeAgo(date: Date | null): string {
   return `${hours}h ago`;
 }
 
-function AnimatedCell({ value }: { value: number }) {
-  const animated = useAnimatedNumber(value, 600);
-  return <span>{new Intl.NumberFormat("en-US").format(Math.round(animated))}</span>;
-}
-
 interface DashboardProps {
   priceUpdateTime?: React.ReactNode;
 }
@@ -67,12 +61,10 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
 
   // Loading states
   const [loadingStats, setLoadingStats] = useState(true);
-  const [loadingTop5, setLoadingTop5] = useState(true);
   const [loadingDaily, setLoadingDaily] = useState(true);
 
   // Error states
   const [errorStats, setErrorStats] = useState<string | null>(null);
-  const [errorTop5, setErrorTop5] = useState<string | null>(null);
   const [errorDaily, setErrorDaily] = useState<string | null>(null);
 
   // Daily range state
@@ -162,12 +154,10 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
     const isFirstLoad = !statsRef.current && !topModelsRef.current && !dailyDataRef.current;
     if (!options?.skipLoading && isFirstLoad) {
       setLoadingStats(true);
-      setLoadingTop5(true);
       setLoadingDaily(true);
     }
 
     setErrorStats(null);
-    setErrorTop5(null);
     setErrorDaily(null);
 
     try {
@@ -291,7 +281,6 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
         }
       } else {
         setErrorStats(`HTTP ${dashboardRes.status}`);
-        setErrorTop5(`HTTP ${dashboardRes.status}`);
         setErrorDaily(`HTTP ${dashboardRes.status}`);
       }
 
@@ -299,12 +288,10 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
     } catch (err) {
       console.error("Fetch error:", err);
       setErrorStats("Network error");
-      setErrorTop5("Network error");
       setErrorDaily("Network error");
     } finally {
       if (!options?.skipLoading) {
         setLoadingStats(false);
-        setLoadingTop5(false);
         setLoadingDaily(false);
       }
       isFetchingRef.current = false;
@@ -407,13 +394,6 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
     [models, selectedModel]
   );
 
-  const formatNumber = (num: number) => new Intl.NumberFormat("en-US").format(num);
-
-  const formatCost = (num: number) => {
-    if (num <= 0) return "$0.00";
-    return `$${num.toFixed(2)}`;
-  };
-
   return (
     <main className="min-h-screen bg-gray-50 p-4 md:p-8">
       <div className="max-w-7xl mx-auto">
@@ -482,131 +462,8 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
           error={errorDaily}
           range={dailyRange}
           onRangeChange={handleDailyRangeChange}
+          topModels={topModels}
         />
-
-        {/* Top N Models */}
-        <div className="bg-white rounded-lg shadow p-6 mb-8">
-          <h2 className="text-lg font-semibold mb-1">
-            Last {dailyRange} Days Top 5 Model Families
-          </h2>
-          {loadingTop5 && (
-            <div className="space-y-3">
-              {Array.from({ length: 5 }, (_, i) => (
-                <div key={i} className="h-12 bg-gray-100 rounded animate-pulse"></div>
-              ))}
-            </div>
-          )}
-          {errorTop5 && <p className="text-red-600">Error: {errorTop5}</p>}
-          {!loadingTop5 && !errorTop5 && topModels.length === 0 && (
-            <p className="text-gray-500">No data available</p>
-          )}
-          {!loadingTop5 && !errorTop5 && topModels.length > 0 && (
-            <>
-              {/* Desktop Table */}
-              <div className="hidden md:block overflow-x-auto">
-                {(() => {
-                  const totalAllTokens = topModels.reduce((sum, m) => sum + m.totalInput + m.totalOutput, 0);
-                  return (
-                    <table className="w-full">
-                      <thead className="bg-gray-50">
-                        <tr>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Model</th>
-                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Total Input</th>
-                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Cache Read</th>
-                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Cache Hit Rate</th>
-                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Total Output</th>
-                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase" title="Pricing from models.dev">Avg cost / 1M tokens</th>
-                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Requests</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-gray-200">
-                        {topModels.map((model) => {
-                          const allTokens = model.totalInput + model.totalOutput;
-                          const percentage = totalAllTokens > 0 ? (allTokens / totalAllTokens) * 100 : 0;
-                          const cacheHitRate = model.totalInput > 0
-                            ? (model.totalInputCached / model.totalInput * 100).toFixed(1) + '%'
-                            : '0%';
-                          return (
-                            <tr
-                              key={model.group}
-                              style={{
-                                background: `linear-gradient(to right, rgb(239 246 255) ${percentage}%, transparent ${percentage}%)`
-                              }}
-                            >
-                              <td className="px-4 py-3 text-sm font-medium text-gray-900">{model.displayName}</td>
-                              <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.totalInput} /></td>
-                              <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.totalInputCached} /></td>
-                              <td className="px-4 py-3 text-sm text-gray-600 text-right">{cacheHitRate}</td>
-                              <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.totalOutput} /></td>
-                              <td className="px-4 py-3 text-sm text-gray-600 text-right">
-                                <div className="flex flex-col items-end">
-                                  <span>{formatCost(model.costPerMillionTokens)}</span>
-                                </div>
-                              </td>
-                              <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.count} /></td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  );
-                })()}
-              </div>
-
-              {/* Mobile Cards */}
-              <div className="md:hidden space-y-3">
-                {(() => {
-                  const totalAllTokens = topModels.reduce((sum, m) => sum + m.totalInput + m.totalOutput, 0);
-                  return topModels.map((model) => {
-                    const allTokens = model.totalInput + model.totalOutput;
-                    const percentage = totalAllTokens > 0 ? (allTokens / totalAllTokens) * 100 : 0;
-                    return (
-                        <div
-                          key={model.group}
-                          className="rounded-lg border border-gray-200 overflow-hidden"
-                          style={{
-                            background: `linear-gradient(to right, rgb(239 246 255) ${percentage}%, transparent ${percentage}%)`
-                          }}
-                        >
-                          <div className="px-4 py-3 font-medium text-gray-900 border-b border-gray-100">
-                            {model.displayName}
-                          </div>
-                          <div className="px-4 py-3 grid grid-cols-2 gap-3">
-                            <div>
-                              <p className="text-xs text-gray-500">Total Input</p>
-                              <p className="text-sm font-semibold text-gray-900">{formatNumber(model.totalInput)}</p>
-                            </div>
-                            <div>
-                              <p className="text-xs text-gray-500">Cache Read</p>
-                              <p className="text-sm font-semibold text-gray-900">{formatNumber(model.totalInputCached)}</p>
-                            </div>
-                            <div>
-                              <p className="text-xs text-gray-500">Cache Hit Rate</p>
-                              <p className="text-sm font-semibold text-gray-900">
-                                {model.totalInput > 0 ? (model.totalInputCached / model.totalInput * 100).toFixed(1) + '%' : '0%'}
-                              </p>
-                            </div>
-                            <div>
-                              <p className="text-xs text-gray-500">Total Output</p>
-                              <p className="text-sm font-semibold text-gray-900">{formatNumber(model.totalOutput)}</p>
-                            </div>
-                            <div>
-                              <p className="text-xs text-gray-500" title="Pricing from models.dev">Avg cost / 1M tokens</p>
-                              <p className="text-sm font-semibold text-gray-900">{formatCost(model.costPerMillionTokens)}</p>
-                            </div>
-                            <div>
-                              <p className="text-xs text-gray-500">Requests</p>
-                              <p className="text-sm font-semibold text-gray-900">{formatNumber(model.count)}</p>
-                            </div>
-                          </div>
-                        </div>
-                    );
-                  });
-                })()}
-              </div>
-            </>
-          )}
-        </div>
 
         {/* Recent Records Toggle */}
         <div className="bg-white rounded-lg shadow overflow-hidden mb-8">
