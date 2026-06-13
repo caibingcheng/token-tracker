@@ -8,6 +8,7 @@
     "build:all": "next build",
     "start": "next start",
     "lint": "next lint",
+    "sync-models-dev": "node scripts/sync-models-dev.js",
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio"
@@ -27,9 +28,10 @@
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "autoprefixer": "^10.4.19",
-    "dotenv": "^17.4.2",
+    "dotenv": "^16.4.5",
     "drizzle-kit": "^0.31.10",
-    "eslint": "^10.4.0",
+    "eslint": "^8.57.0",
+    "eslint-config-next": "^14.2.35",
     "postcss": "^8.4.38",
     "tailwindcss": "^3.4.4",
     "typescript": "^5.4.5"

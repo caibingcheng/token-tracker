@@ -1,10 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { initDatabase, db } from "@/lib/db";
 import { tokenRecords } from "@/lib/db/schema";
-import { executeStatsQuery } from "@/lib/stats-query";
+import { executeStatsQuery, type StatsQueryResult } from "@/lib/stats-query";
 import { resolveProviderFilter } from "@/lib/provider-utils";
+import { getDisplayName, getPricing, normalizeModel } from "@/lib/model-registry";
+import {
+  calculateCost,
+  calculateCostPerMillion,
+} from "@/lib/cost-utils";
+import { type StatItem } from "@/lib/model-utils";
+import { toNum } from "@/lib/number-utils";
+import { unstable_cache } from "next/cache";
 
 const VALID_RANGES = ["3d", "7d", "14d", "30d"];
+const CLI_CACHE_TAG = "api-cli";
 
 function formatNumber(num: number): string {
   return new Intl.NumberFormat("en-US").format(Math.round(num));
@@ -14,6 +23,11 @@ function formatCompact(num: number): string {
   if (num >= 1_000_000) return `${(num / 1_000_000).toFixed(1)}M`;
   if (num >= 1_000) return `${(num / 1_000).toFixed(1)}K`;
   return formatNumber(num);
+}
+
+function formatCost(num: number): string {
+  if (num <= 0) return "$0.00";
+  return `$${num.toFixed(2)}`;
 }
 
 function formatDate(dateStr: string): string {
@@ -53,6 +67,26 @@ function computeChange(current: number, previous: number): string {
   return `${sign}${change.toFixed(1)}%`;
 }
 
+function computeCostFromStatItem(item: StatItem): { cost: number; effectiveTokens: number } {
+  const pricing = getPricing(item.group);
+  const inputTokens = toNum(item.totalInputUncached);
+  const cacheRead = toNum(item.totalInputCached);
+  const cacheWrite = toNum(item.totalCacheWrite);
+  const outputTokens = toNum(item.totalOutput);
+
+  const cost = calculateCost({
+    inputTokens,
+    cacheRead,
+    cacheWrite,
+    outputTokens,
+    pricing,
+  });
+
+  const effectiveTokens = inputTokens + cacheRead + cacheWrite + outputTokens;
+
+  return { cost, effectiveTokens };
+}
+
 function normalizeProviderInput(provider: string): string {
   // ProviderA -> Provider A
   const match = provider.match(/^Provider([A-Z])$/);
@@ -61,6 +95,50 @@ function normalizeProviderInput(provider: string): string {
   }
   return provider;
 }
+
+function isStatItemsWithGroup(data: StatsQueryResult): data is Array<StatItem & { group: string }> {
+  return Array.isArray(data);
+}
+
+function isTotalStatItems(data: StatsQueryResult): data is Array<StatItem & { group: string; lastActiveAt?: string }> {
+  return Array.isArray(data) && (data.length === 0 || "lastActiveAt" in data[0]);
+}
+
+const cliCacheFn = unstable_cache(
+  async (range: string, provider: string, providerFilter: string[] | null) => {
+    const [total, totalModels, daily, models] = await Promise.all([
+      executeStatsQuery({
+        groupBy: "none",
+        range: "all",
+        provider,
+        providerFilter,
+      }),
+      executeStatsQuery({
+        groupBy: "model",
+        range: "all",
+        provider,
+        providerFilter,
+        limit: null,
+      }),
+      executeStatsQuery({
+        groupBy: "date",
+        range,
+        provider,
+        granularity: "day",
+        providerFilter,
+      }),
+      executeStatsQuery({
+        groupBy: "model",
+        range,
+        provider,
+        providerFilter,
+      }),
+    ]);
+    return { total, totalModels, daily, models };
+  },
+  ["cli"],
+  { tags: [CLI_CACHE_TAG], revalidate: false }
+);
 
 export async function GET(request: NextRequest) {
   await initDatabase();
@@ -110,28 +188,8 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // Query data
-    const [total, daily, models] = await Promise.all([
-      executeStatsQuery({
-        groupBy: "none",
-        range: "all",
-        provider,
-        providerFilter,
-      }),
-      executeStatsQuery({
-        groupBy: "date",
-        range,
-        provider,
-        granularity: "day",
-        providerFilter,
-      }),
-      executeStatsQuery({
-        groupBy: "model",
-        range,
-        provider,
-        providerFilter,
-      }),
-    ]);
+    // Query data (cached)
+    const { total, totalModels, daily, models } = await cliCacheFn(range, provider, providerFilter);
 
     // Build output
     const lines: string[] = [];
@@ -155,19 +213,31 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    const totalItem = total[0];
-    const lastActiveAt = totalItem.lastActiveAt as string | null;
+    const totalArr = isTotalStatItems(total) ? total : [];
+    const totalItem = totalArr[0];
+    const lastActiveAt = totalItem?.lastActiveAt ?? null;
+
+    const totalModelsArr = isStatItemsWithGroup(totalModels) ? totalModels : [];
+
+    let totalCost = 0;
+    let totalEffectiveTokens = 0;
+    for (const item of totalModelsArr) {
+      const { cost, effectiveTokens } = computeCostFromStatItem(item);
+      totalCost += cost;
+      totalEffectiveTokens += effectiveTokens;
+    }
+    const totalCostPerMillion = calculateCostPerMillion(totalCost, totalEffectiveTokens);
 
     lines.push(`Last Active: ${formatDateTime(lastActiveAt)}`);
     lines.push("");
 
     // Summary
-    const totalInput = Number(totalItem.totalInput || 0);
-    const totalInputCached = Number(totalItem.totalInputCached || 0);
-    const totalInputUncached = Number(totalItem.totalInputUncached || 0);
-    const totalOutput = Number(totalItem.totalOutput || 0);
-    const totalCacheWrite = Number(totalItem.totalCacheWrite || 0);
-    const totalCount = Number(totalItem.count || 0);
+    const totalInput = toNum(totalItem.totalInput);
+    const totalInputCached = toNum(totalItem.totalInputCached);
+    const totalInputUncached = toNum(totalItem.totalInputUncached);
+    const totalOutput = toNum(totalItem.totalOutput);
+    const totalCacheWrite = toNum(totalItem.totalCacheWrite);
+    const totalCount = toNum(totalItem.count);
     const cacheHitRate =
       totalInput > 0 ? ((totalInputCached / totalInput) * 100).toFixed(1) : "0.0";
 
@@ -177,8 +247,9 @@ export async function GET(request: NextRequest) {
       { label: "\u2514\u2500 Uncached:", value: formatNumber(totalInputUncached), suffix: "tokens", indent: 2 },
       { label: "Cache Hit Rate:", value: cacheHitRate + "%", suffix: "", indent: 0 },
       { label: "Total Output:", value: formatNumber(totalOutput), suffix: "tokens", indent: 0 },
-      { label: "Cache Write:", value: formatNumber(totalCacheWrite), suffix: "tokens", indent: 0 },
       { label: "Total Requests:", value: formatNumber(totalCount), suffix: "", indent: 0 },
+      { label: "Estimated Cost:", value: formatCost(totalCost), suffix: "", indent: 0 },
+      { label: "Avg cost / 1M tokens:", value: formatCost(totalCostPerMillion), suffix: "", indent: 0 },
     ];
 
     const maxLabelLen = Math.max(...summaryItems.map((item) => item.indent + item.label.length));
@@ -196,32 +267,33 @@ export async function GET(request: NextRequest) {
     lines.push("");
 
     // Today vs Yesterday
-    const todayStr = new Date().toISOString().split("T")[0];
-    const yesterdayDate = new Date();
+    const now = new Date();
+    const todayStr = now.toISOString().split("T")[0];
+    const yesterdayDate = new Date(now);
     yesterdayDate.setDate(yesterdayDate.getDate() - 1);
     const yesterdayStr = yesterdayDate.toISOString().split("T")[0];
 
-    const dailyArr = Array.isArray(daily) ? daily : [];
-    const todayItem = dailyArr.find((d: { group: string }) => d.group === todayStr);
+    const dailyArr = isStatItemsWithGroup(daily) ? daily : [];
+    const todayItem = dailyArr.find((d) => d.group === todayStr);
     const yesterdayItem = dailyArr.find(
-      (d: { group: string }) => d.group === yesterdayStr
+      (d) => d.group === yesterdayStr
     );
 
     lines.push("Today vs Yesterday");
     lines.push("-".repeat(60));
 
     if (todayItem || yesterdayItem) {
-      const todayInput = Number(todayItem?.totalInput || 0);
-      const todayOutput = Number(todayItem?.totalOutput || 0);
-      const todayCacheRead = Number(todayItem?.totalInputCached || 0);
-      const todayCacheWrite = Number(todayItem?.totalCacheWrite || 0);
-      const todayRequests = Number(todayItem?.count || 0);
+      const todayInput = toNum(todayItem?.totalInput);
+      const todayOutput = toNum(todayItem?.totalOutput);
+      const todayCacheRead = toNum(todayItem?.totalInputCached);
+      const todayCacheWrite = toNum(todayItem?.totalCacheWrite);
+      const todayRequests = toNum(todayItem?.count);
 
-      const yestInput = Number(yesterdayItem?.totalInput || 0);
-      const yestOutput = Number(yesterdayItem?.totalOutput || 0);
-      const yestCacheRead = Number(yesterdayItem?.totalInputCached || 0);
-      const yestCacheWrite = Number(yesterdayItem?.totalCacheWrite || 0);
-      const yestRequests = Number(yesterdayItem?.count || 0);
+      const yestInput = toNum(yesterdayItem?.totalInput);
+      const yestOutput = toNum(yesterdayItem?.totalOutput);
+      const yestCacheRead = toNum(yesterdayItem?.totalInputCached);
+      const yestCacheWrite = toNum(yesterdayItem?.totalCacheWrite);
+      const yestRequests = toNum(yesterdayItem?.count);
 
       const col1 = 14;
       const col2 = 16;
@@ -241,9 +313,6 @@ export async function GET(request: NextRequest) {
         `${pad("Cache Rd", col1)} ${padLeft(formatNumber(todayCacheRead), col2)} ${padLeft(formatNumber(yestCacheRead), col3)} ${padLeft(computeChange(todayCacheRead, yestCacheRead), col4)}`
       );
       lines.push(
-        `${pad("Cache Wr", col1)} ${padLeft(formatNumber(todayCacheWrite), col2)} ${padLeft(formatNumber(yestCacheWrite), col3)} ${padLeft(computeChange(todayCacheWrite, yestCacheWrite), col4)}`
-      );
-      lines.push(
         `${pad("Requests", col1)} ${padLeft(formatNumber(todayRequests), col2)} ${padLeft(formatNumber(yestRequests), col3)} ${padLeft(computeChange(todayRequests, yestRequests), col4)}`
       );
     } else {
@@ -252,7 +321,16 @@ export async function GET(request: NextRequest) {
     lines.push("");
 
     // Top 5 Models
-    const modelArr = (Array.isArray(models) ? models : []).slice(0, 5);
+    const rawModelArr = isStatItemsWithGroup(models) ? models.slice(0, 5) : [];
+    const modelArr = rawModelArr.map((item) => {
+      const { cost, effectiveTokens } = computeCostFromStatItem(item);
+      return {
+        ...item,
+        displayName: getDisplayName(item.group),
+        cost,
+        costPerMillion: calculateCostPerMillion(cost, effectiveTokens),
+      };
+    });
 
     lines.push(`Top 5 Models (${range})`);
     lines.push("-".repeat(60));
@@ -262,18 +340,18 @@ export async function GET(request: NextRequest) {
       const colCache = 13;
       const colHit = 8;
       const colOutput = 14;
-      const colCacheWr = 13;
+      const colCost = 12;
       const colReqs = 11;
 
       // 动态计算模型名称列宽
-      const modelLabels = modelArr.map((m, i) => `${i + 1}. ${m.group}`);
+      const modelLabels = modelArr.map((m, i) => `${i + 1}. ${m.displayName}`);
       const colModel = Math.max(
         5, // "Model" header
         ...modelLabels.map((l) => l.length)
       );
 
       lines.push(
-        `${pad("Model", colModel)} ${padLeft("Total Input", colInput)} ${padLeft("Cache Read", colCache)} ${padLeft("Hit%", colHit)} ${padLeft("Total Output", colOutput)} ${padLeft("Cache Write", colCacheWr)} ${padLeft("Requests", colReqs)}`
+        `${pad("Model", colModel)} ${padLeft("Total Input", colInput)} ${padLeft("Cache Read", colCache)} ${padLeft("Hit%", colHit)} ${padLeft("Total Output", colOutput)} ${padLeft("Avg / 1M", colCost)} ${padLeft("Requests", colReqs)}`
       );
       lines.push(
         "\u2500".repeat(
@@ -282,7 +360,7 @@ export async function GET(request: NextRequest) {
             colCache +
             colHit +
             colOutput +
-            colCacheWr +
+            colCost +
             colReqs +
             6
         )
@@ -290,13 +368,13 @@ export async function GET(request: NextRequest) {
 
       for (let i = 0; i < modelArr.length; i++) {
         const m = modelArr[i];
-        const mInput = Number(m.totalInput || 0);
-        const mCacheRead = Number(m.totalInputCached || 0);
+        const mInput = toNum(m.totalInput);
+        const mCacheRead = toNum(m.totalInputCached);
         const mHitRate =
           mInput > 0 ? ((mCacheRead / mInput) * 100).toFixed(1) : "0.0";
 
         lines.push(
-          `${pad(`${i + 1}. ${m.group}`, colModel)} ${padLeft(formatNumber(mInput), colInput)} ${padLeft(formatNumber(mCacheRead), colCache)} ${padLeft(mHitRate + "%", colHit)} ${padLeft(formatNumber(m.totalOutput || 0), colOutput)} ${padLeft(formatNumber(m.totalCacheWrite || 0), colCacheWr)} ${padLeft(formatNumber(m.count || 0), colReqs)}`
+          `${pad(`${i + 1}. ${m.displayName}`, colModel)} ${padLeft(formatNumber(mInput), colInput)} ${padLeft(formatNumber(mCacheRead), colCache)} ${padLeft(mHitRate + "%", colHit)} ${padLeft(formatNumber(toNum(m.totalOutput)), colOutput)} ${padLeft(formatCost(m.costPerMillion), colCost)} ${padLeft(formatNumber(toNum(m.count)), colReqs)}`
         );
       }
     } else {
@@ -323,11 +401,11 @@ export async function GET(request: NextRequest) {
       );
 
       for (const d of dailyArr) {
-        const dInput = Number(d.totalInput || 0);
-        const dOutput = Number(d.totalOutput || 0);
+        const dInput = toNum(d.totalInput);
+        const dOutput = toNum(d.totalOutput);
         const dTotal = dInput + dOutput;
         lines.push(
-          `${pad(d.group, colDate)} ${padLeft(formatNumber(dInput), colInput)} ${padLeft(formatNumber(dOutput), colOutput)} ${padLeft(formatNumber(d.count || 0), colReqs)} ${padLeft(formatCompact(dTotal), colTotal)}`
+          `${pad(d.group, colDate)} ${padLeft(formatNumber(dInput), colInput)} ${padLeft(formatNumber(dOutput), colOutput)} ${padLeft(formatNumber(toNum(d.count)), colReqs)} ${padLeft(formatCompact(dTotal), colTotal)}`
         );
       }
     } else {

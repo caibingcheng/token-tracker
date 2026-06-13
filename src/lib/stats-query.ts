@@ -9,6 +9,25 @@ import {
   type StatItem,
 } from "@/lib/model-utils";
 import { resolveProviderFilter } from "@/lib/provider-utils";
+import { toNum } from "@/lib/number-utils";
+
+export interface StatItemWithGroup extends StatItem {
+  group: string;
+}
+
+export interface StatItemWithGroupAndModel extends StatItemWithGroup {
+  model: string;
+}
+
+export interface TotalStatItem extends StatItemWithGroup {
+  lastActiveAt?: string;
+}
+
+export type StatsQueryResult =
+  | TotalStatItem[]
+  | StatItemWithGroup[]
+  | StatItemWithGroupAndModel[]
+  | StatItem[];
 
 // Helper to build combined WHERE clause
 function buildWhereClause(
@@ -43,6 +62,16 @@ function buildWhereClause(
   return conditions.length > 0 ? and(...conditions) : null;
 }
 
+function getDateGroupExpr(granularity: string) {
+  if (granularity === "week") {
+    return sql<string>`TO_CHAR(${tokenRecords.createdAt}, 'YYYY-WW')`;
+  }
+  if (granularity === "month") {
+    return sql<string>`TO_CHAR(${tokenRecords.createdAt}, 'YYYY-MM')`;
+  }
+  return sql<string>`TO_CHAR(${tokenRecords.createdAt}, 'YYYY-MM-DD')`;
+}
+
 export async function executeStatsQuery(params: {
   groupBy: string;
   range: string;
@@ -51,7 +80,8 @@ export async function executeStatsQuery(params: {
   providerFilter?: string[] | null;
   model?: string;
   modelFilter?: string[] | null;
-}): Promise<unknown> {
+  limit?: number | null;
+}): Promise<StatsQueryResult> {
   const {
     groupBy,
     range,
@@ -60,13 +90,18 @@ export async function executeStatsQuery(params: {
     providerFilter: precomputedProviderFilter,
     model,
     modelFilter: precomputedModelFilter,
+    limit,
   } = params;
 
   // 计算时间范围
   let dateFilter: Date | null = null;
   if (range !== "all") {
-    const days = parseInt(range);
-    dateFilter = new Date();
+    const days = parseInt(range, 10);
+    if (!Number.isFinite(days) || days <= 0) {
+      throw new Error(`Invalid range: ${range}`);
+    }
+    const now = new Date();
+    dateFilter = new Date(now);
     dateFilter.setDate(dateFilter.getDate() - days);
   }
 
@@ -134,18 +169,7 @@ export async function executeStatsQuery(params: {
     }
   } else if (groupBy === "date") {
     const effectiveGranularity = granularity || "day";
-    let dateFormat: string;
-
-    if (effectiveGranularity === "week") {
-      dateFormat = "YYYY-WW";
-    } else if (effectiveGranularity === "month") {
-      dateFormat = "YYYY-MM";
-    } else {
-      dateFormat = "YYYY-MM-DD";
-    }
-
-    // 使用 sql.raw 内联格式字符串，避免 GROUP BY 参数化问题
-    const groupExpr = sql<string>`TO_CHAR(${tokenRecords.createdAt}, ${sql.raw(`'${dateFormat}'`)})`;
+    const groupExpr = getDateGroupExpr(effectiveGranularity);
 
     query = db
       .select({
@@ -168,15 +192,7 @@ export async function executeStatsQuery(params: {
     }
   } else if (groupBy === "date-model") {
     const effectiveGranularity = granularity || "day";
-    let dateFormat: string;
-    if (effectiveGranularity === "week") {
-      dateFormat = "YYYY-WW";
-    } else if (effectiveGranularity === "month") {
-      dateFormat = "YYYY-MM";
-    } else {
-      dateFormat = "YYYY-MM-DD";
-    }
-    const groupExpr = sql<string>`TO_CHAR(${tokenRecords.createdAt}, ${sql.raw(`'${dateFormat}'`)})`;
+    const groupExpr = getDateGroupExpr(effectiveGranularity);
 
     query = db
       .select({
@@ -199,13 +215,15 @@ export async function executeStatsQuery(params: {
       query = query.where(whereClause);
     }
   } else if (groupBy === "model") {
-    // 先按原始 model 分组取 Top 20，再应用层归一化合并取 Top 5
+    // 先按原始 model 分组取 Top N，再应用层归一化合并
     // 当 modelFilter 生效时（按特定归一化 model 筛选），不限制原始 model 数量
     const whereClause = buildWhereClause(dateFilter, providerFilter, modelFilter);
 
+    const effectiveLimit = limit === null ? null : TOP_N_RAW_MODELS;
+
     let rawData;
-    if (modelFilter) {
-      // 有 modelFilter 时不限制数量
+    if (modelFilter || effectiveLimit === null) {
+      // 有 modelFilter 或不限制时，不限制数量
       const query = db
         .select({
           group: tokenRecords.model,
@@ -224,7 +242,7 @@ export async function executeStatsQuery(params: {
         );
       rawData = whereClause ? await query.where(whereClause) : await query;
     } else {
-      // 无 modelFilter 时限制 Top 20 原始 model
+      // 无 modelFilter 时限制原始 model 数量
       const query = db
         .select({
           group: tokenRecords.model,
@@ -246,9 +264,20 @@ export async function executeStatsQuery(params: {
     }
 
     const data = aggregateByNormalizedModel(
-      rawData as unknown as StatItem[]
-    ).slice(0, TOP_N_DISPLAY);
+      rawData.map((row) => ({
+        group: String(row.group),
+        totalInput: toNum(row.totalInput),
+        totalOutput: toNum(row.totalOutput),
+        totalInputCached: toNum(row.totalInputCached),
+        totalInputUncached: toNum(row.totalInputUncached),
+        totalCacheWrite: toNum(row.totalCacheWrite),
+        count: toNum(row.count),
+      }))
+    );
 
+    if (!modelFilter && effectiveLimit !== null) {
+      return data.slice(0, TOP_N_DISPLAY);
+    }
     return data;
   } else {
     // provider
@@ -276,5 +305,5 @@ export async function executeStatsQuery(params: {
   }
 
   const data = await query;
-  return data;
+  return data as StatsQueryResult;
 }

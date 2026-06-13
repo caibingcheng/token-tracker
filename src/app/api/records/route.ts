@@ -4,6 +4,7 @@ import { tokenRecords } from "@/lib/db/schema";
 import { sql, desc, eq, and, gte, lte, inArray, SQL } from "drizzle-orm";
 import { resolveProviderFilter } from "@/lib/provider-utils";
 import { normalizeModel, resolveNormalizedModelFilter } from "@/lib/model-utils";
+import { getDisplayName } from "@/lib/model-registry";
 
 export async function GET(request: NextRequest) {
   await initDatabase();
@@ -11,8 +12,8 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
 
     // 分页参数
-    const page = Math.max(1, parseInt(searchParams.get("page") || "1"));
-    const limit = Math.min(200, Math.max(1, parseInt(searchParams.get("limit") || "50")));
+    const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10));
+    const limit = Math.min(200, Math.max(1, parseInt(searchParams.get("limit") || "50", 10)));
     const offset = (page - 1) * limit;
 
     // 筛选条件
@@ -82,8 +83,9 @@ export async function GET(request: NextRequest) {
     const endDate = searchParams.get("endDate");
     if (endDate) {
       const end = new Date(endDate);
-      end.setDate(end.getDate() + 1);
-      conditions.push(lte(tokenRecords.createdAt, end));
+      const nextDay = new Date(end);
+      nextDay.setDate(nextDay.getDate() + 1);
+      conditions.push(lte(tokenRecords.createdAt, nextDay));
     }
 
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
@@ -106,7 +108,7 @@ export async function GET(request: NextRequest) {
     const rawData = whereClause ? await query.where(whereClause) : await query;
     const data = rawData.map((record) => ({
       ...record,
-      normalizedModel: normalizeModel(record.model),
+      normalizedModel: getDisplayName(normalizeModel(record.model)),
     }));
 
     // 查询总数
