@@ -77,8 +77,8 @@ function formatNumber(num: number) {
 }
 
 function formatCost(num: number): string {
-  if (num <= 0) return "$0.00";
-  return `$${num.toFixed(2)}`;
+  if (num <= 0) return "$0.0000";
+  return `$${num.toFixed(4)}`;
 }
 
 function formatPriceAxis(num: number): string {
