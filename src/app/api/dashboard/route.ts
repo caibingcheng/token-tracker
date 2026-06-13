@@ -1,11 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { initDatabase, db } from "@/lib/db";
-import { tokenRecords } from "@/lib/db/schema";
-import { executeStatsQuery, type StatsQueryResult, type TotalStatItem, type StatItemWithGroupAndModel } from "@/lib/stats-query";
+import { initDatabase } from "@/lib/db";
+import { executeStatsQuery, type StatsQueryResult, type StatItemWithGroupAndModel } from "@/lib/stats-query";
 import { type StatItem } from "@/lib/model-utils";
 import { unstable_cache } from "next/cache";
-import { resolveProviderFilter } from "@/lib/provider-utils";
-import { resolveNormalizedModelFilter } from "@/lib/model-utils";
 import { normalizeModel, getDisplayName, getPricing } from "@/lib/model-registry";
 import { toNum } from "@/lib/number-utils";
 import {
@@ -17,24 +14,12 @@ import {
   type AggregatedCost,
   type CostInput,
 } from "@/lib/cost-utils";
+import {
+  resolveDashboardFilters,
+  validateFilterOrThrow,
+} from "@/lib/dashboard-utils";
 
 const DASHBOARD_CACHE_TAG = "api-dashboard";
-
-interface DashboardRow {
-  group: string;
-  totalInput: number;
-  totalInputCached: number;
-  totalInputUncached: number;
-  totalOutput: number;
-  totalCacheWrite: number;
-  count: number;
-  lastActiveAt?: string;
-}
-
-// Type guards for StatsQueryResult narrowing
-function isTotalStatItems(data: StatsQueryResult): data is TotalStatItem[] {
-  return Array.isArray(data) && (data.length === 0 || "lastActiveAt" in data[0]);
-}
 
 function isStatItemsWithGroup(data: StatsQueryResult): data is Array<StatItem & { group: string }> {
   return Array.isArray(data);
@@ -94,24 +79,7 @@ const dashboardCacheFn = unstable_cache(
     model: string,
     modelFilter: string[] | null
   ) => {
-    const [total, totalModels, daily, dailyModel, models] = await Promise.all([
-      executeStatsQuery({
-        groupBy: "none",
-        range: "all",
-        provider,
-        providerFilter,
-        model,
-        modelFilter,
-      }),
-      executeStatsQuery({
-        groupBy: "model",
-        range: "all",
-        provider,
-        providerFilter,
-        model,
-        modelFilter,
-        limit: null,
-      }),
+    const [daily, dailyModel, models] = await Promise.all([
       executeStatsQuery({
         groupBy: "date",
         range,
@@ -139,27 +107,6 @@ const dashboardCacheFn = unstable_cache(
         modelFilter,
       }),
     ]);
-
-    // Total summary
-    const totalArr = isTotalStatItems(total) ? total : [];
-    const totalModelsArr = isStatItemsWithGroup(totalModels) ? totalModels : [];
-
-    const totalInputs = totalModelsArr.map(toCostInput);
-    const totalAggregate = aggregateCost(totalInputs);
-    const totalConsistency = checkPricingConsistency(totalInputs, totalAggregate);
-    if (!totalConsistency.ok) {
-      console.warn("Total pricing mismatch:", totalConsistency.mismatches);
-    }
-
-    const totalResult = totalArr.map((item) => ({
-      ...item,
-      totalCost: totalAggregate.totalCost,
-      costPerMillionTokens: totalAggregate.costPerMillionTokens,
-      costPerMillionInput: totalAggregate.costPerMillionInput,
-      costPerMillionCacheRead: totalAggregate.costPerMillionCacheRead,
-      costPerMillionCacheWrite: totalAggregate.costPerMillionCacheWrite,
-      costPerMillionOutput: totalAggregate.costPerMillionOutput,
-    }));
 
     // Daily cost aggregation
     const dailyArr = isStatItemsWithGroup(daily) ? daily : [];
@@ -210,7 +157,7 @@ const dashboardCacheFn = unstable_cache(
       };
     });
 
-    return { total: totalResult, daily: dailyResult, models: modelsResult };
+    return { daily: dailyResult, models: modelsResult };
   },
   ["dashboard"],
   { tags: [DASHBOARD_CACHE_TAG], revalidate: false }
@@ -226,7 +173,6 @@ export async function GET(request: NextRequest) {
     const provider = searchParams.get("provider") || "all";
     const model = searchParams.get("model") || "all";
 
-    // 参数校验
     if (!VALID_RANGES.includes(range)) {
       return NextResponse.json(
         {
@@ -237,45 +183,12 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // 预先查询 provider mapping（避免 N+1 查询）
-    let providerFilter: string[] | null = null;
-    if (provider !== "all") {
-      const allProviderRows = await db
-        .selectDistinct({ provider: tokenRecords.provider })
-        .from(tokenRecords);
-      const allProviderNames = allProviderRows
-        .map((r) => r.provider)
-        .filter((n): n is string => n !== null && n !== undefined);
+    const { providerFilter, modelFilter } = await resolveDashboardFilters(
+      provider,
+      model
+    );
 
-      providerFilter = resolveProviderFilter(provider, allProviderNames);
-
-      if (!providerFilter || providerFilter.length === 0) {
-        return NextResponse.json(
-          { success: false, error: `Unknown provider: ${provider}` },
-          { status: 400 }
-        );
-      }
-    }
-
-    // 预先查询 model mapping（避免 N+1 查询）
-    let modelFilter: string[] | null = null;
-    if (model !== "all") {
-      const allModelRows = await db
-        .selectDistinct({ model: tokenRecords.model })
-        .from(tokenRecords);
-      const allRawModels = allModelRows
-        .map((r) => r.model)
-        .filter((n): n is string => n !== null && n !== undefined);
-
-      modelFilter = resolveNormalizedModelFilter(model, allRawModels);
-
-      if (!modelFilter || modelFilter.length === 0) {
-        return NextResponse.json(
-          { success: false, error: `Unknown model: ${model}` },
-          { status: 400 }
-        );
-      }
-    }
+    validateFilterOrThrow(provider, providerFilter, model, modelFilter);
 
     const data = await dashboardCacheFn(
       range,
@@ -286,6 +199,12 @@ export async function GET(request: NextRequest) {
     );
     return NextResponse.json({ success: true, data });
   } catch (error) {
+    if (error instanceof Error && error.message.startsWith("Unknown")) {
+      return NextResponse.json(
+        { success: false, error: error.message },
+        { status: 400 }
+      );
+    }
     console.error("Dashboard error:", error);
     return NextResponse.json(
       { success: false, error: "Internal server error" },
