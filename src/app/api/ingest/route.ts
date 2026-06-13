@@ -3,7 +3,7 @@ import { db, initDatabase } from "@/lib/db";
 import { tokenRecords } from "@/lib/db/schema";
 import { revalidateTag } from "next/cache";
 import { eq } from "drizzle-orm";
-import { MODELS_CACHE_TAG } from "@/lib/cache";
+import { MODELS_CACHE_TAG, STATS_CACHE_TAG } from "@/lib/cache";
 
 const DASHBOARD_CACHE_TAG = "api-dashboard";
 const PROVIDERS_CACHE_TAG = "api-providers";
@@ -64,8 +64,9 @@ export async function POST(request: NextRequest) {
       })
       .returning();
 
-    // 使 Dashboard 缓存失效
+    // 使 Dashboard 与 Stats 缓存失效
     revalidateTag(DASHBOARD_CACHE_TAG);
+    revalidateTag(STATS_CACHE_TAG);
 
     // 如果是新 provider，使 Providers 缓存失效
     if (isNewProvider) {
