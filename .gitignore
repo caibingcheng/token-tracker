@@ -17,3 +17,7 @@ drizzle/
 .vscode/
 .idea/
 *.tsbuildinfo
+
+# Secrets
+*.pem
+*.key
