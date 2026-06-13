@@ -30,12 +30,36 @@ export interface DailyData {
   costPerMillionOutput: number;
 }
 
+interface TopModel {
+  group: string;
+  canonicalId: string;
+  displayName: string;
+  totalInput: number;
+  totalOutput: number;
+  totalInputCached: number;
+  totalInputUncached: number;
+  totalCacheWrite: number;
+  count: number;
+  totalCost: number;
+  costPerMillionTokens: number;
+  costPerMillionInput: number;
+  costPerMillionCacheRead: number;
+  costPerMillionCacheWrite: number;
+  costPerMillionOutput: number;
+}
+
+function AnimatedCell({ value }: { value: number }) {
+  const animated = useAnimatedNumber(value, 600);
+  return <span>{new Intl.NumberFormat("en-US").format(Math.round(animated))}</span>;
+}
+
 interface DailyUsageChartProps {
   rawData: DailyData[];
   loading: boolean;
   error: string | null;
   range: number;
   onRangeChange: (range: number) => void;
+  topModels?: TopModel[];
 }
 
 const COLORS = {
@@ -279,7 +303,7 @@ function RatioCostTooltip({ active, payload, label }: {
   );
 }
 
-export default function DailyUsageChart({ rawData, loading, error, range, onRangeChange }: DailyUsageChartProps) {
+export default function DailyUsageChart({ rawData, loading, error, range, onRangeChange, topModels }: DailyUsageChartProps) {
   const data = useMemo(() => {
     const apiData = new Map<string, DailyData>();
     rawData.forEach((item) => {
@@ -547,6 +571,116 @@ export default function DailyUsageChart({ rawData, loading, error, range, onRang
               </div>
             </div>
           </div>
+          {topModels && topModels.length > 0 && (
+            <div className="mt-8">
+              <h3 className="text-lg font-semibold mb-1">Top 5 Model Families</h3>
+              <div className="hidden md:block overflow-x-auto">
+                {(() => {
+                  const totalAllTokens = topModels.reduce((sum, m) => sum + m.totalInput + m.totalOutput, 0);
+                  return (
+                    <table className="w-full">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Model</th>
+                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Total Input</th>
+                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Cache Read</th>
+                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Cache Hit Rate</th>
+                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Total Output</th>
+                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase" title="Pricing from models.dev">Avg cost / 1M tokens</th>
+                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Requests</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-200">
+                        {topModels.map((model) => {
+                          const allTokens = model.totalInput + model.totalOutput;
+                          const percentage = totalAllTokens > 0 ? (allTokens / totalAllTokens) * 100 : 0;
+                          const cacheHitRate = model.totalInput > 0
+                            ? (model.totalInputCached / model.totalInput * 100).toFixed(1) + '%'
+                            : '0%';
+                          return (
+                            <tr
+                              key={model.group}
+                              style={{
+                                background: `linear-gradient(to right, rgb(239 246 255) ${percentage}%, transparent ${percentage}%)`
+                              }}
+                            >
+                              <td className="px-4 py-3 text-sm font-medium text-gray-900">{model.displayName}</td>
+                              <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.totalInput} /></td>
+                              <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.totalInputCached} /></td>
+                              <td className="px-4 py-3 text-sm text-gray-600 text-right">{cacheHitRate}</td>
+                              <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.totalOutput} /></td>
+                              <td className="px-4 py-3 text-sm text-gray-600 text-right">
+                                <div className="flex flex-col items-end">
+                                  <span>{formatCost(model.costPerMillionTokens)}</span>
+                                </div>
+                              </td>
+                              <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.count} /></td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  );
+                })()}
+              </div>
+              <div className="md:hidden space-y-3">
+                {(() => {
+                  const totalAllTokens = topModels.reduce((sum, m) => sum + m.totalInput + m.totalOutput, 0);
+                  return topModels.map((model) => {
+                    const allTokens = model.totalInput + model.totalOutput;
+                    const percentage = totalAllTokens > 0 ? (allTokens / totalAllTokens) * 100 : 0;
+                    return (
+                        <div
+                          key={model.group}
+                          className="rounded-lg border border-gray-200 overflow-hidden"
+                          style={{
+                            background: `linear-gradient(to right, rgb(239 246 255) ${percentage}%, transparent ${percentage}%)`
+                          }}
+                        >
+                          <div className="px-4 py-3 font-medium text-gray-900 border-b border-gray-100">
+                            {model.displayName}
+                          </div>
+                          <div className="px-4 py-3 grid grid-cols-2 gap-3">
+                            <div>
+                              <p className="text-xs text-gray-500">Total Input</p>
+                              <p className="text-sm font-semibold text-gray-900">{formatNumber(model.totalInput)}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-gray-500">Cache Read</p>
+                              <p className="text-sm font-semibold text-gray-900">{formatNumber(model.totalInputCached)}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-gray-500">Cache Hit Rate</p>
+                              <p className="text-sm font-semibold text-gray-900">
+                                {model.totalInput > 0 ? (model.totalInputCached / model.totalInput * 100).toFixed(1) + '%' : '0%'}
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-gray-500">Total Output</p>
+                              <p className="text-sm font-semibold text-gray-900">{formatNumber(model.totalOutput)}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-gray-500" title="Pricing from models.dev">Avg cost / 1M tokens</p>
+                              <p className="text-sm font-semibold text-gray-900">{formatCost(model.costPerMillionTokens)}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-gray-500">Requests</p>
+                              <p className="text-sm font-semibold text-gray-900">{formatNumber(model.count)}</p>
+                            </div>
+                          </div>
+                        </div>
+                    );
+                  });
+                })()}
+              </div>
+            </div>
+          )}
+          {topModels && topModels.length === 0 && (
+            <div className="mt-8">
+              <h3 className="text-lg font-semibold mb-1">Top 5 Model Families</h3>
+              <p className="text-gray-500">No data available</p>
+            </div>
+          )}
         </div>
       )}
     </div>
