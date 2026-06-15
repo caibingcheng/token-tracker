@@ -4,37 +4,48 @@
  * Reads HIDDEN_PROVIDERS from environment and provides functions to
  * anonymize/deanonymize provider names for the dashboard UI.
  *
- * Supports two formats:
+ * Supports three formats:
  *
- * 1. Legacy format (no semicolons): comma-separated exact matches
+ * 1. Legacy format (no semicolons or colons): comma-separated exact matches
  *    HIDDEN_PROVIDERS="openai,anthropic"
  *    → Each provider maps to "Provider A", "Provider B" by original order.
  *
- * 2. Grouped format (with semicolons): semicolon-separated groups, each group
- *    contains comma-separated patterns (exact or wildcard with *)
+ * 2. Anonymous grouped format (with semicolons): semicolon-separated groups,
+ *    each group contains comma-separated patterns (exact or wildcard with *)
  *    HIDDEN_PROVIDERS="name1*,name2*;name3,name4*"
  *    → Group 1 → "Provider A", Group 2 → "Provider B", etc.
+ *    → Multiple real providers can match the same group (many-to-one mapping).
+ *
+ * 3. Named grouped format (with colons): each group can specify a custom
+ *    display name followed by a colon
+ *    HIDDEN_PROVIDERS="Bailian:Seyond,Seyond-Bailian;Bedrock:Seyond-Bedrock"
+ *    → Group 1 → "Bailian", Group 2 → "Bedrock"
  *    → Multiple real providers can match the same group (many-to-one mapping).
  */
 
 export interface HiddenProviderGroup {
-  letter: string; // "A", "B", ...
+  name: string; // display name, e.g. "Bailian" or "Provider A"
+  letter: string; // "A", "B", ... (auto-generated, kept for compatibility)
   patterns: string[]; // ["name1*", "name2*"]
 }
 
-function isNewFormat(raw: string): boolean {
-  return raw.includes(";");
+function isGroupedFormat(raw: string): boolean {
+  return raw.includes(";") || raw.includes(":");
 }
 
 /**
  * Parses the HIDDEN_PROVIDERS environment variable into groups.
  *
- * New format: "name1*,name2*;name3,name4*"
+ * Grouped format: "name1*,name2*;name3,name4*"
  *   - Semicolons separate groups
  *   - Commas separate patterns within a group
  *   - Asterisk suffix means prefix match
  *
- * Legacy format (no semicolons) returns a single group with all patterns.
+ * Named grouped format: "Bailian:Seyond,Seyond-Bailian;Bedrock:Seyond-Bedrock"
+ *   - Colon separates the custom display name from its patterns
+ *   - If a group has no custom name, it falls back to "Provider A/B/C..."
+ *
+ * Legacy format (no semicolons or colons) returns a single group with all patterns.
  */
 export function getHiddenProviderGroups(): HiddenProviderGroup[] {
   const raw = process.env.HIDDEN_PROVIDERS;
@@ -47,19 +58,39 @@ export function getHiddenProviderGroups(): HiddenProviderGroup[] {
     .map((g) => g.trim())
     .filter((g) => g.length > 0);
 
-  return groups.map((group, index) => ({
-    letter: String.fromCharCode(65 + index), // A, B, C...
-    patterns: group
-      .split(",")
-      .map((p) => p.trim())
-      .filter((p) => p.length > 0),
-  }));
+  return groups.map((group, index) => {
+    const letter = String.fromCharCode(65 + index); // A, B, C...
+    const colonIndex = group.indexOf(":");
+
+    let name: string;
+    let patternsStr: string;
+
+    if (colonIndex !== -1) {
+      name = group.slice(0, colonIndex).trim();
+      patternsStr = group.slice(colonIndex + 1);
+      if (name.length === 0) {
+        name = `Provider ${letter}`;
+      }
+    } else {
+      name = `Provider ${letter}`;
+      patternsStr = group;
+    }
+
+    return {
+      name,
+      letter,
+      patterns: patternsStr
+        .split(",")
+        .map((p) => p.trim())
+        .filter((p) => p.length > 0),
+    };
+  });
 }
 
 /**
  * Legacy function: returns a flat list of hidden provider names/patterns.
  *
- * For new format, returns all patterns flattened.
+ * For grouped format, returns all patterns flattened.
  * For legacy format, returns comma-separated values.
  */
 export function getHiddenProviders(): string[] {
@@ -68,7 +99,7 @@ export function getHiddenProviders(): string[] {
     return [];
   }
 
-  if (isNewFormat(raw)) {
+  if (isGroupedFormat(raw)) {
     const groups = getHiddenProviderGroups();
     return groups.flatMap((g) => g.patterns);
   }
@@ -96,7 +127,7 @@ export function matchesPattern(provider: string, pattern: string): boolean {
  * Returns the anonymized display name for a given provider.
  *
  * - If the provider is NOT hidden, returns the name as-is.
- * - If hidden, maps to "Provider A", "Provider B", etc.
+ * - If hidden, maps to the group's display name (custom name or "Provider A/B/...").
  */
 export function anonymizeProvider(
   provider: string,
@@ -108,12 +139,12 @@ export function anonymizeProvider(
     return provider;
   }
 
-  if (isNewFormat(raw)) {
-    // New format: match against groups in order
+  if (isGroupedFormat(raw)) {
+    // Grouped format: match against groups in order
     const groups = getHiddenProviderGroups();
     for (const group of groups) {
       if (group.patterns.some((pattern) => matchesPattern(provider, pattern))) {
-        return `Provider ${group.letter}`;
+        return group.name;
       }
     }
     return provider;
@@ -132,41 +163,33 @@ export function anonymizeProvider(
 }
 
 /**
- * Resolves an anonymized name to the list of matching real provider names.
+ * Resolves a display name to the list of matching real provider names.
  *
- * - For legacy format: returns a single-element array (or empty).
- * - For new format: returns ALL providers matching the group's patterns.
+ * - For grouped format: returns ALL providers matching the group's patterns.
+ * - For legacy format: returns providers matching the pattern at the given letter index.
  *
- * @param anonymizedName - The display name (e.g. "Provider A" or "google")
+ * @param displayName - The display name (e.g. "Bailian", "Provider A" or "google")
  * @param allProviders - Complete list of real provider names in the database
  * @returns Array of matching real provider names
  */
 export function resolveProviderFilter(
-  anonymizedName: string,
+  displayName: string,
   allProviders: string[]
 ): string[] {
   const raw = process.env.HIDDEN_PROVIDERS || "";
 
   if (!raw.trim()) {
     // No hidden providers configured — the name IS the real name
-    return allProviders.includes(anonymizedName) ? [anonymizedName] : [];
+    return allProviders.includes(displayName) ? [displayName] : [];
   }
 
-  // Check if it's an anonymized name like "Provider A"
-  const match = anonymizedName.match(/^Provider ([A-Z])$/);
-  if (!match) {
-    // Not anonymized — treat as real provider name
-    return allProviders.includes(anonymizedName) ? [anonymizedName] : [];
-  }
-
-  const letter = match[1];
-
-  if (isNewFormat(raw)) {
-    // New format: find the group by letter, return all matching providers
+  if (isGroupedFormat(raw)) {
+    // Grouped format: find the group by display name
     const groups = getHiddenProviderGroups();
-    const group = groups.find((g) => g.letter === letter);
+    const group = groups.find((g) => g.name === displayName);
     if (!group) {
-      return [];
+      // Not a configured display name — treat as real provider name
+      return allProviders.includes(displayName) ? [displayName] : [];
     }
 
     return allProviders.filter((provider) =>
@@ -175,6 +198,12 @@ export function resolveProviderFilter(
   }
 
   // Legacy format: match by pattern, return all matching providers
+  const match = displayName.match(/^Provider ([A-Z])$/);
+  if (!match) {
+    return allProviders.includes(displayName) ? [displayName] : [];
+  }
+
+  const letter = match[1];
   const hiddenProviders = getHiddenProviders();
   const index = letter.charCodeAt(0) - 65; // 'A' -> 0, 'B' -> 1, ...
 
