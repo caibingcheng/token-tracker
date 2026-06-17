@@ -1,0 +1,46 @@
+name: Auto merge dev into master
+
+on:
+  push:
+    branches:
+      - dev
+
+jobs:
+  auto-merge:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout dev branch
+        uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+
+      - name: Create or reuse PR and enable auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+
+          pr_url=$(gh pr list \
+            --base master \
+            --head dev \
+            --state open \
+            --json url \
+            --jq '.[0].url')
+
+          if [ -z "$pr_url" ]; then
+            echo "No open PR found, creating one..."
+            pr_url=$(gh pr create \
+              --base master \
+              --head dev \
+              --title "Auto merge dev into master" \
+              --body "This PR was created automatically by GitHub Actions.")
+          else
+            echo "Reusing existing PR: $pr_url"
+          fi
+
+          echo "Enabling auto-merge (merge commit, wait for CI)..."
+          gh pr merge --auto --merge "$pr_url"
