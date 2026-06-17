@@ -1,4 +1,4 @@
-name: Auto merge dev into master
+name: Auto merge dev into main
 
 on:
   push:
@@ -25,7 +25,7 @@ jobs:
           set -e
 
           pr_url=$(gh pr list \
-            --base master \
+            --base main \
             --head dev \
             --state open \
             --json url \
@@ -34,9 +34,9 @@ jobs:
           if [ -z "$pr_url" ]; then
             echo "No open PR found, creating one..."
             pr_url=$(gh pr create \
-              --base master \
+              --base main \
               --head dev \
-              --title "Auto merge dev into master" \
+              --title "Auto merge dev into main" \
               --body "This PR was created automatically by GitHub Actions.")
           else
             echo "Reusing existing PR: $pr_url"
