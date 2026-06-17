@@ -64,6 +64,7 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
   const [isRangeInitialized, setIsRangeInitialized] = useState(false);
 
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [refreshDuration, setRefreshDuration] = useState<number | null>(null);
   const [recordsRefreshKey, setRecordsRefreshKey] = useState(0);
 
   const [, setTick] = useState(0);
@@ -147,6 +148,7 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
       skipLoading?: boolean;
       skipRecordsRefresh?: boolean;
       signal?: AbortSignal;
+      onDataReady?: (endTime: number) => void;
     }) => {
       if (!isVisibleRef.current) return;
 
@@ -258,6 +260,8 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
         setDailyData(daily ?? []);
 
         setLastUpdated(new Date());
+
+        options?.onDataReady?.(performance.now());
       } catch (err) {
         if (err instanceof Error && err.name === "AbortError") {
           aborted = true;
@@ -277,8 +281,9 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
     [buildDashboardUrl]
   );
 
-  const refreshFilters = useCallback(async () => {
+  const refreshFilters = useCallback(async (onReady?: (endTime: number) => void) => {
     await Promise.allSettled([fetchProviders(), fetchModels()]);
+    onReady?.(performance.now());
   }, [fetchProviders, fetchModels]);
 
   const refreshAll = useCallback(
@@ -287,10 +292,25 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
       skipRecordsRefresh?: boolean;
       signal?: AbortSignal;
     }) => {
+      const startTime = performance.now();
+      let dashboardEndTime = 0;
+      let filtersEndTime = 0;
+
       await Promise.allSettled([
-        fetchDashboard(options),
-        refreshFilters(),
+        fetchDashboard({
+          ...options,
+          onDataReady: (endTime) => {
+            dashboardEndTime = endTime;
+          },
+        }),
+        refreshFilters((endTime) => {
+          filtersEndTime = endTime;
+        }),
       ]);
+
+      if (dashboardEndTime > 0 && filtersEndTime > 0) {
+        setRefreshDuration(Math.round(Math.max(dashboardEndTime, filtersEndTime) - startTime));
+      }
     },
     [fetchDashboard, refreshFilters]
   );
@@ -513,7 +533,10 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
         </div>
 
         <div className="mt-8 py-4 border-t border-gray-200 flex flex-col md:flex-row justify-between items-start md:items-center gap-2 text-sm text-gray-500">
-          <span>Updated {formatTimeAgo(lastUpdated)}</span>
+          <span>
+            Updated {formatTimeAgo(lastUpdated)}
+            {refreshDuration !== null && ` · Refreshed in ${refreshDuration}ms`}
+          </span>
           {priceUpdateTime}
         </div>
       </div>
