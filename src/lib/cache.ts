@@ -6,8 +6,8 @@ export const PROVIDERS_CACHE_TAG = "api-providers";
 // ── Models 缓存标签 ──
 export const MODELS_CACHE_TAG = "api-models";
 
-// ── Stats 缓存标签 ──
-export const STATS_CACHE_TAG = "api-stats";
+// ── Dashboard 缓存标签（已合并 stats） ──
+export const DASHBOARD_CACHE_TAG = "api-dashboard";
 
 // ── Providers 缓存函数 ──
 export const providersCacheFn = unstable_cache(

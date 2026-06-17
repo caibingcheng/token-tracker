@@ -30,14 +30,15 @@ npm run lint                # ESLint（仅 extends next/core-web-vitals）
 - **连接配置**：`src/lib/db/index.ts`
 - **关键配置**：postgres client 使用 `prepare: false`，避免 prepared statement 冲突（Neon serverless 必需）
 - **自动初始化**：`initDatabase()` 在首次 API 调用时自动检查并创建 `token_records` 表，无需手动迁移
-- **表结构**：`token_records`（id, api_key, model, provider, input_tokens, output_tokens, cache_read, cache_write, created_at）
+- **表结构**：`token_records`（id, model, provider, input_tokens, output_tokens, cache_read, cache_write, created_at）
 
 ## 缓存策略（核心设计）
 
 - **机制**：Next.js `unstable_cache`，**手动标签失效**（非时间过期）
 - **缓存标签**：
-  - `api-dashboard` — Dashboard 聚合数据（/api/dashboard）
+  - `api-dashboard` — Dashboard 聚合数据（/api/dashboard）：包含 total、today、yesterday、daily、models
   - `api-providers` — Provider 列表（/api/providers）
+  - `api-models` — Model 列表（/api/models）
 - **失效触发**：仅在 `POST /api/ingest` 成功写入后调用 `revalidateTag()`
   - 新 provider 首次出现时额外使 providers 缓存失效
 - **设计目标**：个人使用 + 低频次写入 → 缓存长期有效，读取零数据库访问
@@ -47,11 +48,12 @@ npm run lint                # ESLint（仅 extends next/core-web-vitals）
 | 路由 | 方法 | 认证 | 说明 |
 |------|------|------|------|
 | `/api/ingest` | POST | `X-API-Key` header | 上报 token 用量，触发缓存失效 |
-| `/api/dashboard` | GET | 无 | 聚合统计（total + daily + models），缓存 |
+| `/api/dashboard` | GET | 无 | 聚合统计（total + today + yesterday + daily + models），缓存 |
 | `/api/providers` | GET | 无 | Provider 列表，缓存 |
-| `/api/records` | GET | 无 | 原始记录分页查询（每页 max 200），不走缓存 |
+| `/api/models` | GET | 无 | Model 列表，缓存 |
+| `/api/records` | GET | `X-API-Key` header | 原始记录分页查询（每页 max 200），不走缓存 |
 
-- **认证中间件**：`src/middleware.ts`，仅拦截 `/api/ingest`
+- **认证中间件**：`src/middleware.ts`，拦截 `/api/ingest` 与 `/api/records`
 - **API Keys**：`API_KEYS` 环境变量，逗号分隔多个 key
 
 ## 数据处理约定
@@ -62,8 +64,13 @@ npm run lint                # ESLint（仅 extends next/core-web-vitals）
 - **相关文件**：`src/lib/provider-utils.ts`
 
 ### Model 归一化
-- **文件**：`src/lib/model-utils.ts`
-- **规则**：`MODEL_RULES` 数组按优先级匹配，`*` 结尾表示前缀匹配
+- **文件**：`src/lib/model-registry.ts`（`src/lib/model-utils.ts` 仅做薄封装）
+- **数据源**：`public/data/models-dev/models.json`（canonical ID 与显示名）、`public/data/models-dev/api.json`（官方定价）
+- **规则**：按优先级依次匹配
+  1. 精确匹配 canonical ID
+  2. 精确匹配 provider-local alias
+  3. 最长公共子序列（LCS）模糊匹配，相似度 ≥ 0.6 时采用最佳候选
+  4. 未命中时保持原始名称
 - **用途**：Dashboard Top 5 按归一化后的 model 名称聚合（如 `gpt-4o-2024-08-06` → `gpt-4o`）
 
 ## 环境变量

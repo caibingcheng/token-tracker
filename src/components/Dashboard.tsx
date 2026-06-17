@@ -56,11 +56,8 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
   const [selectedModel, setSelectedModel] = useState<string>("all");
   const selectedModelRef = useRef<string>("all");
 
-  const [loadingStats, setLoadingStats] = useState(true);
-  const [loadingDaily, setLoadingDaily] = useState(true);
-
-  const [errorStats, setErrorStats] = useState<string | null>(null);
-  const [errorDaily, setErrorDaily] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const [dailyRange, setDailyRange] = useState(7);
   const dailyRangeRef = useRef(7);
@@ -77,10 +74,8 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
   const topModelsRef = useRef<ModelStat[]>([]);
   const dailyDataRef = useRef<DailyData[]>([]);
   const isVisibleRef = useRef(true);
-  const isFetchingStatsRef = useRef(false);
-  const isFetchingRangeRef = useRef(false);
-
-  const dailyRangeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const refreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     statsRef.current = stats;
@@ -106,43 +101,34 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
     selectedProviderRef.current = selectedProvider;
   }, [selectedProvider]);
 
-  useEffect(() => {
-    async function fetchProviders() {
-      try {
-        const res = await fetch("/api/providers");
-        const json = await res.json();
-        if (json.success && Array.isArray(json.data)) {
-          setProviders(json.data);
-        }
-      } catch (err) {
-        console.error("Failed to fetch providers:", err);
+  const fetchProviders = useCallback(async () => {
+    try {
+      const res = await fetch("/api/providers");
+      const json = await res.json();
+      if (json.success && Array.isArray(json.data)) {
+        setProviders(json.data);
       }
+    } catch (err) {
+      console.error("Failed to fetch providers:", err);
     }
-    async function fetchModels() {
-      try {
-        const res = await fetch("/api/models");
-        const json = await res.json();
-        if (json.success && Array.isArray(json.data)) {
-          setModels(json.data);
-        }
-      } catch (err) {
-        console.error("Failed to fetch models:", err);
-      }
-    }
-    fetchProviders();
-    fetchModels();
   }, []);
 
-  const buildStatsUrl = useCallback(() => {
-    const url = new URL("/api/stats", window.location.origin);
-    if (selectedProviderRef.current !== "all") {
-      url.searchParams.set("provider", selectedProviderRef.current);
+  const fetchModels = useCallback(async () => {
+    try {
+      const res = await fetch("/api/models");
+      const json = await res.json();
+      if (json.success && Array.isArray(json.data)) {
+        setModels(json.data);
+      }
+    } catch (err) {
+      console.error("Failed to fetch models:", err);
     }
-    if (selectedModelRef.current !== "all") {
-      url.searchParams.set("model", selectedModelRef.current);
-    }
-    return url.toString();
   }, []);
+
+  useEffect(() => {
+    fetchProviders();
+    fetchModels();
+  }, [fetchProviders, fetchModels]);
 
   const buildDashboardUrl = useCallback(() => {
     const url = new URL("/api/dashboard", window.location.origin);
@@ -156,169 +142,180 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
     return url.toString();
   }, []);
 
-  const fetchStats = useCallback(async (options?: { skipLoading?: boolean; skipRecordsRefresh?: boolean }) => {
-    if (!isVisibleRef.current || isFetchingStatsRef.current) return;
-    isFetchingStatsRef.current = true;
+  const fetchDashboard = useCallback(
+    async (options?: {
+      skipLoading?: boolean;
+      skipRecordsRefresh?: boolean;
+      signal?: AbortSignal;
+    }) => {
+      if (!isVisibleRef.current) return;
 
-    const isFirstLoad = !statsRef.current;
-    if (!options?.skipLoading && isFirstLoad) {
-      setLoadingStats(true);
-    }
-
-    setErrorStats(null);
-
-    try {
-      const res = await fetch(buildStatsUrl());
-      if (!res.ok) {
-        setErrorStats(`HTTP ${res.status}`);
-        return;
+      let aborted = false;
+      const isFirstLoad = !statsRef.current && !dailyDataRef.current;
+      if (!options?.skipLoading && isFirstLoad) {
+        setLoading(true);
       }
 
-      const json = await res.json();
-      if (!json.success) {
-        setErrorStats(json.error || "Stats error");
-        return;
-      }
+      setError(null);
 
-      const { total, today, yesterday } = json.data;
-
-      if (total && total.length > 0) {
-        const item = total[0];
-        setStats({
-          totalInput: Number(item.totalInput || 0),
-          totalOutput: Number(item.totalOutput || 0),
-          totalInputCached: Number(item.totalInputCached || 0),
-          totalInputUncached: Number(item.totalInputUncached || 0),
-          totalCacheWrite: Number(item.totalCacheWrite || 0),
-          count: Number(item.count || 0),
-          totalCost: Number(item.totalCost || 0),
-          costPerMillionTokens: Number(item.costPerMillionTokens || 0),
-          costPerMillionInput: Number(item.costPerMillionInput || 0),
-          costPerMillionCacheRead: Number(item.costPerMillionCacheRead || 0),
-          costPerMillionCacheWrite: Number(item.costPerMillionCacheWrite || 0),
-          costPerMillionOutput: Number(item.costPerMillionOutput || 0),
+      try {
+        const res = await fetch(buildDashboardUrl(), {
+          signal: options?.signal,
         });
-        if (item.lastActiveAt) {
-          setLastActiveAt(new Date(item.lastActiveAt));
+        if (!res.ok) {
+          setError(`HTTP ${res.status}`);
+          return;
+        }
+
+        const json = await res.json();
+        if (!json.success) {
+          setError(json.error || "Dashboard error");
+          return;
+        }
+
+        const { total, today, yesterday, daily, models } = json.data;
+
+        setStats(
+          total?.[0]
+            ? {
+                totalInput: Number(total[0].totalInput || 0),
+                totalOutput: Number(total[0].totalOutput || 0),
+                totalInputCached: Number(total[0].totalInputCached || 0),
+                totalInputUncached: Number(total[0].totalInputUncached || 0),
+                totalCacheWrite: Number(total[0].totalCacheWrite || 0),
+                count: Number(total[0].count || 0),
+                totalCost: Number(total[0].totalCost || 0),
+                costPerMillionTokens: Number(total[0].costPerMillionTokens || 0),
+                costPerMillionInput: Number(total[0].costPerMillionInput || 0),
+                costPerMillionCacheRead: Number(total[0].costPerMillionCacheRead || 0),
+                costPerMillionCacheWrite: Number(total[0].costPerMillionCacheWrite || 0),
+                costPerMillionOutput: Number(total[0].costPerMillionOutput || 0),
+              }
+            : null
+        );
+        if (total?.[0]?.lastActiveAt) {
+          setLastActiveAt(new Date(total[0].lastActiveAt));
+        }
+
+        setTodayData(
+          today
+            ? {
+                totalInput: Number(today.totalInput || 0),
+                totalOutput: Number(today.totalOutput || 0),
+                totalInputCached: Number(today.totalInputCached || 0),
+                totalInputUncached: Number(today.totalInputUncached || 0),
+                totalCacheWrite: Number(today.totalCacheWrite || 0),
+                count: Number(today.count || 0),
+                totalCost: Number(today.totalCost || 0),
+                costPerMillionTokens: Number(today.costPerMillionTokens || 0),
+                costPerMillionInput: Number(today.costPerMillionInput || 0),
+                costPerMillionCacheRead: Number(today.costPerMillionCacheRead || 0),
+                costPerMillionCacheWrite: Number(today.costPerMillionCacheWrite || 0),
+                costPerMillionOutput: Number(today.costPerMillionOutput || 0),
+              }
+            : null
+        );
+
+        setYesterdayData(
+          yesterday
+            ? {
+                totalInput: Number(yesterday.totalInput || 0),
+                totalOutput: Number(yesterday.totalOutput || 0),
+                totalInputCached: Number(yesterday.totalInputCached || 0),
+                totalInputUncached: Number(yesterday.totalInputUncached || 0),
+                totalCacheWrite: Number(yesterday.totalCacheWrite || 0),
+                count: Number(yesterday.count || 0),
+                totalCost: Number(yesterday.totalCost || 0),
+                costPerMillionTokens: Number(yesterday.costPerMillionTokens || 0),
+                costPerMillionInput: Number(yesterday.costPerMillionInput || 0),
+                costPerMillionCacheRead: Number(yesterday.costPerMillionCacheRead || 0),
+                costPerMillionCacheWrite: Number(yesterday.costPerMillionCacheWrite || 0),
+                costPerMillionOutput: Number(yesterday.costPerMillionOutput || 0),
+              }
+            : null
+        );
+
+        setTopModels(
+          models?.slice(0, 5).map((m: ModelStat) => ({
+            group: m.group,
+            canonicalId: m.canonicalId || m.group,
+            displayName: m.displayName || m.group,
+            totalInput: Number(m.totalInput || 0),
+            totalOutput: Number(m.totalOutput || 0),
+            totalInputCached: Number(m.totalInputCached || 0),
+            totalInputUncached: Number(m.totalInputUncached || 0),
+            totalCacheWrite: Number(m.totalCacheWrite || 0),
+            count: Number(m.count || 0),
+            totalCost: Number(m.totalCost || 0),
+            costPerMillionTokens: Number(m.costPerMillionTokens || 0),
+            costPerMillionInput: Number(m.costPerMillionInput || 0),
+            costPerMillionCacheRead: Number(m.costPerMillionCacheRead || 0),
+            costPerMillionCacheWrite: Number(m.costPerMillionCacheWrite || 0),
+            costPerMillionOutput: Number(m.costPerMillionOutput || 0),
+          })) ?? []
+        );
+
+        setDailyData(daily ?? []);
+
+        setLastUpdated(new Date());
+      } catch (err) {
+        if (err instanceof Error && err.name === "AbortError") {
+          aborted = true;
+          return;
+        }
+        console.error("Fetch dashboard error:", err);
+        setError("Network error");
+      } finally {
+        if (!aborted && !options?.skipLoading) {
+          setLoading(false);
+        }
+        if (!aborted && !options?.skipRecordsRefresh) {
+          setRecordsRefreshKey((k) => k + 1);
         }
       }
+    },
+    [buildDashboardUrl]
+  );
 
-      setTodayData(today ? {
-        totalInput: Number(today.totalInput || 0),
-        totalOutput: Number(today.totalOutput || 0),
-        totalInputCached: Number(today.totalInputCached || 0),
-        totalInputUncached: Number(today.totalInputUncached || 0),
-        totalCacheWrite: Number(today.totalCacheWrite || 0),
-        count: Number(today.count || 0),
-        totalCost: Number(today.totalCost || 0),
-        costPerMillionTokens: Number(today.costPerMillionTokens || 0),
-        costPerMillionInput: Number(today.costPerMillionInput || 0),
-        costPerMillionCacheRead: Number(today.costPerMillionCacheRead || 0),
-        costPerMillionCacheWrite: Number(today.costPerMillionCacheWrite || 0),
-        costPerMillionOutput: Number(today.costPerMillionOutput || 0),
-      } : null);
+  const refreshFilters = useCallback(async () => {
+    await Promise.allSettled([fetchProviders(), fetchModels()]);
+  }, [fetchProviders, fetchModels]);
 
-      setYesterdayData(yesterday ? {
-        totalInput: Number(yesterday.totalInput || 0),
-        totalOutput: Number(yesterday.totalOutput || 0),
-        totalInputCached: Number(yesterday.totalInputCached || 0),
-        totalInputUncached: Number(yesterday.totalInputUncached || 0),
-        totalCacheWrite: Number(yesterday.totalCacheWrite || 0),
-        count: Number(yesterday.count || 0),
-        totalCost: Number(yesterday.totalCost || 0),
-        costPerMillionTokens: Number(yesterday.costPerMillionTokens || 0),
-        costPerMillionInput: Number(yesterday.costPerMillionInput || 0),
-        costPerMillionCacheRead: Number(yesterday.costPerMillionCacheRead || 0),
-        costPerMillionCacheWrite: Number(yesterday.costPerMillionCacheWrite || 0),
-        costPerMillionOutput: Number(yesterday.costPerMillionOutput || 0),
-      } : null);
+  const refreshAll = useCallback(
+    async (options?: {
+      skipLoading?: boolean;
+      skipRecordsRefresh?: boolean;
+      signal?: AbortSignal;
+    }) => {
+      await Promise.allSettled([
+        fetchDashboard(options),
+        refreshFilters(),
+      ]);
+    },
+    [fetchDashboard, refreshFilters]
+  );
 
-      setLastUpdated(new Date());
-    } catch (err) {
-      console.error("Fetch stats error:", err);
-      setErrorStats("Network error");
-    } finally {
-      if (!options?.skipLoading) {
-        setLoadingStats(false);
+  const scheduleRefresh = useCallback(
+    (options?: { skipLoading?: boolean; skipRecordsRefresh?: boolean }) => {
+      if (!isVisibleRef.current) return;
+
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
       }
-      isFetchingStatsRef.current = false;
-      if (!options?.skipRecordsRefresh) {
-        setRecordsRefreshKey(k => k + 1);
-      }
-    }
-  }, [buildStatsUrl]);
-
-  const fetchRangeData = useCallback(async (options?: { skipLoading?: boolean }) => {
-    if (!isVisibleRef.current || isFetchingRangeRef.current) return;
-    isFetchingRangeRef.current = true;
-
-    const isFirstLoad = !topModelsRef.current && !dailyDataRef.current;
-    if (!options?.skipLoading && isFirstLoad) {
-      setLoadingDaily(true);
-    }
-
-    setErrorDaily(null);
-
-    try {
-      const res = await fetch(buildDashboardUrl());
-      if (!res.ok) {
-        setErrorDaily(`HTTP ${res.status}`);
-        return;
+      if (refreshTimeoutRef.current) {
+        clearTimeout(refreshTimeoutRef.current);
       }
 
-      const json = await res.json();
-      if (!json.success) {
-        setErrorDaily(json.error || "Dashboard error");
-        return;
-      }
-
-      const { daily, models } = json.data;
-
-      if (models) {
-        setTopModels(models.slice(0, 5).map((m: ModelStat) => ({
-          group: m.group,
-          canonicalId: m.canonicalId || m.group,
-          displayName: m.displayName || m.group,
-          totalInput: Number(m.totalInput || 0),
-          totalOutput: Number(m.totalOutput || 0),
-          totalInputCached: Number(m.totalInputCached || 0),
-          totalInputUncached: Number(m.totalInputUncached || 0),
-          totalCacheWrite: Number(m.totalCacheWrite || 0),
-          count: Number(m.count || 0),
-          totalCost: Number(m.totalCost || 0),
-          costPerMillionTokens: Number(m.costPerMillionTokens || 0),
-          costPerMillionInput: Number(m.costPerMillionInput || 0),
-          costPerMillionCacheRead: Number(m.costPerMillionCacheRead || 0),
-          costPerMillionCacheWrite: Number(m.costPerMillionCacheWrite || 0),
-          costPerMillionOutput: Number(m.costPerMillionOutput || 0),
-        })));
-      }
-
-      if (daily) {
-        setDailyData(daily);
-      }
-
-      setLastUpdated(new Date());
-    } catch (err) {
-      console.error("Fetch range data error:", err);
-      setErrorDaily("Network error");
-    } finally {
-      if (!options?.skipLoading) {
-        setLoadingDaily(false);
-      }
-      isFetchingRangeRef.current = false;
-    }
-  }, [buildDashboardUrl]);
-
-  const fetchAll = useCallback(async (options?: { skipLoading?: boolean; skipRecordsRefresh?: boolean }) => {
-    await Promise.all([
-      fetchStats(options),
-      fetchRangeData(options),
-    ]);
-  }, [fetchStats, fetchRangeData]);
+      abortControllerRef.current = new AbortController();
+      refreshTimeoutRef.current = setTimeout(() => {
+        refreshAll({ ...options, signal: abortControllerRef.current?.signal });
+      }, 150);
+    },
+    [refreshAll]
+  );
 
   useEffect(() => {
-    const saved = localStorage.getItem('token-tracker-daily-range');
+    const saved = localStorage.getItem("token-tracker-daily-range");
     if (saved) {
       const parsed = Number(saved);
       if (DAILY_RANGE_OPTIONS.includes(parsed)) {
@@ -331,67 +328,75 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
 
   useEffect(() => {
     if (isRangeInitialized) {
-      fetchAll();
+      scheduleRefresh();
     }
-  }, [isRangeInitialized, fetchAll]);
+  }, [isRangeInitialized, scheduleRefresh]);
 
-  const handleProviderChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
-    const value = e.target.value;
-    setSelectedProvider(value);
-    selectedProviderRef.current = value;
-    fetchAll({ skipLoading: true });
-  }, [fetchAll]);
+  const handleProviderChange = useCallback(
+    (e: React.ChangeEvent<HTMLSelectElement>) => {
+      const value = e.target.value;
+      setSelectedProvider(value);
+      selectedProviderRef.current = value;
+      scheduleRefresh({ skipLoading: true });
+    },
+    [scheduleRefresh]
+  );
 
-  const handleModelChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
-    const value = e.target.value;
-    setSelectedModel(value);
-    selectedModelRef.current = value;
-    fetchAll({ skipLoading: true });
-  }, [fetchAll]);
+  const handleModelChange = useCallback(
+    (e: React.ChangeEvent<HTMLSelectElement>) => {
+      const value = e.target.value;
+      setSelectedModel(value);
+      selectedModelRef.current = value;
+      scheduleRefresh({ skipLoading: true });
+    },
+    [scheduleRefresh]
+  );
 
-  const handleDailyRangeChange = useCallback((newRange: number) => {
-    setDailyRange(newRange);
-    dailyRangeRef.current = newRange;
-    localStorage.setItem('token-tracker-daily-range', String(newRange));
-    if (dailyRangeTimeoutRef.current) {
-      clearTimeout(dailyRangeTimeoutRef.current);
-    }
-    dailyRangeTimeoutRef.current = setTimeout(() => {
-      fetchRangeData({ skipLoading: true });
-    }, 300);
-  }, [fetchRangeData]);
+  const handleDailyRangeChange = useCallback(
+    (newRange: number) => {
+      setDailyRange(newRange);
+      dailyRangeRef.current = newRange;
+      localStorage.setItem("token-tracker-daily-range", String(newRange));
+      scheduleRefresh({ skipLoading: true });
+    },
+    [scheduleRefresh]
+  );
 
   useEffect(() => {
     return () => {
-      if (dailyRangeTimeoutRef.current) {
-        clearTimeout(dailyRangeTimeoutRef.current);
+      if (refreshTimeoutRef.current) {
+        clearTimeout(refreshTimeoutRef.current);
+      }
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
       }
     };
   }, []);
 
   useEffect(() => {
     const interval = setInterval(() => {
-      if (document.visibilityState === 'visible') {
-        fetchAll({ skipLoading: true, skipRecordsRefresh: true });
+      if (document.visibilityState === "visible") {
+        refreshAll({ skipLoading: true, skipRecordsRefresh: true });
       }
     }, 120000);
     return () => clearInterval(interval);
-  }, [fetchAll]);
+  }, [refreshAll]);
 
   useEffect(() => {
     const handleVisibilityChange = () => {
-      isVisibleRef.current = document.visibilityState === 'visible';
-      if (document.visibilityState === 'visible') {
-        fetchAll({ skipLoading: true, skipRecordsRefresh: true });
+      isVisibleRef.current = document.visibilityState === "visible";
+      if (document.visibilityState === "visible") {
+        refreshAll({ skipLoading: true, skipRecordsRefresh: true });
       }
     };
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [fetchAll]);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () =>
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, [refreshAll]);
 
   useEffect(() => {
     const interval = setInterval(() => {
-      setTick(n => n + 1);
+      setTick((n) => n + 1);
     }, 1000);
     return () => clearInterval(interval);
   }, []);
@@ -415,7 +420,10 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
           </div>
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full sm:w-auto">
             <div className="flex items-center gap-2 w-full sm:w-auto">
-              <label htmlFor="provider-select" className="text-sm text-gray-600 shrink-0">
+              <label
+                htmlFor="provider-select"
+                className="text-sm text-gray-600 shrink-0"
+              >
                 Provider:
               </label>
               <select
@@ -433,7 +441,10 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
               </select>
             </div>
             <div className="flex items-center gap-2 w-full sm:w-auto">
-              <label htmlFor="model-select" className="text-sm text-gray-600 shrink-0">
+              <label
+                htmlFor="model-select"
+                className="text-sm text-gray-600 shrink-0"
+              >
                 Model:
               </label>
               <select
@@ -453,18 +464,18 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
           </div>
         </div>
 
-        <StatsCards stats={stats} loading={loadingStats} error={errorStats} />
+        <StatsCards stats={stats} loading={loading} error={error} />
 
-        <TodayOverview 
-          today={todayData} 
-          yesterday={yesterdayData} 
-          loading={loadingStats} 
+        <TodayOverview
+          today={todayData}
+          yesterday={yesterdayData}
+          loading={loading}
         />
 
         <DailyUsageChart
           rawData={dailyData}
-          loading={loadingDaily}
-          error={errorDaily}
+          loading={loading}
+          error={error}
           range={dailyRange}
           onRangeChange={handleDailyRangeChange}
           topModels={topModels}

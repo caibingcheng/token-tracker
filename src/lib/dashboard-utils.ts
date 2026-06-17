@@ -8,6 +8,13 @@ export interface DashboardFilters {
   modelFilter: string[] | null;
 }
 
+export class FilterValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "FilterValidationError";
+  }
+}
+
 export async function resolveDashboardFilters(
   provider: string,
   model: string
@@ -46,9 +53,9 @@ export function validateFilterOrThrow(
   modelFilter: string[] | null
 ): void {
   if (provider !== "all" && (!providerFilter || providerFilter.length === 0)) {
-    throw new Error(`Unknown provider: ${provider}`);
+    throw new FilterValidationError(`Unknown provider: ${provider}`);
   }
   if (model !== "all" && (!modelFilter || modelFilter.length === 0)) {
-    throw new Error(`Unknown model: ${model}`);
+    throw new FilterValidationError(`Unknown model: ${model}`);
   }
 }

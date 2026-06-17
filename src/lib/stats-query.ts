@@ -64,12 +64,12 @@ function buildWhereClause(
 
 function getDateGroupExpr(granularity: string) {
   if (granularity === "week") {
-    return sql<string>`TO_CHAR(${tokenRecords.createdAt}, 'YYYY-WW')`;
+    return sql<string>`TO_CHAR(${tokenRecords.createdAt} AT TIME ZONE 'UTC', 'YYYY-WW')`;
   }
   if (granularity === "month") {
-    return sql<string>`TO_CHAR(${tokenRecords.createdAt}, 'YYYY-MM')`;
+    return sql<string>`TO_CHAR(${tokenRecords.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM')`;
   }
-  return sql<string>`TO_CHAR(${tokenRecords.createdAt}, 'YYYY-MM-DD')`;
+  return sql<string>`TO_CHAR(${tokenRecords.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD')`;
 }
 
 export async function executeStatsQuery(params: {
