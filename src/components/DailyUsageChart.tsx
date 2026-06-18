@@ -1,10 +1,12 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState, useCallback, useRef, useEffect } from "react";
 import { useAnimatedNumber } from "@/hooks/useAnimatedNumber";
+import { formatNumber } from "@/lib/number-utils";
 import {
   BarChart,
   Bar,
+  Cell,
   ComposedChart,
   Line,
   XAxis,
@@ -13,6 +15,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
+import { useNumberFormat } from "./NumberFormatContext";
 
 export interface DailyData {
   group: string;
@@ -49,8 +52,9 @@ interface TopModel {
 }
 
 function AnimatedCell({ value }: { value: number }) {
+  const { compact } = useNumberFormat();
   const animated = useAnimatedNumber(value, 600);
-  return <span>{new Intl.NumberFormat("en-US").format(Math.round(animated))}</span>;
+  return <span>{formatNumber(animated, compact)}</span>;
 }
 
 interface DailyUsageChartProps {
@@ -60,6 +64,7 @@ interface DailyUsageChartProps {
   range: number;
   onRangeChange: (range: number) => void;
   topModels?: TopModel[];
+  dailyTopModels?: Record<string, TopModel[]>;
 }
 
 const COLORS = {
@@ -70,11 +75,14 @@ const COLORS = {
   price: "#10B981",
 };
 
-const RANGE_OPTIONS = [3, 7, 14, 30];
+const HIGHLIGHT_COLORS = {
+  input: "#1D4ED8",
+  cache: "#60A5FA",
+  output: "#1E3A8A",
+  stroke: "#1E3A8A",
+};
 
-function formatNumber(num: number) {
-  return new Intl.NumberFormat("en-US").format(num);
-}
+const RANGE_OPTIONS = [3, 7, 14, 30];
 
 function formatCost(num: number): string {
   if (num <= 0) return "$0.0000";
@@ -153,6 +161,7 @@ function SummarySection({
     costPerMillionOutput: number;
   };
 }) {
+  const { compact } = useNumberFormat();
   const animatedTotalInput = useAnimatedNumber(summary.totalInput, 600);
   const animatedTotalOutput = useAnimatedNumber(summary.totalOutput, 600);
   const animatedTotalRequests = useAnimatedNumber(summary.totalRequests, 600);
@@ -226,7 +235,7 @@ function SummarySection({
             {card.label}
           </p>
           <p className="text-lg font-bold mt-1">
-            {card.isCost ? formatCost(card.value) : formatNumber(card.value)}
+            {card.isCost ? formatCost(card.value) : formatNumber(card.value, compact)}
           </p>
           {card.breakdown && (
             <div className="mt-2 pt-2 border-t border-gray-100 grid grid-cols-2 gap-2">
@@ -234,7 +243,7 @@ function SummarySection({
                 <div key={b.label} className="min-w-0">
                   <p className="text-[10px] text-gray-400 truncate">{b.label}</p>
                   <p className="text-xs font-medium text-gray-700 break-words">
-                    {typeof b.value === 'string' ? b.value : (b.isCost ? formatCost(b.value) : formatNumber(b.value))}
+                    {typeof b.value === 'string' ? b.value : (b.isCost ? formatCost(b.value) : formatNumber(b.value, compact))}
                   </p>
                 </div>
               ))}
@@ -251,6 +260,7 @@ function TokenBarTooltip({ active, payload, label }: {
   payload?: Array<{ value: number; name: string }>;
   label?: string;
 }) {
+  const { compact } = useNumberFormat();
   if (!active || !payload || payload.length === 0) return null;
   const reversed = [...payload].reverse();
   return (
@@ -259,7 +269,7 @@ function TokenBarTooltip({ active, payload, label }: {
       <div className="space-y-0.5">
         {reversed.map((entry) => (
           <p key={entry.name} className="text-gray-600">
-            <span className="font-medium">{entry.name}:</span> {formatNumber(Number(entry.value))}
+            <span className="font-medium">{entry.name}:</span> {formatNumber(Number(entry.value), compact)}
           </p>
         ))}
       </div>
@@ -272,6 +282,7 @@ function RatioCostTooltip({ active, payload, label }: {
   payload?: Array<{ value: number; name: string }>;
   label?: string;
 }) {
+  const { compact } = useNumberFormat();
   if (!active || !payload || payload.length === 0) return null;
   const filtered = payload.filter((entry) => {
     const name = String(entry.name || "");
@@ -290,7 +301,7 @@ function RatioCostTooltip({ active, payload, label }: {
           } else if (name === "Avg cost / 1M") {
             value = formatPriceAxis(Number(entry.value));
           } else {
-            value = formatNumber(Number(entry.value));
+            value = formatNumber(Number(entry.value), compact);
           }
           return (
             <p key={name} className="text-gray-600">
@@ -303,7 +314,68 @@ function RatioCostTooltip({ active, payload, label }: {
   );
 }
 
-export default function DailyUsageChart({ rawData, loading, error, range, onRangeChange, topModels }: DailyUsageChartProps) {
+function formatSelectedDateLabel(dateStr: string): string {
+  const today = formatDate(new Date());
+  if (dateStr === today) {
+    return "Today";
+  }
+  const parts = dateStr.split("-").map(Number);
+  if (parts.length >= 3) {
+    const date = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]));
+    return date.toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      timeZone: "UTC",
+    });
+  }
+  return dateStr;
+}
+
+export default function DailyUsageChart({
+  rawData,
+  loading,
+  error,
+  range,
+  onRangeChange,
+  topModels,
+  dailyTopModels,
+}: DailyUsageChartProps) {
+  const { compact } = useNumberFormat();
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const chartRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (
+        chartRef.current &&
+        !chartRef.current.contains(event.target as Node)
+      ) {
+        setSelectedDate(null);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  const handleChartClick = useCallback(
+    (state: { activeLabel?: string | number }) => {
+      if (!state || !state.activeLabel) {
+        setSelectedDate(null);
+        return;
+      }
+      const date = String(state.activeLabel);
+      setSelectedDate((prev) => (prev === date ? null : date));
+    },
+    []
+  );
+
+  const activeTopModels = useMemo(() => {
+    if (selectedDate && dailyTopModels?.[selectedDate]) {
+      return dailyTopModels[selectedDate];
+    }
+    return topModels;
+  }, [selectedDate, dailyTopModels, topModels]);
+
   const data = useMemo(() => {
     const apiData = new Map<string, DailyData>();
     rawData.forEach((item) => {
@@ -404,7 +476,7 @@ export default function DailyUsageChart({ rawData, loading, error, range, onRang
   }, [data]);
 
   return (
-    <div className="bg-white rounded-lg shadow p-6 mb-8">
+    <div ref={chartRef} className="bg-white rounded-lg shadow p-6 mb-8">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-4 gap-2">
         <h2 className="text-lg font-semibold">Last {range} Daily Usage</h2>
         <div className="inline-flex rounded-md overflow-hidden flex-shrink-0">
@@ -455,6 +527,8 @@ export default function DailyUsageChart({ rawData, loading, error, range, onRang
                     margin={{ top: 10, right: 100, left: 55, bottom: 10 }}
                     barCategoryGap="20%"
                     syncId="daily"
+                    onClick={handleChartClick}
+                    className="cursor-pointer"
                   >
                     <CartesianGrid strokeDasharray="3 3" vertical={false} />
                     <XAxis
@@ -481,21 +555,48 @@ export default function DailyUsageChart({ rawData, loading, error, range, onRang
                       stackId="tokens"
                       fill={COLORS.cache}
                       name="Cache"
-                    />
+                    >
+                      {data.map((entry, index) => (
+                        <Cell
+                          key={`cell-cache-${index}`}
+                          fill={entry.group === selectedDate ? HIGHLIGHT_COLORS.cache : COLORS.cache}
+                          stroke={entry.group === selectedDate ? HIGHLIGHT_COLORS.stroke : "none"}
+                          strokeWidth={entry.group === selectedDate ? 1 : 0}
+                        />
+                      ))}
+                    </Bar>
                     <Bar
                       yAxisId="left"
                       dataKey="totalInputUncached"
                       stackId="tokens"
                       fill={COLORS.input}
                       name="UnCache"
-                    />
+                    >
+                      {data.map((entry, index) => (
+                        <Cell
+                          key={`cell-input-${index}`}
+                          fill={entry.group === selectedDate ? HIGHLIGHT_COLORS.input : COLORS.input}
+                          stroke={entry.group === selectedDate ? HIGHLIGHT_COLORS.stroke : "none"}
+                          strokeWidth={entry.group === selectedDate ? 1 : 0}
+                        />
+                      ))}
+                    </Bar>
                     <Bar
                       yAxisId="left"
                       dataKey="totalOutput"
                       stackId="tokens"
                       fill={COLORS.output}
                       name="Output"
-                    />
+                    >
+                      {data.map((entry, index) => (
+                        <Cell
+                          key={`cell-output-${index}`}
+                          fill={entry.group === selectedDate ? HIGHLIGHT_COLORS.output : COLORS.output}
+                          stroke={entry.group === selectedDate ? HIGHLIGHT_COLORS.stroke : "none"}
+                          strokeWidth={entry.group === selectedDate ? 1 : 0}
+                        />
+                      ))}
+                    </Bar>
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -510,6 +611,8 @@ export default function DailyUsageChart({ rawData, loading, error, range, onRang
                     margin={{ top: 10, right: 55, left: 55, bottom: 10 }}
                     syncId="daily"
                     barCategoryGap="20%"
+                    onClick={handleChartClick}
+                    className="cursor-pointer"
                   >
                     <CartesianGrid strokeDasharray="3 3" vertical={false} />
                     <XAxis
@@ -571,12 +674,35 @@ export default function DailyUsageChart({ rawData, loading, error, range, onRang
               </div>
             </div>
           </div>
-          {topModels && topModels.length > 0 && (
+          {activeTopModels && activeTopModels.length > 0 && (
             <div className="mt-8">
-              <h3 className="text-lg font-semibold mb-1">Top 5 Model Families</h3>
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-1 gap-2">
+                <h3 className="text-lg font-semibold">
+                  {selectedDate
+                    ? `Top 5 Model Families - ${formatSelectedDateLabel(selectedDate)}`
+                    : "Top 5 Model Families"}
+                </h3>
+                {selectedDate && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedDate(null)}
+                    className="inline-flex items-center gap-1 px-3 py-1 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-full transition-colors"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                      <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                    </svg>
+                    Reset to range total
+                  </button>
+                )}
+              </div>
+              <p className="text-xs text-gray-500 mb-3">
+                {selectedDate
+                  ? `Showing top models for ${selectedDate}`
+                  : "Click a day in the charts above to see its top models"}
+              </p>
               <div className="hidden md:block overflow-x-auto">
                 {(() => {
-                  const totalAllTokens = topModels.reduce((sum, m) => sum + m.totalInput + m.totalOutput, 0);
+                  const totalAllTokens = activeTopModels.reduce((sum, m) => sum + m.totalInput + m.totalOutput, 0);
                   return (
                     <table className="w-full">
                       <thead className="bg-gray-50">
@@ -591,7 +717,7 @@ export default function DailyUsageChart({ rawData, loading, error, range, onRang
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-200">
-                        {topModels.map((model) => {
+                        {activeTopModels.map((model) => {
                           const allTokens = model.totalInput + model.totalOutput;
                           const percentage = totalAllTokens > 0 ? (allTokens / totalAllTokens) * 100 : 0;
                           const cacheHitRate = model.totalInput > 0
@@ -625,8 +751,8 @@ export default function DailyUsageChart({ rawData, loading, error, range, onRang
               </div>
               <div className="md:hidden space-y-3">
                 {(() => {
-                  const totalAllTokens = topModels.reduce((sum, m) => sum + m.totalInput + m.totalOutput, 0);
-                  return topModels.map((model) => {
+                  const totalAllTokens = activeTopModels.reduce((sum, m) => sum + m.totalInput + m.totalOutput, 0);
+                  return activeTopModels.map((model) => {
                     const allTokens = model.totalInput + model.totalOutput;
                     const percentage = totalAllTokens > 0 ? (allTokens / totalAllTokens) * 100 : 0;
                     return (
@@ -643,11 +769,11 @@ export default function DailyUsageChart({ rawData, loading, error, range, onRang
                           <div className="px-4 py-3 grid grid-cols-2 gap-3">
                             <div>
                               <p className="text-xs text-gray-500">Total Input</p>
-                              <p className="text-sm font-semibold text-gray-900">{formatNumber(model.totalInput)}</p>
+                              <p className="text-sm font-semibold text-gray-900">{formatNumber(model.totalInput, compact)}</p>
                             </div>
                             <div>
                               <p className="text-xs text-gray-500">Cache Read</p>
-                              <p className="text-sm font-semibold text-gray-900">{formatNumber(model.totalInputCached)}</p>
+                              <p className="text-sm font-semibold text-gray-900">{formatNumber(model.totalInputCached, compact)}</p>
                             </div>
                             <div>
                               <p className="text-xs text-gray-500">Cache Hit Rate</p>
@@ -657,7 +783,7 @@ export default function DailyUsageChart({ rawData, loading, error, range, onRang
                             </div>
                             <div>
                               <p className="text-xs text-gray-500">Total Output</p>
-                              <p className="text-sm font-semibold text-gray-900">{formatNumber(model.totalOutput)}</p>
+                              <p className="text-sm font-semibold text-gray-900">{formatNumber(model.totalOutput, compact)}</p>
                             </div>
                             <div>
                               <p className="text-xs text-gray-500" title="Pricing from models.dev">Avg cost / 1M tokens</p>
@@ -665,7 +791,7 @@ export default function DailyUsageChart({ rawData, loading, error, range, onRang
                             </div>
                             <div>
                               <p className="text-xs text-gray-500">Requests</p>
-                              <p className="text-sm font-semibold text-gray-900">{formatNumber(model.count)}</p>
+                              <p className="text-sm font-semibold text-gray-900">{formatNumber(model.count, compact)}</p>
                             </div>
                           </div>
                         </div>
@@ -675,10 +801,30 @@ export default function DailyUsageChart({ rawData, loading, error, range, onRang
               </div>
             </div>
           )}
-          {topModels && topModels.length === 0 && (
+          {activeTopModels && activeTopModels.length === 0 && (
             <div className="mt-8">
-              <h3 className="text-lg font-semibold mb-1">Top 5 Model Families</h3>
-              <p className="text-gray-500">No data available</p>
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-1 gap-2">
+                <h3 className="text-lg font-semibold">
+                  {selectedDate
+                    ? `Top 5 Model Families - ${formatSelectedDateLabel(selectedDate)}`
+                    : "Top 5 Model Families"}
+                </h3>
+                {selectedDate && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedDate(null)}
+                    className="inline-flex items-center gap-1 px-3 py-1 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-full transition-colors"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                      <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                    </svg>
+                    Reset to range total
+                  </button>
+                )}
+              </div>
+              <p className="text-gray-500">
+                {selectedDate ? "No data for selected date" : "No data available"}
+              </p>
             </div>
           )}
         </div>

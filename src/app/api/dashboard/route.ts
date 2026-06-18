@@ -6,7 +6,7 @@ import {
   type TotalStatItem,
   type StatItemWithGroupAndModel,
 } from "@/lib/stats-query";
-import { type StatItem } from "@/lib/model-utils";
+import { aggregateByNormalizedModel, type StatItem } from "@/lib/model-utils";
 import { unstable_cache } from "next/cache";
 import { normalizeModel, getDisplayName, getPricing } from "@/lib/model-registry";
 import { toNum } from "@/lib/number-utils";
@@ -19,6 +19,7 @@ import {
   type AggregatedCost,
   type CostInput,
 } from "@/lib/cost-utils";
+import { TOP_N_DISPLAY } from "@/lib/model-utils";
 import {
   resolveDashboardFilters,
   validateFilterOrThrow,
@@ -50,6 +51,58 @@ function toCostInput(item: StatItem): CostInput {
     outputTokens: toNum(item.totalOutput),
     pricing: getPricing(item.group),
   };
+}
+
+function aggregateTopModelsByDate(
+  rows: Array<StatItem & { group: string; model: string }>
+): Map<string, ModelStat[]> {
+  const byDate = new Map<string, StatItem[]>();
+
+  for (const row of rows) {
+    const date = String(row.group);
+    if (!byDate.has(date)) {
+      byDate.set(date, []);
+    }
+    byDate.get(date)!.push({
+      group: String(row.model),
+      totalInput: toNum(row.totalInput),
+      totalOutput: toNum(row.totalOutput),
+      totalInputCached: toNum(row.totalInputCached),
+      totalInputUncached: toNum(row.totalInputUncached),
+      totalCacheWrite: toNum(row.totalCacheWrite),
+      count: toNum(row.count),
+    });
+  }
+
+  const result = new Map<string, ModelStat[]>();
+  byDate.forEach((items, date) => {
+    const aggregated = aggregateByNormalizedModel(items).slice(0, TOP_N_DISPLAY);
+    const models = aggregated.map((item) => {
+      const inputs = [toCostInput(item)];
+      const aggregate = aggregateCost(inputs);
+      const consistency = checkPricingConsistency(inputs, aggregate);
+      if (!consistency.ok) {
+        console.warn(
+          `Daily model pricing mismatch for ${date}/${item.group}:`,
+          consistency.mismatches
+        );
+      }
+      return {
+        ...item,
+        canonicalId: item.group,
+        displayName: getDisplayName(item.group),
+        totalCost: aggregate.totalCost,
+        costPerMillionTokens: aggregate.costPerMillionTokens,
+        costPerMillionInput: aggregate.costPerMillionInput,
+        costPerMillionCacheRead: aggregate.costPerMillionCacheRead,
+        costPerMillionCacheWrite: aggregate.costPerMillionCacheWrite,
+        costPerMillionOutput: aggregate.costPerMillionOutput,
+      };
+    });
+    result.set(date, models);
+  });
+
+  return result;
 }
 
 function aggregateCostByDate(
@@ -94,6 +147,26 @@ function formatDateKey(date: Date): string {
   return `${y}-${m}-${d}`;
 }
 
+function getTotalDays(firstActiveAt?: string): number {
+  if (!firstActiveAt) return 0;
+  const first = new Date(firstActiveAt);
+  if (Number.isNaN(first.getTime())) return 0;
+  const today = new Date();
+  const start = Date.UTC(
+    first.getUTCFullYear(),
+    first.getUTCMonth(),
+    first.getUTCDate()
+  );
+  const end = Date.UTC(
+    today.getUTCFullYear(),
+    today.getUTCMonth(),
+    today.getUTCDate()
+  );
+  const diffMs = end - start;
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  return Math.max(1, diffDays + 1);
+}
+
 interface DayData {
   group: string;
   totalInput: number;
@@ -130,6 +203,7 @@ interface DashboardData {
     totalInputUncached: number;
     totalCacheWrite: number;
     count: number;
+    firstActiveAt?: string;
     lastActiveAt?: string;
     totalCost: number;
     costPerMillionTokens: number;
@@ -138,10 +212,13 @@ interface DashboardData {
     costPerMillionCacheWrite: number;
     costPerMillionOutput: number;
   }>;
+  totalDays: number;
   today: DayData | null;
   yesterday: DayData | null;
   daily: DayData[];
   models: ModelStat[];
+  todayModels: ModelStat[];
+  dailyModels: Record<string, ModelStat[]>;
 }
 
 function buildDayData(
@@ -277,6 +354,8 @@ const dashboardCacheFn = unstable_cache(
       costPerMillionOutput: totalAggregate.costPerMillionOutput,
     }));
 
+    const totalDays = getTotalDays(totalArr[0]?.firstActiveAt);
+
     // Today / Yesterday cost aggregation
     const dailyModelAllArr = isStatItemsWithModel(dailyModelAll)
       ? dailyModelAll
@@ -298,6 +377,39 @@ const dashboardCacheFn = unstable_cache(
 
     const today = buildDayData(todayKey, dailyCostMapAll, countMapAll);
     const yesterday = buildDayData(yesterdayKey, dailyCostMapAll, countMapAll);
+
+    // Today's top models (UTC date key, consistent with today/yesterday)
+    const todayModelRows = dailyModelAllArr
+      .filter((row) => String(row.group) === todayKey)
+      .map((row) => ({
+        group: String(row.model),
+        totalInput: toNum(row.totalInput),
+        totalOutput: toNum(row.totalOutput),
+        totalInputCached: toNum(row.totalInputCached),
+        totalInputUncached: toNum(row.totalInputUncached),
+        totalCacheWrite: toNum(row.totalCacheWrite),
+        count: toNum(row.count),
+      }));
+    const todayModelsAggregated = aggregateByNormalizedModel(todayModelRows).slice(0, 5);
+    const todayModelsResult = todayModelsAggregated.map((item) => {
+      const inputs = [toCostInput(item)];
+      const aggregate = aggregateCost(inputs);
+      const consistency = checkPricingConsistency(inputs, aggregate);
+      if (!consistency.ok) {
+        console.warn(`Today model pricing mismatch for ${item.group}:`, consistency.mismatches);
+      }
+      return {
+        ...item,
+        canonicalId: item.group,
+        displayName: getDisplayName(item.group),
+        totalCost: aggregate.totalCost,
+        costPerMillionTokens: aggregate.costPerMillionTokens,
+        costPerMillionInput: aggregate.costPerMillionInput,
+        costPerMillionCacheRead: aggregate.costPerMillionCacheRead,
+        costPerMillionCacheWrite: aggregate.costPerMillionCacheWrite,
+        costPerMillionOutput: aggregate.costPerMillionOutput,
+      };
+    });
 
     // Daily cost aggregation for selected range
     const dailyArr = isStatItemsWithGroup(dailyRange) ? dailyRange : [];
@@ -353,7 +465,18 @@ const dashboardCacheFn = unstable_cache(
       };
     });
 
-    return { total: totalResult, today, yesterday, daily: dailyResult, models: modelsResult };
+    const dailyTopModelsMap = aggregateTopModelsByDate(dailyModelRangeArr);
+
+    return {
+      total: totalResult,
+      totalDays,
+      today,
+      yesterday,
+      daily: dailyResult,
+      models: modelsResult,
+      todayModels: todayModelsResult,
+      dailyModels: Object.fromEntries(dailyTopModelsMap),
+    };
   },
   ["dashboard"],
   { tags: [DASHBOARD_CACHE_TAG], revalidate: false }

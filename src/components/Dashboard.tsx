@@ -5,6 +5,10 @@ import StatsCards, { Stats } from "./StatsCards";
 import RecordsTable from "./RecordsTable";
 import DailyUsageChart, { DailyData } from "./DailyUsageChart";
 import TodayOverview, { TodayData } from "./TodayOverview";
+import {
+  NumberFormatProvider,
+  useNumberFormat,
+} from "./NumberFormatContext";
 
 interface ModelStat {
   group: string;
@@ -40,13 +44,53 @@ interface DashboardProps {
   priceUpdateTime?: React.ReactNode;
 }
 
+function NumberFormatToggle() {
+  const { compact, setCompact } = useNumberFormat();
+
+  return (
+    <div
+      className="inline-flex items-center rounded-md overflow-hidden border border-gray-300 bg-white w-full sm:w-auto"
+      role="group"
+      aria-label="Number format"
+    >
+      <button
+        type="button"
+        onClick={() => setCompact(false)}
+        aria-pressed={!compact}
+        className={`flex-1 sm:flex-initial px-4 py-2.5 sm:px-3 sm:py-1.5 text-sm sm:text-xs font-medium transition-colors ${
+          !compact
+            ? "bg-blue-600 text-white"
+            : "text-gray-600 hover:bg-gray-50"
+        }`}
+      >
+        123
+      </button>
+      <button
+        type="button"
+        onClick={() => setCompact(true)}
+        aria-pressed={compact}
+        className={`flex-1 sm:flex-initial px-4 py-2.5 sm:px-3 sm:py-1.5 text-sm sm:text-xs font-medium transition-colors ${
+          compact
+            ? "bg-blue-600 text-white"
+            : "text-gray-600 hover:bg-gray-50"
+        }`}
+      >
+        K/M/B
+      </button>
+    </div>
+  );
+}
+
 export default function Dashboard({ priceUpdateTime }: DashboardProps) {
   const [stats, setStats] = useState<Stats | null>(null);
   const [topModels, setTopModels] = useState<ModelStat[]>([]);
+  const [todayTopModels, setTodayTopModels] = useState<ModelStat[]>([]);
+  const [dailyTopModels, setDailyTopModels] = useState<Record<string, ModelStat[]>>({});
   const [dailyData, setDailyData] = useState<DailyData[]>([]);
   const [todayData, setTodayData] = useState<TodayData | null>(null);
   const [yesterdayData, setYesterdayData] = useState<TodayData | null>(null);
   const [lastActiveAt, setLastActiveAt] = useState<Date | null>(null);
+  const [totalDays, setTotalDays] = useState<number>(0);
 
   const [providers, setProviders] = useState<Array<{ id: string; name: string }>>([]);
   const [selectedProvider, setSelectedProvider] = useState<string>("all");
@@ -175,7 +219,9 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
           return;
         }
 
-        const { total, today, yesterday, daily, models } = json.data;
+        const { total, totalDays, today, yesterday, daily, models, todayModels, dailyModels } = json.data;
+
+        setTotalDays(Number(totalDays) || 0);
 
         setStats(
           total?.[0]
@@ -256,6 +302,28 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
             costPerMillionOutput: Number(m.costPerMillionOutput || 0),
           })) ?? []
         );
+
+        setTodayTopModels(
+          todayModels?.slice(0, 5).map((m: ModelStat) => ({
+            group: m.group,
+            canonicalId: m.canonicalId || m.group,
+            displayName: m.displayName || m.group,
+            totalInput: Number(m.totalInput || 0),
+            totalOutput: Number(m.totalOutput || 0),
+            totalInputCached: Number(m.totalInputCached || 0),
+            totalInputUncached: Number(m.totalInputUncached || 0),
+            totalCacheWrite: Number(m.totalCacheWrite || 0),
+            count: Number(m.count || 0),
+            totalCost: Number(m.totalCost || 0),
+            costPerMillionTokens: Number(m.costPerMillionTokens || 0),
+            costPerMillionInput: Number(m.costPerMillionInput || 0),
+            costPerMillionCacheRead: Number(m.costPerMillionCacheRead || 0),
+            costPerMillionCacheWrite: Number(m.costPerMillionCacheWrite || 0),
+            costPerMillionOutput: Number(m.costPerMillionOutput || 0),
+          })) ?? []
+        );
+
+        setDailyTopModels(dailyModels ?? {});
 
         setDailyData(daily ?? []);
 
@@ -427,19 +495,21 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
   );
 
   return (
-    <main className="min-h-screen bg-gray-50 p-4 md:p-8">
-      <div className="max-w-7xl mx-auto">
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 gap-2">
-          <div>
-            <h1 className="text-xl md:text-3xl font-bold">Token Tracker Dashboard</h1>
-            {lastActiveAt && (
-              <p className="text-sm text-gray-500 mt-1">
-                Last active token at {lastActiveAt.toLocaleString()}
-              </p>
-            )}
-          </div>
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full sm:w-auto">
-            <div className="flex items-center gap-2 w-full sm:w-auto">
+    <NumberFormatProvider>
+      <main className="min-h-screen bg-gray-50 p-4 md:p-8">
+        <div className="max-w-7xl mx-auto">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 gap-2">
+            <div>
+              <h1 className="text-xl md:text-3xl font-bold">Token Tracker Dashboard</h1>
+              {lastActiveAt && (
+                <p className="text-sm text-gray-500 mt-1">
+                  Last active token at {lastActiveAt.toLocaleString()}
+                </p>
+              )}
+            </div>
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full sm:w-auto">
+              <NumberFormatToggle />
+              <div className="flex items-center gap-2 w-full sm:w-auto">
               <label
                 htmlFor="provider-select"
                 className="text-sm text-gray-600 shrink-0"
@@ -484,12 +554,13 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
           </div>
         </div>
 
-        <StatsCards stats={stats} loading={loading} error={error} />
+        <StatsCards stats={stats} totalDays={totalDays} loading={loading} error={error} topModels={topModels} />
 
         <TodayOverview
           today={todayData}
           yesterday={yesterdayData}
           loading={loading}
+          topModels={todayTopModels}
         />
 
         <DailyUsageChart
@@ -499,6 +570,7 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
           range={dailyRange}
           onRangeChange={handleDailyRangeChange}
           topModels={topModels}
+          dailyTopModels={dailyTopModels}
         />
 
         <div className="bg-white rounded-lg shadow overflow-hidden mb-8">
@@ -541,5 +613,6 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
         </div>
       </div>
     </main>
+  </NumberFormatProvider>
   );
 }

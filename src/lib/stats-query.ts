@@ -20,6 +20,7 @@ export interface StatItemWithGroupAndModel extends StatItemWithGroup {
 }
 
 export interface TotalStatItem extends StatItemWithGroup {
+  firstActiveAt?: string;
   lastActiveAt?: string;
 }
 
@@ -159,6 +160,7 @@ export async function executeStatsQuery(params: {
         totalOutput: sql<number>`SUM(${tokenRecords.outputTokens})`,
         totalCacheWrite: sql<number>`SUM(${tokenRecords.cacheWrite})`,
         count: sql<number>`COUNT(*)`,
+        firstActiveAt: sql<string>`MIN(${tokenRecords.createdAt})`,
         lastActiveAt: sql<string>`MAX(${tokenRecords.createdAt})`,
       })
       .from(tokenRecords);
