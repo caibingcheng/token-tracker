@@ -1,6 +1,9 @@
 "use client";
 
 import { useAnimatedNumber } from "@/hooks/useAnimatedNumber";
+import { formatNumber } from "@/lib/number-utils";
+import TopModelsCards from "./TopModelsCards";
+import { useNumberFormat } from "./NumberFormatContext";
 
 export interface TodayData {
   totalInput: number;
@@ -17,14 +20,18 @@ export interface TodayData {
   costPerMillionOutput: number;
 }
 
+interface TopModel {
+  displayName: string;
+  totalInput: number;
+  totalOutput: number;
+  totalInputCached: number;
+}
+
 interface TodayOverviewProps {
   today: TodayData | null;
   yesterday: TodayData | null;
   loading: boolean;
-}
-
-function formatNumber(num: number): string {
-  return new Intl.NumberFormat("en-US").format(Math.round(num));
+  topModels?: TopModel[];
 }
 
 function formatCost(num: number): string {
@@ -32,9 +39,9 @@ function formatCost(num: number): string {
   return `$${num.toFixed(4)}`;
 }
 
-function formatValue(num: number, isCost: boolean, isRatio?: boolean): string {
+function formatValue(num: number, isCost: boolean, isRatio?: boolean, compact?: boolean): string {
   if (isRatio) return formatRatio(num);
-  return isCost ? formatCost(num) : formatNumber(num);
+  return isCost ? formatCost(num) : formatNumber(num, compact ?? false);
 }
 
 function formatRatio(num: number): string {
@@ -67,7 +74,8 @@ interface TodayItem {
   breakdown?: { label: string; value: number; isCost?: boolean; isRatio?: boolean }[];
 }
 
-export default function TodayOverview({ today, yesterday, loading }: TodayOverviewProps) {
+export default function TodayOverview({ today, yesterday, loading, topModels }: TodayOverviewProps) {
+  const { compact } = useNumberFormat();
   const animatedInput = useAnimatedNumber(today?.totalInput || 0, 600);
   const animatedOutput = useAnimatedNumber(today?.totalOutput || 0, 600);
   const animatedCount = useAnimatedNumber(today?.count || 0, 600);
@@ -154,6 +162,7 @@ export default function TodayOverview({ today, yesterday, loading }: TodayOvervi
             </div>
           ))}
         </div>
+        <TopModelsCards title="Top 5 Models Today" models={[]} loading />
       </div>
     );
   }
@@ -167,7 +176,7 @@ export default function TodayOverview({ today, yesterday, loading }: TodayOvervi
             <p className="text-xs text-gray-500 mb-1" title={item.label === "Avg cost / 1M tokens" ? "Pricing from models.dev" : undefined}>
               {item.label}
             </p>
-            <p className="text-xl md:text-2xl font-bold text-gray-900">{item.isCost ? formatCost(item.value) : formatNumber(item.value)}</p>
+            <p className="text-xl md:text-2xl font-bold text-gray-900">{item.isCost ? formatCost(item.value) : formatNumber(item.value, compact)}</p>
             <div className="mt-1">
               <ChangeBadge today={item.today} yesterday={item.yesterday} />
             </div>
@@ -176,7 +185,7 @@ export default function TodayOverview({ today, yesterday, loading }: TodayOvervi
                 {item.breakdown.map((b) => (
                   <div key={b.label} className="min-w-0">
                     <p className="text-[10px] text-gray-400 truncate">{b.label}</p>
-                    <p className="text-xs font-medium text-gray-700 break-words">{formatValue(b.value, b.isCost ?? false, b.isRatio)}</p>
+                    <p className="text-xs font-medium text-gray-700 break-words">{formatValue(b.value, b.isCost ?? false, b.isRatio, compact)}</p>
                   </div>
                 ))}
               </div>
@@ -184,6 +193,7 @@ export default function TodayOverview({ today, yesterday, loading }: TodayOvervi
           </div>
         ))}
       </div>
+      <TopModelsCards title="Top 5 Models Today" models={topModels ?? []} loading={loading} />
     </div>
   );
 }

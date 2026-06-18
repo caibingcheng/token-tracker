@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { formatNumber } from "@/lib/number-utils";
+import { useNumberFormat } from "./NumberFormatContext";
 
 export interface Record {
   id: number;
@@ -158,6 +160,7 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
   }, [apiKey]);
 
   const [queryKey, setQueryKey] = useState(0);
+  const { compact } = useNumberFormat();
 
   // Reset page and bump queryKey when filters change
   useEffect(() => {
@@ -214,7 +217,6 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page, queryKey, refreshKey, apiKey]);
 
-  const formatNumber = (num: number) => new Intl.NumberFormat("en-US").format(num);
   const formatDate = (date: string) => new Date(date).toLocaleString();
 
   const handleSubmitKey = () => {
@@ -331,13 +333,13 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
                   {record.normalizedModel}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
-                  {formatNumber(record.inputTokens)}
+                  {formatNumber(record.inputTokens, compact)}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
-                  {formatNumber(record.cacheRead)}
+                  {formatNumber(record.cacheRead, compact)}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
-                  {formatNumber(record.outputTokens)}</td>
+                  {formatNumber(record.outputTokens, compact)}</td>
               </tr>
             ))}
           </tbody>
@@ -362,15 +364,15 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <p className="text-xs text-gray-500">Input (Uncached)</p>
-                <p className="text-sm font-semibold text-gray-900">{formatNumber(record.inputTokens)}</p>
+                <p className="text-sm font-semibold text-gray-900">{formatNumber(record.inputTokens, compact)}</p>
               </div>
               <div>
                 <p className="text-xs text-gray-500">Input (Cached)</p>
-                <p className="text-sm font-semibold text-gray-900">{formatNumber(record.cacheRead)}</p>
+                <p className="text-sm font-semibold text-gray-900">{formatNumber(record.cacheRead, compact)}</p>
               </div>
               <div>
                 <p className="text-xs text-gray-500">Output</p>
-                <p className="text-sm font-semibold text-gray-900">{formatNumber(record.outputTokens)}</p>
+                <p className="text-sm font-semibold text-gray-900">{formatNumber(record.outputTokens, compact)}</p>
               </div>
             </div>
           </div>
