@@ -1,4 +1,4 @@
-name: Auto merge dev into main
+name: Create PR dev into main
 
 on:
   push:
@@ -6,10 +6,10 @@ on:
       - dev
 
 jobs:
-  auto-merge:
+  create-pr:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       pull-requests: write
     steps:
       - name: Checkout dev branch
@@ -18,29 +18,26 @@ jobs:
           ref: dev
           fetch-depth: 0
 
-      - name: Create or reuse PR and enable auto-merge
+      - name: Create or reuse PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
 
-          pr_url=$(gh pr list \
+          existing_pr=$(gh pr list \
             --base main \
             --head dev \
             --state open \
-            --json url \
-            --jq '.[0].url')
+            --json number \
+            --jq '.[0].number')
 
-          if [ -z "$pr_url" ]; then
+          if [ -z "$existing_pr" ]; then
             echo "No open PR found, creating one..."
-            pr_url=$(gh pr create \
+            gh pr create \
               --base main \
               --head dev \
               --title "Auto merge dev into main" \
-              --body "This PR was created automatically by GitHub Actions.")
+              --body "This PR was created automatically by GitHub Actions."
           else
-            echo "Reusing existing PR: $pr_url"
+            echo "Reusing existing PR #$existing_pr"
           fi
-
-          echo "Enabling auto-merge (merge commit, wait for CI)..."
-          gh pr merge --auto --merge "$pr_url"
