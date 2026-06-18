@@ -1,6 +1,9 @@
 "use client";
 
 import { useAnimatedNumber } from "@/hooks/useAnimatedNumber";
+import { formatNumber } from "@/lib/number-utils";
+import TopModelsCards from "./TopModelsCards";
+import { useNumberFormat } from "./NumberFormatContext";
 
 export interface Stats {
   totalInput: number;
@@ -17,14 +20,19 @@ export interface Stats {
   costPerMillionOutput: number;
 }
 
-interface StatsCardsProps {
-  stats: Stats | null;
-  loading: boolean;
-  error: string | null;
+interface TopModel {
+  displayName: string;
+  totalInput: number;
+  totalOutput: number;
+  totalInputCached: number;
 }
 
-function formatNumber(num: number): string {
-  return new Intl.NumberFormat("en-US").format(Math.round(num));
+interface StatsCardsProps {
+  stats: Stats | null;
+  totalDays?: number;
+  loading: boolean;
+  error: string | null;
+  topModels?: TopModel[];
 }
 
 function formatCost(num: number): string {
@@ -50,12 +58,13 @@ interface CardValue {
   breakdown?: BreakdownItem[];
 }
 
-function formatValue(num: number, isCost: boolean, isRatio?: boolean): string {
+function formatValue(num: number, isCost: boolean, isRatio?: boolean, compact?: boolean): string {
   if (isRatio) return formatRatio(num);
-  return isCost ? formatCost(num) : formatNumber(num);
+  return isCost ? formatCost(num) : formatNumber(num, compact ?? false);
 }
 
-export default function StatsCards({ stats, loading, error }: StatsCardsProps) {
+export default function StatsCards({ stats, totalDays = 0, loading, error, topModels }: StatsCardsProps) {
+  const { compact } = useNumberFormat();
   const animatedTotalInput = useAnimatedNumber(stats?.totalInput || 0, 600);
   const animatedTotalOutput = useAnimatedNumber(stats?.totalOutput || 0, 600);
   const animatedTotalInputCached = useAnimatedNumber(stats?.totalInputCached || 0, 600);
@@ -120,13 +129,17 @@ export default function StatsCards({ stats, loading, error }: StatsCardsProps) {
 
   if (loading) {
     return (
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-        {[1, 2, 3, 4].map((i) => (
-          <div key={i} className="bg-white rounded-lg shadow p-4 md:p-6 animate-pulse">
-            <div className="h-4 bg-gray-200 rounded w-20 mb-2"></div>
-            <div className="h-8 bg-gray-200 rounded w-24"></div>
-          </div>
-        ))}
+      <div className="bg-white rounded-lg shadow p-6 mb-8 animate-pulse">
+        <div className="h-6 bg-gray-200 rounded w-40 mb-4"></div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {[1, 2, 3, 4].map((i) => (
+            <div key={i} className="bg-gray-50 rounded-lg p-4 md:p-6">
+              <div className="h-4 bg-gray-200 rounded w-20 mb-2"></div>
+              <div className="h-8 bg-gray-200 rounded w-24"></div>
+            </div>
+          ))}
+        </div>
+        <TopModelsCards title="Top 5 Models" models={[]} loading />
       </div>
     );
   }
@@ -140,27 +153,33 @@ export default function StatsCards({ stats, loading, error }: StatsCardsProps) {
   }
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-      {cardValues.map((card) => (
-        <div key={card.label} className="bg-white rounded-lg shadow p-4 md:p-6 flex flex-col">
-          <h3 className="text-sm font-medium text-gray-500" title={card.label === "Avg cost / 1M tokens" ? "Pricing from models.dev" : undefined}>
-            {card.label}
-          </h3>
-          <p className="text-xl md:text-2xl font-bold mt-2">
-            {card.isCost ? formatCost(card.value) : formatNumber(card.value)}
-          </p>
-          {card.breakdown && (
-            <div className="mt-3 pt-3 border-t border-gray-100 grid grid-cols-2 gap-2">
-              {card.breakdown.map((item) => (
-                <div key={item.label} className="min-w-0">
-                  <p className="text-xs text-gray-400 truncate">{item.label}</p>
-                  <p className="text-sm font-semibold text-gray-700 break-words">{formatValue(item.value, item.isCost ?? false, item.isRatio)}</p>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      ))}
+    <div className="bg-white rounded-lg shadow p-6 mb-8">
+      <h2 className="text-lg font-semibold mb-4">
+        Total Summary ({totalDays} Day{totalDays !== 1 ? "s" : ""})
+      </h2>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {cardValues.map((card) => (
+          <div key={card.label} className="bg-gray-50 rounded-lg p-4 md:p-6 flex flex-col">
+            <h3 className="text-sm font-medium text-gray-500" title={card.label === "Avg cost / 1M tokens" ? "Pricing from models.dev" : undefined}>
+              {card.label}
+            </h3>
+            <p className="text-xl md:text-2xl font-bold mt-2">
+              {card.isCost ? formatCost(card.value) : formatNumber(card.value, compact)}
+            </p>
+            {card.breakdown && (
+              <div className="mt-3 pt-3 border-t border-gray-100 grid grid-cols-2 gap-2">
+                {card.breakdown.map((item) => (
+                  <div key={item.label} className="min-w-0">
+                    <p className="text-xs text-gray-400 truncate">{item.label}</p>
+                    <p className="text-sm font-semibold text-gray-700 break-words">{formatValue(item.value, item.isCost ?? false, item.isRatio, compact)}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+      <TopModelsCards title="Top 5 Models" models={topModels ?? []} loading={loading} />
     </div>
   );
 }
