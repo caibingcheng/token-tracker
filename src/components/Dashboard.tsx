@@ -49,7 +49,7 @@ function NumberFormatToggle() {
 
   return (
     <div
-      className="inline-flex items-center rounded-md overflow-hidden border border-gray-300 bg-white w-full sm:w-auto"
+      className="inline-flex items-center rounded-md overflow-hidden border border-gray-300 bg-white"
       role="group"
       aria-label="Number format"
     >
@@ -57,7 +57,7 @@ function NumberFormatToggle() {
         type="button"
         onClick={() => setCompact(false)}
         aria-pressed={!compact}
-        className={`flex-1 sm:flex-initial px-4 py-2.5 sm:px-3 sm:py-1.5 text-sm sm:text-xs font-medium transition-colors ${
+        className={`px-3 py-1.5 text-xs font-medium transition-colors ${
           !compact
             ? "bg-blue-600 text-white"
             : "text-gray-600 hover:bg-gray-50"
@@ -69,7 +69,7 @@ function NumberFormatToggle() {
         type="button"
         onClick={() => setCompact(true)}
         aria-pressed={compact}
-        className={`flex-1 sm:flex-initial px-4 py-2.5 sm:px-3 sm:py-1.5 text-sm sm:text-xs font-medium transition-colors ${
+        className={`px-3 py-1.5 text-xs font-medium transition-colors ${
           compact
             ? "bg-blue-600 text-white"
             : "text-gray-600 hover:bg-gray-50"
@@ -77,6 +77,132 @@ function NumberFormatToggle() {
       >
         K/M/B
       </button>
+    </div>
+  );
+}
+
+interface FiltersModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  providers: Array<{ id: string; name: string }>;
+  models: Array<{ id: string; name: string }>;
+  selectedProvider: string;
+  selectedModel: string;
+  onProviderChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
+  onModelChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
+}
+
+function FiltersModal({
+  isOpen,
+  onClose,
+  providers,
+  models,
+  selectedProvider,
+  selectedModel,
+  onProviderChange,
+  onModelChange,
+}: FiltersModalProps) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+
+    const handleClickOutside = (e: MouseEvent) => {
+      if (
+        dialogRef.current &&
+        !dialogRef.current.contains(e.target as Node)
+      ) {
+        onClose();
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [isOpen, onClose]);
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 sm:hidden">
+      <div
+        ref={dialogRef}
+        className="w-full max-w-sm rounded-lg bg-white p-5 shadow-xl"
+      >
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-lg font-semibold">Filter Options</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-2xl leading-none text-gray-400 hover:text-gray-600"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="space-y-4">
+          <div>
+            <label className="mb-1 block text-sm text-gray-600">
+              Number format
+            </label>
+            <NumberFormatToggle />
+          </div>
+
+          <div>
+            <label htmlFor="mobile-provider-select" className="mb-1 block text-sm text-gray-600">
+              Provider
+            </label>
+            <select
+              id="mobile-provider-select"
+              value={selectedProvider}
+              onChange={onProviderChange}
+              className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              <option value="all">All Providers</option>
+              {providers.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label htmlFor="mobile-model-select" className="mb-1 block text-sm text-gray-600">
+              Model
+            </label>
+            <select
+              id="mobile-model-select"
+              value={selectedModel}
+              onChange={onModelChange}
+              className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              <option value="all">All Models</option>
+              {models.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={onClose}
+          className="mt-6 w-full rounded bg-blue-600 py-2 text-sm font-medium text-white hover:bg-blue-700"
+        >
+          Done
+        </button>
+      </div>
     </div>
   );
 }
@@ -114,6 +240,7 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
   const [, setTick] = useState(0);
 
   const [recordsVisible, setRecordsVisible] = useState(false);
+  const [isFiltersOpen, setIsFiltersOpen] = useState(false);
 
   const statsRef = useRef<Stats | null>(null);
   const topModelsRef = useRef<ModelStat[]>([]);
@@ -499,28 +626,36 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
       <main className="min-h-screen bg-gray-50 p-4 md:p-8">
         <div className="max-w-7xl mx-auto">
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 gap-2">
-            <div>
-              <h1 className="text-xl md:text-3xl font-bold">Token Tracker Dashboard</h1>
-              {lastActiveAt && (
-                <p className="text-sm text-gray-500 mt-1">
-                  Last active token at {lastActiveAt.toLocaleString()}
-                </p>
-              )}
-            </div>
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full sm:w-auto">
-              <NumberFormatToggle />
-              <div className="flex items-center gap-2 w-full sm:w-auto">
-              <label
-                htmlFor="provider-select"
-                className="text-sm text-gray-600 shrink-0"
+            <div className="flex min-w-0 flex-1 items-start justify-between gap-2">
+              <div className="min-w-0">
+                <h1 className="text-xl md:text-3xl font-bold truncate">
+                  Token Tracker Dashboard
+                </h1>
+                {lastActiveAt && (
+                  <p className="text-xs text-gray-400 mt-1">
+                    Last active token at {lastActiveAt.toLocaleString()}
+                  </p>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsFiltersOpen(true)}
+                className="sm:hidden inline-flex items-center gap-2 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 shrink-0"
               >
-                Provider:
-              </label>
+                Filters
+                {(selectedProvider !== "all" || selectedModel !== "all") && (
+                  <span className="h-2 w-2 rounded-full bg-red-500" />
+                )}
+                <span className="text-gray-400">▼</span>
+              </button>
+            </div>
+
+            <div className="hidden sm:flex flex-row items-center gap-3">
+              <NumberFormatToggle />
               <select
-                id="provider-select"
                 value={selectedProvider}
                 onChange={handleProviderChange}
-                className="w-full rounded border border-gray-300 bg-white px-3 py-1.5 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="rounded border border-gray-300 bg-white px-3 py-1.5 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
               >
                 <option value="all">All Providers</option>
                 {providers.map((p) => (
@@ -529,19 +664,10 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
                   </option>
                 ))}
               </select>
-            </div>
-            <div className="flex items-center gap-2 w-full sm:w-auto">
-              <label
-                htmlFor="model-select"
-                className="text-sm text-gray-600 shrink-0"
-              >
-                Model:
-              </label>
               <select
-                id="model-select"
                 value={selectedModel}
                 onChange={handleModelChange}
-                className="w-full rounded border border-gray-300 bg-white px-3 py-1.5 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="rounded border border-gray-300 bg-white px-3 py-1.5 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
               >
                 <option value="all">All Models</option>
                 {models.map((m) => (
@@ -552,7 +678,17 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
               </select>
             </div>
           </div>
-        </div>
+
+          <FiltersModal
+            isOpen={isFiltersOpen}
+            onClose={() => setIsFiltersOpen(false)}
+            providers={providers}
+            models={models}
+            selectedProvider={selectedProvider}
+            selectedModel={selectedModel}
+            onProviderChange={handleProviderChange}
+            onModelChange={handleModelChange}
+          />
 
         <StatsCards stats={stats} totalDays={totalDays} loading={loading} error={error} topModels={topModels} />
 
