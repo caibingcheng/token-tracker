@@ -17,6 +17,19 @@ import {
 } from "recharts";
 import { useNumberFormat } from "./NumberFormatContext";
 
+function useIsMobile(): boolean {
+  const [isMobile, setIsMobile] = useState(false);
+
+  useEffect(() => {
+    const check = () => setIsMobile(window.innerWidth < 768);
+    check();
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
+  }, []);
+
+  return isMobile;
+}
+
 export interface DailyData {
   group: string;
   totalInput: number;
@@ -75,12 +88,7 @@ const COLORS = {
   price: "#10B981",
 };
 
-const HIGHLIGHT_COLORS = {
-  input: "#1D4ED8",
-  cache: "#60A5FA",
-  output: "#1E3A8A",
-  stroke: "#1E3A8A",
-};
+const ACTIVE_AXIS_COLOR = "#2563EB";
 
 const RANGE_OPTIONS = [3, 7, 14, 30];
 
@@ -119,6 +127,56 @@ function formatAxisNumber(num: number) {
     return (num / 1000).toFixed(1).replace(/\.0$/, "") + "K";
   }
   return new Intl.NumberFormat("en-US").format(num);
+}
+
+function formatXAxisDate(value: string): string {
+  const parts = value.split("-");
+  return parts.length >= 3 ? `${Number(parts[1])}-${Number(parts[2])}` : value;
+}
+
+interface CustomXAxisTickProps {
+  x?: number;
+  y?: number;
+  payload?: { value?: string };
+  index?: number;
+  selectedDate?: string | null;
+  hoveredDate?: string | null;
+}
+
+function CustomXAxisTick({
+  x = 0,
+  y = 0,
+  payload,
+  index = 0,
+  selectedDate,
+  hoveredDate,
+}: CustomXAxisTickProps) {
+  const value = payload?.value ?? "";
+  const isSelected = value === selectedDate;
+  const isHovered = value === hoveredDate;
+  const isActive = isSelected || isHovered;
+  const showLabel = index !== -1 || isActive;
+  return (
+    <g transform={`translate(${x},${y})`}>
+      {showLabel && (
+        <text
+          dy={12}
+          textAnchor="middle"
+          fill={isActive ? ACTIVE_AXIS_COLOR : "#6B7280"}
+          fontSize={11}
+          fontWeight={isSelected ? 700 : isActive ? 600 : 400}
+        >
+          {formatXAxisDate(value)}
+        </text>
+      )}
+      {isActive && (
+        <polygon
+          points={isSelected ? "0,25 -5,32 5,32" : "0,26 -4,31 4,31"}
+          fill={ACTIVE_AXIS_COLOR}
+        />
+      )}
+    </g>
+  );
 }
 
 function formatDate(date: Date): string {
@@ -341,7 +399,9 @@ export default function DailyUsageChart({
   dailyTopModels,
 }: DailyUsageChartProps) {
   const { compact } = useNumberFormat();
+  const isMobile = useIsMobile();
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [hoveredDate, setHoveredDate] = useState<string | null>(null);
   const chartRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -357,6 +417,19 @@ export default function DailyUsageChart({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  const handleChartMouseMove = useCallback(
+    (state: { activeLabel?: string | number }) => {
+      if (state && state.activeLabel) {
+        setHoveredDate(String(state.activeLabel));
+      }
+    },
+    []
+  );
+
+  const handleChartMouseLeave = useCallback(() => {
+    setHoveredDate(null);
+  }, []);
+
   const handleChartClick = useCallback(
     (state: { activeLabel?: string | number }) => {
       if (!state || !state.activeLabel) {
@@ -370,8 +443,8 @@ export default function DailyUsageChart({
   );
 
   const activeTopModels = useMemo(() => {
-    if (selectedDate && dailyTopModels?.[selectedDate]) {
-      return dailyTopModels[selectedDate];
+    if (selectedDate) {
+      return dailyTopModels?.[selectedDate] ?? [];
     }
     return topModels;
   }, [selectedDate, dailyTopModels, topModels]);
@@ -476,7 +549,7 @@ export default function DailyUsageChart({
   }, [data]);
 
   return (
-    <div ref={chartRef} className="bg-white rounded-lg shadow p-6 mb-8">
+    <div ref={chartRef} className="bg-white rounded-lg shadow p-3 md:p-6 mb-8">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-4 gap-2">
         <h2 className="text-lg font-semibold">Last {range} Daily Usage</h2>
         <div className="inline-flex rounded-md overflow-hidden flex-shrink-0">
@@ -511,13 +584,13 @@ export default function DailyUsageChart({
         <p className="text-gray-500">No data available</p>
       )}
 
-      {!loading && !error && data.length > 0 && (
+          {!loading && !error && data.length > 0 && (
         <div>
           {summary && (
             <SummarySection summary={summary} />
           )}
 
-          <div className="space-y-6">
+          <div className="space-y-6 hidden md:block">
             <div>
               <h3 className="text-sm font-medium text-gray-700 mb-2">Daily Token Usage</h3>
               <div className="h-[280px]">
@@ -528,18 +601,29 @@ export default function DailyUsageChart({
                     barCategoryGap="20%"
                     syncId="daily"
                     onClick={handleChartClick}
+                    onMouseMove={handleChartMouseMove}
+                    onMouseLeave={handleChartMouseLeave}
                     className="cursor-pointer"
                   >
                     <CartesianGrid strokeDasharray="3 3" vertical={false} />
                     <XAxis
                       dataKey="group"
-                      tick={{ fontSize: 11 }}
-                      interval={getXAxisInterval(range)}
-                      minTickGap={15}
-                      tickFormatter={(value: string) => {
-                        const parts = value.split("-");
-                        return parts.length >= 3 ? `${Number(parts[1])}-${Number(parts[2])}` : value;
+                      ticks={data.map((d) => d.group)}
+                      tick={(props) => {
+                        const index = props.index ?? 0;
+                        const interval = getXAxisInterval(range);
+                        const showLabel = interval === 0 || index % (interval + 1) === 0;
+                        return (
+                          <CustomXAxisTick
+                            {...props}
+                            selectedDate={selectedDate}
+                            hoveredDate={hoveredDate}
+                            index={showLabel ? index : -1}
+                          />
+                        );
                       }}
+                      interval={0}
+                      minTickGap={15}
                     />
                     <YAxis
                       yAxisId="left"
@@ -548,7 +632,7 @@ export default function DailyUsageChart({
                       tickFormatter={(v: number) => formatAxisNumber(v)}
                       domain={tokenDomain}
                     />
-                    <Tooltip content={<TokenBarTooltip />} />
+                    <Tooltip content={<TokenBarTooltip />} cursor={false} />
                     <Bar
                       yAxisId="left"
                       dataKey="totalInputCached"
@@ -559,9 +643,7 @@ export default function DailyUsageChart({
                       {data.map((entry, index) => (
                         <Cell
                           key={`cell-cache-${index}`}
-                          fill={entry.group === selectedDate ? HIGHLIGHT_COLORS.cache : COLORS.cache}
-                          stroke={entry.group === selectedDate ? HIGHLIGHT_COLORS.stroke : "none"}
-                          strokeWidth={entry.group === selectedDate ? 1 : 0}
+                          fill={COLORS.cache}
                         />
                       ))}
                     </Bar>
@@ -575,9 +657,7 @@ export default function DailyUsageChart({
                       {data.map((entry, index) => (
                         <Cell
                           key={`cell-input-${index}`}
-                          fill={entry.group === selectedDate ? HIGHLIGHT_COLORS.input : COLORS.input}
-                          stroke={entry.group === selectedDate ? HIGHLIGHT_COLORS.stroke : "none"}
-                          strokeWidth={entry.group === selectedDate ? 1 : 0}
+                          fill={COLORS.input}
                         />
                       ))}
                     </Bar>
@@ -591,9 +671,7 @@ export default function DailyUsageChart({
                       {data.map((entry, index) => (
                         <Cell
                           key={`cell-output-${index}`}
-                          fill={entry.group === selectedDate ? HIGHLIGHT_COLORS.output : COLORS.output}
-                          stroke={entry.group === selectedDate ? HIGHLIGHT_COLORS.stroke : "none"}
-                          strokeWidth={entry.group === selectedDate ? 1 : 0}
+                          fill={COLORS.output}
                         />
                       ))}
                     </Bar>
@@ -612,18 +690,29 @@ export default function DailyUsageChart({
                     syncId="daily"
                     barCategoryGap="20%"
                     onClick={handleChartClick}
+                    onMouseMove={handleChartMouseMove}
+                    onMouseLeave={handleChartMouseLeave}
                     className="cursor-pointer"
                   >
                     <CartesianGrid strokeDasharray="3 3" vertical={false} />
                     <XAxis
                       dataKey="group"
-                      tick={{ fontSize: 11 }}
-                      interval={getXAxisInterval(range)}
-                      minTickGap={15}
-                      tickFormatter={(value: string) => {
-                        const parts = value.split("-");
-                        return parts.length >= 3 ? `${Number(parts[1])}-${Number(parts[2])}` : value;
+                      ticks={data.map((d) => d.group)}
+                      tick={(props) => {
+                        const index = props.index ?? 0;
+                        const interval = getXAxisInterval(range);
+                        const showLabel = interval === 0 || index % (interval + 1) === 0;
+                        return (
+                          <CustomXAxisTick
+                            {...props}
+                            selectedDate={selectedDate}
+                            hoveredDate={hoveredDate}
+                            index={showLabel ? index : -1}
+                          />
+                        );
                       }}
+                      interval={0}
+                      minTickGap={15}
                     />
                     <YAxis
                       yAxisId="left"
@@ -640,7 +729,7 @@ export default function DailyUsageChart({
                       tickFormatter={(v: number) => formatPriceAxis(v)}
                       domain={priceDomain}
                     />
-                    <Tooltip content={<RatioCostTooltip />} />
+                    <Tooltip content={<RatioCostTooltip />} cursor={false} />
                     <Bar
                       yAxisId="left"
                       dataKey="dummy"
@@ -674,6 +763,13 @@ export default function DailyUsageChart({
               </div>
             </div>
           </div>
+
+          {isMobile && (
+            <div className="md:hidden my-4 rounded-lg border border-dashed border-gray-300 bg-gray-50 p-4 text-center text-sm text-gray-500">
+              Charts are available on desktop
+            </div>
+          )}
+
           {activeTopModels && activeTopModels.length > 0 && (
             <div className="mt-8">
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-1 gap-2">
