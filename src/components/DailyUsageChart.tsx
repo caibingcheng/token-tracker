@@ -370,8 +370,8 @@ export default function DailyUsageChart({
   );
 
   const activeTopModels = useMemo(() => {
-    if (selectedDate && dailyTopModels?.[selectedDate]) {
-      return dailyTopModels[selectedDate];
+    if (selectedDate) {
+      return dailyTopModels?.[selectedDate] ?? [];
     }
     return topModels;
   }, [selectedDate, dailyTopModels, topModels]);
