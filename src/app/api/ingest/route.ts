@@ -35,6 +35,7 @@ export async function POST(request: NextRequest) {
 
     const provider = String(body.provider);
     const model = String(body.model);
+    const agent = body.agent ? String(body.agent) : "unknown";
 
     // 检查是否为新 provider（使 providers 缓存失效）
     const existingProviders = await db
@@ -56,6 +57,7 @@ export async function POST(request: NextRequest) {
       .values({
         model,
         provider,
+        agent,
         inputTokens,
         outputTokens,
         cacheRead,
