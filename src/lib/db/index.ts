@@ -31,6 +31,7 @@ export async function initDatabase() {
           id SERIAL PRIMARY KEY,
           model VARCHAR(255) NOT NULL,
           provider VARCHAR(255) NOT NULL,
+          agent VARCHAR(255) NOT NULL DEFAULT 'unknown',
           input_tokens INTEGER NOT NULL DEFAULT 0,
           output_tokens INTEGER NOT NULL DEFAULT 0,
           cache_read INTEGER NOT NULL DEFAULT 0,
