@@ -4,6 +4,7 @@ export const tokenRecords = pgTable("token_records", {
   id: serial("id").primaryKey(),
   model: varchar("model", { length: 255 }).notNull(),
   provider: varchar("provider", { length: 255 }).notNull(),
+  agent: varchar("agent", { length: 255 }).notNull().default("unknown"),
   inputTokens: integer("input_tokens").notNull().default(0),
   outputTokens: integer("output_tokens").notNull().default(0),
   cacheRead: integer("cache_read").notNull().default(0),
