@@ -5,6 +5,7 @@ import StatsCards, { Stats } from "./StatsCards";
 import RecordsTable from "./RecordsTable";
 import DailyUsageChart, { DailyData } from "./DailyUsageChart";
 import TodayOverview, { TodayData } from "./TodayOverview";
+import PriceSimulatorModal from "./PriceSimulatorModal";
 import {
   NumberFormatProvider,
   useNumberFormat,
@@ -241,6 +242,7 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
 
   const [recordsVisible, setRecordsVisible] = useState(false);
   const [isFiltersOpen, setIsFiltersOpen] = useState(false);
+  const [isSimulatorOpen, setIsSimulatorOpen] = useState(false);
 
   const statsRef = useRef<Stats | null>(null);
   const topModelsRef = useRef<ModelStat[]>([]);
@@ -648,10 +650,24 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
                 )}
                 <span className="text-gray-400">▼</span>
               </button>
+              <button
+                type="button"
+                onClick={() => setIsSimulatorOpen(true)}
+                className="sm:hidden inline-flex items-center gap-2 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 shrink-0"
+              >
+                Simulate
+              </button>
             </div>
 
             <div className="hidden sm:flex flex-row items-center gap-3">
               <NumberFormatToggle />
+              <button
+                type="button"
+                onClick={() => setIsSimulatorOpen(true)}
+                className="inline-flex items-center gap-2 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50"
+              >
+                Price Simulation
+              </button>
               <select
                 value={selectedProvider}
                 onChange={handleProviderChange}
@@ -747,8 +763,18 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
           </span>
           {priceUpdateTime}
         </div>
+
+        <PriceSimulatorModal
+          isOpen={isSimulatorOpen}
+          onClose={() => setIsSimulatorOpen(false)}
+          stats={stats}
+          todayData={todayData}
+          dailyData={dailyData}
+          totalDays={totalDays}
+          loading={loading}
+        />
       </div>
     </main>
   </NumberFormatProvider>
-  );
+);
 }
