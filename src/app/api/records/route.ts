@@ -44,13 +44,19 @@ export async function GET(request: NextRequest) {
     let modelFilter: string[] | null = null;
     if (modelParam) {
       const allModelRows = await db
-        .selectDistinct({ model: tokenRecords.model })
+        .selectDistinct({ model: tokenRecords.model, provider: tokenRecords.provider })
         .from(tokenRecords);
       const allRawModels: string[] = allModelRows
         .map((r) => r.model)
         .filter((n): n is string => n !== null && n !== undefined);
+      const providerByModel = new Map<string, string>();
+      for (const row of allModelRows) {
+        if (row.model && row.provider) {
+          providerByModel.set(row.model, row.provider);
+        }
+      }
 
-      modelFilter = resolveNormalizedModelFilter(modelParam, allRawModels);
+      modelFilter = resolveNormalizedModelFilter(modelParam, allRawModels, providerByModel);
 
       if (!modelFilter || modelFilter.length === 0) {
         return NextResponse.json(
@@ -95,6 +101,7 @@ export async function GET(request: NextRequest) {
       .select({
         id: tokenRecords.id,
         model: tokenRecords.model,
+        provider: tokenRecords.provider,
         inputTokens: tokenRecords.inputTokens,
         outputTokens: tokenRecords.outputTokens,
         cacheRead: tokenRecords.cacheRead,
@@ -108,7 +115,7 @@ export async function GET(request: NextRequest) {
     const rawData = whereClause ? await query.where(whereClause) : await query;
     const data = rawData.map((record) => ({
       ...record,
-      normalizedModel: getDisplayName(normalizeModel(record.model)),
+      normalizedModel: getDisplayName(normalizeModel(record.model, record.provider ?? undefined)),
     }));
 
     // 查询总数

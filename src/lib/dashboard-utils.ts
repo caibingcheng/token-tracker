@@ -34,13 +34,19 @@ export async function resolveDashboardFilters(
   let modelFilter: string[] | null = null;
   if (model !== "all") {
     const allModelRows = await db
-      .selectDistinct({ model: tokenRecords.model })
+      .selectDistinct({ model: tokenRecords.model, provider: tokenRecords.provider })
       .from(tokenRecords);
-    const allRawModels = allModelRows
+    const allRawModels: string[] = allModelRows
       .map((r) => r.model)
       .filter((n): n is string => n !== null && n !== undefined);
+    const providerByModel = new Map<string, string>();
+    for (const row of allModelRows) {
+      if (row.model && row.provider) {
+        providerByModel.set(row.model, row.provider);
+      }
+    }
 
-    modelFilter = resolveNormalizedModelFilter(model, allRawModels);
+    modelFilter = resolveNormalizedModelFilter(model, allRawModels, providerByModel);
   }
 
   return { providerFilter, modelFilter };
