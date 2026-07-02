@@ -27,6 +27,8 @@ import {
 } from "@/lib/dashboard-utils";
 import { DASHBOARD_CACHE_TAG } from "@/lib/cache";
 
+export const dynamic = "force-dynamic";
+
 function isTotalStatItems(data: StatsQueryResult): data is TotalStatItem[] {
   return Array.isArray(data) && (data.length === 0 || "lastActiveAt" in data[0]);
 }

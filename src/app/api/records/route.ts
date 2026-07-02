@@ -6,6 +6,8 @@ import { resolveProviderFilter } from "@/lib/provider-utils";
 import { normalizeModel, resolveNormalizedModelFilter } from "@/lib/model-utils";
 import { getDisplayName } from "@/lib/model-registry";
 
+export const dynamic = "force-dynamic";
+
 export async function GET(request: NextRequest) {
   await initDatabase();
   try {
