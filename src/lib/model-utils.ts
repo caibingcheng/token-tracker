@@ -4,12 +4,13 @@ import { toNum } from "@/lib/number-utils";
 export const TOP_N_RAW_MODELS = 20;
 export const TOP_N_DISPLAY = 5;
 
-export function normalizeModel(model: string): string {
-  return registryNormalizeModel(model);
+export function normalizeModel(model: string, provider?: string): string {
+  return registryNormalizeModel(model, provider);
 }
 
 export interface StatItem {
   group: string;
+  provider?: string;
   totalInput: number;
   totalOutput: number;
   totalInputCached: number;
@@ -29,18 +30,20 @@ export interface StatItem {
  */
 export function resolveNormalizedModelFilter(
   normalizedModel: string,
-  allRawModels: string[]
+  allRawModels: string[],
+  providerByModel?: Map<string, string>
 ): string[] {
-  return allRawModels.filter(
-    (raw) => normalizeModel(raw) === normalizedModel
-  );
+  return allRawModels.filter((raw) => {
+    const provider = providerByModel?.get(raw);
+    return normalizeModel(raw, provider) === normalizedModel;
+  });
 }
 
 export function aggregateByNormalizedModel(items: StatItem[]): StatItem[] {
   const map = new Map<string, StatItem>();
 
   for (const item of items) {
-    const normalized = normalizeModel(item.group);
+    const normalized = normalizeModel(item.group, item.provider);
     const existing = map.get(normalized);
 
     if (existing) {

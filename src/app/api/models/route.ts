@@ -24,21 +24,22 @@ export async function GET(request: NextRequest) {
   await initDatabase();
   try {
     const data = await getCachedModels(async () => {
-      // Query all unique raw model names
+      // Query all unique (model, provider) pairs
       const rows = await db
         .selectDistinct({
           model: tokenRecords.model,
+          provider: tokenRecords.provider,
         })
         .from(tokenRecords);
 
-      const allRawModels: string[] = rows
-        .map((row) => row.model)
-        .filter((name): name is string => name !== null && name !== undefined);
-
-      // Normalize and deduplicate
+      // Normalize with provider and deduplicate
       const normalizedSet = new Set<string>();
-      for (const raw of allRawModels) {
-        normalizedSet.add(normalizeModel(raw));
+      for (const row of rows) {
+        const raw = row.model;
+        const provider = row.provider ?? undefined;
+        if (raw) {
+          normalizedSet.add(normalizeModel(raw, provider));
+        }
       }
 
       const normalizedList = Array.from(normalizedSet).sort();
