@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "node scripts/sync-models-dev.js && next build",
     "build:all": "next build",
     "start": "next start",
     "lint": "next lint",
