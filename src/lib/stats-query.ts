@@ -17,6 +17,7 @@ export interface StatItemWithGroup extends StatItem {
 
 export interface StatItemWithGroupAndModel extends StatItemWithGroup {
   model: string;
+  provider?: string;
 }
 
 export interface TotalStatItem extends StatItemWithGroup {
@@ -127,16 +128,23 @@ export async function executeStatsQuery(params: {
   let modelFilter: string[] | null = precomputedModelFilter ?? null;
   if (model && model !== "all" && !modelFilter) {
     const allModelRows = await db
-      .selectDistinct({ model: tokenRecords.model })
+      .selectDistinct({ model: tokenRecords.model, provider: tokenRecords.provider })
       .from(tokenRecords);
     const allRawModels: string[] = allModelRows
       .map((r) => r.model)
       .filter((n): n is string => n !== null && n !== undefined);
+    const providerByModel = new Map<string, string>();
+    for (const row of allModelRows) {
+      if (row.model && row.provider) {
+        providerByModel.set(row.model, row.provider);
+      }
+    }
 
     // 找到所有原始 model 名称中归一化后等于所选 model 的
     const matchedRawModels: string[] = [];
     for (const raw of allRawModels) {
-      if (normalizeModel(raw) === model) {
+      const provider = providerByModel.get(raw);
+      if (normalizeModel(raw, provider) === model) {
         matchedRawModels.push(raw);
       }
     }
@@ -200,6 +208,7 @@ export async function executeStatsQuery(params: {
       .select({
         group: groupExpr,
         model: tokenRecords.model,
+        provider: tokenRecords.provider,
         totalInput:
           sql<number>`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead})`,
         totalInputCached: sql<number>`SUM(${tokenRecords.cacheRead})`,
@@ -209,15 +218,15 @@ export async function executeStatsQuery(params: {
         count: sql<number>`COUNT(*)`,
       })
       .from(tokenRecords)
-      .groupBy(groupExpr, tokenRecords.model)
-      .orderBy(groupExpr, tokenRecords.model);
+      .groupBy(groupExpr, tokenRecords.provider, tokenRecords.model)
+      .orderBy(groupExpr, tokenRecords.provider, tokenRecords.model);
 
     const whereClause = buildWhereClause(dateFilter, providerFilter, modelFilter);
     if (whereClause) {
       query = query.where(whereClause);
     }
   } else if (groupBy === "model") {
-    // 先按原始 model 分组取 Top N，再应用层归一化合并
+    // 先按 (provider, 原始 model) 分组取 Top N，再应用层归一化合并
     // 当 modelFilter 生效时（按特定归一化 model 筛选），不限制原始 model 数量
     const whereClause = buildWhereClause(dateFilter, providerFilter, modelFilter);
 
@@ -229,6 +238,7 @@ export async function executeStatsQuery(params: {
       const query = db
         .select({
           group: tokenRecords.model,
+          provider: tokenRecords.provider,
           totalInput:
             sql<number>`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead})`,
           totalInputCached: sql<number>`SUM(${tokenRecords.cacheRead})`,
@@ -238,7 +248,7 @@ export async function executeStatsQuery(params: {
           count: sql<number>`COUNT(*)`,
         })
         .from(tokenRecords)
-        .groupBy(tokenRecords.model)
+        .groupBy(tokenRecords.provider, tokenRecords.model)
         .orderBy(
           sql`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead}) DESC`
         );
@@ -248,6 +258,7 @@ export async function executeStatsQuery(params: {
       const query = db
         .select({
           group: tokenRecords.model,
+          provider: tokenRecords.provider,
           totalInput:
             sql<number>`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead})`,
           totalInputCached: sql<number>`SUM(${tokenRecords.cacheRead})`,
@@ -257,7 +268,7 @@ export async function executeStatsQuery(params: {
           count: sql<number>`COUNT(*)`,
         })
         .from(tokenRecords)
-        .groupBy(tokenRecords.model)
+        .groupBy(tokenRecords.provider, tokenRecords.model)
         .orderBy(
           sql`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead}) DESC`
         )
@@ -268,6 +279,7 @@ export async function executeStatsQuery(params: {
     const data = aggregateByNormalizedModel(
       rawData.map((row) => ({
         group: String(row.group),
+        provider: row.provider ?? undefined,
         totalInput: toNum(row.totalInput),
         totalOutput: toNum(row.totalOutput),
         totalInputCached: toNum(row.totalInputCached),

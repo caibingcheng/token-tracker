@@ -27,6 +27,8 @@ import {
 } from "@/lib/dashboard-utils";
 import { DASHBOARD_CACHE_TAG } from "@/lib/cache";
 
+export const dynamic = "force-dynamic";
+
 function isTotalStatItems(data: StatsQueryResult): data is TotalStatItem[] {
   return Array.isArray(data) && (data.length === 0 || "lastActiveAt" in data[0]);
 }
@@ -54,7 +56,7 @@ function toCostInput(item: StatItem): CostInput {
 }
 
 function aggregateTopModelsByDate(
-  rows: Array<StatItem & { group: string; model: string }>
+  rows: Array<StatItem & { group: string; model: string; provider?: string }>
 ): Map<string, ModelStat[]> {
   const byDate = new Map<string, StatItem[]>();
 
@@ -65,6 +67,7 @@ function aggregateTopModelsByDate(
     }
     byDate.get(date)!.push({
       group: String(row.model),
+      provider: row.provider,
       totalInput: toNum(row.totalInput),
       totalOutput: toNum(row.totalOutput),
       totalInputCached: toNum(row.totalInputCached),
@@ -106,7 +109,7 @@ function aggregateTopModelsByDate(
 }
 
 function aggregateCostByDate(
-  rows: Array<StatItem & { group: string; model: string }>
+  rows: Array<StatItem & { group: string; model: string; provider?: string }>
 ): Map<string, { aggregate: AggregatedCost; inputs: CostInput[] }> {
   const map = new Map<
     string,
@@ -115,7 +118,7 @@ function aggregateCostByDate(
 
   for (const row of rows) {
     const date = String(row.group);
-    const canonicalId = normalizeModel(String(row.model));
+    const canonicalId = normalizeModel(String(row.model), row.provider);
     const input: CostInput = {
       inputTokens: toNum(row.totalInputUncached),
       cacheRead: toNum(row.totalInputCached),
@@ -383,6 +386,7 @@ const dashboardCacheFn = unstable_cache(
       .filter((row) => String(row.group) === todayKey)
       .map((row) => ({
         group: String(row.model),
+        provider: row.provider,
         totalInput: toNum(row.totalInput),
         totalOutput: toNum(row.totalOutput),
         totalInputCached: toNum(row.totalInputCached),
