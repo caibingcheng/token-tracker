@@ -8,6 +8,17 @@ interface CanonicalInfo {
   family?: string;
 }
 
+interface ApiModelInfo {
+  id: string;
+  name: string;
+  cost: Record<string, unknown>;
+}
+
+interface ProviderModels {
+  modelToId: Map<string, string>; // lower-cased local id -> original local id
+  info: Map<string, ApiModelInfo>; // lower-cased local id -> info
+}
+
 interface Registry {
   canonicalMap: Map<string, CanonicalInfo>;
   priceMap: Map<string, ModelPricing>;
@@ -15,6 +26,8 @@ interface Registry {
   canonicalList: string[];
   canonicalModelParts: string[];
   rawToCanonical: Map<string, string>;
+  providerModelMap: Map<string, ProviderModels>;
+  apiModelInfoMap: Map<string, ApiModelInfo>;
 }
 
 const MODELS_JSON_PATH = path.join(
@@ -239,6 +252,61 @@ function buildAliasMap(
   return aliasMap;
 }
 
+function buildProviderModelMap(
+  apiData: unknown
+): {
+  providerModelMap: Map<string, ProviderModels>;
+  apiModelInfoMap: Map<string, ApiModelInfo>;
+} {
+  const providerModelMap = new Map<string, ProviderModels>();
+  const apiModelInfoMap = new Map<string, ApiModelInfo>();
+  if (!apiData || typeof apiData !== "object") {
+    return { providerModelMap, apiModelInfoMap };
+  }
+
+  const providers = apiData as Record<string, unknown>;
+
+  for (const [providerId, provider] of Object.entries(providers)) {
+    if (!provider || typeof provider !== "object") continue;
+    const models = (provider as Record<string, unknown>).models as
+      | Record<string, unknown>
+      | undefined;
+    if (!models) continue;
+
+    const modelToId = new Map<string, string>();
+    const info = new Map<string, ApiModelInfo>();
+
+    for (const [localId, modelEntry] of Object.entries(models)) {
+      if (!modelEntry || typeof modelEntry !== "object") continue;
+      const entry = modelEntry as Record<string, unknown>;
+
+      const name =
+        typeof entry.name === "string" && entry.name.length > 0
+          ? entry.name
+          : localId;
+      const cost =
+        entry.cost && typeof entry.cost === "object"
+          ? (entry.cost as Record<string, unknown>)
+          : {};
+
+      const lower = localId.toLowerCase();
+      const apiInfo: ApiModelInfo = { id: localId, name, cost };
+      if (!modelToId.has(lower)) {
+        modelToId.set(lower, localId);
+        info.set(lower, apiInfo);
+      }
+      if (!apiModelInfoMap.has(lower)) {
+        apiModelInfoMap.set(lower, apiInfo);
+      }
+    }
+
+    if (modelToId.size > 0) {
+      providerModelMap.set(providerId.toLowerCase(), { modelToId, info });
+    }
+  }
+
+  return { providerModelMap, apiModelInfoMap };
+}
 function loadRegistry(): Registry {
   const modelsData = loadJsonFile(MODELS_JSON_PATH);
   const apiData = loadJsonFile(API_JSON_PATH);
@@ -246,6 +314,7 @@ function loadRegistry(): Registry {
   const canonicalMap = buildCanonicalMap(modelsData);
   const priceMap = buildPriceMap(canonicalMap, apiData);
   const aliasMap = buildAliasMap(canonicalMap, apiData);
+  const { providerModelMap, apiModelInfoMap } = buildProviderModelMap(apiData);
   const canonicalList = Array.from(canonicalMap.keys());
   const canonicalModelParts = canonicalList.map((id) => filterAlnum(getModelPart(id)));
 
@@ -253,6 +322,8 @@ function loadRegistry(): Registry {
     canonicalMap,
     priceMap,
     aliasMap,
+    providerModelMap,
+    apiModelInfoMap,
     canonicalList,
     canonicalModelParts,
     rawToCanonical: new Map(),
@@ -306,33 +377,106 @@ export function getRegistry(): Registry {
   return ensureRegistry();
 }
 
-export function normalizeModel(raw: string): string {
+/**
+ * 仅在 canonical / alias / LCS 中查找最佳匹配，不触碰 api.json。
+ * 用于把 api.json 命中的 model 进一步归一化到 canonical（如果可能）。
+ */
+function resolveApiModelToCanonical(
+  apiInfo: ApiModelInfo,
+  reg: Registry
+): string | null {
+  const targetFiltered = filterAlnum(apiInfo.name);
+  if (targetFiltered.length === 0) return null;
+
+  let result: string | null = null;
+
+  // 优先按 display name 的 alnum 完全匹配 canonical 模型
+  reg.canonicalMap.forEach((info, canonicalId) => {
+    if (result) return;
+    if (filterAlnum(info.displayName) === targetFiltered) {
+      result = canonicalId;
+    }
+  });
+
+  if (result) return result;
+
+  // 兜底：用 LCS，但阈值收紧到 0.9，避免短串/高重叠误匹配
+  let bestRatio = 0;
+  let bestId = "";
+
+  for (let i = 0; i < reg.canonicalList.length; i++) {
+    const candidatePart = reg.canonicalModelParts[i];
+    const lcs = longestCommonSubsequenceLength(targetFiltered, candidatePart);
+    const ratio = lcs / targetFiltered.length;
+    if (ratio > bestRatio) {
+      bestRatio = ratio;
+      bestId = reg.canonicalList[i];
+    }
+  }
+
+  if (bestRatio >= 0.9 && bestId) {
+    return bestId;
+  }
+
+  return null;
+}
+
+export function normalizeModel(raw: string, provider?: string): string {
   if (!raw || typeof raw !== "string") return raw;
   const trimmed = raw.trim();
   if (!trimmed) return raw;
 
   const reg = ensureRegistry();
 
-  // 记忆化缓存
-  const cached = reg.rawToCanonical.get(trimmed);
+  // 记忆化缓存（key 包含 provider，因为相同 model 在不同 provider 下可能归一化结果不同）
+  const cacheKey = provider ? `${provider}:${trimmed}` : trimmed;
+  const cached = reg.rawToCanonical.get(cacheKey);
   if (cached !== undefined) return cached;
 
   const lower = trimmed.toLowerCase();
+  const providerTrimmed = provider ? provider.trim() : undefined;
 
   // 1. 精确匹配 canonical ID
   if (reg.canonicalMap.has(lower)) {
-    reg.rawToCanonical.set(trimmed, lower);
+    reg.rawToCanonical.set(cacheKey, lower);
     return lower;
   }
 
-  // 2. 精确匹配 provider-local alias
+  // 2. 精确匹配 provider-local alias（ canonical 模型在 api.json 中的别名映射）
   const aliased = reg.aliasMap.get(lower);
   if (aliased) {
-    reg.rawToCanonical.set(trimmed, aliased);
+    reg.rawToCanonical.set(cacheKey, aliased);
     return aliased;
   }
 
-  // 3. 子序列模糊匹配
+  // 3. provider 精确匹配 api.json（处理不在 canonical 中的 provider-specific 模型）
+  if (providerTrimmed) {
+    const providerLower = providerTrimmed.toLowerCase();
+    const providerModels = reg.providerModelMap.get(providerLower);
+    if (providerModels) {
+      const matchedId = providerModels.modelToId.get(lower);
+      if (matchedId) {
+        const apiInfo = providerModels.info.get(lower);
+        const canonicalMatch = apiInfo
+          ? resolveApiModelToCanonical(apiInfo, reg)
+          : null;
+        const result = canonicalMatch || matchedId;
+        reg.rawToCanonical.set(cacheKey, result);
+        return result;
+      }
+    }
+  }
+
+  // 4. 全局 api.json model 名称匹配（不限制 provider，用于自部署等未命中 provider 的场景）
+  const globalApiInfo = reg.apiModelInfoMap.get(lower);
+  if (globalApiInfo) {
+    const canonicalMatch = resolveApiModelToCanonical(globalApiInfo, reg);
+    const result = canonicalMatch || globalApiInfo.id;
+    reg.rawToCanonical.set(cacheKey, result);
+    return result;
+  }
+
+  // 5. 子序列模糊匹配
   const rawFiltered = filterAlnum(trimmed);
   if (rawFiltered.length > 0) {
     let bestRatio = 0;
@@ -349,19 +493,24 @@ export function normalizeModel(raw: string): string {
     }
 
     if (bestRatio >= 0.6 && bestId) {
-      reg.rawToCanonical.set(trimmed, bestId);
+      reg.rawToCanonical.set(cacheKey, bestId);
       return bestId;
     }
   }
 
-  // 4. Fallback：保持原始名称
-  reg.rawToCanonical.set(trimmed, trimmed);
+  // 6. Fallback：保持原始名称
+  reg.rawToCanonical.set(cacheKey, trimmed);
   return trimmed;
 }
 
 export function getDisplayName(canonicalId: string): string {
-  const info = ensureRegistry().canonicalMap.get(canonicalId);
+  const reg = ensureRegistry();
+  const info = reg.canonicalMap.get(canonicalId);
   if (info?.displayName) return info.displayName;
+
+  const apiInfo = reg.apiModelInfoMap.get(canonicalId.toLowerCase());
+  if (apiInfo?.name) return apiInfo.name;
+
   return getModelPart(canonicalId);
 }
 
@@ -370,5 +519,40 @@ export function getShortDisplayName(canonicalId: string): string {
 }
 
 export function getPricing(canonicalId: string): ModelPricing | null {
-  return ensureRegistry().priceMap.get(canonicalId) || null;
+  const reg = ensureRegistry();
+  const existing = reg.priceMap.get(canonicalId);
+  if (existing) return existing;
+
+  const apiInfo = reg.apiModelInfoMap.get(canonicalId.toLowerCase());
+  if (!apiInfo) return null;
+
+  const cost = apiInfo.cost;
+  const inputPrice = toNum(cost.input);
+  const outputPrice = toNum(cost.output);
+  const cacheReadPrice =
+    cost.cache_read !== undefined
+      ? toNum(cost.cache_read)
+      : inputPrice;
+  const cacheWritePrice =
+    cost.cache_write !== undefined
+      ? toNum(cost.cache_write)
+      : inputPrice;
+
+  if (
+    inputPrice === 0 &&
+    outputPrice === 0 &&
+    cacheReadPrice === 0 &&
+    cacheWritePrice === 0
+  ) {
+    return null;
+  }
+
+  return {
+    canonicalId,
+    displayName: apiInfo.name || getModelPart(canonicalId),
+    inputPrice,
+    cacheReadPrice,
+    cacheWritePrice,
+    outputPrice,
+  };
 }

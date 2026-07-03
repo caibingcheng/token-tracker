@@ -12,6 +12,8 @@ import { type StatItem } from "@/lib/model-utils";
 import { toNum } from "@/lib/number-utils";
 import { unstable_cache } from "next/cache";
 
+export const dynamic = "force-dynamic";
+
 const VALID_RANGES = ["3d", "7d", "14d", "30d"];
 const CLI_CACHE_TAG = "api-cli";
 
