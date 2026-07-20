@@ -1,29 +1,24 @@
 import fs from "fs";
 import path from "path";
-import { unstable_cache } from "next/cache";
 
-const getPriceUpdateTime = unstable_cache(
-  async () => {
-    const filePath = path.join(
-      process.cwd(),
-      "public",
-      "data",
-      "models-dev",
-      "api.json"
-    );
-    try {
-      const stats = fs.statSync(filePath);
-      return stats.mtime.toISOString().split("T")[0];
-    } catch {
-      return null;
-    }
-  },
-  ["price-update-time"],
-  { revalidate: 3600 }
+const META_PATH = path.join(
+  process.cwd(),
+  "public",
+  "data",
+  "models-dev",
+  "meta.json"
 );
 
 export default async function PriceUpdateTime() {
-  const updatedAt = await getPriceUpdateTime();
+  let updatedAt: string | null = null;
+
+  try {
+    const raw = fs.readFileSync(META_PATH, "utf8");
+    const meta = JSON.parse(raw);
+    updatedAt = meta.latestModelUpdatedAt ?? null;
+  } catch {
+    return null;
+  }
 
   if (!updatedAt) return null;
 
