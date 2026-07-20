@@ -211,6 +211,7 @@ function FiltersModal({
 export default function Dashboard({ priceUpdateTime }: DashboardProps) {
   const [stats, setStats] = useState<Stats | null>(null);
   const [topModels, setTopModels] = useState<ModelStat[]>([]);
+  const [totalTopModels, setTotalTopModels] = useState<ModelStat[]>([]);
   const [todayTopModels, setTodayTopModels] = useState<ModelStat[]>([]);
   const [dailyTopModels, setDailyTopModels] = useState<Record<string, ModelStat[]>>({});
   const [dailyData, setDailyData] = useState<DailyData[]>([]);
@@ -348,7 +349,7 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
           return;
         }
 
-        const { total, totalDays, today, yesterday, daily, models, todayModels, dailyModels } = json.data;
+        const { total, totalDays, totalTopModels, today, yesterday, daily, models, todayModels, dailyModels } = json.data;
 
         setTotalDays(Number(totalDays) || 0);
 
@@ -414,6 +415,26 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
 
         setTopModels(
           models?.slice(0, 5).map((m: ModelStat) => ({
+            group: m.group,
+            canonicalId: m.canonicalId || m.group,
+            displayName: m.displayName || m.group,
+            totalInput: Number(m.totalInput || 0),
+            totalOutput: Number(m.totalOutput || 0),
+            totalInputCached: Number(m.totalInputCached || 0),
+            totalInputUncached: Number(m.totalInputUncached || 0),
+            totalCacheWrite: Number(m.totalCacheWrite || 0),
+            count: Number(m.count || 0),
+            totalCost: Number(m.totalCost || 0),
+            costPerMillionTokens: Number(m.costPerMillionTokens || 0),
+            costPerMillionInput: Number(m.costPerMillionInput || 0),
+            costPerMillionCacheRead: Number(m.costPerMillionCacheRead || 0),
+            costPerMillionCacheWrite: Number(m.costPerMillionCacheWrite || 0),
+            costPerMillionOutput: Number(m.costPerMillionOutput || 0),
+          })) ?? []
+        );
+
+        setTotalTopModels(
+          totalTopModels?.slice(0, 5).map((m: ModelStat) => ({
             group: m.group,
             canonicalId: m.canonicalId || m.group,
             displayName: m.displayName || m.group,
@@ -706,7 +727,7 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
             onModelChange={handleModelChange}
           />
 
-        <StatsCards stats={stats} totalDays={totalDays} loading={loading} error={error} topModels={topModels} />
+        <StatsCards stats={stats} totalDays={totalDays} loading={loading} error={error} topModels={totalTopModels} />
 
         <TodayOverview
           today={todayData}
