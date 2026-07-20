@@ -216,6 +216,7 @@ interface DashboardData {
     costPerMillionOutput: number;
   }>;
   totalDays: number;
+  totalTopModels: ModelStat[];
   today: DayData | null;
   yesterday: DayData | null;
   daily: DayData[];
@@ -359,6 +360,42 @@ const dashboardCacheFn = unstable_cache(
 
     const totalDays = getTotalDays(totalArr[0]?.firstActiveAt);
 
+    // Total top models (all-time)
+    const totalTopModelsAggregated = aggregateByNormalizedModel(
+      totalModelsArr.map((row) => ({
+        group: String(row.group),
+        provider: row.provider,
+        totalInput: toNum(row.totalInput),
+        totalOutput: toNum(row.totalOutput),
+        totalInputCached: toNum(row.totalInputCached),
+        totalInputUncached: toNum(row.totalInputUncached),
+        totalCacheWrite: toNum(row.totalCacheWrite),
+        count: toNum(row.count),
+      }))
+    ).slice(0, TOP_N_DISPLAY);
+    const totalTopModelsResult = totalTopModelsAggregated.map((item) => {
+      const inputs = [toCostInput(item)];
+      const aggregate = aggregateCost(inputs);
+      const consistency = checkPricingConsistency(inputs, aggregate);
+      if (!consistency.ok) {
+        console.warn(
+          `Total top model pricing mismatch for ${item.group}:`,
+          consistency.mismatches
+        );
+      }
+      return {
+        ...item,
+        canonicalId: item.group,
+        displayName: getDisplayName(item.group),
+        totalCost: aggregate.totalCost,
+        costPerMillionTokens: aggregate.costPerMillionTokens,
+        costPerMillionInput: aggregate.costPerMillionInput,
+        costPerMillionCacheRead: aggregate.costPerMillionCacheRead,
+        costPerMillionCacheWrite: aggregate.costPerMillionCacheWrite,
+        costPerMillionOutput: aggregate.costPerMillionOutput,
+      };
+    });
+
     // Today / Yesterday cost aggregation
     const dailyModelAllArr = isStatItemsWithModel(dailyModelAll)
       ? dailyModelAll
@@ -474,6 +511,7 @@ const dashboardCacheFn = unstable_cache(
     return {
       total: totalResult,
       totalDays,
+      totalTopModels: totalTopModelsResult,
       today,
       yesterday,
       daily: dailyResult,

@@ -59,19 +59,21 @@ npm run lint                # ESLint（仅 extends next/core-web-vitals）
 ## 数据处理约定
 
 ### Provider 匿名化
-- **环境变量**：`HIDDEN_PROVIDERS`（逗号分隔）
-- **行为**：被隐藏的 provider 在 UI 中显示为 "Provider A", "Provider B"...
+- **环境变量**：`HIDDEN_PROVIDERS`（逗号分隔；支持命名分组，如 `CustomA:vendor*`）
+- **行为**：被隐藏的 provider 在 UI 中显示为 "Provider A", "Provider B"... 或自定义名称
 - **相关文件**：`src/lib/provider-utils.ts`
 
 ### Model 归一化
 - **文件**：`src/lib/model-registry.ts`（`src/lib/model-utils.ts` 仅做薄封装）
-- **数据源**：`public/data/models-dev/models.json`（canonical ID 与显示名）、`public/data/models-dev/api.json`（官方定价）
+- **数据源**：`public/data/model-registry.json`（自维护 canonical ID、显示名、价格、别名）
 - **规则**：按优先级依次匹配
   1. 精确匹配 canonical ID
-  2. 精确匹配 provider-local alias
-  3. 最长公共子序列（LCS）模糊匹配，相似度 ≥ 0.6 时采用最佳候选
-  4. 未命中时保持原始名称
-- **用途**：Dashboard Top 5 按归一化后的 model 名称聚合（如 `gpt-4o-2024-08-06` → `gpt-4o`）
+  2. 精确匹配 `aliases` 中的 `provider/model` 别名
+  3. 若 provider 被 `HIDDEN_PROVIDERS` 隐藏，则只按 `model` 部分匹配 `aliases` 中的别名
+  4. 精确匹配 `aliases` 中的 `model` 别名
+  5. 未命中时保持原始名称
+- **用途**：Dashboard Top 5 按归一化后的 model 名称聚合（如 `kimi-for-coding/k2p7` → `moonshotai/kimi-k2.7-code`）
+- **注**：不再依赖 `models.dev` 数据，所有模型、价格、别名均从 `model-registry.json` 维护；hidden provider 的别名不需要写入 registry，依赖 `HIDDEN_PROVIDERS` 的 fallback 规则归一化
 
 ## 环境变量
 
