@@ -3,11 +3,10 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "node scripts/sync-models-dev.js && next build",
+    "build": "next build",
     "build:all": "next build",
     "start": "next start",
     "lint": "next lint",
-    "sync-models-dev": "node scripts/sync-models-dev.js",
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio"

@@ -18,7 +18,7 @@
  *
  * 3. Named grouped format (with colons): each group can specify a custom
  *    display name followed by a colon
- *    HIDDEN_PROVIDERS="Bailian:ExampleProvider,ExampleProvider-Bailian;Bedrock:ExampleProvider-Bedrock"
+ *    HIDDEN_PROVIDERS="CustomA:vendor,vendor-partner;CustomB:vendor-platform"
  *    → Group 1 → "Bailian", Group 2 → "Bedrock"
  *    → Multiple real providers can match the same group (many-to-one mapping).
  */
@@ -41,7 +41,7 @@ function isGroupedFormat(raw: string): boolean {
  *   - Commas separate patterns within a group
  *   - Asterisk suffix means prefix match
  *
- * Named grouped format: "Bailian:ExampleProvider,ExampleProvider-Bailian;Bedrock:ExampleProvider-Bedrock"
+ * Named grouped format: "CustomA:vendor,vendor-partner;CustomB:vendor-platform"
  *   - Colon separates the custom display name from its patterns
  *   - If a group has no custom name, it falls back to "Provider A/B/C..."
  *
