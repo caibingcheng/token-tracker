@@ -2,6 +2,11 @@
 
 LLM Token Usage Dashboard.
 
+## Related Plugins:
+
+- [token-tracker-opencode](https://github.com/caibingcheng/token-tracker-opencode)
+- [token-tracker-openwebui](https://github.com/caibingcheng/token-tracker-openwebui)
+
 ## Deploy to Vercel
 
 ### 方法一：Vercel Postgres（推荐）
