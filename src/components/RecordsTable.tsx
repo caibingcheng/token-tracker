@@ -140,7 +140,6 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
   const [apiKey, setApiKey] = useState<string | null>(null);
   const [inputKey, setInputKey] = useState("");
   const [authError, setAuthError] = useState<string | null>(null);
-  const [fetchTrigger, setFetchTrigger] = useState(0);
 
   useEffect(() => {
     const stored = localStorage.getItem(STORAGE_KEY);
@@ -237,7 +236,7 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
   };
 
   const handleRefresh = () => {
-    setFetchTrigger((prev) => prev + 1);
+    setQueryKey((prev) => prev + 1);
   };
 
   const handleHome = () => {
