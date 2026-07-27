@@ -414,7 +414,7 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
         );
 
         setTopModels(
-          models?.slice(0, 5).map((m: ModelStat) => ({
+          models?.map((m: ModelStat) => ({
             group: m.group,
             canonicalId: m.canonicalId || m.group,
             displayName: m.displayName || m.group,
