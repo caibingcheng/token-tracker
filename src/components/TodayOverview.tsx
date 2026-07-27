@@ -25,6 +25,7 @@ interface TopModel {
   totalInput: number;
   totalOutput: number;
   totalInputCached: number;
+  totalCost: number;
 }
 
 interface TodayOverviewProps {
@@ -140,6 +141,7 @@ export default function TodayOverview({ today, yesterday, loading, topModels }: 
         { label: "Input / 1M", value: today?.costPerMillionInput || 0, isCost: true },
         { label: "Cache read / 1M", value: today?.costPerMillionCacheRead || 0, isCost: true },
         { label: "Output / 1M", value: today?.costPerMillionOutput || 0, isCost: true },
+        { label: "Total Cost", value: today?.totalCost || 0, isCost: true },
       ],
     },
   ];

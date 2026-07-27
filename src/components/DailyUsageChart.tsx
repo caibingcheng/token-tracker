@@ -64,6 +64,44 @@ interface TopModel {
   costPerMillionOutput: number;
 }
 
+type SortField = 'totalInput' | 'totalInputCached' | 'cacheHitRate' | 'totalOutput' | 'costPerMillionTokens' | 'totalCost' | 'count';
+
+function getMetricValue(m: TopModel, field: SortField): number {
+  switch (field) {
+    case 'cacheHitRate': return m.totalInput > 0 ? m.totalInputCached / m.totalInput : 0;
+    case 'totalInput': return m.totalInput;
+    case 'totalInputCached': return m.totalInputCached;
+    case 'totalOutput': return m.totalOutput;
+    case 'totalCost': return m.totalCost;
+    case 'costPerMillionTokens': return m.costPerMillionTokens;
+    case 'count': return m.count;
+  }
+}
+
+function SortHeader({
+  field, sortBy, sortOrder, onSort, children, className,
+}: {
+  field: string;
+  sortBy: string;
+  sortOrder: 'desc' | 'asc';
+  onSort: (field: any) => void;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  const isActive = sortBy === field;
+  return (
+    <th
+      className={`${className} px-4 py-3 text-right text-xs font-medium uppercase cursor-pointer select-none transition-colors overflow-hidden ${isActive ? 'text-blue-700' : 'text-gray-500 hover:text-gray-700'}`}
+      onClick={() => onSort(field)}
+    >
+      <span className="inline-flex items-center gap-1">
+        {children}
+        {isActive && <span>{sortOrder === 'desc' ? '▼' : '▲'}</span>}
+      </span>
+    </th>
+  );
+}
+
 function AnimatedCell({ value }: { value: number }) {
   const { compact } = useNumberFormat();
   const animated = useAnimatedNumber(value, 600);
@@ -281,6 +319,7 @@ function SummarySection({
         { label: "In", value: animatedCostPerMillionInput, isCost: true },
         { label: "Cache", value: animatedCostPerMillionCacheRead, isCost: true },
         { label: "Out", value: animatedCostPerMillionOutput, isCost: true },
+        { label: "Total Cost", value: summary.totalCost, isCost: true },
       ],
     },
   ];
@@ -403,6 +442,16 @@ export default function DailyUsageChart({
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [hoveredDate, setHoveredDate] = useState<string | null>(null);
   const chartRef = useRef<HTMLDivElement>(null);
+  const [sortBy, setSortBy] = useState<SortField>('totalInput');
+  const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
+  const handleSort = useCallback((field: typeof sortBy) => {
+    if (field !== sortBy) {
+      setSortBy(field);
+      setSortOrder('desc');
+    } else {
+      setSortOrder(o => o === 'desc' ? 'asc' : 'desc');
+    }
+  }, [sortBy]);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -443,11 +492,18 @@ export default function DailyUsageChart({
   );
 
   const activeTopModels = useMemo(() => {
-    if (selectedDate) {
-      return dailyTopModels?.[selectedDate] ?? [];
-    }
-    return topModels;
-  }, [selectedDate, dailyTopModels, topModels]);
+    const source = selectedDate
+      ? (dailyTopModels?.[selectedDate] ?? [])
+      : (topModels ?? []);
+
+    return [...source]
+      .sort((a, b) => {
+        const aVal = getMetricValue(a, sortBy);
+        const bVal = getMetricValue(b, sortBy);
+        return sortOrder === 'desc' ? bVal - aVal : aVal - bVal;
+      })
+      .slice(0, 5);
+  }, [selectedDate, dailyTopModels, topModels, sortBy, sortOrder]);
 
   const data = useMemo(() => {
     const apiData = new Map<string, DailyData>();
@@ -798,24 +854,25 @@ export default function DailyUsageChart({
               </p>
               <div className="hidden md:block overflow-x-auto">
                 {(() => {
-                  const totalAllTokens = activeTopModels.reduce((sum, m) => sum + m.totalInput + m.totalOutput, 0);
                   return (
-                    <table className="w-full">
+                    <table className="w-full" style={{ tableLayout: 'fixed' }}>
                       <thead className="bg-gray-50">
                         <tr>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Model</th>
-                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Total Input</th>
-                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Cache Read</th>
-                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Cache Hit Rate</th>
-                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Total Output</th>
-                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase" title="Pricing from models.dev">Avg cost / 1M tokens</th>
-                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Requests</th>
+                          <th className="w-[20%] px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase overflow-hidden">Model</th>
+                          <SortHeader className="w-[12%]" field="totalInput" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort}>Total Input</SortHeader>
+                          <SortHeader className="w-[11%]" field="totalInputCached" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort}>Cache Read</SortHeader>
+                          <SortHeader className="w-[12%]" field="cacheHitRate" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort}>Cache Hit Rate</SortHeader>
+                          <SortHeader className="w-[11%]" field="totalOutput" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort}>Total Output</SortHeader>
+                          <SortHeader className="w-[15%]" field="costPerMillionTokens" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort}>Avg cost / 1M tokens</SortHeader>
+                          <SortHeader className="w-[10%]" field="totalCost" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort}>Total Cost</SortHeader>
+                          <SortHeader className="w-[9%]" field="count" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort}>Requests</SortHeader>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-200">
                         {activeTopModels.map((model) => {
-                          const allTokens = model.totalInput + model.totalOutput;
-                          const percentage = totalAllTokens > 0 ? (allTokens / totalAllTokens) * 100 : 0;
+                          const metricTotal = activeTopModels.reduce((sum, m) => sum + getMetricValue(m, sortBy), 0);
+                          const metricVal = getMetricValue(model, sortBy);
+                          const percentage = metricTotal > 0 ? (metricVal / metricTotal) * 100 : 0;
                           const cacheHitRate = model.totalInput > 0
                             ? (model.totalInputCached / model.totalInput * 100).toFixed(1) + '%'
                             : '0%';
@@ -826,17 +883,18 @@ export default function DailyUsageChart({
                                 background: `linear-gradient(to right, rgb(239 246 255) ${percentage}%, transparent ${percentage}%)`
                               }}
                             >
-                              <td className="px-4 py-3 text-sm font-medium text-gray-900">{model.displayName}</td>
-                              <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.totalInput} /></td>
-                              <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.totalInputCached} /></td>
-                              <td className="px-4 py-3 text-sm text-gray-600 text-right">{cacheHitRate}</td>
-                              <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.totalOutput} /></td>
-                              <td className="px-4 py-3 text-sm text-gray-600 text-right">
+                              <td className="px-4 py-3 text-sm font-medium text-gray-900 overflow-hidden">{model.displayName}</td>
+                              <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden"><AnimatedCell value={model.totalInput} /></td>
+                              <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden"><AnimatedCell value={model.totalInputCached} /></td>
+                              <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden">{cacheHitRate}</td>
+                              <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden"><AnimatedCell value={model.totalOutput} /></td>
+                              <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden">
                                 <div className="flex flex-col items-end">
                                   <span>{formatCost(model.costPerMillionTokens)}</span>
                                 </div>
                               </td>
-                              <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.count} /></td>
+                              <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden">{formatCost(model.totalCost)}</td>
+                              <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden"><AnimatedCell value={model.count} /></td>
                             </tr>
                           );
                         })}
@@ -845,12 +903,27 @@ export default function DailyUsageChart({
                   );
                 })()}
               </div>
+              <div className="md:hidden mb-3">
+                <select
+                  value={sortBy}
+                  onChange={(e) => handleSort(e.target.value as typeof sortBy)}
+                  className="text-xs border border-gray-200 rounded px-2 py-1.5 bg-white text-gray-700 w-full"
+                >
+                  <option value="totalInput">Total Input</option>
+                  <option value="totalOutput">Total Output</option>
+                  <option value="totalInputCached">Cache Read</option>
+                  <option value="cacheHitRate">Cache Hit Rate</option>
+                  <option value="totalCost">Total Cost</option>
+                  <option value="costPerMillionTokens">Avg Cost / 1M</option>
+                  <option value="count">Requests</option>
+                </select>
+              </div>
               <div className="md:hidden space-y-3">
                 {(() => {
-                  const totalAllTokens = activeTopModels.reduce((sum, m) => sum + m.totalInput + m.totalOutput, 0);
+                  const metricTotal = activeTopModels.reduce((sum, m) => sum + getMetricValue(m, sortBy), 0);
                   return activeTopModels.map((model) => {
-                    const allTokens = model.totalInput + model.totalOutput;
-                    const percentage = totalAllTokens > 0 ? (allTokens / totalAllTokens) * 100 : 0;
+                    const metricVal = getMetricValue(model, sortBy);
+                    const percentage = metricTotal > 0 ? (metricVal / metricTotal) * 100 : 0;
                     return (
                         <div
                           key={model.group}
@@ -884,6 +957,10 @@ export default function DailyUsageChart({
                             <div>
                               <p className="text-xs text-gray-500" title="Pricing from models.dev">Avg cost / 1M tokens</p>
                               <p className="text-sm font-semibold text-gray-900">{formatCost(model.costPerMillionTokens)}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-gray-500">Total Cost</p>
+                              <p className="text-sm font-semibold text-gray-900">{formatCost(model.totalCost)}</p>
                             </div>
                             <div>
                               <p className="text-xs text-gray-500">Requests</p>

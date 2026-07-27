@@ -19,7 +19,7 @@ import {
   type AggregatedCost,
   type CostInput,
 } from "@/lib/cost-utils";
-import { TOP_N_DISPLAY } from "@/lib/model-utils";
+import { TOP_N_DISPLAY, TOP_N_RAW_MODELS } from "@/lib/model-utils";
 import {
   resolveDashboardFilters,
   validateFilterOrThrow,
@@ -79,7 +79,7 @@ function aggregateTopModelsByDate(
 
   const result = new Map<string, ModelStat[]>();
   byDate.forEach((items, date) => {
-    const aggregated = aggregateByNormalizedModel(items).slice(0, TOP_N_DISPLAY);
+    const aggregated = aggregateByNormalizedModel(items).slice(0, TOP_N_RAW_MODELS);
     const models = aggregated.map((item) => {
       const inputs = [toCostInput(item)];
       const aggregate = aggregateCost(inputs);
