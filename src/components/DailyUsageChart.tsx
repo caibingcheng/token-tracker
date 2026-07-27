@@ -281,6 +281,7 @@ function SummarySection({
         { label: "In", value: animatedCostPerMillionInput, isCost: true },
         { label: "Cache", value: animatedCostPerMillionCacheRead, isCost: true },
         { label: "Out", value: animatedCostPerMillionOutput, isCost: true },
+        { label: "Total Cost", value: summary.totalCost, isCost: true },
       ],
     },
   ];
@@ -809,6 +810,7 @@ export default function DailyUsageChart({
                           <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Cache Hit Rate</th>
                           <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Total Output</th>
                           <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase" title="Pricing from models.dev">Avg cost / 1M tokens</th>
+                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Total Cost</th>
                           <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Requests</th>
                         </tr>
                       </thead>
@@ -836,6 +838,7 @@ export default function DailyUsageChart({
                                   <span>{formatCost(model.costPerMillionTokens)}</span>
                                 </div>
                               </td>
+                              <td className="px-4 py-3 text-sm text-gray-600 text-right">{formatCost(model.totalCost)}</td>
                               <td className="px-4 py-3 text-sm text-gray-600 text-right"><AnimatedCell value={model.count} /></td>
                             </tr>
                           );
@@ -884,6 +887,10 @@ export default function DailyUsageChart({
                             <div>
                               <p className="text-xs text-gray-500" title="Pricing from models.dev">Avg cost / 1M tokens</p>
                               <p className="text-sm font-semibold text-gray-900">{formatCost(model.costPerMillionTokens)}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-gray-500">Total Cost</p>
+                              <p className="text-sm font-semibold text-gray-900">{formatCost(model.totalCost)}</p>
                             </div>
                             <div>
                               <p className="text-xs text-gray-500">Requests</p>

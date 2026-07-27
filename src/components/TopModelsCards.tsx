@@ -3,11 +3,17 @@
 import { formatNumber } from "@/lib/number-utils";
 import { useNumberFormat } from "./NumberFormatContext";
 
+function formatCost(num: number): string {
+  if (num <= 0) return "$0.0000";
+  return `$${num.toFixed(4)}`;
+}
+
 interface TopModel {
   displayName: string;
   totalInput: number;
   totalOutput: number;
   totalInputCached: number;
+  totalCost: number;
 }
 
 interface TopModelsCardsProps {
@@ -95,6 +101,12 @@ export default function TopModelsCards({ title, models, loading }: TopModelsCard
                   <span className="text-gray-400">Hit</span>
                   <span className="font-semibold text-gray-700 whitespace-nowrap">
                     {formatRatio(hitRate)}
+                  </span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span className="text-gray-400">Total Cost</span>
+                  <span className="font-semibold text-gray-700 whitespace-nowrap">
+                    {formatCost(model.totalCost)}
                   </span>
                 </div>
               </div>

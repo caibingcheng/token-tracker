@@ -25,6 +25,7 @@ interface TopModel {
   totalInput: number;
   totalOutput: number;
   totalInputCached: number;
+  totalCost: number;
 }
 
 interface StatsCardsProps {
@@ -123,6 +124,7 @@ export default function StatsCards({ stats, totalDays = 0, loading, error, topMo
         { label: "Input / 1M", value: stats?.costPerMillionInput || 0, isCost: true },
         { label: "Cache read / 1M", value: stats?.costPerMillionCacheRead || 0, isCost: true },
         { label: "Output / 1M", value: stats?.costPerMillionOutput || 0, isCost: true },
+        { label: "Total Cost", value: stats?.totalCost || 0, isCost: true },
       ],
     },
   ];
