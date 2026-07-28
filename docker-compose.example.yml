@@ -1,0 +1,14 @@
+services:
+  token-tracker:
+    image: ghcr.io/caibingcheng/token-tracker:latest
+    container_name: token-tracker
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    environment:
+      - SQLITE_DATABASE_PATH=/app/data/token-tracker.db
+      - API_KEYS=${API_KEYS:-your-api-key-here}
+      - HIDDEN_PROVIDERS=${HIDDEN_PROVIDERS:-}
+      - API_CACHE_DEBUG=false
+    volumes:
+      - ./data:/app/data

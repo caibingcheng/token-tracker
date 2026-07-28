@@ -5,7 +5,11 @@ node_modules/
 .next/
 
 # Environment variables
+.env
 .env.local
+
+# Docker compose (use example file)
+docker-compose.yml
 
 # Drizzle
 drizzle/
@@ -17,6 +21,19 @@ drizzle/
 .vscode/
 .idea/
 *.tsbuildinfo
+
+# Data
+/data/
+*.db
+
+# OpenCode
+.opencode/
+
+# Docs (plan/spec)
+/docs/
+
+# Local dev tooling
+mise.toml
 
 # Secrets
 *.pem

@@ -7,7 +7,6 @@ import {
   type StatItemWithGroupAndModel,
 } from "@/lib/stats-query";
 import { aggregateByNormalizedModel, type StatItem } from "@/lib/model-utils";
-import { unstable_cache } from "next/cache";
 import { normalizeModel, getDisplayName, getPricing } from "@/lib/model-registry";
 import { toNum } from "@/lib/number-utils";
 import {
@@ -25,8 +24,6 @@ import {
   validateFilterOrThrow,
   FilterValidationError,
 } from "@/lib/dashboard-utils";
-import { DASHBOARD_CACHE_TAG } from "@/lib/cache";
-
 export const dynamic = "force-dynamic";
 
 function isTotalStatItems(data: StatsQueryResult): data is TotalStatItem[] {
@@ -257,14 +254,14 @@ function buildDayData(
   };
 }
 
-const dashboardCacheFn = unstable_cache(
-  async (
+async function queryDashboard(
     range: string,
     provider: string,
     providerFilter: string[] | null,
     model: string,
-    modelFilter: string[] | null
-  ): Promise<DashboardData> => {
+    modelFilter: string[] | null,
+    agentFilter: string | null
+  ): Promise<DashboardData> {
     const [
       total,
       totalModels,
@@ -281,6 +278,7 @@ const dashboardCacheFn = unstable_cache(
         providerFilter,
         model,
         modelFilter,
+        agentFilter,
       }),
       executeStatsQuery({
         groupBy: "model",
@@ -289,6 +287,7 @@ const dashboardCacheFn = unstable_cache(
         providerFilter,
         model,
         modelFilter,
+        agentFilter,
         limit: null,
       }),
       executeStatsQuery({
@@ -299,6 +298,7 @@ const dashboardCacheFn = unstable_cache(
         providerFilter,
         model,
         modelFilter,
+        agentFilter,
       }),
       executeStatsQuery({
         groupBy: "date",
@@ -308,6 +308,7 @@ const dashboardCacheFn = unstable_cache(
         providerFilter,
         model,
         modelFilter,
+        agentFilter,
       }),
       executeStatsQuery({
         groupBy: "date",
@@ -317,6 +318,7 @@ const dashboardCacheFn = unstable_cache(
         providerFilter,
         model,
         modelFilter,
+        agentFilter,
       }),
       executeStatsQuery({
         groupBy: "date-model",
@@ -326,6 +328,7 @@ const dashboardCacheFn = unstable_cache(
         providerFilter,
         model,
         modelFilter,
+        agentFilter,
       }),
       executeStatsQuery({
         groupBy: "model",
@@ -334,6 +337,7 @@ const dashboardCacheFn = unstable_cache(
         providerFilter,
         model,
         modelFilter,
+        agentFilter,
       }),
     ]);
 
@@ -519,10 +523,7 @@ const dashboardCacheFn = unstable_cache(
       todayModels: todayModelsResult,
       dailyModels: Object.fromEntries(dailyTopModelsMap),
     };
-  },
-  ["dashboard"],
-  { tags: [DASHBOARD_CACHE_TAG], revalidate: false }
-);
+}
 
 const VALID_RANGES = ["3d", "7d", "14d", "30d"];
 
@@ -534,6 +535,7 @@ export async function GET(request: NextRequest) {
     const range = searchParams.get("range") || "7d";
     const provider = searchParams.get("provider") || "all";
     const model = searchParams.get("model") || "all";
+    const agent = searchParams.get("agent") || "all";
 
     if (!VALID_RANGES.includes(range)) {
       return NextResponse.json(
@@ -545,19 +547,21 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const { providerFilter, modelFilter } = await resolveDashboardFilters(
+    const { providerFilter, modelFilter, agentFilter } = await resolveDashboardFilters(
       provider,
-      model
+      model,
+      agent
     );
 
     validateFilterOrThrow(provider, providerFilter, model, modelFilter);
 
-    const data = await dashboardCacheFn(
+    const data = await queryDashboard(
       range,
       provider,
       providerFilter?.slice().sort() ?? null,
       model,
-      modelFilter?.slice().sort() ?? null
+      modelFilter?.slice().sort() ?? null,
+      agentFilter
     );
     return NextResponse.json({ success: true, data });
   } catch (error) {

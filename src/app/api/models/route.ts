@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db, initDatabase } from "@/lib/db";
-import { tokenRecords } from "@/lib/db/schema";
+import { tokenRecords } from "@/lib/db";
 import { normalizeModel } from "@/lib/model-utils";
+
+export const dynamic = "force-dynamic";
 import { getDisplayName } from "@/lib/model-registry";
-import { getCachedModels } from "@/lib/cache";
 
 /**
  * GET /api/models
@@ -23,32 +24,30 @@ import { getCachedModels } from "@/lib/cache";
 export async function GET(request: NextRequest) {
   await initDatabase();
   try {
-    const data = await getCachedModels(async () => {
-      // Query all unique (model, provider) pairs
-      const rows = await db
-        .selectDistinct({
-          model: tokenRecords.model,
-          provider: tokenRecords.provider,
-        })
-        .from(tokenRecords);
+    // Query all unique (model, provider) pairs
+    const rows = await db
+      .selectDistinct({
+        model: tokenRecords.model,
+        provider: tokenRecords.provider,
+      })
+      .from(tokenRecords);
 
-      // Normalize with provider and deduplicate
-      const normalizedSet = new Set<string>();
-      for (const row of rows) {
-        const raw = row.model;
-        const provider = row.provider ?? undefined;
-        if (raw) {
-          normalizedSet.add(normalizeModel(raw, provider));
-        }
+    // Normalize with provider and deduplicate
+    const normalizedSet = new Set<string>();
+    for (const row of rows) {
+      const raw = row.model;
+      const provider = row.provider ?? undefined;
+      if (raw) {
+        normalizedSet.add(normalizeModel(raw, provider));
       }
+    }
 
-      const normalizedList = Array.from(normalizedSet).sort();
+    const normalizedList = Array.from(normalizedSet).sort();
 
-      return normalizedList.map((id) => ({
-        id,
-        name: getDisplayName(id),
-      }));
-    });
+    const data = normalizedList.map((id) => ({
+      id,
+      name: getDisplayName(id),
+    }));
 
     return NextResponse.json({
       success: true,
