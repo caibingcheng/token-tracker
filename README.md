@@ -21,8 +21,8 @@ LLM Token Usage Dashboard.
 ```bash
 git clone https://github.com/caibingcheng/token-tracker.git
 cd token-tracker
-cp .env.example .env.local
-# Edit .env.local with your API keys
+cp .env.example .env
+# Edit .env with your API keys
 ```
 
 2. **Build and run**
@@ -48,6 +48,7 @@ The SQLite database file is automatically created on first API request — no ma
 ```bash
 npm install
 cp .env.example .env.local
+# (Docker deployment uses .env; local dev uses .env.local)
 npm run dev
 ```
 
