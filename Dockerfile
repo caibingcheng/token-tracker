@@ -29,13 +29,26 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
 
+RUN set -eux; \
+  apt-get update; \
+  apt-get install -y --no-install-recommends ca-certificates wget; \
+  rm -rf /var/lib/apt/lists/*; \
+  dpkgArch="$(dpkg --print-architecture | awk -F- '{ print $NF }')"; \
+  wget -O /usr/local/bin/gosu "https://github.com/tianon/gosu/releases/download/1.19/gosu-$dpkgArch"; \
+  chmod +x /usr/local/bin/gosu; \
+  apt-get purge -y --auto-remove wget; \
+  rm -rf /var/lib/apt/lists/*
+
 RUN mkdir -p /app/data && chown node:node /app/data
 
 COPY --from=builder --chown=node:node /app/.next/standalone ./
 COPY --from=builder --chown=node:node /app/.next/static ./.next/static
 COPY --from=builder --chown=node:node /app/public ./public
 
-USER node
+COPY docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+ENTRYPOINT ["docker-entrypoint.sh"]
 EXPOSE 3000
 
 CMD ["node", "server.js"]
