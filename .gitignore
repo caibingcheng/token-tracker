@@ -18,6 +18,19 @@ drizzle/
 .idea/
 *.tsbuildinfo
 
+# Data
+/data/
+*.db
+
+# OpenCode
+.opencode/
+
+# Docs (plan/spec)
+/docs/
+
+# Local dev tooling
+mise.toml
+
 # Secrets
 *.pem
 *.key

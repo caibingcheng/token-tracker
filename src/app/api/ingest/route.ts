@@ -1,11 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db, initDatabase } from "@/lib/db";
-import { tokenRecords } from "@/lib/db/schema";
-import { revalidateTag } from "next/cache";
-import { eq } from "drizzle-orm";
-import { MODELS_CACHE_TAG, DASHBOARD_CACHE_TAG } from "@/lib/cache";
-
-const PROVIDERS_CACHE_TAG = "api-providers";
+import { tokenRecords } from "@/lib/db";
 
 export async function POST(request: NextRequest) {
   await initDatabase();
@@ -37,20 +32,6 @@ export async function POST(request: NextRequest) {
     const model = String(body.model);
     const agent = body.agent ? String(body.agent) : "unknown";
 
-    // 检查是否为新 provider（使 providers 缓存失效）
-    const existingProviders = await db
-      .selectDistinct({ provider: tokenRecords.provider })
-      .from(tokenRecords)
-      .where(eq(tokenRecords.provider, provider));
-    const isNewProvider = existingProviders.length === 0;
-
-    // 检查是否为新 model（使 models 缓存失效）
-    const existingModels = await db
-      .selectDistinct({ model: tokenRecords.model })
-      .from(tokenRecords)
-      .where(eq(tokenRecords.model, model));
-    const isNewModel = existingModels.length === 0;
-
     // 插入记录
     const result = await db
       .insert(tokenRecords)
@@ -64,19 +45,6 @@ export async function POST(request: NextRequest) {
         cacheWrite,
       })
       .returning();
-
-    // 使 Dashboard 缓存失效（已合并 stats）
-    revalidateTag(DASHBOARD_CACHE_TAG);
-
-    // 如果是新 provider，使 Providers 缓存失效
-    if (isNewProvider) {
-      revalidateTag(PROVIDERS_CACHE_TAG);
-    }
-
-    // 如果是新 model，使 Models 缓存失效
-    if (isNewModel) {
-      revalidateTag(MODELS_CACHE_TAG);
-    }
 
     return NextResponse.json({ success: true, id: result[0].id });
   } catch (error) {

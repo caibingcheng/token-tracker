@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db, initDatabase } from "@/lib/db";
-import { tokenRecords } from "@/lib/db/schema";
+import { tokenRecords } from "@/lib/db";
 import { sql, desc, eq, and, gte, lte, inArray, SQL } from "drizzle-orm";
 import { resolveProviderFilter } from "@/lib/provider-utils";
 import { normalizeModel, resolveNormalizedModelFilter } from "@/lib/model-utils";
@@ -29,8 +29,8 @@ export async function GET(request: NextRequest) {
         .selectDistinct({ provider: tokenRecords.provider })
         .from(tokenRecords);
       const allProviderNames: string[] = allProviderRows
-        .map((r) => r.provider)
-        .filter((n): n is string => n !== null && n !== undefined);
+        .map((r: any) => r.provider)
+        .filter((n: any): n is string => n !== null && n !== undefined);
 
       providerFilter = resolveProviderFilter(provider, allProviderNames);
 
@@ -49,8 +49,8 @@ export async function GET(request: NextRequest) {
         .selectDistinct({ model: tokenRecords.model, provider: tokenRecords.provider })
         .from(tokenRecords);
       const allRawModels: string[] = allModelRows
-        .map((r) => r.model)
-        .filter((n): n is string => n !== null && n !== undefined);
+        .map((r: any) => r.model)
+        .filter((n: any): n is string => n !== null && n !== undefined);
       const providerByModel = new Map<string, string>();
       for (const row of allModelRows) {
         if (row.model && row.provider) {
@@ -115,7 +115,7 @@ export async function GET(request: NextRequest) {
       .limit(limit)
       .offset(offset);
     const rawData = whereClause ? await query.where(whereClause) : await query;
-    const data = rawData.map((record) => ({
+    const data = rawData.map((record: any) => ({
       ...record,
       normalizedModel: getDisplayName(normalizeModel(record.model, record.provider ?? undefined)),
     }));

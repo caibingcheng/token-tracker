@@ -1,5 +1,5 @@
 import { db } from "@/lib/db";
-import { tokenRecords } from "@/lib/db/schema";
+import { tokenRecords } from "@/lib/db";
 import { resolveProviderFilter } from "@/lib/provider-utils";
 import { resolveNormalizedModelFilter } from "@/lib/model-utils";
 
@@ -24,9 +24,9 @@ export async function resolveDashboardFilters(
     const allProviderRows = await db
       .selectDistinct({ provider: tokenRecords.provider })
       .from(tokenRecords);
-    const allProviderNames = allProviderRows
-      .map((r) => r.provider)
-      .filter((n): n is string => n !== null && n !== undefined);
+      const allProviderNames: string[] = allProviderRows
+        .map((r: any) => r.provider)
+        .filter((n: any): n is string => n !== null && n !== undefined);
 
     providerFilter = resolveProviderFilter(provider, allProviderNames);
   }
@@ -36,9 +36,9 @@ export async function resolveDashboardFilters(
     const allModelRows = await db
       .selectDistinct({ model: tokenRecords.model, provider: tokenRecords.provider })
       .from(tokenRecords);
-    const allRawModels: string[] = allModelRows
-      .map((r) => r.model)
-      .filter((n): n is string => n !== null && n !== undefined);
+      const allRawModels: string[] = allModelRows
+        .map((r: any) => r.model)
+        .filter((n: any): n is string => n !== null && n !== undefined);
     const providerByModel = new Map<string, string>();
     for (const row of allModelRows) {
       if (row.model && row.provider) {

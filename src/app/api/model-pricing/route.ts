@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { initDatabase } from "@/lib/db";
-import { getCachedModelPricing } from "@/lib/cache";
+
+export const dynamic = "force-dynamic";
 import { getRegistry } from "@/lib/model-registry";
 import { type ModelPricing } from "@/lib/cost-utils";
 
@@ -8,10 +9,8 @@ export async function GET(_request: NextRequest) {
   try {
     await initDatabase();
 
-    const data = await getCachedModelPricing<ModelPricing[]>(async () => {
-      const { priceMap } = getRegistry();
-      return Array.from(priceMap.values());
-    });
+    const { priceMap } = getRegistry();
+    const data: ModelPricing[] = Array.from(priceMap.values());
 
     return NextResponse.json({
       success: true,

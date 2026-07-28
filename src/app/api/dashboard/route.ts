@@ -7,7 +7,6 @@ import {
   type StatItemWithGroupAndModel,
 } from "@/lib/stats-query";
 import { aggregateByNormalizedModel, type StatItem } from "@/lib/model-utils";
-import { unstable_cache } from "next/cache";
 import { normalizeModel, getDisplayName, getPricing } from "@/lib/model-registry";
 import { toNum } from "@/lib/number-utils";
 import {
@@ -25,8 +24,6 @@ import {
   validateFilterOrThrow,
   FilterValidationError,
 } from "@/lib/dashboard-utils";
-import { DASHBOARD_CACHE_TAG } from "@/lib/cache";
-
 export const dynamic = "force-dynamic";
 
 function isTotalStatItems(data: StatsQueryResult): data is TotalStatItem[] {
@@ -257,14 +254,13 @@ function buildDayData(
   };
 }
 
-const dashboardCacheFn = unstable_cache(
-  async (
+async function queryDashboard(
     range: string,
     provider: string,
     providerFilter: string[] | null,
     model: string,
     modelFilter: string[] | null
-  ): Promise<DashboardData> => {
+  ): Promise<DashboardData> {
     const [
       total,
       totalModels,
@@ -519,10 +515,7 @@ const dashboardCacheFn = unstable_cache(
       todayModels: todayModelsResult,
       dailyModels: Object.fromEntries(dailyTopModelsMap),
     };
-  },
-  ["dashboard"],
-  { tags: [DASHBOARD_CACHE_TAG], revalidate: false }
-);
+}
 
 const VALID_RANGES = ["3d", "7d", "14d", "30d"];
 
@@ -552,7 +545,7 @@ export async function GET(request: NextRequest) {
 
     validateFilterOrThrow(provider, providerFilter, model, modelFilter);
 
-    const data = await dashboardCacheFn(
+    const data = await queryDashboard(
       range,
       provider,
       providerFilter?.slice().sort() ?? null,

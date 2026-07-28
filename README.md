@@ -7,40 +7,49 @@ LLM Token Usage Dashboard.
 - [token-tracker-opencode](https://github.com/caibingcheng/token-tracker-opencode)
 - [token-tracker-openwebui](https://github.com/caibingcheng/token-tracker-openwebui)
 
-## Deploy to Vercel
+## Deploy with Docker (VPS)
 
-### 方法一：Vercel Postgres（推荐）
+### Prerequisites
 
-1. **Push code to GitHub** and import project in [Vercel Dashboard](https://vercel.com)
+- Docker and Docker Compose installed
+- API keys ready for token ingestion
 
-2. **Add Vercel Postgres**
-   - 进入项目 Dashboard → "Storage" → "Connect Store" → "Create New" → "Vercel Postgres"
-   - Vercel 会自动添加 `POSTGRES_URL` 环境变量
+### Quick Start
 
-3. **Configure environment variables**
+1. **Clone and configure**
 
-   | 变量名 | 值 | 说明 |
-   |--------|-----|------|
-   | `DATABASE_URL` | `${POSTGRES_URL}` | 使用 Vercel Postgres 的连接字符串 |
-   | `API_KEYS` | `your-secret-key` | 数据上报的 API 密钥，可设置多个（逗号分隔）|
+```bash
+git clone https://github.com/caibingcheng/token-tracker.git
+cd token-tracker
+cp .env.example .env.local
+# Edit .env.local with your API keys
+```
 
-4. **Deploy**
-   - Vercel 自动构建和部署
-   - 首次部署后运行数据库迁移：`DATABASE_URL="your-production-url" npx drizzle-kit push`
+2. **Build and run**
 
-### 方法二：External Database（Neon / Supabase / Self-hosted）
+```bash
+docker compose up -d
+```
 
-使用任意 PostgreSQL 数据库：
+The app will be available at `http://localhost:3001` (or your configured port).
 
-1. **配置环境变量**
+### Environment Variables
 
-   | 变量名 | 值 |
-   |--------|-----|
-   | `DATABASE_URL` | `postgresql://user:password@host:port/database` |
-   | `API_KEYS` | `your-secret-key` |
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `SQLITE_DATABASE_PATH` | Yes | Path to SQLite database file (default: `/app/data/token-tracker.db`) |
+| `API_KEYS` | Yes | API keys for token ingestion, comma-separated |
+| `HIDDEN_PROVIDERS` | No | Providers to anonymize in the UI |
 
-2. **运行迁移** — `npx drizzle-kit push`
-3. **部署** — 推送代码到 GitHub，Vercel 自动部署
+The SQLite database file is automatically created on first API request — no manual migration needed.
+
+## Development
+
+```bash
+npm install
+cp .env.example .env.local
+npm run dev
+```
 
 ## License
 

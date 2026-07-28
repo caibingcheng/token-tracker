@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { initDatabase, db } from "@/lib/db";
-import { tokenRecords } from "@/lib/db/schema";
+import { tokenRecords } from "@/lib/db";
 import { executeStatsQuery, type StatsQueryResult } from "@/lib/stats-query";
 import { resolveProviderFilter } from "@/lib/provider-utils";
 import { getDisplayName, getPricing, normalizeModel } from "@/lib/model-registry";
@@ -10,12 +10,10 @@ import {
 } from "@/lib/cost-utils";
 import { type StatItem } from "@/lib/model-utils";
 import { toNum } from "@/lib/number-utils";
-import { unstable_cache } from "next/cache";
 
 export const dynamic = "force-dynamic";
 
 const VALID_RANGES = ["3d", "7d", "14d", "30d"];
-const CLI_CACHE_TAG = "api-cli";
 
 function formatNumber(num: number): string {
   return new Intl.NumberFormat("en-US").format(Math.round(num));
@@ -106,41 +104,37 @@ function isTotalStatItems(data: StatsQueryResult): data is Array<StatItem & { gr
   return Array.isArray(data) && (data.length === 0 || "lastActiveAt" in data[0]);
 }
 
-const cliCacheFn = unstable_cache(
-  async (range: string, provider: string, providerFilter: string[] | null) => {
-    const [total, totalModels, daily, models] = await Promise.all([
-      executeStatsQuery({
-        groupBy: "none",
-        range: "all",
-        provider,
-        providerFilter,
-      }),
-      executeStatsQuery({
-        groupBy: "model",
-        range: "all",
-        provider,
-        providerFilter,
-        limit: null,
-      }),
-      executeStatsQuery({
-        groupBy: "date",
-        range,
-        provider,
-        granularity: "day",
-        providerFilter,
-      }),
-      executeStatsQuery({
-        groupBy: "model",
-        range,
-        provider,
-        providerFilter,
-      }),
-    ]);
-    return { total, totalModels, daily, models };
-  },
-  ["cli"],
-  { tags: [CLI_CACHE_TAG], revalidate: false }
-);
+async function queryCliData(range: string, provider: string, providerFilter: string[] | null) {
+  const [total, totalModels, daily, models] = await Promise.all([
+    executeStatsQuery({
+      groupBy: "none",
+      range: "all",
+      provider,
+      providerFilter,
+    }),
+    executeStatsQuery({
+      groupBy: "model",
+      range: "all",
+      provider,
+      providerFilter,
+      limit: null,
+    }),
+    executeStatsQuery({
+      groupBy: "date",
+      range,
+      provider,
+      granularity: "day",
+      providerFilter,
+    }),
+    executeStatsQuery({
+      groupBy: "model",
+      range,
+      provider,
+      providerFilter,
+    }),
+  ]);
+  return { total, totalModels, daily, models };
+}
 
 export async function GET(request: NextRequest) {
   await initDatabase();
@@ -167,9 +161,9 @@ export async function GET(request: NextRequest) {
       const allProviderRows = await db
         .selectDistinct({ provider: tokenRecords.provider })
         .from(tokenRecords);
-      const allProviderNames = allProviderRows
-        .map((r) => r.provider)
-        .filter((n): n is string => n !== null && n !== undefined);
+      const allProviderNames: string[] = allProviderRows
+        .map((r: any) => r.provider)
+        .filter((n: any): n is string => n !== null && n !== undefined);
 
       providerFilter = resolveProviderFilter(provider, allProviderNames);
 
@@ -190,8 +184,8 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // Query data (cached)
-    const { total, totalModels, daily, models } = await cliCacheFn(range, provider, providerFilter);
+    // Query data
+    const { total, totalModels, daily, models } = await queryCliData(range, provider, providerFilter);
 
     // Build output
     const lines: string[] = [];

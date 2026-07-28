@@ -33,24 +33,51 @@ interface ModelRegistryJson {
   aliases?: Record<string, string>;
 }
 
-const MODEL_REGISTRY_PATH = path.join(
-  process.cwd(),
-  "public",
-  "data",
-  "model-registry.json"
-);
+const MODEL_REGISTRY_PATH =
+  process.env.MODEL_REGISTRY_PATH ||
+  path.join(process.cwd(), "data", "model-registry.json");
 
 function getModelPart(canonicalId: string): string {
   const slashIndex = canonicalId.indexOf("/");
   return slashIndex >= 0 ? canonicalId.slice(slashIndex + 1) : canonicalId;
 }
 
+const SEED_REGISTRY_PATH = path.join(process.cwd(), "public", "data", "model-registry.json");
+
 function loadJsonFile(filePath: string): unknown {
   try {
     const content = fs.readFileSync(filePath, "utf-8");
     return JSON.parse(content);
   } catch (err) {
-    console.warn(`Failed to load model registry from ${filePath}:`, err);
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      console.warn(`[Registry] Failed to load from ${filePath}:`, err);
+      return null;
+    }
+  }
+
+  const seedPath = SEED_REGISTRY_PATH;
+  try {
+    const seedContent = fs.readFileSync(seedPath, "utf-8");
+    try {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, seedContent, "utf-8");
+      console.log(`[Registry] Copied seed to ${filePath}`);
+    } catch {
+      console.warn(`[Registry] Can't write to ${filePath}, using built-in seed`);
+    }
+    return JSON.parse(seedContent);
+  } catch (seedErr) {
+    if ((seedErr as NodeJS.ErrnoException).code !== "ENOENT") {
+      console.warn(`[Registry] Failed to load seed from ${seedPath}:`, seedErr);
+    }
+    try {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, "{}", "utf-8");
+      console.log(`[Registry] Created empty model registry at ${filePath}`);
+      return {};
+    } catch (writeErr) {
+      console.warn(`[Registry] Failed to create model registry at ${filePath}:`, writeErr);
+    }
     return null;
   }
 }

@@ -1,5 +1,4 @@
-import { db } from "@/lib/db";
-import { tokenRecords } from "@/lib/db/schema";
+import { db, tokenRecords, getDateGroupExpr } from "@/lib/db";
 import { sql, and, eq, inArray } from "drizzle-orm";
 import {
   TOP_N_RAW_MODELS,
@@ -64,16 +63,6 @@ function buildWhereClause(
   return conditions.length > 0 ? and(...conditions) : null;
 }
 
-function getDateGroupExpr(granularity: string) {
-  if (granularity === "week") {
-    return sql<string>`TO_CHAR(${tokenRecords.createdAt} AT TIME ZONE 'UTC', 'YYYY-WW')`;
-  }
-  if (granularity === "month") {
-    return sql<string>`TO_CHAR(${tokenRecords.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM')`;
-  }
-  return sql<string>`TO_CHAR(${tokenRecords.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD')`;
-}
-
 export async function executeStatsQuery(params: {
   groupBy: string;
   range: string;
@@ -113,9 +102,9 @@ export async function executeStatsQuery(params: {
     const allProviderRows = await db
       .selectDistinct({ provider: tokenRecords.provider })
       .from(tokenRecords);
-    const allProviderNames: string[] = allProviderRows
-      .map((r) => r.provider)
-      .filter((n): n is string => n !== null && n !== undefined);
+      const allProviderNames: string[] = allProviderRows
+        .map((r: any) => r.provider)
+        .filter((n: any): n is string => n !== null && n !== undefined);
 
     providerFilter = resolveProviderFilter(provider, allProviderNames);
 
@@ -130,9 +119,9 @@ export async function executeStatsQuery(params: {
     const allModelRows = await db
       .selectDistinct({ model: tokenRecords.model, provider: tokenRecords.provider })
       .from(tokenRecords);
-    const allRawModels: string[] = allModelRows
-      .map((r) => r.model)
-      .filter((n): n is string => n !== null && n !== undefined);
+      const allRawModels: string[] = allModelRows
+        .map((r: any) => r.model)
+        .filter((n: any): n is string => n !== null && n !== undefined);
     const providerByModel = new Map<string, string>();
     for (const row of allModelRows) {
       if (row.model && row.provider) {
@@ -277,7 +266,7 @@ export async function executeStatsQuery(params: {
     }
 
     const data = aggregateByNormalizedModel(
-      rawData.map((row) => ({
+      rawData.map((row: any) => ({
         group: String(row.group),
         provider: row.provider ?? undefined,
         totalInput: toNum(row.totalInput),
