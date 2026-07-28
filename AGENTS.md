@@ -23,7 +23,8 @@ npm run lint                # ESLint（仅 extends next/core-web-vitals）
 
 # Docker
 docker build -t token-tracker:test .                # 本地构建
-docker compose up -d                                 # 本地运行（需 .env 文件）
+cp docker-compose.example.yml docker-compose.yml     # 首次使用：复制示例文件
+docker compose up -d                                 # 本地运行
 ```
 
 ## 数据库架构（Drizzle ORM）
@@ -117,7 +118,8 @@ docker run -d \
   -v /opt/token-tracker/data:/app/data \
   ghcr.io/caibingcheng/token-tracker:latest
 
-# 或用 docker-compose.yml（推荐）
+# 或用 docker-compose.example.yml（推荐）
+cp docker-compose.example.yml docker-compose.yml
 docker compose up -d
 ```
 
