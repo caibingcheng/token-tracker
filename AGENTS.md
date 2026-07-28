@@ -67,6 +67,16 @@ docker compose up -d                                 # 本地运行（需 .env �
 - **用途**：Dashboard Top 5 按归一化后的 model 名称聚合（如 `kimi-for-coding/k2p7` → `moonshotai/kimi-k2.7-code`）
 - **注**：不再依赖 `models.dev` 数据，所有模型、价格、别名均从 `model-registry.json` 维护；hidden provider 的别名不需要写入 registry，依赖 `HIDDEN_PROVIDERS` 的 fallback 规则归一化
 
+## 查询缓存
+
+- 项目在 **SQLite 驱动层**使用 `lru-cache` 实现了 SELECT 结果缓存，由 `src/lib/db/cache.ts` 管理。
+- 通过 `wrapDatabaseClient()` 包装 `better-sqlite3` 的 `prepare` 方法，对 `select`/`pragma`/`with` 语句自动缓存，对其他语句（INSERT/UPDATE/DELETE）自动清空缓存。
+- 默认 TTL 10 秒（`API_CACHE_TTL_MS`），时间参数按 10 秒桶取整作为缓存 key，保证同一窗口内查询共享缓存。
+- 带 `X-API-Key` 的请求（`/api/ingest`、`/api/records`）通过 `AsyncLocalStorage` 跳过缓存，直接查库。
+- 因此 `/api/dashboard`、`/api/providers`、`/api/models`、`/api/cli` 自动享受缓存；写入 `/api/ingest` 后自动清空缓存，后续 GET 立即读到新数据。
+- 相关文件：`src/lib/db/cache.ts`、`src/lib/db/index.ts`、`src/app/api/ingest/route.ts`、`src/app/api/records/route.ts`
+- **提醒**：如果未来新增写入接口（如新的 POST/PUT/DELETE 路由），必须在写入成功处调用 `invalidateQueryCache()` 清空缓存，或将 handler 包进 `withSkipCache()` 以确保一致性。
+
 ## 环境变量
 
 ```bash
@@ -79,6 +89,11 @@ API_KEYS="your-secret-key"          # 可设置多个，逗号分隔
 # 可选
 HIDDEN_PROVIDERS="openai,google"    # 需要匿名的 provider 列表
 MODEL_REGISTRY_PATH=                # model 归一化/价格配置（默认 data/model-registry.json，不存在则自动创建空文件）
+
+# Query Cache
+API_CACHE_TTL_MS=10000              # SELECT 缓存 TTL（毫秒），默认 10000，0 关闭
+API_CACHE_MAX_SIZE=1000             # 缓存最大条目数，默认 1000
+# API_CACHE_DEBUG=true              # 设为 true 在日志中输出缓存命中/未命中
 ```
 
 - 本地开发复制 `.env.example` → `.env.local`

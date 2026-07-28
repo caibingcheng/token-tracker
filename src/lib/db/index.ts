@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import { wrapDatabaseClient } from "./cache";
 
 let db: any;
 let tokenRecords: any;
@@ -25,6 +26,7 @@ async function ensureClient() {
 
   mkdirSync(dirname(dbPath), { recursive: true });
   const client = new Database(dbPath);
+  wrapDatabaseClient(client);
 
   const { drizzle } = await import("drizzle-orm/better-sqlite3");
   db = drizzle(client, { schema: sqliteModule });

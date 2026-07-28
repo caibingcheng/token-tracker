@@ -9,5 +9,6 @@ services:
       - SQLITE_DATABASE_PATH=/app/data/token-tracker.db
       - API_KEYS=${API_KEYS:-your-api-key-here}
       - HIDDEN_PROVIDERS=${HIDDEN_PROVIDERS:-}
+      - API_CACHE_DEBUG=false
     volumes:
       - ./data:/app/data
