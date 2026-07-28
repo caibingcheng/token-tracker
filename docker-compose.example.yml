@@ -1,6 +1,6 @@
 services:
   token-tracker:
-    image: ghcr.io/caibingcheng/token-tracker:latest
+    image: token-tracker:test
     container_name: token-tracker
     restart: unless-stopped
     ports:

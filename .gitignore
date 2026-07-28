@@ -8,6 +8,9 @@ node_modules/
 .env
 .env.local
 
+# Docker compose (use example file)
+docker-compose.yml
+
 # Drizzle
 drizzle/
 
