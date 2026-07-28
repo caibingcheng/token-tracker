@@ -2,6 +2,8 @@
 
 LLM Token Usage Dashboard.
 
+![Dashboard Screenshot](./public/readme-screenshot.png)
+
 ## Related Plugins:
 
 - [token-tracker-opencode](https://github.com/caibingcheng/token-tracker-opencode)
