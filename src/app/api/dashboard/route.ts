@@ -259,7 +259,8 @@ async function queryDashboard(
     provider: string,
     providerFilter: string[] | null,
     model: string,
-    modelFilter: string[] | null
+    modelFilter: string[] | null,
+    agentFilter: string | null
   ): Promise<DashboardData> {
     const [
       total,
@@ -277,6 +278,7 @@ async function queryDashboard(
         providerFilter,
         model,
         modelFilter,
+        agentFilter,
       }),
       executeStatsQuery({
         groupBy: "model",
@@ -285,6 +287,7 @@ async function queryDashboard(
         providerFilter,
         model,
         modelFilter,
+        agentFilter,
         limit: null,
       }),
       executeStatsQuery({
@@ -295,6 +298,7 @@ async function queryDashboard(
         providerFilter,
         model,
         modelFilter,
+        agentFilter,
       }),
       executeStatsQuery({
         groupBy: "date",
@@ -304,6 +308,7 @@ async function queryDashboard(
         providerFilter,
         model,
         modelFilter,
+        agentFilter,
       }),
       executeStatsQuery({
         groupBy: "date",
@@ -313,6 +318,7 @@ async function queryDashboard(
         providerFilter,
         model,
         modelFilter,
+        agentFilter,
       }),
       executeStatsQuery({
         groupBy: "date-model",
@@ -322,6 +328,7 @@ async function queryDashboard(
         providerFilter,
         model,
         modelFilter,
+        agentFilter,
       }),
       executeStatsQuery({
         groupBy: "model",
@@ -330,6 +337,7 @@ async function queryDashboard(
         providerFilter,
         model,
         modelFilter,
+        agentFilter,
       }),
     ]);
 
@@ -527,6 +535,7 @@ export async function GET(request: NextRequest) {
     const range = searchParams.get("range") || "7d";
     const provider = searchParams.get("provider") || "all";
     const model = searchParams.get("model") || "all";
+    const agent = searchParams.get("agent") || "all";
 
     if (!VALID_RANGES.includes(range)) {
       return NextResponse.json(
@@ -538,9 +547,10 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const { providerFilter, modelFilter } = await resolveDashboardFilters(
+    const { providerFilter, modelFilter, agentFilter } = await resolveDashboardFilters(
       provider,
-      model
+      model,
+      agent
     );
 
     validateFilterOrThrow(provider, providerFilter, model, modelFilter);
@@ -550,7 +560,8 @@ export async function GET(request: NextRequest) {
       provider,
       providerFilter?.slice().sort() ?? null,
       model,
-      modelFilter?.slice().sort() ?? null
+      modelFilter?.slice().sort() ?? null,
+      agentFilter
     );
     return NextResponse.json({ success: true, data });
   } catch (error) {

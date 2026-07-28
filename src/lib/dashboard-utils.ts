@@ -6,6 +6,7 @@ import { resolveNormalizedModelFilter } from "@/lib/model-utils";
 export interface DashboardFilters {
   providerFilter: string[] | null;
   modelFilter: string[] | null;
+  agentFilter: string | null;
 }
 
 export class FilterValidationError extends Error {
@@ -17,7 +18,8 @@ export class FilterValidationError extends Error {
 
 export async function resolveDashboardFilters(
   provider: string,
-  model: string
+  model: string,
+  agent?: string
 ): Promise<DashboardFilters> {
   let providerFilter: string[] | null = null;
   if (provider !== "all") {
@@ -49,14 +51,17 @@ export async function resolveDashboardFilters(
     modelFilter = resolveNormalizedModelFilter(model, allRawModels, providerByModel);
   }
 
-  return { providerFilter, modelFilter };
+  const agentFilter = agent && agent !== "all" ? agent : null;
+
+  return { providerFilter, modelFilter, agentFilter };
 }
 
 export function validateFilterOrThrow(
   provider: string,
   providerFilter: string[] | null,
   model: string,
-  modelFilter: string[] | null
+  modelFilter: string[] | null,
+  agent?: string
 ): void {
   if (provider !== "all" && (!providerFilter || providerFilter.length === 0)) {
     throw new FilterValidationError(`Unknown provider: ${provider}`);

@@ -87,10 +87,13 @@ interface FiltersModalProps {
   onClose: () => void;
   providers: Array<{ id: string; name: string }>;
   models: Array<{ id: string; name: string }>;
+  agents: Array<{ id: string; name: string }>;
   selectedProvider: string;
   selectedModel: string;
+  selectedAgent: string;
   onProviderChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
   onModelChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
+  onAgentChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
 }
 
 function FiltersModal({
@@ -98,10 +101,13 @@ function FiltersModal({
   onClose,
   providers,
   models,
+  agents,
   selectedProvider,
   selectedModel,
+  selectedAgent,
   onProviderChange,
   onModelChange,
+  onAgentChange,
 }: FiltersModalProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
 
@@ -155,6 +161,25 @@ function FiltersModal({
               Number format
             </label>
             <NumberFormatToggle />
+          </div>
+
+          <div>
+            <label htmlFor="mobile-agent-select" className="mb-1 block text-sm text-gray-600">
+              Agent
+            </label>
+            <select
+              id="mobile-agent-select"
+              value={selectedAgent}
+              onChange={onAgentChange}
+              className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              <option value="all">All Agents</option>
+              {agents.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}
+                </option>
+              ))}
+            </select>
           </div>
 
           <div>
@@ -228,6 +253,10 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
   const [selectedModel, setSelectedModel] = useState<string>("all");
   const selectedModelRef = useRef<string>("all");
 
+  const [agents, setAgents] = useState<Array<{ id: string; name: string }>>([]);
+  const [selectedAgent, setSelectedAgent] = useState<string>("all");
+  const selectedAgentRef = useRef<string>("all");
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -276,6 +305,10 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
     selectedProviderRef.current = selectedProvider;
   }, [selectedProvider]);
 
+  useEffect(() => {
+    selectedAgentRef.current = selectedAgent;
+  }, [selectedAgent]);
+
   const fetchProviders = useCallback(async () => {
     try {
       const res = await fetch("/api/providers");
@@ -300,10 +333,23 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
     }
   }, []);
 
+  const fetchAgents = useCallback(async () => {
+    try {
+      const res = await fetch("/api/agents");
+      const json = await res.json();
+      if (json.success && Array.isArray(json.data)) {
+        setAgents(json.data);
+      }
+    } catch (err) {
+      console.error("Failed to fetch agents:", err);
+    }
+  }, []);
+
   useEffect(() => {
     fetchProviders();
     fetchModels();
-  }, [fetchProviders, fetchModels]);
+    fetchAgents();
+  }, [fetchProviders, fetchModels, fetchAgents]);
 
   const buildDashboardUrl = useCallback(() => {
     const url = new URL("/api/dashboard", window.location.origin);
@@ -313,6 +359,9 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
     }
     if (selectedModelRef.current !== "all") {
       url.searchParams.set("model", selectedModelRef.current);
+    }
+    if (selectedAgentRef.current !== "all") {
+      url.searchParams.set("agent", selectedAgentRef.current);
     }
     return url.toString();
   }, []);
@@ -500,9 +549,9 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
   );
 
   const refreshFilters = useCallback(async (onReady?: (endTime: number) => void) => {
-    await Promise.allSettled([fetchProviders(), fetchModels()]);
+    await Promise.allSettled([fetchProviders(), fetchModels(), fetchAgents()]);
     onReady?.(performance.now());
-  }, [fetchProviders, fetchModels]);
+  }, [fetchProviders, fetchModels, fetchAgents]);
 
   const refreshAll = useCallback(
     async (options?: {
@@ -590,6 +639,16 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
     [scheduleRefresh]
   );
 
+  const handleAgentChange = useCallback(
+    (e: React.ChangeEvent<HTMLSelectElement>) => {
+      const value = e.target.value;
+      setSelectedAgent(value);
+      selectedAgentRef.current = value;
+      scheduleRefresh({ skipLoading: true });
+    },
+    [scheduleRefresh]
+  );
+
   const handleDailyRangeChange = useCallback(
     (newRange: number) => {
       setDailyRange(newRange);
@@ -644,12 +703,17 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
     [models, selectedModel]
   );
 
+  const selectedAgentName = useMemo(
+    () => agents.find((a) => a.id === selectedAgent)?.name || selectedAgent,
+    [agents, selectedAgent]
+  );
+
   return (
     <NumberFormatProvider>
       <main className="min-h-screen bg-gray-50 p-4 md:p-8">
         <div className="max-w-7xl mx-auto">
-          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 gap-2">
-            <div className="flex min-w-0 flex-1 items-start justify-between gap-2">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-2">
+            <div className="flex min-w-0 flex-1 items-start justify-between gap-2 w-full sm:w-auto">
               <div className="min-w-0">
                 <h1 className="text-xl md:text-3xl font-bold truncate">
                   Token Tracker Dashboard
@@ -660,24 +724,26 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
                   </p>
                 )}
               </div>
-              <button
-                type="button"
-                onClick={() => setIsFiltersOpen(true)}
-                className="sm:hidden inline-flex items-center gap-2 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 shrink-0"
-              >
-                Filters
-                {(selectedProvider !== "all" || selectedModel !== "all") && (
-                  <span className="h-2 w-2 rounded-full bg-red-500" />
-                )}
-                <span className="text-gray-400">▼</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setIsSimulatorOpen(true)}
-                className="sm:hidden inline-flex items-center gap-2 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 shrink-0"
-              >
-                Simulate
-              </button>
+              <div className="sm:hidden flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setIsFiltersOpen(true)}
+                  className="inline-flex items-center gap-2 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50"
+                >
+                  Filters
+                  {(selectedProvider !== "all" || selectedModel !== "all" || selectedAgent !== "all") && (
+                    <span className="h-2 w-2 rounded-full bg-red-500" />
+                  )}
+                  <span className="text-gray-400">▼</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsSimulatorOpen(true)}
+                  className="inline-flex items-center gap-2 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50"
+                >
+                  Simulate
+                </button>
+              </div>
             </div>
 
             <div className="hidden sm:flex flex-row items-center gap-3">
@@ -689,6 +755,18 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
               >
                 Price Simulation
               </button>
+              <select
+                value={selectedAgent}
+                onChange={handleAgentChange}
+                className="rounded border border-gray-300 bg-white px-3 py-1.5 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              >
+                <option value="all">All Agents</option>
+                {agents.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+              </select>
               <select
                 value={selectedProvider}
                 onChange={handleProviderChange}
@@ -721,10 +799,13 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
             onClose={() => setIsFiltersOpen(false)}
             providers={providers}
             models={models}
+            agents={agents}
             selectedProvider={selectedProvider}
             selectedModel={selectedModel}
+            selectedAgent={selectedAgent}
             onProviderChange={handleProviderChange}
             onModelChange={handleModelChange}
+            onAgentChange={handleAgentChange}
           />
 
         <StatsCards stats={stats} totalDays={totalDays} loading={loading} error={error} topModels={totalTopModels} />
@@ -753,11 +834,14 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
           >
             <div className="text-left">
               <h2 className="text-lg font-semibold">Recent Records</h2>
-              {selectedModel !== "all" && (
-                <p className="text-xs text-gray-400 mt-1">
-                  Filtered by {selectedModelName}
-                </p>
-              )}
+              <div className="flex flex-wrap gap-x-3 text-xs text-gray-400 mt-1">
+                {selectedAgent !== "all" && (
+                  <span>Agent: {selectedAgentName}</span>
+                )}
+                {selectedModel !== "all" && (
+                  <span>Model: {selectedModelName}</span>
+                )}
+              </div>
             </div>
             <div className="flex items-center gap-2">
               <span className="text-gray-400">
@@ -771,6 +855,7 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
               selectedProvider={selectedProvider}
               selectedModel={selectedModel}
               selectedModelName={selectedModelName}
+              selectedAgent={selectedAgent}
               refreshKey={recordsRefreshKey}
               showHeader={false}
             />

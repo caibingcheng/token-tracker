@@ -8,6 +8,7 @@ export interface Record {
   id: number;
   model: string;
   normalizedModel: string;
+  agent: string;
   inputTokens: number;
   outputTokens: number;
   cacheRead: number;
@@ -19,6 +20,7 @@ interface RecordsTableProps {
   selectedProvider?: string;
   selectedModel?: string;
   selectedModelName?: string;
+  selectedAgent?: string;
   refreshKey?: number;
   showHeader?: boolean;
 }
@@ -130,7 +132,7 @@ function FilterHint({ selectedModelName }: { selectedModelName?: string }) {
   );
 }
 
-export default function RecordsTable({ selectedProvider = "all", selectedModel = "all", selectedModelName, refreshKey = 0, showHeader = true }: RecordsTableProps) {
+export default function RecordsTable({ selectedProvider = "all", selectedModel = "all", selectedModelName, selectedAgent = "all", refreshKey = 0, showHeader = true }: RecordsTableProps) {
   const [records, setRecords] = useState<Record[]>([]);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -165,7 +167,7 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
   useEffect(() => {
     setPage(1);
     setQueryKey(k => k + 1);
-  }, [selectedProvider, selectedModel]);
+  }, [selectedProvider, selectedModel, selectedAgent]);
 
   // Fetch records
   useEffect(() => {
@@ -187,6 +189,9 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
     }
     if (selectedModel !== "all") {
       url.searchParams.set("model", selectedModel);
+    }
+    if (selectedAgent !== "all") {
+      url.searchParams.set("agent", selectedAgent);
     }
 
     fetch(url.toString(), { headers })
@@ -314,6 +319,7 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
             <tr>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Model</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Agent</th>
               <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Input (Uncached)</th>
               <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Input (Cached)</th>
               <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Output</th>
@@ -330,6 +336,9 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
                   title={`Original Model: ${record.model}`}
                 >
                   {record.normalizedModel}
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                  {record.agent}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
                   {formatNumber(record.inputTokens, compact)}
@@ -358,6 +367,7 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
                 <p className="text-sm font-medium text-gray-900" title={`Original: ${record.model}`}>
                   {record.normalizedModel}
                 </p>
+                <p className="text-xs text-gray-400 mt-1">{record.agent}</p>
               </div>
             </div>
             <div className="grid grid-cols-2 gap-3">

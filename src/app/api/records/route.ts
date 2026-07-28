@@ -24,6 +24,7 @@ export async function GET(request: NextRequest) {
       const modelParam = searchParams.get("model");
 
       const provider = searchParams.get("provider");
+      const agent = searchParams.get("agent");
       let providerFilter: string[] | null = null;
       if (provider) {
         const allProviderRows = await db
@@ -70,6 +71,10 @@ export async function GET(request: NextRequest) {
 
       const conditions: SQL[] = [];
 
+      if (agent) {
+        conditions.push(eq(tokenRecords.agent, agent));
+      }
+
       if (modelFilter) {
         if (modelFilter.length === 1) {
           conditions.push(eq(tokenRecords.model, modelFilter[0]));
@@ -103,6 +108,7 @@ export async function GET(request: NextRequest) {
           id: tokenRecords.id,
           model: tokenRecords.model,
           provider: tokenRecords.provider,
+          agent: tokenRecords.agent,
           inputTokens: tokenRecords.inputTokens,
           outputTokens: tokenRecords.outputTokens,
           cacheRead: tokenRecords.cacheRead,

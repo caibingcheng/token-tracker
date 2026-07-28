@@ -104,19 +104,21 @@ function isTotalStatItems(data: StatsQueryResult): data is Array<StatItem & { gr
   return Array.isArray(data) && (data.length === 0 || "lastActiveAt" in data[0]);
 }
 
-async function queryCliData(range: string, provider: string, providerFilter: string[] | null) {
+async function queryCliData(range: string, provider: string, providerFilter: string[] | null, agentFilter: string | null) {
   const [total, totalModels, daily, models] = await Promise.all([
     executeStatsQuery({
       groupBy: "none",
       range: "all",
       provider,
       providerFilter,
+      agentFilter,
     }),
     executeStatsQuery({
       groupBy: "model",
       range: "all",
       provider,
       providerFilter,
+      agentFilter,
       limit: null,
     }),
     executeStatsQuery({
@@ -125,12 +127,14 @@ async function queryCliData(range: string, provider: string, providerFilter: str
       provider,
       granularity: "day",
       providerFilter,
+      agentFilter,
     }),
     executeStatsQuery({
       groupBy: "model",
       range,
       provider,
       providerFilter,
+      agentFilter,
     }),
   ]);
   return { total, totalModels, daily, models };
@@ -143,6 +147,7 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const range = searchParams.get("range") || "7d";
     let provider = searchParams.get("provider") || "all";
+    const agent = searchParams.get("agent") || "all";
 
     // CLI-specific: ProviderA -> Provider A
     provider = normalizeProviderInput(provider);
@@ -184,15 +189,19 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    const agentFilter = agent !== "all" ? agent : null;
+
     // Query data
-    const { total, totalModels, daily, models } = await queryCliData(range, provider, providerFilter);
+    const { total, totalModels, daily, models } = await queryCliData(range, provider, providerFilter, agentFilter);
 
     // Build output
     const lines: string[] = [];
 
     const providerDisplay =
       provider === "all" ? "all providers" : provider;
-    lines.push(`Token Tracker Dashboard (${range}, ${providerDisplay})`);
+    const agentDisplay =
+      agent === "all" ? "" : `, agent: ${agent}`;
+    lines.push(`Token Tracker Dashboard (${range}, ${providerDisplay}${agentDisplay})`);
     lines.push("=".repeat(60));
     lines.push("");
 

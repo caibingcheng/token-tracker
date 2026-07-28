@@ -34,7 +34,8 @@ export type StatsQueryResult =
 function buildWhereClause(
   dateFilter: Date | null,
   providerFilter: string[] | null,
-  modelFilter: string[] | null
+  modelFilter: string[] | null,
+  agentFilter: string | null
 ) {
   const conditions = [];
 
@@ -60,6 +61,10 @@ function buildWhereClause(
     }
   }
 
+  if (agentFilter) {
+    conditions.push(eq(tokenRecords.agent, agentFilter));
+  }
+
   return conditions.length > 0 ? and(...conditions) : null;
 }
 
@@ -71,6 +76,7 @@ export async function executeStatsQuery(params: {
   providerFilter?: string[] | null;
   model?: string;
   modelFilter?: string[] | null;
+  agentFilter: string | null;
   limit?: number | null;
 }): Promise<StatsQueryResult> {
   const {
@@ -81,6 +87,7 @@ export async function executeStatsQuery(params: {
     providerFilter: precomputedProviderFilter,
     model,
     modelFilter: precomputedModelFilter,
+    agentFilter,
     limit,
   } = params;
 
@@ -162,7 +169,7 @@ export async function executeStatsQuery(params: {
       })
       .from(tokenRecords);
 
-    const whereClause = buildWhereClause(dateFilter, providerFilter, modelFilter);
+    const whereClause = buildWhereClause(dateFilter, providerFilter, modelFilter, agentFilter);
     if (whereClause) {
       query = query.where(whereClause);
     }
@@ -185,7 +192,7 @@ export async function executeStatsQuery(params: {
       .groupBy(groupExpr)
       .orderBy(groupExpr);
 
-    const whereClause = buildWhereClause(dateFilter, providerFilter, modelFilter);
+    const whereClause = buildWhereClause(dateFilter, providerFilter, modelFilter, agentFilter);
     if (whereClause) {
       query = query.where(whereClause);
     }
@@ -210,14 +217,14 @@ export async function executeStatsQuery(params: {
       .groupBy(groupExpr, tokenRecords.provider, tokenRecords.model)
       .orderBy(groupExpr, tokenRecords.provider, tokenRecords.model);
 
-    const whereClause = buildWhereClause(dateFilter, providerFilter, modelFilter);
+    const whereClause = buildWhereClause(dateFilter, providerFilter, modelFilter, agentFilter);
     if (whereClause) {
       query = query.where(whereClause);
     }
   } else if (groupBy === "model") {
     // 先按 (provider, 原始 model) 分组取 Top N，再应用层归一化合并
     // 当 modelFilter 生效时（按特定归一化 model 筛选），不限制原始 model 数量
-    const whereClause = buildWhereClause(dateFilter, providerFilter, modelFilter);
+    const whereClause = buildWhereClause(dateFilter, providerFilter, modelFilter, agentFilter);
 
     const effectiveLimit = limit === null ? null : TOP_N_RAW_MODELS;
 
@@ -301,7 +308,7 @@ export async function executeStatsQuery(params: {
         sql`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead}) DESC`
       );
 
-    const whereClause = buildWhereClause(dateFilter, providerFilter, modelFilter);
+    const whereClause = buildWhereClause(dateFilter, providerFilter, modelFilter, agentFilter);
     if (whereClause) {
       query = query.where(whereClause);
     }
