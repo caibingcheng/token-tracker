@@ -6,7 +6,6 @@ import { formatNumber } from "@/lib/number-utils";
 import {
   localDateKeyFromUtcDate,
   addDaysLocal,
-  formatOffsetMinutesToString,
 } from "@/lib/timezone-utils";
 import {
   BarChart,
@@ -274,14 +273,10 @@ function HourlyDistributionCard({ hourly, range, timezoneOffsetMinutes }: { hour
     return { buckets, maxAvg };
   }, [hourly, range]);
 
-  const offsetLabel = timezoneOffsetMinutes !== undefined
-    ? formatOffsetMinutesToString(timezoneOffsetMinutes)
-    : "+00:00";
-
   return (
     <div className="bg-white rounded-lg shadow p-4 flex flex-col">
       <p className="text-xs text-gray-400">
-        Hourly Distribution (avg/hour{timezoneOffsetMinutes !== undefined && timezoneOffsetMinutes !== 0 ? `, UTC${offsetLabel}` : ", UTC"})
+        Hourly Distribution
       </p>
       <div className="flex-1 flex items-end gap-px h-16 mt-2">
         {buckets.map((b) => {
