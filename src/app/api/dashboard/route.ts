@@ -24,6 +24,9 @@ import {
   validateFilterOrThrow,
   FilterValidationError,
 } from "@/lib/dashboard-utils";
+import {
+  localDateKeyFromUtcDate,
+} from "@/lib/timezone-utils";
 export const dynamic = "force-dynamic";
 
 function isTotalStatItems(data: StatsQueryResult): data is TotalStatItem[] {
@@ -140,28 +143,31 @@ function aggregateCostByDate(
   return map;
 }
 
-function formatDateKey(date: Date): string {
+function formatDateKey(date: Date, timezoneOffsetMinutes?: number): string {
+  if (timezoneOffsetMinutes !== undefined) {
+    return localDateKeyFromUtcDate(date, timezoneOffsetMinutes);
+  }
   const y = date.getUTCFullYear();
   const m = String(date.getUTCMonth() + 1).padStart(2, "0");
   const d = String(date.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
 }
 
-function getTotalDays(firstActiveAt?: string): number {
+function getTotalDays(firstActiveAt?: string, timezoneOffsetMinutes?: number): number {
   if (!firstActiveAt) return 0;
   const first = new Date(firstActiveAt);
   if (Number.isNaN(first.getTime())) return 0;
   const today = new Date();
-  const start = Date.UTC(
-    first.getUTCFullYear(),
-    first.getUTCMonth(),
-    first.getUTCDate()
-  );
-  const end = Date.UTC(
-    today.getUTCFullYear(),
-    today.getUTCMonth(),
-    today.getUTCDate()
-  );
+  const offsetFn =
+    timezoneOffsetMinutes !== undefined
+      ? (d: Date) => localDateKeyFromUtcDate(d, timezoneOffsetMinutes)
+      : (d: Date) =>
+          `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+  const firstKey = offsetFn(first);
+  const todayKey = offsetFn(today);
+  const start = new Date(`${firstKey}T00:00:00Z`).getTime();
+  const end = new Date(`${todayKey}T00:00:00Z`).getTime();
+  if (Number.isNaN(start) || Number.isNaN(end)) return 0;
   const diffMs = end - start;
   const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
   return Math.max(1, diffDays + 1);
@@ -220,6 +226,9 @@ interface DashboardData {
   models: ModelStat[];
   todayModels: ModelStat[];
   dailyModels: Record<string, ModelStat[]>;
+  heatmap: DayData[];
+  hourly: DayData[];
+  timezoneOffsetMinutes: number;
 }
 
 function buildDayData(
@@ -260,7 +269,8 @@ async function queryDashboard(
     providerFilter: string[] | null,
     model: string,
     modelFilter: string[] | null,
-    agentFilter: string | null
+    agentFilter: string | null,
+    timezoneOffsetMinutes?: number
   ): Promise<DashboardData> {
     const [
       total,
@@ -270,6 +280,8 @@ async function queryDashboard(
       dailyRange,
       dailyModelRange,
       modelsRange,
+      heatmap,
+      hourly,
     ] = await Promise.all([
       executeStatsQuery({
         groupBy: "none",
@@ -279,6 +291,7 @@ async function queryDashboard(
         model,
         modelFilter,
         agentFilter,
+        timezoneOffsetMinutes,
       }),
       executeStatsQuery({
         groupBy: "model",
@@ -299,6 +312,7 @@ async function queryDashboard(
         model,
         modelFilter,
         agentFilter,
+        timezoneOffsetMinutes,
       }),
       executeStatsQuery({
         groupBy: "date",
@@ -309,6 +323,7 @@ async function queryDashboard(
         model,
         modelFilter,
         agentFilter,
+        timezoneOffsetMinutes,
       }),
       executeStatsQuery({
         groupBy: "date",
@@ -319,6 +334,7 @@ async function queryDashboard(
         model,
         modelFilter,
         agentFilter,
+        timezoneOffsetMinutes,
       }),
       executeStatsQuery({
         groupBy: "date-model",
@@ -329,6 +345,7 @@ async function queryDashboard(
         model,
         modelFilter,
         agentFilter,
+        timezoneOffsetMinutes,
       }),
       executeStatsQuery({
         groupBy: "model",
@@ -338,6 +355,29 @@ async function queryDashboard(
         model,
         modelFilter,
         agentFilter,
+        timezoneOffsetMinutes,
+      }),
+      executeStatsQuery({
+        groupBy: "date",
+        range: "365d",
+        provider,
+        granularity: "day",
+        providerFilter,
+        model,
+        modelFilter,
+        agentFilter,
+        timezoneOffsetMinutes,
+      }),
+      executeStatsQuery({
+        groupBy: "date",
+        range,
+        provider,
+        granularity: "hour",
+        providerFilter,
+        model,
+        modelFilter,
+        agentFilter,
+        timezoneOffsetMinutes,
       }),
     ]);
 
@@ -362,7 +402,10 @@ async function queryDashboard(
       costPerMillionOutput: totalAggregate.costPerMillionOutput,
     }));
 
-    const totalDays = getTotalDays(totalArr[0]?.firstActiveAt);
+    const totalDays = getTotalDays(
+      totalArr[0]?.firstActiveAt,
+      timezoneOffsetMinutes
+    );
 
     // Total top models (all-time)
     const totalTopModelsAggregated = aggregateByNormalizedModel(
@@ -406,11 +449,11 @@ async function queryDashboard(
       : [];
     const dailyCostMapAll = aggregateCostByDate(dailyModelAllArr);
 
-    // Today / Yesterday keys (UTC)
-    const todayKey = formatDateKey(new Date());
+    // Today / Yesterday keys (local timezone)
+    const todayKey = formatDateKey(new Date(), timezoneOffsetMinutes);
     const yesterdayDate = new Date();
     yesterdayDate.setUTCDate(yesterdayDate.getUTCDate() - 1);
-    const yesterdayKey = formatDateKey(yesterdayDate);
+    const yesterdayKey = formatDateKey(yesterdayDate, timezoneOffsetMinutes);
 
     // Raw counts per date
     const dateAllArr = isStatItemsWithGroup(dateAll) ? dateAll : [];
@@ -522,6 +565,44 @@ async function queryDashboard(
       models: modelsResult,
       todayModels: todayModelsResult,
       dailyModels: Object.fromEntries(dailyTopModelsMap),
+      heatmap: isStatItemsWithGroup(heatmap)
+        ? heatmap.map((row) => ({
+            group: String(row.group),
+            totalInput: toNum(row.totalInput),
+            totalOutput: toNum(row.totalOutput),
+            totalInputCached: toNum(row.totalInputCached),
+            totalInputUncached: toNum(row.totalInputUncached),
+            totalCacheWrite: toNum(row.totalCacheWrite),
+            count: toNum(row.count),
+            totalCost: 0,
+            costPerMillionTokens: 0,
+            costPerMillionInput: 0,
+            costPerMillionCacheRead: 0,
+            costPerMillionCacheWrite: 0,
+            costPerMillionOutput: 0,
+          }))
+        : [],
+      hourly: isStatItemsWithGroup(hourly)
+        ? hourly.map((row) => ({
+            group: String(row.group),
+            totalInput: toNum(row.totalInput),
+            totalOutput: toNum(row.totalOutput),
+            totalInputCached: toNum(row.totalInputCached),
+            totalInputUncached: toNum(row.totalInputUncached),
+            totalCacheWrite: toNum(row.totalCacheWrite),
+            count: toNum(row.count),
+            totalCost: 0,
+            costPerMillionTokens: 0,
+            costPerMillionInput: 0,
+            costPerMillionCacheRead: 0,
+            costPerMillionCacheWrite: 0,
+            costPerMillionOutput: 0,
+          }))
+        : [],
+      timezoneOffsetMinutes:
+        timezoneOffsetMinutes !== undefined
+          ? timezoneOffsetMinutes
+          : 0,
     };
 }
 
@@ -536,6 +617,25 @@ export async function GET(request: NextRequest) {
     const provider = searchParams.get("provider") || "all";
     const model = searchParams.get("model") || "all";
     const agent = searchParams.get("agent") || "all";
+    const tzOffsetParam = searchParams.get("tzOffset");
+
+    let timezoneOffsetMinutes: number | undefined;
+    if (tzOffsetParam !== null) {
+      timezoneOffsetMinutes = parseInt(tzOffsetParam, 10);
+      if (
+        Number.isNaN(timezoneOffsetMinutes) ||
+        timezoneOffsetMinutes < -720 ||
+        timezoneOffsetMinutes > 720
+      ) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "Invalid tzOffset. Must be an integer between -720 and 720.",
+          },
+          { status: 400 }
+        );
+      }
+    }
 
     if (!VALID_RANGES.includes(range)) {
       return NextResponse.json(
@@ -561,7 +661,8 @@ export async function GET(request: NextRequest) {
       providerFilter?.slice().sort() ?? null,
       model,
       modelFilter?.slice().sort() ?? null,
-      agentFilter
+      agentFilter,
+      timezoneOffsetMinutes
     );
     return NextResponse.json({ success: true, data });
   } catch (error) {

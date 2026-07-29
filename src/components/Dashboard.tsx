@@ -6,10 +6,12 @@ import RecordsTable from "./RecordsTable";
 import DailyUsageChart, { DailyData } from "./DailyUsageChart";
 import TodayOverview, { TodayData } from "./TodayOverview";
 import PriceSimulatorModal from "./PriceSimulatorModal";
+import UsageHeatmap, { HeatmapData } from "./UsageHeatmap";
 import {
   NumberFormatProvider,
   useNumberFormat,
 } from "./NumberFormatContext";
+import { getClientTimezoneOffsetMinutes } from "@/lib/timezone-utils";
 
 interface ModelStat {
   group: string;
@@ -240,6 +242,13 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
   const [todayTopModels, setTodayTopModels] = useState<ModelStat[]>([]);
   const [dailyTopModels, setDailyTopModels] = useState<Record<string, ModelStat[]>>({});
   const [dailyData, setDailyData] = useState<DailyData[]>([]);
+  const [heatmapData, setHeatmapData] = useState<HeatmapData[]>([]);
+  const [hourlyData, setHourlyData] = useState<DailyData[]>([]);
+  const [timezoneOffsetMinutes, setTimezoneOffsetMinutes] = useState<number>(0);
+  const clientTimezoneOffsetMinutes = useMemo(
+    () => getClientTimezoneOffsetMinutes(),
+    []
+  );
   const [todayData, setTodayData] = useState<TodayData | null>(null);
   const [yesterdayData, setYesterdayData] = useState<TodayData | null>(null);
   const [lastActiveAt, setLastActiveAt] = useState<Date | null>(null);
@@ -354,6 +363,10 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
   const buildDashboardUrl = useCallback(() => {
     const url = new URL("/api/dashboard", window.location.origin);
     url.searchParams.set("range", `${dailyRangeRef.current}d`);
+    url.searchParams.set(
+      "tzOffset",
+      String(clientTimezoneOffsetMinutes)
+    );
     if (selectedProviderRef.current !== "all") {
       url.searchParams.set("provider", selectedProviderRef.current);
     }
@@ -364,7 +377,7 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
       url.searchParams.set("agent", selectedAgentRef.current);
     }
     return url.toString();
-  }, []);
+  }, [clientTimezoneOffsetMinutes]);
 
   const fetchDashboard = useCallback(
     async (options?: {
@@ -398,7 +411,7 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
           return;
         }
 
-        const { total, totalDays, totalTopModels, today, yesterday, daily, models, todayModels, dailyModels } = json.data;
+        const { total, totalDays, totalTopModels, today, yesterday, daily, models, todayModels, dailyModels, heatmap, hourly, timezoneOffsetMinutes: responseTimezoneOffsetMinutes } = json.data;
 
         setTotalDays(Number(totalDays) || 0);
 
@@ -525,6 +538,13 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
         setDailyTopModels(dailyModels ?? {});
 
         setDailyData(daily ?? []);
+        setHeatmapData(heatmap ?? []);
+        setHourlyData(hourly ?? []);
+        setTimezoneOffsetMinutes(
+          typeof responseTimezoneOffsetMinutes === "number"
+            ? responseTimezoneOffsetMinutes
+            : clientTimezoneOffsetMinutes
+        );
 
         setLastUpdated(new Date());
 
@@ -545,7 +565,7 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
         }
       }
     },
-    [buildDashboardUrl]
+    [buildDashboardUrl, clientTimezoneOffsetMinutes]
   );
 
   const refreshFilters = useCallback(async (onReady?: (endTime: number) => void) => {
@@ -794,19 +814,21 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
             </div>
           </div>
 
-          <FiltersModal
-            isOpen={isFiltersOpen}
-            onClose={() => setIsFiltersOpen(false)}
-            providers={providers}
-            models={models}
-            agents={agents}
-            selectedProvider={selectedProvider}
-            selectedModel={selectedModel}
-            selectedAgent={selectedAgent}
-            onProviderChange={handleProviderChange}
-            onModelChange={handleModelChange}
-            onAgentChange={handleAgentChange}
-          />
+        <FiltersModal
+          isOpen={isFiltersOpen}
+          onClose={() => setIsFiltersOpen(false)}
+          providers={providers}
+          models={models}
+          agents={agents}
+          selectedProvider={selectedProvider}
+          selectedModel={selectedModel}
+          selectedAgent={selectedAgent}
+          onProviderChange={handleProviderChange}
+          onModelChange={handleModelChange}
+          onAgentChange={handleAgentChange}
+        />
+
+        <UsageHeatmap data={heatmapData} loading={loading} timezoneOffsetMinutes={timezoneOffsetMinutes} />
 
         <StatsCards stats={stats} totalDays={totalDays} loading={loading} error={error} topModels={totalTopModels} />
 
@@ -825,6 +847,8 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
           onRangeChange={handleDailyRangeChange}
           topModels={topModels}
           dailyTopModels={dailyTopModels}
+          hourly={hourlyData}
+          timezoneOffsetMinutes={timezoneOffsetMinutes}
         />
 
         <div className="bg-white rounded-lg shadow overflow-hidden mb-8">
@@ -878,6 +902,7 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
           dailyData={dailyData}
           totalDays={totalDays}
           loading={loading}
+          timezoneOffsetMinutes={timezoneOffsetMinutes}
         />
       </div>
     </main>

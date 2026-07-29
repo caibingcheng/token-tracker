@@ -7,6 +7,7 @@ import { DailyData } from "./DailyUsageChart";
 import { type ModelPricing, calculateCost } from "@/lib/cost-utils";
 import { formatNumber, toNum } from "@/lib/number-utils";
 import { useNumberFormat } from "./NumberFormatContext";
+import { localDateKeyFromUtcDate } from "@/lib/timezone-utils";
 
 interface PriceSimulatorModalProps {
   isOpen: boolean;
@@ -16,6 +17,7 @@ interface PriceSimulatorModalProps {
   dailyData: DailyData[];
   totalDays: number;
   loading: boolean;
+  timezoneOffsetMinutes?: number;
 }
 
 interface SectionData {
@@ -103,7 +105,8 @@ function computeSection(
 
 function aggregateDailyDataForRange(
   data: DailyData[],
-  days: number
+  days: number,
+  timezoneOffsetMinutes: number
 ): Pick<
   SectionData,
   | "totalInput"
@@ -115,13 +118,13 @@ function aggregateDailyDataForRange(
   if (!data || data.length === 0) return null;
 
   const today = new Date();
-  const cutoff = new Date(today);
-  cutoff.setUTCDate(today.getUTCDate() - days + 1);
-  cutoff.setUTCHours(0, 0, 0, 0);
+  const cutoffKey = localDateKeyFromUtcDate(
+    new Date(today.getTime() - days * 24 * 60 * 60 * 1000),
+    timezoneOffsetMinutes
+  );
 
   const filtered = data.filter((item) => {
-    const date = new Date(`${item.group}T00:00:00Z`);
-    return date >= cutoff;
+    return item.group >= cutoffKey;
   });
 
   if (filtered.length === 0) return null;
@@ -234,6 +237,7 @@ export default function PriceSimulatorModal({
   dailyData,
   totalDays,
   loading,
+  timezoneOffsetMinutes = 0,
 }: PriceSimulatorModalProps) {
   const { compact } = useNumberFormat();
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -379,7 +383,11 @@ export default function PriceSimulatorModal({
     if (todaySection) result.push(todaySection);
 
     for (const days of RANGE_OPTIONS) {
-      const rangeData = aggregateDailyDataForRange(dailyData, days);
+      const rangeData = aggregateDailyDataForRange(
+        dailyData,
+        days,
+        timezoneOffsetMinutes
+      );
       const rangeSection = computeSection(
         `Last ${days} Days`,
         rangeData,
@@ -389,7 +397,7 @@ export default function PriceSimulatorModal({
     }
 
     return result;
-  }, [stats, todayData, dailyData, selectedModel, totalDays]);
+  }, [stats, todayData, dailyData, selectedModel, totalDays, timezoneOffsetMinutes]);
 
   const hasData = stats !== null || todayData !== null || dailyData.length > 0;
 
