@@ -1,6 +1,10 @@
 import { db, tokenRecords, getDateGroupExpr } from "@/lib/db";
 import { sql, and, eq, inArray } from "drizzle-orm";
 import {
+  offsetMinutesToSqlModifiers,
+  localDateKeyFromUtcDate,
+} from "@/lib/timezone-utils";
+import {
   TOP_N_RAW_MODELS,
   TOP_N_DISPLAY,
   aggregateByNormalizedModel,
@@ -32,17 +36,31 @@ export type StatsQueryResult =
 
 // Helper to build combined WHERE clause
 function buildWhereClause(
-  dateFilter: Date | null,
+  dateFilter: Date | string | null,
   providerFilter: string[] | null,
   modelFilter: string[] | null,
-  agentFilter: string | null
+  agentFilter: string | null,
+  timezoneOffsetMinutes?: number
 ) {
   const conditions = [];
 
   if (dateFilter) {
-    conditions.push(
-      sql`${tokenRecords.createdAt} >= ${dateFilter.toISOString()}`
-    );
+    if (typeof dateFilter === "string" && timezoneOffsetMinutes !== undefined) {
+      const modifiers = offsetMinutesToSqlModifiers(timezoneOffsetMinutes);
+      if (modifiers.length === 1) {
+        conditions.push(
+          sql`strftime('%Y-%m-%d', ${tokenRecords.createdAt}, ${modifiers[0]}) >= ${dateFilter}`
+        );
+      } else {
+        conditions.push(
+          sql`strftime('%Y-%m-%d', ${tokenRecords.createdAt}, ${modifiers[0]}, ${modifiers[1]}) >= ${dateFilter}`
+        );
+      }
+    } else if (dateFilter instanceof Date) {
+      conditions.push(
+        sql`${tokenRecords.createdAt} >= ${dateFilter.toISOString()}`
+      );
+    }
   }
 
   if (providerFilter && providerFilter.length > 0) {
@@ -78,6 +96,7 @@ export async function executeStatsQuery(params: {
   modelFilter?: string[] | null;
   agentFilter: string | null;
   limit?: number | null;
+  timezoneOffsetMinutes?: number;
 }): Promise<StatsQueryResult> {
   const {
     groupBy,
@@ -89,18 +108,28 @@ export async function executeStatsQuery(params: {
     modelFilter: precomputedModelFilter,
     agentFilter,
     limit,
+    timezoneOffsetMinutes,
   } = params;
 
   // 计算时间范围
-  let dateFilter: Date | null = null;
+  let dateFilter: Date | string | null = null;
   if (range !== "all") {
     const days = parseInt(range, 10);
     if (!Number.isFinite(days) || days <= 0) {
       throw new Error(`Invalid range: ${range}`);
     }
-    const now = new Date();
-    dateFilter = new Date(now);
-    dateFilter.setDate(dateFilter.getDate() - days);
+    if (timezoneOffsetMinutes !== undefined) {
+      const todayLocal = localDateKeyFromUtcDate(
+        new Date(),
+        timezoneOffsetMinutes
+      );
+      const base = new Date(`${todayLocal}T00:00:00Z`);
+      base.setUTCDate(base.getUTCDate() - days);
+      dateFilter = localDateKeyFromUtcDate(base, timezoneOffsetMinutes);
+    } else {
+      dateFilter = new Date();
+      dateFilter.setDate(dateFilter.getDate() - days);
+    }
   }
 
   // Resolve provider filter if a specific one is selected
@@ -169,13 +198,22 @@ export async function executeStatsQuery(params: {
       })
       .from(tokenRecords);
 
-    const whereClause = buildWhereClause(dateFilter, providerFilter, modelFilter, agentFilter);
+    const whereClause = buildWhereClause(
+      dateFilter,
+      providerFilter,
+      modelFilter,
+      agentFilter,
+      timezoneOffsetMinutes
+    );
     if (whereClause) {
       query = query.where(whereClause);
     }
   } else if (groupBy === "date") {
     const effectiveGranularity = granularity || "day";
-    const groupExpr = getDateGroupExpr(effectiveGranularity);
+    const groupExpr = getDateGroupExpr(
+      effectiveGranularity,
+      timezoneOffsetMinutes
+    );
 
     query = db
       .select({
@@ -192,13 +230,22 @@ export async function executeStatsQuery(params: {
       .groupBy(groupExpr)
       .orderBy(groupExpr);
 
-    const whereClause = buildWhereClause(dateFilter, providerFilter, modelFilter, agentFilter);
+    const whereClause = buildWhereClause(
+      dateFilter,
+      providerFilter,
+      modelFilter,
+      agentFilter,
+      timezoneOffsetMinutes
+    );
     if (whereClause) {
       query = query.where(whereClause);
     }
   } else if (groupBy === "date-model") {
     const effectiveGranularity = granularity || "day";
-    const groupExpr = getDateGroupExpr(effectiveGranularity);
+    const groupExpr = getDateGroupExpr(
+      effectiveGranularity,
+      timezoneOffsetMinutes
+    );
 
     query = db
       .select({
@@ -217,14 +264,26 @@ export async function executeStatsQuery(params: {
       .groupBy(groupExpr, tokenRecords.provider, tokenRecords.model)
       .orderBy(groupExpr, tokenRecords.provider, tokenRecords.model);
 
-    const whereClause = buildWhereClause(dateFilter, providerFilter, modelFilter, agentFilter);
+    const whereClause = buildWhereClause(
+      dateFilter,
+      providerFilter,
+      modelFilter,
+      agentFilter,
+      timezoneOffsetMinutes
+    );
     if (whereClause) {
       query = query.where(whereClause);
     }
   } else if (groupBy === "model") {
     // 先按 (provider, 原始 model) 分组取 Top N，再应用层归一化合并
     // 当 modelFilter 生效时（按特定归一化 model 筛选），不限制原始 model 数量
-    const whereClause = buildWhereClause(dateFilter, providerFilter, modelFilter, agentFilter);
+    const whereClause = buildWhereClause(
+      dateFilter,
+      providerFilter,
+      modelFilter,
+      agentFilter,
+      timezoneOffsetMinutes
+    );
 
     const effectiveLimit = limit === null ? null : TOP_N_RAW_MODELS;
 
@@ -308,7 +367,13 @@ export async function executeStatsQuery(params: {
         sql`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead}) DESC`
       );
 
-    const whereClause = buildWhereClause(dateFilter, providerFilter, modelFilter, agentFilter);
+    const whereClause = buildWhereClause(
+      dateFilter,
+      providerFilter,
+      modelFilter,
+      agentFilter,
+      timezoneOffsetMinutes
+    );
     if (whereClause) {
       query = query.where(whereClause);
     }

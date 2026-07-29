@@ -41,7 +41,7 @@ docker compose up -d                                 # 本地运行
 | 路由 | 方法 | 认证 | 说明 |
 |------|------|------|------|
 | `/api/ingest` | POST | `X-API-Key` header | 上报 token 用量 |
-| `/api/dashboard` | GET | 无 | 聚合统计（total + today + yesterday + daily + models） |
+| `/api/dashboard` | GET | 无 | 聚合统计（total + today + yesterday + daily + models + 365 天 heatmap + 24h 分布） |
 | `/api/providers` | GET | 无 | Provider 列表 |
 | `/api/models` | GET | 无 | Model 列表 |
 | `/api/records` | GET | `X-API-Key` header | 原始记录分页查询（每页 max 200） |
@@ -50,6 +50,11 @@ docker compose up -d                                 # 本地运行
 - **API Keys**：`API_KEYS` 环境变量，逗号分隔多个 key
 
 ## 数据处理约定
+
+### Dashboard 视图
+- `src/components/UsageHeatmap.tsx`：头部 GitHub 风格 365 天使用热力图，按 input + output tokens 分档着色，移动端横向滚动。
+- `src/components/DailyUsageChart.tsx`：N 日使用趋势 + “Last N Days” 汇总卡片，其中第 5 张卡片展示 24 小时平均分布直方图（纯 CSS 柱）。
+- `src/components/StatsCards.tsx` / `TodayOverview.tsx` / `TopModelsCards.tsx`：其余统计卡片。
 
 ### Provider 匿名化
 - **环境变量**：`HIDDEN_PROVIDERS`（逗号分隔；支持命名分组，如 `CustomA:vendor*`）
@@ -77,6 +82,13 @@ docker compose up -d                                 # 本地运行
 - 因此 `/api/dashboard`、`/api/providers`、`/api/models`、`/api/cli` 自动享受缓存；写入 `/api/ingest` 后自动清空缓存，后续 GET 立即读到新数据。
 - 相关文件：`src/lib/db/cache.ts`、`src/lib/db/index.ts`、`src/app/api/ingest/route.ts`、`src/app/api/records/route.ts`
 - **提醒**：如果未来新增写入接口（如新的 POST/PUT/DELETE 路由），必须在写入成功处调用 `invalidateQueryCache()` 清空缓存，或将 handler 包进 `withSkipCache()` 以确保一致性。
+
+## 时区
+
+- Dashboard 的所有日期/时间分组与显示均按**浏览器时区**对齐。
+- `Dashboard.tsx` 通过 `new Date().getTimezoneOffset()` 获取客户端偏移分钟数（例如 UTC+8 返回 `-480`），并通过 `tzOffset` 查询参数传递给 `/api/dashboard`。
+- 服务端使用 `src/lib/timezone-utils.ts` 中的助手函数将 UTC 的 `created_at` 转换为本地日期/小时进行分组和过滤。
+- 相关文件：`src/lib/timezone-utils.ts`、`src/lib/db/index.ts`、`src/lib/stats-query.ts`、`src/app/api/dashboard/route.ts`、`src/components/Dashboard.tsx`、`src/components/UsageHeatmap.tsx`、`src/components/DailyUsageChart.tsx`。
 
 ## 环境变量
 

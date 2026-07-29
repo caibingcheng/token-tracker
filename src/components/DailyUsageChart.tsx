@@ -4,6 +4,10 @@ import { useMemo, useState, useCallback, useRef, useEffect } from "react";
 import { useAnimatedNumber } from "@/hooks/useAnimatedNumber";
 import { formatNumber } from "@/lib/number-utils";
 import {
+  localDateKeyFromUtcDate,
+  addDaysLocal,
+} from "@/lib/timezone-utils";
+import {
   BarChart,
   Bar,
   Cell,
@@ -116,6 +120,8 @@ interface DailyUsageChartProps {
   onRangeChange: (range: number) => void;
   topModels?: TopModel[];
   dailyTopModels?: Record<string, TopModel[]>;
+  hourly?: DailyData[];
+  timezoneOffsetMinutes?: number;
 }
 
 const COLORS = {
@@ -217,20 +223,25 @@ function CustomXAxisTick({
   );
 }
 
-function formatDate(date: Date): string {
-  const y = date.getUTCFullYear();
-  const m = String(date.getUTCMonth() + 1).padStart(2, "0");
-  const d = String(date.getUTCDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
+function formatDate(date: Date, timezoneOffsetMinutes: number): string {
+  return localDateKeyFromUtcDate(date, timezoneOffsetMinutes);
 }
 
-function getLastNDays(days: number): string[] {
+function getLastNDays(days: number, timezoneOffsetMinutes: number): string[] {
   const result: string[] = [];
   const now = new Date();
-  for (let i = days - 1; i >= 0; i--) {
-    const d = new Date(now);
-    d.setUTCDate(d.getUTCDate() - i);
-    result.push(formatDate(d));
+  const localNow = new Date(now.getTime() - timezoneOffsetMinutes * 60000);
+  const end = new Date(
+    Date.UTC(
+      localNow.getUTCFullYear(),
+      localNow.getUTCMonth(),
+      localNow.getUTCDate()
+    )
+  );
+  let current = addDaysLocal(end, -(days - 1), timezoneOffsetMinutes);
+  for (let i = 0; i < days; i++) {
+    result.push(formatDate(current, timezoneOffsetMinutes));
+    current = addDaysLocal(current, 1, timezoneOffsetMinutes);
   }
   return result;
 }
@@ -241,8 +252,67 @@ function getXAxisInterval(range: number): number {
   return 4;
 }
 
+function HourlyDistributionCard({ hourly, range, timezoneOffsetMinutes }: { hourly?: DailyData[]; range: number; timezoneOffsetMinutes?: number }) {
+  const { compact } = useNumberFormat();
+  const { buckets, maxAvg } = useMemo(() => {
+    const map = new Map<number, number>();
+    for (const row of hourly ?? []) {
+      const hour = Number(row.group);
+      if (Number.isNaN(hour)) continue;
+      map.set(hour, (map.get(hour) || 0) + (row.totalInput || 0) + (row.totalOutput || 0));
+    }
+    const buckets = Array.from({ length: 24 }, (_, i) => {
+      const totalTokens = map.get(i) || 0;
+      return {
+        hour: i,
+        totalTokens,
+        avgTokens: range > 0 ? totalTokens / range : 0,
+      };
+    });
+    const maxAvg = Math.max(...buckets.map((b) => b.avgTokens), 0);
+    return { buckets, maxAvg };
+  }, [hourly, range]);
+
+  return (
+    <div className="bg-white rounded-lg shadow p-4 flex flex-col">
+      <p className="text-xs text-gray-400">
+        Hourly Distribution
+      </p>
+      <div className="flex-1 flex items-end gap-px h-16 mt-2">
+        {buckets.map((b) => {
+          const heightPct =
+            maxAvg > 0 && b.avgTokens > 0
+              ? Math.max((b.avgTokens / maxAvg) * 100, 4)
+              : 0;
+          return (
+            <div
+              key={b.hour}
+              className="flex-1 bg-blue-500 rounded-sm hover:bg-blue-600"
+              style={{ height: `${heightPct}%` }}
+              title={`${String(b.hour).padStart(2, "0")}:00 · avg ${formatNumber(
+                Math.round(b.avgTokens),
+                compact
+              )} tokens · total ${formatNumber(b.totalTokens, compact)}`}
+            />
+          );
+        })}
+      </div>
+      <div className="flex justify-between text-[10px] text-gray-400 mt-1">
+        <span>00</span>
+        <span>06</span>
+        <span>12</span>
+        <span>18</span>
+        <span>23</span>
+      </div>
+    </div>
+  );
+}
+
 function SummarySection({
   summary,
+  hourly,
+  range,
+  timezoneOffsetMinutes,
 }: {
   summary: {
     totalInput: number;
@@ -256,6 +326,9 @@ function SummarySection({
     costPerMillionCacheRead: number;
     costPerMillionOutput: number;
   };
+  hourly?: DailyData[];
+  range: number;
+  timezoneOffsetMinutes?: number;
 }) {
   const { compact } = useNumberFormat();
   const animatedTotalInput = useAnimatedNumber(summary.totalInput, 600);
@@ -325,7 +398,7 @@ function SummarySection({
   ];
 
   return (
-    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 mb-6">
       {cards.map((card) => (
         <div key={card.label} className="bg-white rounded-lg shadow p-4 flex flex-col">
           <p className="text-xs text-gray-400" title={card.label === "Avg cost / 1M tokens" ? "Pricing from models.dev" : undefined}>
@@ -348,6 +421,7 @@ function SummarySection({
           )}
         </div>
       ))}
+      <HourlyDistributionCard hourly={hourly} range={range} timezoneOffsetMinutes={timezoneOffsetMinutes} />
     </div>
   );
 }
@@ -411,8 +485,11 @@ function RatioCostTooltip({ active, payload, label }: {
   );
 }
 
-function formatSelectedDateLabel(dateStr: string): string {
-  const today = formatDate(new Date());
+function formatSelectedDateLabel(
+  dateStr: string,
+  timezoneOffsetMinutes: number
+): string {
+  const today = formatDate(new Date(), timezoneOffsetMinutes);
   if (dateStr === today) {
     return "Today";
   }
@@ -436,6 +513,8 @@ export default function DailyUsageChart({
   onRangeChange,
   topModels,
   dailyTopModels,
+  hourly,
+  timezoneOffsetMinutes = 0,
 }: DailyUsageChartProps) {
   const { compact } = useNumberFormat();
   const isMobile = useIsMobile();
@@ -511,7 +590,7 @@ export default function DailyUsageChart({
       apiData.set(item.group, item);
     });
 
-    const lastNDays = getLastNDays(range);
+    const lastNDays = getLastNDays(range, timezoneOffsetMinutes);
     const mapped = lastNDays.map((date) => {
       const existing = apiData.get(date);
       if (existing) {
@@ -556,7 +635,7 @@ export default function DailyUsageChart({
     });
 
     return mapped;
-  }, [rawData, range]);
+  }, [rawData, range, timezoneOffsetMinutes]);
 
   const tokenDomain = useMemo(() => {
     const max = Math.max(
@@ -643,7 +722,7 @@ export default function DailyUsageChart({
           {!loading && !error && data.length > 0 && (
         <div>
           {summary && (
-            <SummarySection summary={summary} />
+            <SummarySection summary={summary} hourly={hourly} range={range} timezoneOffsetMinutes={timezoneOffsetMinutes} />
           )}
 
           <div className="space-y-6 hidden md:block">
@@ -831,7 +910,7 @@ export default function DailyUsageChart({
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-1 gap-2">
                 <h3 className="text-lg font-semibold">
                   {selectedDate
-                    ? `Top 5 Model Families - ${formatSelectedDateLabel(selectedDate)}`
+                    ? `Top 5 Model Families - ${formatSelectedDateLabel(selectedDate, timezoneOffsetMinutes)}`
                     : "Top 5 Model Families"}
                 </h3>
                 {selectedDate && (
@@ -979,7 +1058,7 @@ export default function DailyUsageChart({
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-1 gap-2">
                 <h3 className="text-lg font-semibold">
                   {selectedDate
-                    ? `Top 5 Model Families - ${formatSelectedDateLabel(selectedDate)}`
+                    ? `Top 5 Model Families - ${formatSelectedDateLabel(selectedDate, timezoneOffsetMinutes)}`
                     : "Top 5 Model Families"}
                 </h3>
                 {selectedDate && (

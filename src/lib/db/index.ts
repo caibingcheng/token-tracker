@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import { wrapDatabaseClient } from "./cache";
+import { offsetMinutesToSqlModifiers } from "@/lib/timezone-utils";
 
 let db: any;
 let tokenRecords: any;
@@ -53,18 +54,56 @@ async function ensureClient() {
   console.log("[DB] SQLite initialized at:", dbPath);
 }
 
-export function getDateGroupExpr(granularity: string) {
+export function getDateGroupExpr(
+  granularity: string,
+  timezoneOffsetMinutes?: number
+) {
   if (!tokenRecords) {
     throw new Error("Database not initialized. Call initDatabase() first.");
   }
 
+  const modifiers =
+    timezoneOffsetMinutes !== undefined
+      ? offsetMinutesToSqlModifiers(timezoneOffsetMinutes)
+      : [];
+
   if (granularity === "week") {
-    return sql<string>`strftime('%Y-%W', ${tokenRecords.createdAt})`;
+    if (modifiers.length === 0) {
+      return sql<string>`strftime('%Y-%W', ${tokenRecords.createdAt})`;
+    }
+    if (modifiers.length === 1) {
+      return sql<string>`strftime('%Y-%W', ${tokenRecords.createdAt}, ${modifiers[0]})`;
+    }
+    return sql<string>`strftime('%Y-%W', ${tokenRecords.createdAt}, ${modifiers[0]}, ${modifiers[1]})`;
   }
+
   if (granularity === "month") {
-    return sql<string>`strftime('%Y-%m', ${tokenRecords.createdAt})`;
+    if (modifiers.length === 0) {
+      return sql<string>`strftime('%Y-%m', ${tokenRecords.createdAt})`;
+    }
+    if (modifiers.length === 1) {
+      return sql<string>`strftime('%Y-%m', ${tokenRecords.createdAt}, ${modifiers[0]})`;
+    }
+    return sql<string>`strftime('%Y-%m', ${tokenRecords.createdAt}, ${modifiers[0]}, ${modifiers[1]})`;
   }
-  return sql<string>`strftime('%Y-%m-%d', ${tokenRecords.createdAt})`;
+
+  if (granularity === "hour") {
+    if (modifiers.length === 0) {
+      return sql<string>`strftime('%H', ${tokenRecords.createdAt})`;
+    }
+    if (modifiers.length === 1) {
+      return sql<string>`strftime('%H', ${tokenRecords.createdAt}, ${modifiers[0]})`;
+    }
+    return sql<string>`strftime('%H', ${tokenRecords.createdAt}, ${modifiers[0]}, ${modifiers[1]})`;
+  }
+
+  if (modifiers.length === 0) {
+    return sql<string>`strftime('%Y-%m-%d', ${tokenRecords.createdAt})`;
+  }
+  if (modifiers.length === 1) {
+    return sql<string>`strftime('%Y-%m-%d', ${tokenRecords.createdAt}, ${modifiers[0]})`;
+  }
+  return sql<string>`strftime('%Y-%m-%d', ${tokenRecords.createdAt}, ${modifiers[0]}, ${modifiers[1]})`;
 }
 
 export { db, tokenRecords };
