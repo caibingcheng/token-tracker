@@ -47,6 +47,131 @@ interface DashboardProps {
   priceUpdateTime?: React.ReactNode;
 }
 
+interface SectionNavItem {
+  id: string;
+  label: string;
+}
+
+const SECTIONS: SectionNavItem[] = [
+  { id: "heatmap-section", label: "Heatmap" },
+  { id: "stats-section", label: "Stats" },
+  { id: "today-section", label: "Today" },
+  { id: "trends-section", label: "Trends" },
+  { id: "records-section", label: "Records" },
+];
+
+function SectionNav() {
+  const [activeId, setActiveId] = useState<string | null>(SECTIONS[0]?.id ?? null);
+  const isClickScrollingRef = useRef(false);
+  const clickTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const rafRef = useRef<number | null>(null);
+
+  const updateActiveFromScroll = useCallback(() => {
+    if (isClickScrollingRef.current) return;
+
+    // 以 viewport 顶部往下 25% 处作为当前栏目判定线
+    const scrollOffset = window.innerHeight * 0.25;
+    let currentId = SECTIONS[0]?.id ?? null;
+    for (const { id } of SECTIONS) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      const rect = el.getBoundingClientRect();
+      if (rect.top <= scrollOffset) {
+        currentId = id;
+      } else {
+        break;
+      }
+    }
+    setActiveId(currentId);
+  }, []);
+
+  useEffect(() => {
+    const handleScroll = () => {
+      if (rafRef.current) return;
+      rafRef.current = requestAnimationFrame(() => {
+        updateActiveFromScroll();
+        rafRef.current = null;
+      });
+    };
+
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    updateActiveFromScroll();
+
+    return () => {
+      window.removeEventListener("scroll", handleScroll);
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+      }
+    };
+  }, [updateActiveFromScroll]);
+
+  useEffect(() => {
+    return () => {
+      if (clickTimeoutRef.current) {
+        clearTimeout(clickTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  const scrollTo = (id: string) => {
+    setActiveId(id);
+    isClickScrollingRef.current = true;
+    if (clickTimeoutRef.current) {
+      clearTimeout(clickTimeoutRef.current);
+    }
+    clickTimeoutRef.current = setTimeout(() => {
+      isClickScrollingRef.current = false;
+      updateActiveFromScroll();
+    }, 600);
+
+    const el = document.getElementById(id);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  };
+
+  return (
+    <nav
+      className="hidden md:flex fixed left-6 top-1/2 -translate-y-1/2 z-40 flex-col gap-4"
+      aria-label="Section navigation"
+    >
+      {SECTIONS.map(({ id, label }) => {
+        const isActive = activeId === id;
+        return (
+          <button
+            key={id}
+            type="button"
+            onClick={() => scrollTo(id)}
+            className="group flex items-center gap-3 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50 rounded-md"
+            aria-current={isActive ? "location" : undefined}
+          >
+            <span
+              className={`
+                inline-flex h-2 w-2 rounded-full transition-all duration-300 ease-out
+                ${isActive
+                  ? "bg-blue-600 scale-125"
+                  : "bg-gray-300 group-hover:bg-blue-500 group-hover:scale-110"
+                }
+              `}
+            />
+            <span
+              className={`
+                text-sm transition-all duration-300 ease-out
+                ${isActive
+                  ? "translate-x-0 scale-105 font-medium text-gray-900"
+                  : "text-gray-400 group-hover:text-gray-700 group-hover:translate-x-0.5 group-hover:scale-105"
+                }
+              `}
+            >
+              {label}
+            </span>
+          </button>
+        );
+      })}
+    </nav>
+  );
+}
+
 function NumberFormatToggle() {
   const { compact, setCompact } = useNumberFormat();
 
@@ -731,6 +856,7 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
   return (
     <NumberFormatProvider>
       <main className="min-h-screen bg-gray-50 p-4 md:p-8">
+        <SectionNav />
         <div className="max-w-7xl mx-auto">
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-2">
             <div className="flex min-w-0 flex-1 items-start justify-between gap-2 w-full sm:w-auto">
@@ -828,63 +954,73 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
           onAgentChange={handleAgentChange}
         />
 
-        <UsageHeatmap data={heatmapData} loading={loading} timezoneOffsetMinutes={timezoneOffsetMinutes} />
+        <section id="heatmap-section" className="scroll-mt-28">
+          <UsageHeatmap data={heatmapData} loading={loading} timezoneOffsetMinutes={timezoneOffsetMinutes} />
+        </section>
 
-        <StatsCards stats={stats} totalDays={totalDays} loading={loading} error={error} topModels={totalTopModels} />
+        <section id="stats-section" className="scroll-mt-28">
+          <StatsCards stats={stats} totalDays={totalDays} loading={loading} error={error} topModels={totalTopModels} />
+        </section>
 
-        <TodayOverview
-          today={todayData}
-          yesterday={yesterdayData}
-          loading={loading}
-          topModels={todayTopModels}
-        />
+        <section id="today-section" className="scroll-mt-28">
+          <TodayOverview
+            today={todayData}
+            yesterday={yesterdayData}
+            loading={loading}
+            topModels={todayTopModels}
+          />
+        </section>
 
-        <DailyUsageChart
-          rawData={dailyData}
-          loading={loading}
-          error={error}
-          range={dailyRange}
-          onRangeChange={handleDailyRangeChange}
-          topModels={topModels}
-          dailyTopModels={dailyTopModels}
-          hourly={hourlyData}
-          timezoneOffsetMinutes={timezoneOffsetMinutes}
-        />
+        <section id="trends-section" className="scroll-mt-28">
+          <DailyUsageChart
+            rawData={dailyData}
+            loading={loading}
+            error={error}
+            range={dailyRange}
+            onRangeChange={handleDailyRangeChange}
+            topModels={topModels}
+            dailyTopModels={dailyTopModels}
+            hourly={hourlyData}
+            timezoneOffsetMinutes={timezoneOffsetMinutes}
+          />
+        </section>
 
-        <div className="bg-white rounded-lg shadow overflow-hidden mb-8">
-          <button
-            onClick={() => setRecordsVisible(!recordsVisible)}
-            className="w-full px-6 py-4 flex justify-between items-center hover:bg-gray-50 transition-colors"
-          >
-            <div className="text-left">
-              <h2 className="text-lg font-semibold">Recent Records</h2>
-              <div className="flex flex-wrap gap-x-3 text-xs text-gray-400 mt-1">
-                {selectedAgent !== "all" && (
-                  <span>Agent: {selectedAgentName}</span>
-                )}
-                {selectedModel !== "all" && (
-                  <span>Model: {selectedModelName}</span>
-                )}
+        <section id="records-section" className="scroll-mt-28">
+          <div className="bg-white rounded-lg shadow overflow-hidden mb-8">
+            <button
+              onClick={() => setRecordsVisible(!recordsVisible)}
+              className="w-full px-6 py-4 flex justify-between items-center hover:bg-gray-50 transition-colors"
+            >
+              <div className="text-left">
+                <h2 className="text-lg font-semibold">Recent Records</h2>
+                <div className="flex flex-wrap gap-x-3 text-xs text-gray-400 mt-1">
+                  {selectedAgent !== "all" && (
+                    <span>Agent: {selectedAgentName}</span>
+                  )}
+                  {selectedModel !== "all" && (
+                    <span>Model: {selectedModelName}</span>
+                  )}
+                </div>
               </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-gray-400">
-                {recordsVisible ? "▼" : "▶"}
-              </span>
-            </div>
-          </button>
+              <div className="flex items-center gap-2">
+                <span className="text-gray-400">
+                  {recordsVisible ? "▼" : "▶"}
+                </span>
+              </div>
+            </button>
 
-          {recordsVisible && (
-            <RecordsTable
-              selectedProvider={selectedProvider}
-              selectedModel={selectedModel}
-              selectedModelName={selectedModelName}
-              selectedAgent={selectedAgent}
-              refreshKey={recordsRefreshKey}
-              showHeader={false}
-            />
-          )}
-        </div>
+            {recordsVisible && (
+              <RecordsTable
+                selectedProvider={selectedProvider}
+                selectedModel={selectedModel}
+                selectedModelName={selectedModelName}
+                selectedAgent={selectedAgent}
+                refreshKey={recordsRefreshKey}
+                showHeader={false}
+              />
+            )}
+          </div>
+        </section>
 
         <div className="mt-8 py-4 border-t border-gray-200 flex flex-col md:flex-row justify-between items-start md:items-center gap-2 text-sm text-gray-500">
           <span>
