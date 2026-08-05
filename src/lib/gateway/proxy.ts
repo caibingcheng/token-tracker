@@ -1,0 +1,434 @@
+import type { Protocol } from "./model-router";
+import { extractRequestModel, routeModel } from "./model-router";
+import type { UpstreamRoute } from "./model-router";
+import { buildAuthHeaders } from "./upstream-client";
+import { joinUrlPath } from "./url-utils";
+import {
+  parseOpenAiNonStreaming,
+  parseOpenAiStreaming,
+  parseAnthropicNonStreaming,
+  parseAnthropicStreaming,
+  parseGeminiNonStreaming,
+  parseGeminiStreaming,
+} from "./parsers";
+import type { ParsedUsage } from "./parsers/types";
+
+export const MAX_RETRY = 2; // 每个 key 内最多尝试次数
+const NON_STREAMING_TIMEOUT_MS = 60_000;
+
+export interface VirtualKeyInfo {
+  id: number;
+  name: string;
+  enabled: boolean;
+}
+
+export interface RecordUsageMeta {
+  model: string;
+  provider: string;
+  agent: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheRead: number;
+  cacheWrite: number;
+  status?: string;
+  latencyMs?: number;
+}
+
+export interface ProxyDeps {
+  // 虚拟 key 校验：全表解密比对
+  resolveVirtualKey: (token: string) => Promise<VirtualKeyInfo | null>;
+  // 上游 key 链（解密后的明文，按配置顺序，已过滤禁用）
+  resolveUpstreamKeys: (upstreamId: number) => Promise<string[]>;
+  // 加载所有启用的上游（含 enabledModels）
+  loadUpstreams: () => Promise<UpstreamRoute[]>;
+  // usage 解析完成回调（写库）
+  onUsage?: (meta: RecordUsageMeta) => Promise<void>;
+  // 请求完成回调（更新 last_used_at 等）
+  onComplete?: (meta: { virtualKeyId: number }) => Promise<void>;
+  log?: (message: string) => void;
+}
+
+// 从请求头/query 中提取虚拟 key token
+export function extractVirtualKeyToken(
+  headers: Headers,
+  searchParams: URLSearchParams
+): string | null {
+  const authorization = headers.get("authorization");
+  if (authorization && authorization.startsWith("Bearer ")) {
+    const token = authorization.slice("Bearer ".length).trim();
+    if (token) return token;
+  }
+  const apiKey = headers.get("x-api-key");
+  if (apiKey) return apiKey;
+  const googKey = headers.get("x-goog-api-key");
+  if (googKey) return googKey;
+  const queryKey = searchParams.get("key");
+  if (queryKey) return queryKey;
+  return null;
+}
+
+// 构造发往上游的请求头：剔除客户端认证/传输头，按协议注入真实 key
+export function buildUpstreamHeaders(
+  clientHeaders: Headers,
+  protocol: Protocol,
+  apiKey: string
+): Headers {
+  const headers = new Headers();
+  const SKIP = new Set([
+    "host",
+    "authorization",
+    "content-length",
+    "connection",
+    "keep-alive",
+    "transfer-encoding",
+    "proxy-authorization",
+    "proxy-connection",
+    "te",
+    "trailer",
+    "upgrade",
+    "x-api-key",
+    "x-goog-api-key",
+    "accept-encoding", // 强制 identity，保证响应体可解析 usage
+  ]);
+  clientHeaders.forEach((value, key) => {
+    const lower = key.toLowerCase();
+    if (SKIP.has(lower)) return;
+    headers.set(key, value);
+  });
+  headers.set("accept-encoding", "identity");
+  for (const [key, value] of Object.entries(buildAuthHeaders(protocol, apiKey))) {
+    headers.set(key, value);
+  }
+  return headers;
+}
+
+export function isStreamingResponse(headers: Headers): boolean {
+  const contentType = headers.get("content-type")?.toLowerCase() ?? "";
+  return contentType.includes("text/event-stream");
+}
+
+function isRetryableStatus(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
+function isNonStreamingRequestBody(bodyJson: unknown): boolean {
+  if (typeof bodyJson === "object" && bodyJson !== null) {
+    const stream = (bodyJson as Record<string, unknown>).stream;
+    if (typeof stream === "boolean") return !stream;
+  }
+  return false;
+}
+
+export const PROXY_RESPONSE_HEADERS: Record<string, string> = {
+  "cache-control": "no-store",
+  "x-accel-buffering": "no",
+};
+
+// 核心代理流程
+export async function handleProxyRequest(
+  request: Request,
+  deps: ProxyDeps
+): Promise<Response> {
+  const url = new URL(request.url);
+  const path = url.pathname;
+  const token = extractVirtualKeyToken(request.headers, url.searchParams);
+
+  if (!token) {
+    return proxyError(401, "Missing virtual key", "authentication_error");
+  }
+
+  const virtualKey = await deps.resolveVirtualKey(token);
+  if (!virtualKey || !virtualKey.enabled) {
+    return proxyError(401, "Invalid or revoked virtual key", "authentication_error");
+  }
+
+  // GET /v1/models：返回所有启用上游模型的并集
+  if (request.method === "GET" && path.endsWith("/models")) {
+    const upstreams = await deps.loadUpstreams();
+    const models = collectEnabledModels(upstreams);
+    return Response.json(
+      {
+        object: "list",
+        data: models.map((id) => ({ id, object: "model", created: 0, owned_by: "gateway" })),
+      },
+      { headers: PROXY_RESPONSE_HEADERS }
+    );
+  }
+
+  if (!["POST", "PUT", "PATCH"].includes(request.method)) {
+    return proxyError(405, "Method not allowed", "method_not_allowed");
+  }
+
+  const bodyBuffer = new Uint8Array(await request.arrayBuffer());
+  const contentType = request.headers.get("content-type") ?? "";
+  let bodyJson: unknown = null;
+  if (bodyBuffer.length > 0 && contentType.includes("application/json")) {
+    try {
+      bodyJson = JSON.parse(new TextDecoder().decode(bodyBuffer));
+    } catch {
+      return proxyError(400, "Invalid JSON body", "invalid_request_error");
+    }
+  }
+
+  const model = extractRequestModel(path, bodyJson);
+  if (!model) {
+    return proxyError(400, "Unable to determine model from request", "invalid_request_error");
+  }
+
+  const upstreams = await deps.loadUpstreams();
+  const match = routeModel(model, upstreams);
+  if (!match) {
+    return proxyError(404, `No upstream configured for model: ${model}`, "model_not_found");
+  }
+
+  const protocol = match.upstream.protocol;
+  const keys = await deps.resolveUpstreamKeys(match.upstream.id);
+  if (keys.length === 0) {
+    return proxyError(502, `No API keys configured for upstream: ${match.upstream.name}`, "upstream_error");
+  }
+
+  const startTime = Date.now();
+  const targetUrl = `${joinUrlPath(match.upstream.baseUrl, path)}${stripQueryKey(url)}`;
+  const isNonStreaming = isNonStreamingRequestBody(bodyJson);
+
+  let lastError: { status: number; text?: string } | null = null;
+  let lastResponse: Response | null = null;
+
+  // 故障转移链：按配置顺序遍历 key，每个 key 内重试 MAX_RETRY 次；
+  // 只在收到响应头之前允许重试/切换（流式输出开始后不可重试）
+  for (const apiKey of keys) {
+    for (let attempt = 0; attempt < MAX_RETRY; attempt++) {
+      let upstreamResponse: Response | null = null;
+      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const controller = new AbortController();
+        if (isNonStreaming) {
+          timeoutHandle = setTimeout(() => controller.abort(), NON_STREAMING_TIMEOUT_MS);
+        }
+
+        upstreamResponse = await fetch(targetUrl, {
+          method: request.method,
+          headers: buildUpstreamHeaders(request.headers, protocol, apiKey),
+          body: bodyBuffer.length > 0 ? bodyBuffer : null,
+          duplex: "half",
+          redirect: "follow",
+          signal: controller.signal,
+        } as RequestInit & { duplex: "half" });
+
+        if (isRetryableStatus(upstreamResponse.status)) {
+          lastError = { status: upstreamResponse.status };
+          await upstreamResponse.body?.cancel();
+          continue; // 重试
+        }
+        lastResponse = upstreamResponse; // 成功（含 4xx 业务错误）：直接透传
+        break;
+      } catch (err) {
+        lastError = {
+          status: 0,
+          text: err instanceof Error ? err.message : String(err),
+        };
+        // 网络错误/超时 → 重试
+      } finally {
+        clearTimeout(timeoutHandle);
+      }
+
+      if (lastResponse) break;
+    }
+    if (lastResponse) break;
+  }
+
+  // 全部失败：返回最后一个上游错误原样透传
+  if (!lastResponse) {
+    deps.onComplete?.({ virtualKeyId: virtualKey.id }).catch(() => {});
+    if (lastError && lastError.status > 0) {
+      return new Response(
+        JSON.stringify({
+          error: { message: `Upstream returned status ${lastError.status}`, type: "upstream_error" },
+        }),
+        { status: 502, headers: PROXY_RESPONSE_HEADERS }
+      );
+    }
+    return proxyError(502, lastError?.text ?? "Upstream request failed", "upstream_error");
+  }
+
+  const latencyMs = Date.now() - startTime;
+  const meta: RecordUsageMeta = {
+    model,
+    provider: match.upstream.name,
+    agent: virtualKey.name,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    latencyMs,
+  };
+
+  return passthroughResponse(lastResponse, {
+    meta,
+    deps,
+    bodyJson,
+    protocol,
+    virtualKeyId: virtualKey.id,
+  });
+}
+
+// 透传上游响应（单 reader，边透传边累积副本），usage 解析与写库由 deps 完成
+async function passthroughResponse(
+  upstreamResponse: Response,
+  opts: {
+    meta: RecordUsageMeta;
+    deps: ProxyDeps;
+    bodyJson: unknown;
+    protocol: Protocol;
+    virtualKeyId: number;
+  }
+): Promise<Response> {
+  const { meta, deps, bodyJson, protocol, virtualKeyId } = opts;
+  const headers = new Headers(PROXY_RESPONSE_HEADERS);
+  copyHeader(upstreamResponse.headers, headers, "content-type");
+  copyHeader(upstreamResponse.headers, headers, "x-ratelimit-remaining-requests");
+  copyHeader(upstreamResponse.headers, headers, "x-ratelimit-remaining-tokens");
+
+  if (!upstreamResponse.body) {
+    deps.onComplete?.({ virtualKeyId }).catch(() => {});
+    return new Response(null, { status: upstreamResponse.status, headers });
+  }
+
+  const isStreaming = isStreamingResponse(upstreamResponse.headers);
+  const isSuccess = upstreamResponse.status >= 200 && upstreamResponse.status < 300;
+  const reader = upstreamResponse.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let onDone: () => void = () => {};
+
+  const passthrough = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const pump = async () => {
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value);
+            controller.enqueue(value);
+          }
+          controller.close();
+        } catch (err) {
+          controller.error(err);
+        }
+      };
+      pump().finally(() => onDone());
+    },
+    cancel() {
+      reader.cancel();
+    },
+  });
+
+  onDone = async () => {
+    try {
+      if (isSuccess) {
+        const fullText = new TextDecoder().decode(concatUint8Arrays(chunks));
+        const parsed = isStreaming
+          ? parseUsageStreaming(fullText, protocol)
+          : parseUsageNonStreaming(fullText, protocol);
+        const usage = toRecordUsage(parsed, meta);
+        await deps.onUsage?.(usage);
+      }
+    } catch (err) {
+      deps.log?.(`[gateway] usage capture failed: ${(err as Error).message}`);
+    } finally {
+      deps.onComplete?.({ virtualKeyId }).catch(() => {});
+    }
+  };
+
+  return new Response(passthrough, { status: upstreamResponse.status, headers });
+}
+
+// ---- usage 解析（按上游协议选择解析器） ----
+
+function parseUsageNonStreaming(fullText: string, protocol: Protocol): ParsedUsage | null {
+  let json: unknown;
+  try {
+    json = JSON.parse(fullText);
+  } catch {
+    return null;
+  }
+  switch (protocol) {
+    case "anthropic":
+      return parseAnthropicNonStreaming(json);
+    case "gemini":
+      return parseGeminiNonStreaming(json);
+    default:
+      return parseOpenAiNonStreaming(json);
+  }
+}
+
+function parseUsageStreaming(sseText: string, protocol: Protocol): ParsedUsage | null {
+  switch (protocol) {
+    case "anthropic":
+      return parseAnthropicStreaming(sseText);
+    case "gemini":
+      return parseGeminiStreaming(sseText);
+    default:
+      return parseOpenAiStreaming(sseText);
+  }
+}
+
+function toRecordUsage(parsed: ParsedUsage | null, meta: RecordUsageMeta): RecordUsageMeta {
+  if (!parsed) {
+    return { ...meta, inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0, status: "no_usage" };
+  }
+  return { ...meta, ...parsed };
+}
+
+// ---- 工具 ----
+
+function stripQueryKey(url: URL): string {
+  url.searchParams.delete("key");
+  const qs = url.searchParams.toString();
+  return qs ? `?${qs}` : "";
+}
+
+function collectEnabledModels(upstreams: UpstreamRoute[]): string[] {
+  const result = new Set<string>();
+  for (const upstream of upstreams) {
+    if (upstream.enabled === false) continue;
+    const raw = upstream.enabledModels;
+    if (Array.isArray(raw)) {
+      for (const m of raw) {
+        if (!m.endsWith("*")) result.add(m);
+      }
+    } else if (typeof raw === "string") {
+      try {
+        const parsed = JSON.parse(raw) as string[];
+        for (const m of parsed) {
+          if (!m.endsWith("*")) result.add(m);
+        }
+      } catch {
+        // ignore
+      }
+    }
+  }
+  return Array.from(result).sort();
+}
+
+function concatUint8Arrays(chunks: Uint8Array[]): Uint8Array {
+  const total = chunks.reduce((acc, c) => acc + c.length, 0);
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return result;
+}
+
+function copyHeader(from: Headers, to: Headers, name: string): void {
+  const value = from.get(name);
+  if (value) to.set(name, value);
+}
+
+export function proxyError(status: number, message: string, type: string): Response {
+  return new Response(
+    JSON.stringify({ error: { message, type } }),
+    { status, headers: PROXY_RESPONSE_HEADERS }
+  );
+}

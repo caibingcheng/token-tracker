@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import Link from "next/link";
 import StatsCards, { Stats } from "./StatsCards";
 import RecordsTable from "./RecordsTable";
 import DailyUsageChart, { DailyData } from "./DailyUsageChart";
@@ -12,6 +13,7 @@ import {
   useNumberFormat,
 } from "./NumberFormatContext";
 import { getClientTimezoneOffsetMinutes } from "@/lib/timezone-utils";
+import { apiFetch } from "@/lib/client/api-client";
 
 interface ModelStat {
   group: string;
@@ -445,7 +447,7 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
 
   const fetchProviders = useCallback(async () => {
     try {
-      const res = await fetch("/api/providers");
+      const res = await apiFetch("/api/providers");
       const json = await res.json();
       if (json.success && Array.isArray(json.data)) {
         setProviders(json.data);
@@ -457,7 +459,7 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
 
   const fetchModels = useCallback(async () => {
     try {
-      const res = await fetch("/api/models");
+      const res = await apiFetch("/api/models");
       const json = await res.json();
       if (json.success && Array.isArray(json.data)) {
         setModels(json.data);
@@ -469,7 +471,7 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
 
   const fetchAgents = useCallback(async () => {
     try {
-      const res = await fetch("/api/agents");
+      const res = await apiFetch("/api/agents");
       const json = await res.json();
       if (json.success && Array.isArray(json.data)) {
         setAgents(json.data);
@@ -522,7 +524,7 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
       setError(null);
 
       try {
-        const res = await fetch(buildDashboardUrl(), {
+        const res = await apiFetch(buildDashboardUrl(), {
           signal: options?.signal,
         });
         if (!res.ok) {
@@ -882,6 +884,12 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
                   )}
                   <span className="text-gray-400">▼</span>
                 </button>
+                <Link
+                  href="/admin"
+                  className="inline-flex items-center gap-2 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50"
+                >
+                  Admin
+                </Link>
                 <button
                   type="button"
                   onClick={() => setIsSimulatorOpen(true)}
@@ -893,6 +901,12 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
             </div>
 
             <div className="hidden sm:flex flex-row items-center gap-3">
+              <Link
+                href="/admin"
+                className="inline-flex items-center gap-2 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50"
+              >
+                Admin
+              </Link>
               <NumberFormatToggle />
               <button
                 type="button"

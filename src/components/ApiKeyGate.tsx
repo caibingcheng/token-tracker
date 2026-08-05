@@ -1,0 +1,96 @@
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
+import {
+  getApiKey,
+  setApiKey,
+  clearApiKey,
+  registerUnauthorizedHandler,
+} from "@/lib/client/api-client";
+
+export default function ApiKeyGate({ children }: { children: React.ReactNode }) {
+  // 初始一律未认证（SSR 无 sessionStorage，避免 hydration mismatch），挂载后读取
+  const [hasKey, setHasKey] = useState<boolean>(false);
+  const [inputKey, setInputKey] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const handleUnauthorized = useCallback(() => {
+    setError("Invalid or missing API Key");
+    setHasKey(false);
+  }, []);
+
+  useEffect(() => {
+    setHasKey(getApiKey() !== null);
+  }, []);
+
+  useEffect(() => {
+    return registerUnauthorizedHandler(handleUnauthorized);
+  }, [handleUnauthorized]);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = inputKey.trim();
+    if (!trimmed) return;
+    setApiKey(trimmed);
+    setInputKey("");
+    setError(null);
+    setHasKey(true);
+  };
+
+  const handleLogout = () => {
+    clearApiKey();
+    setInputKey("");
+    setError(null);
+    setHasKey(false);
+  };
+
+  if (!hasKey) {
+    return (
+      <main className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+        <div className="w-full max-w-sm rounded-lg bg-white p-8 shadow">
+          <div className="mb-6 text-center">
+            <h1 className="text-xl font-bold text-gray-900">Token Tracker</h1>
+            <p className="mt-1 text-sm text-gray-500">
+              Please enter your API Key to continue
+            </p>
+          </div>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <input
+              type="password"
+              value={inputKey}
+              onChange={(e) => setInputKey(e.target.value)}
+              placeholder="API Key..."
+              autoFocus
+              className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            {error && (
+              <div className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-600">
+                {error}
+              </div>
+            )}
+            <button
+              type="submit"
+              className="w-full rounded bg-blue-600 py-2 text-sm font-medium text-white hover:bg-blue-700 active:scale-[0.98] transition-all"
+            >
+              Continue
+            </button>
+          </form>
+        </div>
+      </main>
+    );
+  }
+
+  return (
+    <>
+      {children}
+      <button
+        type="button"
+        onClick={handleLogout}
+        className="fixed bottom-4 right-4 z-50 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs text-gray-500 shadow-sm hover:bg-gray-50 hover:text-red-600 transition-colors"
+        title="Logout"
+      >
+        Logout
+      </button>
+    </>
+  );
+}

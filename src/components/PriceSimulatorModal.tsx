@@ -8,6 +8,7 @@ import { type ModelPricing, calculateCost } from "@/lib/cost-utils";
 import { formatNumber, toNum } from "@/lib/number-utils";
 import { useNumberFormat } from "./NumberFormatContext";
 import { localDateKeyFromUtcDate } from "@/lib/timezone-utils";
+import { apiFetch } from "@/lib/client/api-client";
 
 interface PriceSimulatorModalProps {
   isOpen: boolean;
@@ -282,7 +283,7 @@ export default function PriceSimulatorModal({
       // ignore storage errors
     }
 
-    fetch("/api/model-pricing")
+    apiFetch("/api/model-pricing")
       .then((res) => res.json())
       .then((json) => {
         if (json.success && Array.isArray(json.data)) {

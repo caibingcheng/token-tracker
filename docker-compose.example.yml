@@ -8,6 +8,7 @@ services:
     environment:
       - SQLITE_DATABASE_PATH=/app/data/token-tracker.db
       - API_KEYS=${API_KEYS:-your-api-key-here}
+      - GATEWAY_SECRET=${GATEWAY_SECRET:-your-32-byte-hex-secret}
       - HIDDEN_PROVIDERS=${HIDDEN_PROVIDERS:-}
       - API_CACHE_DEBUG=false
     volumes:

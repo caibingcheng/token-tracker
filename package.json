@@ -10,7 +10,8 @@
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
-    "db:migrate-to-sqlite": "tsx scripts/migrate-pg-to-sqlite.ts"
+    "db:migrate-to-sqlite": "tsx scripts/migrate-pg-to-sqlite.ts",
+    "test": "vitest run"
   },
   "dependencies": {
     "better-sqlite3": "^11.10.0",
@@ -38,6 +39,7 @@
     "postcss": "^8.4.38",
     "tailwindcss": "^3.4.4",
     "tsx": "^4.19.3",
-    "typescript": "^5.4.5"
+    "typescript": "^5.4.5",
+    "vitest": "^4.1.10"
   }
 }

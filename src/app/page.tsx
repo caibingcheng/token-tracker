@@ -1,5 +1,10 @@
 import Dashboard from "@/components/Dashboard";
+import ApiKeyGate from "@/components/ApiKeyGate";
 
 export default function Home() {
-  return <Dashboard />;
+  return (
+    <ApiKeyGate>
+      <Dashboard />
+    </ApiKeyGate>
+  );
 }

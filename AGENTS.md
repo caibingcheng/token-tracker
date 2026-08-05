@@ -4,22 +4,19 @@
 
 ## 项目概览
 
-- **Token Tracker**：基于 Next.js 14 App Router + Drizzle ORM + SQLite 的 LLM Token 用量仪表盘
+- **Token Tracker**：基于 Next.js 14 App Router + Drizzle ORM + SQLite 的**个人 AI Gateway**（LLM Token 用量仪表盘 + 多协议上游代理）
+- **网关定位**：`/v1/*` + `/v1beta/*` catch-all 纯透传（OpenAI/Anthropic/Gemini 三协议），透传中自动解析 token 用量写库；agent 客户端零插件，只改 base_url + key
 - **部署目标**：Docker VPS（SQLite）
 - **使用规模**：个人使用，日均约 1000 条记录
 
 ## 开发者命令
 
 ```bash
-# 开发
 npm run dev                 # 启动开发服务器，访问 http://localhost:3000
-
-# 数据库操作
-npx drizzle-kit studio      # 启动 Drizzle Studio（SQLite）
-
-# 构建与检查
 npm run build               # 生产构建
-npm run lint                # ESLint（仅 extends next/core-web-vitals）
+npm run lint                # ESLint
+npm test                    # vitest 单元测试（src/**/*.test.ts）
+npx drizzle-kit studio      # Drizzle Studio（SQLite）
 
 # Docker
 docker build -t token-tracker:test .                # 本地构建
@@ -32,22 +29,58 @@ docker compose up -d                                 # 本地运行
 - **Schema**：`src/lib/db/schema-sqlite.ts`（sqlite-core）
 - **连接配置**：`src/lib/db/index.ts`，懒加载初始化
 - **关键配置**：better-sqlite3，文本模式存储时间戳（ISO 格式）
-- **自动初始化**：`initDatabase()` 在首次 API 调用时自动创建 `token_records` 表和索引
-- **表结构**：`token_records`（id, model, provider, agent, input_tokens, output_tokens, cache_read, cache_write, created_at）
-- **日期分组**：`getDateGroupExpr(granularity)` 使用 SQLite `strftime`
+- **自动初始化**：`initDatabase()` 在首次 API 调用时自动建表 + 索引
+- **表结构**：
+  - `token_records`（id, model, provider, agent, input_tokens, output_tokens, cache_read, cache_write, status, latency_ms, created_at）
+  - `upstreams`（id, name, protocol, base_url, enabled_models(JSON), priority, enabled, created_at）
+  - `upstream_keys`（id, upstream_id, api_key_encrypted, enabled, last_status, created_at）
+  - `virtual_keys`（id, name, api_key_encrypted, enabled, last_used_at, created_at）
+- **存量迁移**：`migrateTokenRecordsColumns()` 通过 `PRAGMA table_info` 检测缺失列并 `ALTER TABLE` 补列（`CREATE TABLE IF NOT EXISTS` 不会补列）
 
 ## API 路由与认证
 
 | 路由 | 方法 | 认证 | 说明 |
 |------|------|------|------|
-| `/api/ingest` | POST | `X-API-Key` header | 上报 token 用量 |
-| `/api/dashboard` | GET | 无 | 聚合统计（total + today + yesterday + daily + models + 365 天 heatmap + 24h 分布） |
-| `/api/providers` | GET | 无 | Provider 列表 |
-| `/api/models` | GET | 无 | Model 列表 |
-| `/api/records` | GET | `X-API-Key` header | 原始记录分页查询（每页 max 200） |
+| `/v1/*`, `/v1beta/*` | 全部 | 虚拟 key（`vk-` 前缀，DB 加密比对） | 代理入口：虚拟 key 校验 → model 路由 → 上游 key 故障转移链 → 纯透传 + usage 解析写库 |
+| `/api/dashboard` | GET | `X-API-Key` | 聚合统计（total + today + yesterday + daily + models + 365 天 heatmap + 24h 分布） |
+| `/api/providers` `/api/models` `/api/agents` `/api/cli` `/api/model-pricing` `/api/records` | GET | `X-API-Key` | 统计/查询 API |
+| `/api/admin/upstreams*` | CRUD | `X-API-Key` | 上游管理（含 keys、模型拉取、连接测试） |
+| `/api/admin/virtual-keys*` | CRUD | `X-API-Key` | 虚拟 key 管理（创建/吊销/用量） |
 
-- **认证中间件**：`src/middleware.ts`，拦截 `/api/ingest` 与 `/api/records`
+- **认证中间件**：`src/middleware.ts` 对全部 `/api/*` 强制 `X-API-Key`（env `API_KEYS`）；matcher 不含 `/v1/*`、`/v1beta/*`（代理走虚拟 key 认证）
+- **页面认证**：`/`、`/admin` 由客户端 `ApiKeyGate`（sessionStorage + 401 拦截）处理，无 middleware；全局 fetch 走 `src/lib/client/api-client.ts` 的 `apiFetch`（自动注入 header，401 时清 key 回输入页）
 - **API Keys**：`API_KEYS` 环境变量，逗号分隔多个 key
+
+## AI Gateway 代理链路（核心）
+
+- **路由**：`src/app/v1/[...path]/route.ts` + `src/app/v1beta/[...path]/route.ts`（`runtime = "nodejs"`、`dynamic = "force-dynamic"`）
+- **核心逻辑**：`src/lib/gateway/proxy.ts`（纯逻辑可单测）；依赖注入 `src/lib/gateway/proxy-deps.ts`（DB 访问）
+- **流程**：提取虚拟 key（Authorization Bearer / x-api-key / x-goog-api-key / ?key=）→ 校验（**全表解密比对**，AES-256-GCM 随机 IV 无法索引）→ 提取 model（OpenAI/Anthropic 取 body，Gemini 取 path）→ `routeModel()` 匹配（精确 > 前缀通配，priority 小者胜）→ 故障转移链（429/5xx/网络错误重试，每个 key 内 `MAX_RETRY=2`，4xx 直接透传不重试，**流式输出开始后不可重试**）→ 透传（剥离认证头 + `accept-encoding: identity`，按协议注入真实 key）→ 响应管道边透传边累积 → usage 解析器 → `withSkipCache` 写库
+- **写库**：仅 2xx 响应记录；响应无 usage 时记 0 且 `status='no_usage'`；`status`/`latency_ms` 为新增列
+- **模型并集**：`GET /v1/models` 返回所有启用上游 `enabled_models` 中非通配条目
+- **注意事项**：
+  - 新增写入接口必须在写入成功后调用 `invalidateQueryCache()` 或将 handler 包进 `withSkipCache()`（`src/lib/db/cache.ts`）
+  - `GATEWAY_SECRET` 缺失时代理路由与 admin API 返回 503，不静默降级
+  - 日志永不打印请求 body 与任何 key
+
+### Usage 解析器（`src/lib/gateway/parsers/`）
+
+统一输出 `{inputTokens, outputTokens, cacheRead, cacheWrite, hasUsage}`，按协议选择：
+
+| 字段 | OpenAI | Anthropic | Gemini |
+|---|---|---|---|
+| input | `usage.prompt_tokens` | `usage.input_tokens` | `usageMetadata.promptTokenCount` |
+| output | `usage.completion_tokens` | `usage.output_tokens` | `usageMetadata.candidatesTokenCount` |
+| cache_read | `prompt_tokens_details.cached_tokens` | `cache_read_input_tokens` | `cachedContentTokenCount` |
+| cache_write | 0 | `cache_creation_input_tokens` | 0 |
+
+流式来源：OpenAI 末尾 chunk `usage`（依赖 `stream_options.include_usage`）；Anthropic `message_start`(input) + `message_delta`(output)；Gemini 累计 `usageMetadata` 取最后。
+
+### 加密（`src/lib/gateway/crypto.ts`）
+
+- AES-256-GCM，密文格式 `iv:authTag:ciphertext`（base64）
+- `GATEWAY_SECRET` 支持 hex(64) / base64(32B) / 任意字符串（sha256 派生）
+- `generateVirtualKey()`：`vk-` + 32 base64url 随机字符
 
 ## 数据处理约定
 
@@ -70,25 +103,20 @@ docker compose up -d                                 # 本地运行
   3. 若 provider 被 `HIDDEN_PROVIDERS` 隐藏，则只按 `model` 部分匹配 `aliases` 中的别名
   4. 精确匹配 `aliases` 中的 `model` 别名
   5. 未命中时保持原始名称
-- **用途**：Dashboard Top 5 按归一化后的 model 名称聚合（如 `kimi-for-coding/k2p7` → `moonshotai/kimi-k2.7-code`）
-- **注**：不再依赖 `models.dev` 数据，所有模型、价格、别名均从 `model-registry.json` 维护；hidden provider 的别名不需要写入 registry，依赖 `HIDDEN_PROVIDERS` 的 fallback 规则归一化
+- **用途**：Dashboard Top 5 按归一化后的 model 名称聚合
 
 ## 查询缓存
 
 - 项目在 **SQLite 驱动层**使用 `lru-cache` 实现了 SELECT 结果缓存，由 `src/lib/db/cache.ts` 管理。
 - 通过 `wrapDatabaseClient()` 包装 `better-sqlite3` 的 `prepare` 方法，对 `select`/`pragma`/`with` 语句自动缓存，对其他语句（INSERT/UPDATE/DELETE）自动清空缓存。
 - 默认 TTL 10 秒（`API_CACHE_TTL_MS`），时间参数按 10 秒桶取整作为缓存 key，保证同一窗口内查询共享缓存。
-- 带 `X-API-Key` 的请求（`/api/ingest`、`/api/records`）通过 `AsyncLocalStorage` 跳过缓存，直接查库。
-- 因此 `/api/dashboard`、`/api/providers`、`/api/models`、`/api/cli` 自动享受缓存；写入 `/api/ingest` 后自动清空缓存，后续 GET 立即读到新数据。
-- 相关文件：`src/lib/db/cache.ts`、`src/lib/db/index.ts`、`src/app/api/ingest/route.ts`、`src/app/api/records/route.ts`
-- **提醒**：如果未来新增写入接口（如新的 POST/PUT/DELETE 路由），必须在写入成功处调用 `invalidateQueryCache()` 清空缓存，或将 handler 包进 `withSkipCache()` 以确保一致性。
+- 网关写库（`proxy-deps.ts` 的 `onUsage`/`onComplete`）包进 `withSkipCache()`，INSERT 后自动清缓存，Dashboard 即时可见新数据。
 
 ## 时区
 
 - Dashboard 的所有日期/时间分组与显示均按**浏览器时区**对齐。
-- `Dashboard.tsx` 通过 `new Date().getTimezoneOffset()` 获取客户端偏移分钟数（例如 UTC+8 返回 `-480`），并通过 `tzOffset` 查询参数传递给 `/api/dashboard`。
+- `Dashboard.tsx` 通过 `new Date().getTimezoneOffset()` 获取客户端偏移分钟数，并通过 `tzOffset` 查询参数传递给 `/api/dashboard`。
 - 服务端使用 `src/lib/timezone-utils.ts` 中的助手函数将 UTC 的 `created_at` 转换为本地日期/小时进行分组和过滤。
-- 相关文件：`src/lib/timezone-utils.ts`、`src/lib/db/index.ts`、`src/lib/stats-query.ts`、`src/app/api/dashboard/route.ts`、`src/components/Dashboard.tsx`、`src/components/UsageHeatmap.tsx`、`src/components/DailyUsageChart.tsx`。
 
 ## 环境变量
 
@@ -97,11 +125,14 @@ docker compose up -d                                 # 本地运行
 SQLITE_DATABASE_PATH="./data/token-tracker.db"
 
 # API Keys（必需）
-API_KEYS="your-secret-key"          # 可设置多个，逗号分隔
+API_KEYS="your-secret-key"          # 可设置多个，逗号分隔；管理面（Dashboard/admin/统计 API）认证
+
+# AI Gateway 主密钥（必需）
+GATEWAY_SECRET=""                   # AES-256-GCM 32 字节（hex/base64）；openssl rand -hex 32
 
 # 可选
 HIDDEN_PROVIDERS="openai,google"    # 需要匿名的 provider 列表
-MODEL_REGISTRY_PATH=                # model 归一化/价格配置（默认 data/model-registry.json，不存在则自动创建空文件）
+MODEL_REGISTRY_PATH=                # model 归一化/价格配置（默认 data/model-registry.json）
 
 # Query Cache
 API_CACHE_TTL_MS=10000              # SELECT 缓存 TTL（毫秒），默认 10000，0 关闭
@@ -110,7 +141,6 @@ API_CACHE_MAX_SIZE=1000             # 缓存最大条目数，默认 1000
 ```
 
 - 本地开发复制 `.env.example` → `.env.local`
-- Drizzle Kit 自动读取 `.env.local`（通过 `drizzle.config.ts` 中的 `dotenv.config()`）
 
 ## Docker 部署（VPS 自托管）
 
@@ -121,12 +151,13 @@ docker pull ghcr.io/caibingcheng/token-tracker:latest
 # 2. 准备 data 目录
 mkdir -p /opt/token-tracker/data
 
-# 3. 启动
+# 3. 启动（必须设置 GATEWAY_SECRET）
 docker run -d \
   --name token-tracker \
   -p 3000:3000 \
   -e SQLITE_DATABASE_PATH=/app/data/token-tracker.db \
   -e API_KEYS=your-key-here \
+  -e GATEWAY_SECRET=your-32-byte-hex \
   -v /opt/token-tracker/data:/app/data \
   ghcr.io/caibingcheng/token-tracker:latest
 
@@ -135,7 +166,7 @@ cp docker-compose.example.yml docker-compose.yml
 docker compose up -d
 ```
 
-- SQLite 数据库文件在首次 API 请求时由 `initDatabase()` 自动创建，无需手动迁移
+- SQLite 数据库文件在首次 API 请求时由 `initDatabase()` 自动创建（含新表与存量补列），无需手动迁移
 
 ### GitHub Container Registry
 
@@ -145,8 +176,14 @@ docker compose up -d
 | `dev` | `ghcr.io/caibingcheng/token-tracker:dev` | 测试 |
 | 任意 | `ghcr.io/caibingcheng/token-tracker:<sha>` | 指定版本 |
 
-- GHCR 公仓可直接 `docker pull`，无需登录
-- 私仓需在 VPS 上 `docker login ghcr.io -u <用户名> -p <PAT>`
+## 测试
+
+- 首次引入 vitest（`src/**/*.test.ts`，`npm test`），测试范围均为不依赖 Next.js 运行时的纯逻辑模块：
+  - `src/lib/gateway/parsers/`：三协议 usage 解析
+  - `src/lib/gateway/model-router`：精确/通配/priority 匹配、Gemini path 提取
+  - `src/lib/gateway/proxy`：认证、故障转移链（mock fetch）、usage 写库回调
+  - `src/lib/gateway/crypto`：AES-256-GCM 往返/篡改
+- 新增纯逻辑模块（如解析器、路由匹配、加密）时应同步提交单测
 
 ## Git Commit
 
