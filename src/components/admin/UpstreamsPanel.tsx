@@ -37,12 +37,28 @@ interface FormState {
 
 const EMPTY_FORM: FormState = { name: "", protocol: "openai", baseUrl: "", enabledModels: "", priority: "0" };
 
+interface FormKeyTestResult {
+  ok: boolean;
+  status: number;
+  error?: string;
+}
+
+interface ModelPickerState {
+  models: string[];
+  selected: Set<string>;
+  error?: string;
+}
+
 export default function UpstreamsPanel() {
   const [upstreams, setUpstreams] = useState<UpstreamItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
+  const [formKeys, setFormKeys] = useState<string[]>([""]);
+  const [formKeyTests, setFormKeyTests] = useState<Record<number, FormKeyTestResult | null>>({});
+  const [modelPicker, setModelPicker] = useState<ModelPickerState | null>(null);
+  const [fetchingModels, setFetchingModels] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -101,6 +117,7 @@ export default function UpstreamsPanel() {
         .filter(Boolean),
       priority: Number(form.priority) || 0,
     };
+    const newKeys = formKeys.map((k) => k.trim()).filter(Boolean);
     try {
       const res = editingId
         ? await apiFetch(`/api/admin/upstreams/${editingId}`, {
@@ -118,7 +135,22 @@ export default function UpstreamsPanel() {
         setError(json.error || "Failed to save upstream");
         return;
       }
+      const upstreamId = editingId ?? (json.data as { id: number }).id;
+      for (const apiKey of newKeys) {
+        const keyRes = await apiFetch(`/api/admin/upstreams/${upstreamId}/keys`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ apiKey }),
+        });
+        const keyJson = await keyRes.json();
+        if (!keyJson.success) {
+          setError(keyJson.error || "Failed to add an API key");
+          break;
+        }
+      }
       setForm(EMPTY_FORM);
+      setFormKeys([""]);
+      setFormKeyTests({});
       setEditingId(null);
       loadUpstreams();
     } catch {
@@ -137,6 +169,9 @@ export default function UpstreamsPanel() {
       enabledModels: u.enabledModels.join(", "),
       priority: String(u.priority),
     });
+    setFormKeys([""]);
+    setFormKeyTests({});
+    setModelPicker(null);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
@@ -196,6 +231,114 @@ export default function UpstreamsPanel() {
     setTestResults((prev) => ({ ...prev, [u.id]: json.data ?? { ok: false, error: json.error } }));
   };
 
+  const addFormKeyRow = () => {
+    setFormKeys((prev) => [...prev, ""]);
+  };
+
+  const removeFormKeyRow = (index: number) => {
+    setFormKeys((prev) => prev.filter((_, i) => i !== index));
+    setFormKeyTests((prev) => {
+      const next = { ...prev };
+      delete next[index];
+      return next;
+    });
+  };
+
+  const updateFormKey = (index: number, value: string) => {
+    setFormKeys((prev) => prev.map((k, i) => (i === index ? value : k)));
+    setFormKeyTests((prev) => ({ ...prev, [index]: null }));
+  };
+
+  const testFormKey = async (index: number) => {
+    const apiKey = formKeys[index]?.trim();
+    if (!apiKey) return;
+    setFormKeyTests((prev) => ({ ...prev, [index]: null }));
+    try {
+      const res = await apiFetch("/api/admin/upstreams/test-connection", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          protocol: form.protocol,
+          baseUrl: form.baseUrl.trim(),
+          apiKey,
+        }),
+      });
+      const json = await res.json();
+      if (json.success && json.data) {
+        setFormKeyTests((prev) => ({ ...prev, [index]: json.data }));
+      } else {
+        setFormKeyTests((prev) => ({
+          ...prev,
+          [index]: { ok: false, status: 0, error: json.error || "Test failed" },
+        }));
+      }
+    } catch {
+      setFormKeyTests((prev) => ({ ...prev, [index]: { ok: false, status: 0, error: "Network error" } }));
+    }
+  };
+
+  const firstFormKey = () => formKeys.map((k) => k.trim()).find(Boolean) || "";
+
+  const handleFetchModels = async () => {
+    const apiKey = firstFormKey();
+    if (!apiKey) return;
+    setFetchingModels(true);
+    setError(null);
+    try {
+      const res = await apiFetch("/api/admin/upstreams/fetch-models", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          protocol: form.protocol,
+          baseUrl: form.baseUrl.trim(),
+          apiKey,
+        }),
+      });
+      const json = await res.json();
+      if (json.success && json.data) {
+        setModelPicker({
+          models: json.data.models as string[],
+          selected: new Set<string>(),
+          error: json.data.error || undefined,
+        });
+      } else {
+        setModelPicker({
+          models: [],
+          selected: new Set<string>(),
+          error: json.error || "Failed to fetch models",
+        });
+      }
+    } catch {
+      setModelPicker({ models: [], selected: new Set<string>(), error: "Network error" });
+    } finally {
+      setFetchingModels(false);
+    }
+  };
+
+  const togglePickerModel = (model: string) => {
+    setModelPicker((prev) => {
+      if (!prev) return prev;
+      const next = new Set(prev.selected);
+      if (next.has(model)) {
+        next.delete(model);
+      } else {
+        next.add(model);
+      }
+      return { ...prev, selected: next };
+    });
+  };
+
+  const confirmModelPicker = () => {
+    if (!modelPicker) return;
+    const current = form.enabledModels
+      .split(",")
+      .map((m) => m.trim())
+      .filter(Boolean);
+    const merged = Array.from(new Set([...current, ...Array.from(modelPicker.selected)]));
+    setForm({ ...form, enabledModels: merged.join(", ") });
+    setModelPicker(null);
+  };
+
   if (loading) {
     return <div className="h-40 flex items-center justify-center text-gray-400">Loading...</div>;
   }
@@ -211,7 +354,7 @@ export default function UpstreamsPanel() {
         <h2 className="mb-4 text-lg font-semibold">
           {editingId ? `Edit Upstream #${editingId}` : "New Upstream"}
         </h2>
-        <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-[1fr_200px_200px] gap-4">
           <div>
             <label className="mb-1 block text-sm text-gray-600">Name</label>
             <input
@@ -234,7 +377,16 @@ export default function UpstreamsPanel() {
               ))}
             </select>
           </div>
-          <div className="md:col-span-2">
+          <div>
+            <label className="mb-1 block text-sm text-gray-600">Priority (model routing)</label>
+            <input
+              type="number"
+              value={form.priority}
+              onChange={(e) => setForm({ ...form, priority: e.target.value })}
+              className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+          </div>
+          <div className="md:col-span-3">
             <label className="mb-1 block text-sm text-gray-600">Base URL</label>
             <input
               value={form.baseUrl}
@@ -244,10 +396,77 @@ export default function UpstreamsPanel() {
               className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>
-          <div className="md:col-span-2">
+          <div className="md:col-span-3">
             <label className="mb-1 block text-sm text-gray-600">
-              Enabled Models <span className="text-gray-400">(comma separated, supports gpt-* wildcard)</span>
+              API Keys{" "}
+              <span className="text-gray-400">
+                ({editingId ? "new keys are appended to this upstream" : "optional at creation, add more later"})
+              </span>
             </label>
+            <div className="space-y-2">
+              {formKeys.map((keyValue, index) => (
+                <div key={index}>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="password"
+                      value={keyValue}
+                      onChange={(e) => updateFormKey(index, e.target.value)}
+                      placeholder={`API key ${index + 1}`}
+                      className="flex-1 rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => testFormKey(index)}
+                      disabled={!keyValue.trim() || !form.baseUrl.trim()}
+                      className="rounded border border-gray-300 px-3 py-2 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40"
+                    >
+                      Test
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => removeFormKeyRow(index)}
+                      className="rounded border border-gray-300 px-3 py-2 text-xs text-gray-600 hover:bg-gray-50"
+                      title="Remove key"
+                    >
+                      −
+                    </button>
+                  </div>
+                  {formKeyTests[index] && (
+                    <p
+                      className={`mt-1 text-xs ${
+                        formKeyTests[index]?.ok ? "text-green-600" : "text-red-600"
+                      }`}
+                    >
+                      {formKeyTests[index]?.ok
+                        ? "Connection OK"
+                        : `Test failed: ${formKeyTests[index]?.error || "unknown error"}`}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={addFormKeyRow}
+              className="mt-2 rounded border border-dashed border-gray-300 px-3 py-1.5 text-xs text-gray-500 hover:bg-gray-50"
+            >
+              + Add key
+            </button>
+          </div>
+          <div className="md:col-span-3">
+            <div className="mb-1 flex items-center justify-between">
+              <label className="block text-sm text-gray-600">
+                Enabled Models <span className="text-gray-400">(comma separated, supports gpt-* wildcard)</span>
+              </label>
+              <button
+                type="button"
+                onClick={handleFetchModels}
+                disabled={fetchingModels || !form.baseUrl.trim() || !firstFormKey()}
+                className="rounded border border-gray-300 px-2.5 py-1 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40"
+              >
+                {fetchingModels ? "Fetching..." : "Fetch Models"}
+              </button>
+            </div>
             <input
               value={form.enabledModels}
               onChange={(e) => setForm({ ...form, enabledModels: e.target.value })}
@@ -255,40 +474,102 @@ export default function UpstreamsPanel() {
               className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>
-          <div>
-            <label className="mb-1 block text-sm text-gray-600">Priority <span className="text-gray-400">(lower = preferred)</span></label>
-            <input
-              type="number"
-              value={form.priority}
-              onChange={(e) => setForm({ ...form, priority: e.target.value })}
-              className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            />
-          </div>
-          <div className="flex items-end">
-            <div className="flex gap-2">
+          <div className="md:col-span-3 flex items-center gap-2">
+            <button
+              type="submit"
+              disabled={saving}
+              className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            >
+              {saving ? "Saving..." : editingId ? "Save" : "Create"}
+            </button>
+            {editingId && (
               <button
-                type="submit"
-                disabled={saving}
-                className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                type="button"
+                onClick={() => {
+                  setEditingId(null);
+                  setForm(EMPTY_FORM);
+                  setFormKeys([""]);
+                  setFormKeyTests({});
+                }}
+                className="rounded border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50"
               >
-                {saving ? "Saving..." : editingId ? "Save" : "Create"}
+                Cancel
               </button>
-              {editingId && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEditingId(null);
-                    setForm(EMPTY_FORM);
-                  }}
-                  className="rounded border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50"
-                >
-                  Cancel
-                </button>
-              )}
-            </div>
+            )}
           </div>
         </form>
       </div>
+
+      {modelPicker && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="flex max-h-[80vh] w-full max-w-2xl flex-col rounded-lg bg-white shadow-xl">
+            <div className="flex items-center justify-between border-b px-5 py-3">
+              <h3 className="font-semibold">
+                Select models for {form.name.trim() || "new upstream"}
+                <span className="ml-2 text-xs font-normal text-gray-400">
+                  {modelPicker.models.length} available · {modelPicker.selected.size} selected
+                </span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setModelPicker(null)}
+                className="text-2xl leading-none text-gray-400 hover:text-gray-600"
+              >
+                ×
+              </button>
+            </div>
+
+            {modelPicker.error && (
+              <div className="mx-5 mt-3 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-600">
+                Fetch failed: {modelPicker.error}
+              </div>
+            )}
+
+            <div className="flex-1 overflow-y-auto p-5">
+              {modelPicker.models.length === 0 && !modelPicker.error ? (
+                <div className="py-10 text-center text-gray-400">
+                  No models found. Close this dialog and add models manually.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
+                  {modelPicker.models.map((model) => (
+                    <label
+                      key={model}
+                      className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-gray-50"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={modelPicker.selected.has(model)}
+                        onChange={() => togglePickerModel(model)}
+                        className="rounded border-gray-300"
+                      />
+                      <code className="truncate" title={model}>{model}</code>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end border-t px-5 py-3 gap-2">
+              <button
+                type="button"
+                onClick={() => setModelPicker(null)}
+                className="rounded border border-gray-300 px-4 py-1.5 text-sm text-gray-600 hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmModelPicker}
+                disabled={modelPicker.models.length === 0}
+                className="rounded bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              >
+                Apply ({modelPicker.selected.size})
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 上游列表 */}
       <div className="space-y-4">

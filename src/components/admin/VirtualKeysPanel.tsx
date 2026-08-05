@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiFetch } from "@/lib/client/api-client";
 import { formatNumber } from "@/lib/number-utils";
+import { maskVirtualKey } from "@/lib/mask-utils";
 
 export interface VirtualKeyItem {
   id: number;
@@ -220,7 +221,7 @@ export default function VirtualKeysPanel() {
               <span className={`h-2 w-2 rounded-full ${key.enabled ? "bg-green-500" : "bg-gray-300"}`} />
               <span className="font-semibold">{key.name}</span>
               <code className="rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-600 break-all max-w-xs">
-                {key.apiKey}
+                {maskVirtualKey(key.apiKey)}
               </code>
               <button
                 type="button"
@@ -258,31 +259,6 @@ export default function VirtualKeysPanel() {
                 </button>
               </div>
             </div>
-
-            {key.usage && (
-              <div className="mt-3 grid grid-cols-2 md:grid-cols-5 gap-3 rounded bg-gray-50 p-3 text-sm">
-                <div>
-                  <p className="text-xs text-gray-400">Requests</p>
-                  <p className="font-semibold">{formatNumber(key.usage.requestCount, true)}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-gray-400">Input</p>
-                  <p className="font-semibold">{formatNumber(key.usage.totalInput, true)}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-gray-400">Output</p>
-                  <p className="font-semibold">{formatNumber(key.usage.totalOutput, true)}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-gray-400">Cache Read</p>
-                  <p className="font-semibold">{formatNumber(key.usage.totalCacheRead, true)}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-gray-400">Cache Write</p>
-                  <p className="font-semibold">{formatNumber(key.usage.totalCacheWrite, true)}</p>
-                </div>
-              </div>
-            )}
 
             {expandedId === key.id && usageDetail && (
               <div className="mt-4">

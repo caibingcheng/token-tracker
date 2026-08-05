@@ -884,12 +884,6 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
                   )}
                   <span className="text-gray-400">▼</span>
                 </button>
-                <Link
-                  href="/admin"
-                  className="inline-flex items-center gap-2 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50"
-                >
-                  Admin
-                </Link>
                 <button
                   type="button"
                   onClick={() => setIsSimulatorOpen(true)}
@@ -897,16 +891,16 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
                 >
                   Simulate
                 </button>
+                <Link
+                  href="/admin"
+                  className="text-sm text-gray-400 hover:text-blue-600 transition-colors"
+                >
+                  Admin →
+                </Link>
               </div>
             </div>
 
             <div className="hidden sm:flex flex-row items-center gap-3">
-              <Link
-                href="/admin"
-                className="inline-flex items-center gap-2 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50"
-              >
-                Admin
-              </Link>
               <NumberFormatToggle />
               <button
                 type="button"
@@ -951,6 +945,12 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
                   </option>
                 ))}
               </select>
+              <Link
+                href="/admin"
+                className="text-sm text-gray-400 hover:text-blue-600 transition-colors"
+              >
+                Admin →
+              </Link>
             </div>
           </div>
 
