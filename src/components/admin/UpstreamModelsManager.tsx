@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/client/api-client";
 import type { UpstreamItem } from "./UpstreamsPanel";
 
@@ -23,8 +23,27 @@ export default function UpstreamModelsManager({
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
+  const selectAllRef = useRef<HTMLInputElement>(null);
 
-  const load = useCallback(async () => {
+  const allModels = Array.from(
+    new Set([...(data?.manual ?? []), ...(data?.available ?? [])])
+  ).sort();
+  const someSelected = selected.size > 0 && !allModels.every((m) => selected.has(m));
+
+  useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate = someSelected;
+    }
+  }, [someSelected]);
+
+  // 打开 modal 直接用 upstream.enabledModels 渲染；仅点 "↻ Pull from upstream" 才调用上游接口
+  const openModal = () => {
+    setData({ manual: upstream.enabledModels, available: [], merged: upstream.enabledModels });
+    setSelected(new Set(upstream.enabledModels));
+    setOpen(true);
+  };
+
+  const pull = async () => {
     setLoading(true);
     try {
       const res = await apiFetch(`/api/admin/upstreams/${upstream.id}/models`);
@@ -32,16 +51,13 @@ export default function UpstreamModelsManager({
       if (json.success) {
         const d = json.data as ModelsData;
         setData(d);
-        setSelected(new Set(d.merged ?? d.manual ?? []));
+        // 新拉取的模型不默认选中，只保留原有手动配置的
+        setSelected(new Set(d.manual ?? []));
       }
     } finally {
       setLoading(false);
     }
-  }, [upstream.id]);
-
-  useEffect(() => {
-    if (open) load();
-  }, [open, load]);
+  };
 
   const toggleModel = (model: string) => {
     setSelected((prev) => {
@@ -77,7 +93,7 @@ export default function UpstreamModelsManager({
     return (
       <button
         type="button"
-        onClick={() => setOpen(true)}
+        onClick={openModal}
         className="text-xs text-gray-500 hover:text-blue-600"
       >
         Models
@@ -85,7 +101,15 @@ export default function UpstreamModelsManager({
     );
   }
 
-  const allModels = Array.from(new Set([...(data?.manual ?? []), ...(data?.available ?? [])])).sort();
+  const allSelected = allModels.length > 0 && allModels.every((m) => selected.has(m));
+
+  const toggleSelectAll = () => {
+    if (allSelected) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(allModels));
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
@@ -94,7 +118,7 @@ export default function UpstreamModelsManager({
           <h3 className="font-semibold">
             Models for {upstream.name}
             <span className="ml-2 text-xs font-normal text-gray-400">
-              {data?.available.length ?? 0} available upstream · {allModels.length} selected
+              {data?.available.length ?? 0} available upstream · {selected.size} selected
             </span>
           </h3>
           <button
@@ -120,26 +144,38 @@ export default function UpstreamModelsManager({
               No models found. Pull models from upstream or add them manually in the upstream form.
             </div>
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
-              {allModels.map((model) => (
-                <label
-                  key={model}
-                  className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-gray-50"
-                >
-                  <input
-                    type="checkbox"
-                    checked={selected.has(model)}
-                    onChange={() => toggleModel(model)}
-                    className="rounded border-gray-300"
-                  />
-                  <code className="truncate" title={model}>{model}</code>
-                  {data?.available.includes(model) && !data?.manual.includes(model) && (
-                    <span className="ml-auto shrink-0 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] text-blue-600">
-                      pulled
-                    </span>
-                  )}
-                </label>
-              ))}
+            <div>
+              <label className="mb-2 flex items-center gap-2 rounded border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-600">
+                <input
+                  ref={selectAllRef}
+                  type="checkbox"
+                  checked={allSelected}
+                  onChange={toggleSelectAll}
+                  className="rounded border-gray-300"
+                />
+                {allSelected ? "Unselect all" : "Select all"}
+              </label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
+                {allModels.map((model) => (
+                  <label
+                    key={model}
+                    className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-gray-50"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selected.has(model)}
+                      onChange={() => toggleModel(model)}
+                      className="rounded border-gray-300"
+                    />
+                    <code className="truncate" title={model}>{model}</code>
+                    {data?.available.includes(model) && !data?.manual.includes(model) && (
+                      <span className="ml-auto shrink-0 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] text-blue-600">
+                        pulled
+                      </span>
+                    )}
+                  </label>
+                ))}
+              </div>
             </div>
           )}
         </div>
@@ -147,7 +183,7 @@ export default function UpstreamModelsManager({
         <div className="flex items-center justify-between border-t px-5 py-3">
           <button
             type="button"
-            onClick={load}
+            onClick={pull}
             disabled={loading}
             className="text-sm text-gray-500 hover:text-blue-600 disabled:opacity-50"
           >

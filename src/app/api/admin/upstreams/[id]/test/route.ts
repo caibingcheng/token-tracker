@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
 import { db, initDatabase, upstreamsTable, upstreamKeysTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
+import { withAuth } from "@/lib/auth/guard";
 import { testUpstreamConnection } from "@/lib/gateway/upstream-client";
 import { decryptSecret, GatewaySecretMissingError } from "@/lib/gateway/crypto";
 
@@ -17,7 +18,8 @@ interface Params {
 }
 
 // 连接测试：默认用第一个启用 key；可选 body.apiKey 指定临时 key 测试
-export async function POST(request: NextRequest, { params }: Params) {
+export const POST = withAuth(async (request: NextRequest, ctx: any) => {
+  const { params } = ctx as Params;
   return withSkipCache(async () => {
     await initDatabase();
     const upstreamId = Number(params.id);
@@ -83,4 +85,4 @@ export async function POST(request: NextRequest, { params }: Params) {
       return NextResponse.json({ success: false, error: "Internal server error" }, { status: 500 });
     }
   });
-}
+});

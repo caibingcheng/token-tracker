@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { eq, count } from "drizzle-orm";
 import { db, initDatabase, upstreamsTable, upstreamKeysTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
+import { withAuth } from "@/lib/auth/guard";
 import { isProtocol, parseEnabledModels } from "@/lib/gateway/model-router";
 import { GatewaySecretMissingError } from "@/lib/gateway/crypto";
 
@@ -12,7 +13,7 @@ function gatewaySecretError() {
   );
 }
 
-export async function GET() {
+export const GET = withAuth(async () => {
   return withSkipCache(async () => {
     await initDatabase();
     const rows = await db.select().from(upstreamsTable).orderBy(upstreamsTable.priority);
@@ -35,14 +36,16 @@ export async function GET() {
       priority: row.priority,
       enabled: row.enabled === 1,
       keyCount: countMap.get(row.id) || 0,
+      balance: row.balance ?? null,
+      balanceUpdatedAt: row.balanceUpdatedAt ?? null,
       createdAt: row.createdAt,
     }));
 
     return NextResponse.json({ success: true, data });
   });
-}
+});
 
-export async function POST(request: NextRequest) {
+export const POST = withAuth(async (request: NextRequest) => {
   return withSkipCache(async () => {
     await initDatabase();
     let body: Record<string, unknown>;
@@ -97,4 +100,4 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: "Internal server error" }, { status: 500 });
     }
   });
-}
+});

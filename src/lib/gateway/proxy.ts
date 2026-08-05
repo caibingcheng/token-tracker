@@ -1,5 +1,10 @@
 import type { Protocol } from "./model-router";
-import { extractRequestModel, routeModel } from "./model-router";
+import {
+  extractRequestModel,
+  routeModel,
+  modelMatchesPattern,
+  parseEnabledModels,
+} from "./model-router";
 import type { UpstreamRoute } from "./model-router";
 import { buildAuthHeaders } from "./upstream-client";
 import { joinUrlPath } from "./url-utils";
@@ -20,6 +25,7 @@ export interface VirtualKeyInfo {
   id: number;
   name: string;
   enabled: boolean;
+  enabledModels?: string | string[];
 }
 
 export interface RecordUsageMeta {
@@ -32,6 +38,7 @@ export interface RecordUsageMeta {
   cacheWrite: number;
   status?: string;
   latencyMs?: number;
+  virtualKeyId?: number;
 }
 
 export interface ProxyDeps {
@@ -142,10 +149,12 @@ export async function handleProxyRequest(
     return proxyError(401, "Invalid or revoked virtual key", "authentication_error");
   }
 
-  // GET /v1/models：返回所有启用上游模型的并集
+  // GET /v1/models：返回所有启用上游模型的并集（按 vk enabledModels 过滤）
   if (request.method === "GET" && path.endsWith("/models")) {
     const upstreams = await deps.loadUpstreams();
-    const models = collectEnabledModels(upstreams);
+    const models = collectEnabledModels(upstreams).filter((id) =>
+      isModelAllowedByVirtualKey(virtualKey, id)
+    );
     return Response.json(
       {
         object: "list",
@@ -173,6 +182,11 @@ export async function handleProxyRequest(
   const model = extractRequestModel(path, bodyJson);
   if (!model) {
     return proxyError(400, "Unable to determine model from request", "invalid_request_error");
+  }
+
+  // vk model allowlist 检查：'*' 全放行，其余按通配规则匹配
+  if (!isModelAllowedByVirtualKey(virtualKey, model)) {
+    return proxyError(403, `Model not allowed for this virtual key: ${model}`, "model_not_allowed");
   }
 
   const upstreams = await deps.loadUpstreams();
@@ -261,6 +275,7 @@ export async function handleProxyRequest(
     cacheRead: 0,
     cacheWrite: 0,
     latencyMs,
+    virtualKeyId: virtualKey.id,
   };
 
   return passthroughResponse(lastResponse, {
@@ -340,6 +355,16 @@ async function passthroughResponse(
   };
 
   return new Response(passthrough, { status: upstreamResponse.status, headers });
+}
+
+// vk model allowlist 匹配：'*' 全放行，空配置视为不允许（deny by default）
+export function isModelAllowedByVirtualKey(
+  vk: VirtualKeyInfo,
+  model: string
+): boolean {
+  const patterns = parseEnabledModels(vk.enabledModels);
+  if (patterns.includes("*")) return true;
+  return patterns.some((p) => modelMatchesPattern(p, model));
 }
 
 // ---- usage 解析（按上游协议选择解析器） ----

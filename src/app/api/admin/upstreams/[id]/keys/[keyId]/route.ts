@@ -2,12 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
 import { db, initDatabase, upstreamKeysTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
+import { withAuth } from "@/lib/auth/guard";
 
 interface Params {
   params: { id: string; keyId: string };
 }
 
-export async function PATCH(request: NextRequest, { params }: Params) {
+export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
+  const { params } = ctx as Params;
   return withSkipCache(async () => {
     await initDatabase();
     const keyId = Number(params.keyId);
@@ -39,9 +41,10 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     await db.update(upstreamKeysTable).set(values).where(eq(upstreamKeysTable.id, keyId));
     return NextResponse.json({ success: true });
   });
-}
+});
 
-export async function DELETE(request: NextRequest, { params }: Params) {
+export const DELETE = withAuth(async (request: NextRequest, ctx: any) => {
+  const { params } = ctx as Params;
   return withSkipCache(async () => {
     await initDatabase();
     const keyId = Number(params.keyId);
@@ -54,4 +57,4 @@ export async function DELETE(request: NextRequest, { params }: Params) {
     await db.delete(upstreamKeysTable).where(eq(upstreamKeysTable.id, keyId));
     return NextResponse.json({ success: true });
   });
-}
+});

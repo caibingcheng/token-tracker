@@ -8,7 +8,7 @@ import {
   tokenRecords,
 } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
-import { decryptSecret } from "./crypto";
+import { decryptSecret, safeCompare } from "./crypto";
 import type { ProxyDeps, RecordUsageMeta } from "./proxy";
 import type { UpstreamRoute } from "./model-router";
 
@@ -21,8 +21,13 @@ export function createProxyDeps(): ProxyDeps {
       for (const row of rows) {
         try {
           const plain = decryptSecret(row.apiKeyEncrypted);
-          if (plain === token) {
-            return { id: row.id, name: row.name, enabled: row.enabled === 1 };
+          if (safeCompare(plain, token)) {
+            return {
+              id: row.id,
+              name: row.name,
+              enabled: row.enabled === 1,
+              enabledModels: row.enabledModels,
+            };
           }
         } catch {
           continue;
@@ -82,6 +87,7 @@ export function createProxyDeps(): ProxyDeps {
           cacheWrite: usage.cacheWrite,
           status: usage.status ?? null,
           latencyMs: usage.latencyMs ?? null,
+          virtualKeyId: usage.virtualKeyId ?? null,
         });
       });
     },

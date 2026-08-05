@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { withSkipCache } from "@/lib/db/cache";
+import { withAuth } from "@/lib/auth/guard";
 import { fetchUpstreamModels } from "@/lib/gateway/upstream-client";
 import { isProtocol } from "@/lib/gateway/model-router";
 
-export async function POST(request: NextRequest) {
+export const POST = withAuth(async (request: NextRequest) => {
   return withSkipCache(async () => {
     let body: Record<string, unknown>;
     try {
@@ -32,4 +33,4 @@ export async function POST(request: NextRequest) {
       data: { models: result.models, status: result.status, error: result.error },
     });
   });
-}
+});

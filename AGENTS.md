@@ -31,25 +31,34 @@ docker compose up -d                                 # 本地运行
 - **关键配置**：better-sqlite3，文本模式存储时间戳（ISO 格式）
 - **自动初始化**：`initDatabase()` 在首次 API 调用时自动建表 + 索引
 - **表结构**：
-  - `token_records`（id, model, provider, agent, input_tokens, output_tokens, cache_read, cache_write, status, latency_ms, created_at）
-  - `upstreams`（id, name, protocol, base_url, enabled_models(JSON), priority, enabled, created_at）
+  - `token_records`（id, model, provider, agent, input_tokens, output_tokens, cache_read, cache_write, status, latency_ms, virtual_key_id, created_at）
+  - `upstreams`（id, name, protocol, base_url, enabled_models(JSON), priority, enabled, balance, balance_updated_at, created_at）
   - `upstream_keys`（id, upstream_id, api_key_encrypted, enabled, last_status, created_at）
-  - `virtual_keys`（id, name, api_key_encrypted, enabled, last_used_at, created_at）
-- **存量迁移**：`migrateTokenRecordsColumns()` 通过 `PRAGMA table_info` 检测缺失列并 `ALTER TABLE` 补列（`CREATE TABLE IF NOT EXISTS` 不会补列）
+  - `virtual_keys`（id, name, api_key_encrypted, enabled, comment, enabled_models(JSON, 默认 '["*"]'), last_used_at, created_at）
+  - `settings`（key TEXT PRIMARY KEY, value TEXT）：`admin_api_key`（AES-256-GCM 加密）、`totp_secret`、`totp_enabled`、`token_epoch`
+- **存量迁移**：`migrateColumns()` 泛化支持多表（token_records / virtual_keys / upstreams），通过 `PRAGMA table_info` 检测缺失列并 `ALTER TABLE` 补列（`CREATE TABLE IF NOT EXISTS` 不会补列）
 
 ## API 路由与认证
 
 | 路由 | 方法 | 认证 | 说明 |
 |------|------|------|------|
-| `/v1/*`, `/v1beta/*` | 全部 | 虚拟 key（`vk-` 前缀，DB 加密比对） | 代理入口：虚拟 key 校验 → model 路由 → 上游 key 故障转移链 → 纯透传 + usage 解析写库 |
-| `/api/dashboard` | GET | `X-API-Key` | 聚合统计（total + today + yesterday + daily + models + 365 天 heatmap + 24h 分布） |
-| `/api/providers` `/api/models` `/api/agents` `/api/cli` `/api/model-pricing` `/api/records` | GET | `X-API-Key` | 统计/查询 API |
-| `/api/admin/upstreams*` | CRUD | `X-API-Key` | 上游管理（含 keys、模型拉取、连接测试） |
-| `/api/admin/virtual-keys*` | CRUD | `X-API-Key` | 虚拟 key 管理（创建/吊销/用量） |
+| `/v1/*`, `/v1beta/*` | 全部 | 虚拟 key（`vk-` 前缀，DB 加密比对） | 代理入口：虚拟 key 校验 → vk model allowlist → model 路由 → 上游 key 故障转移链 → 纯透传 + usage 解析写库 |
+| `POST /api/auth/login` | POST | 原始 API key（DB 优先，env 兜底）+ 可选 TOTP | 登录换会话 token（唯一换取入口，内存限流） |
+| `/api/dashboard` | GET | 会话 token（`X-API-Key` header） | 聚合统计（total + today + yesterday + daily + models + 365 天 heatmap + 24h 分布） |
+| `/api/providers` `/api/models` `/api/agents` `/api/cli` `/api/model-pricing` `/api/records` | GET | 会话 token | 统计/查询 API |
+| `/api/admin/upstreams*` | CRUD | 会话 token | 上游管理（含 keys、模型拉取、连接测试、余额刷新） |
+| `/api/admin/virtual-keys*` | CRUD | 会话 token | 虚拟 key 管理（创建/编辑/吊销/用量，支持 comment + enabledModels） |
+| `/api/admin/auth/totp` `/api/admin/auth/api-key` | CRUD | 会话 token + TOTP 动态码 | TOTP 绑定/解绑、修改登录 key |
 
-- **认证中间件**：`src/middleware.ts` 对全部 `/api/*` 强制 `X-API-Key`（env `API_KEYS`）；matcher 不含 `/v1/*`、`/v1beta/*`（代理走虚拟 key 认证）
-- **页面认证**：`/`、`/admin` 由客户端 `ApiKeyGate`（sessionStorage + 401 拦截）处理，无 middleware；全局 fetch 走 `src/lib/client/api-client.ts` 的 `apiFetch`（自动注入 header，401 时清 key 回输入页）
-- **API Keys**：`API_KEYS` 环境变量，逗号分隔多个 key
+- **认证架构（多层防漏）**：验签 middleware（第一层，WebCrypto 验 HMAC 签名 + exp，Edge runtime）→ 路由内 `withAuth`（第二层，epoch 检查 + DB key 指纹校验）→ vitest 静态扫描测试（第三层，`src/lib/auth/guard-scan.test.ts`）→ 本文件约定（第四层）
+- **⚠️ breaking change**：所有 `/api/*`（login 除外）只接受会话 token（HMAC-SHA256 签名，GATEWAY_SECRET 派生密钥），**原始 API key 不能直接调 API**。脚本/curl 必须先 `POST /api/auth/login`（body `{apiKey, totpCode?}`）换 token，再带 `X-API-Key: <token>` 调用
+- **新增 /api 路由必须用 `withAuth` 包裹**（`src/lib/auth/guard.ts`，login 除外），否则静态扫描测试失败
+- **会话 token**：payload 含 `exp + epoch + keyId`；`SESSION_TOKEN_TTL_HOURS` 控制有效期（默认 24h）；认证通过且剩余不足一半时 guard 通过响应头 `X-Session-Token` 下发新 token（滑动续期），`apiFetch` 自动存回 sessionStorage
+- **key 生命周期**：修改登录 key（settings 表 `admin_api_key`）时 `token_epoch + 1` → 所有已签发 token 立即 401，env `API_KEYS` 旧 key 立即失效（DB 有 key 时 env 不再被检查）
+- **防锁死恢复**：settings 表无 `admin_api_key` 时回退 env `API_KEYS` 兜底；如忘记 key 导致无法登录，删除 `settings` 表中的 `admin_api_key` 行即可恢复（sqlite3 CLI 操作）
+- **settings 读写必须包 `withSkipCache()`**（`src/lib/auth/settings.ts`）：查询缓存 TTL 10s，否则改 key/epoch+1/解绑 TOTP 后旧凭证最长残留 10s
+- **页面认证**：`/`、`/admin` 由客户端 `ApiKeyGate`（sessionStorage 存会话 token + 401 拦截 + TOTP 两步登录）处理，无 middleware；全局 fetch 走 `src/lib/client/api-client.ts` 的 `apiFetch`
+- **TOTP**：RFC 6238 自实现（`src/lib/auth/totp.ts`，30s 窗口 ±1 容差）；admin + dashboard 共用一次登录
 
 ## AI Gateway 代理链路（核心）
 
@@ -133,6 +142,7 @@ GATEWAY_SECRET=""                   # AES-256-GCM 32 字节（hex/base64）；op
 # 可选
 HIDDEN_PROVIDERS="openai,google"    # 需要匿名的 provider 列表
 MODEL_REGISTRY_PATH=                # model 归一化/价格配置（默认 data/model-registry.json）
+SESSION_TOKEN_TTL_HOURS=24          # 会话 token 有效期（小时），默认 24，滑动续期
 
 # Query Cache
 API_CACHE_TTL_MS=10000              # SELECT 缓存 TTL（毫秒），默认 10000，0 关闭
@@ -181,8 +191,16 @@ docker compose up -d
 - 首次引入 vitest（`src/**/*.test.ts`，`npm test`），测试范围均为不依赖 Next.js 运行时的纯逻辑模块：
   - `src/lib/gateway/parsers/`：三协议 usage 解析
   - `src/lib/gateway/model-router`：精确/通配/priority 匹配、Gemini path 提取
-  - `src/lib/gateway/proxy`：认证、故障转移链（mock fetch）、usage 写库回调
+  - `src/lib/gateway/proxy`：认证、故障转移链（mock fetch）、usage 写库回调、vk model allowlist 403
   - `src/lib/gateway/crypto`：AES-256-GCM 往返/篡改
+  - `src/lib/auth/totp`：RFC 6238 测试向量 + 时间窗容差
+  - `src/lib/auth/session`：会话 token 签发/验签/过期/滑动续期判定
+  - `src/lib/auth/edge-verify`：WebCrypto 验签（与 node 侧签名互认）
+  - `src/lib/auth/guard-scan`：静态扫描所有 /api 路由必须用 withAuth（login 除外）
+  - `src/lib/gateway/balance`：deepseek/openrouter 余额解析（mock fetch）、provider 判定
+  - `src/lib/db/migrate`：存量表补列迁移（临时 SQLite 库，幂等性 + NOT NULL 默认值回填）
+  - `src/lib/provider-presets`：预设合法性（protocol/baseUrl/唯一性）
+  - `src/lib/stats-query`：静态断言聚合口径（totalInput 不含 cacheRead 双重计入）
 - 新增纯逻辑模块（如解析器、路由匹配、加密）时应同步提交单测
 
 ## Git Commit

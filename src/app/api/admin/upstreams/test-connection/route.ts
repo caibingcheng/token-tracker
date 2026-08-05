@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { withSkipCache } from "@/lib/db/cache";
+import { withAuth } from "@/lib/auth/guard";
 import { testUpstreamConnection } from "@/lib/gateway/upstream-client";
 import { isProtocol } from "@/lib/gateway/model-router";
 
-export async function POST(request: NextRequest) {
+export const POST = withAuth(async (request: NextRequest) => {
   if (!process.env.GATEWAY_SECRET) {
     return NextResponse.json(
       { success: false, error: "GATEWAY_SECRET is not configured" },
@@ -38,4 +39,4 @@ export async function POST(request: NextRequest) {
       data: { ok: result.ok, status: result.status, error: result.error },
     });
   });
-}
+});

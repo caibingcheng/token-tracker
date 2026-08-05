@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { eq, count } from "drizzle-orm";
 import { db, initDatabase, upstreamsTable, upstreamKeysTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
+import { withAuth } from "@/lib/auth/guard";
 import { isProtocol, parseEnabledModels } from "@/lib/gateway/model-router";
 
 interface Params {
@@ -22,6 +23,8 @@ async function withKeys(upstream: any) {
     ...upstream,
     enabled: upstream.enabled === 1,
     enabledModels: parseEnabledModels(upstream.enabledModels),
+    balance: upstream.balance ?? null,
+    balanceUpdatedAt: upstream.balanceUpdatedAt ?? null,
     keys: keyRows.map((k: any) => ({
       id: k.id,
       enabled: k.enabled === 1,
@@ -31,7 +34,8 @@ async function withKeys(upstream: any) {
   };
 }
 
-export async function GET(request: NextRequest, { params }: Params) {
+export const GET = withAuth(async (request: NextRequest, ctx: any) => {
+  const { params } = ctx as Params;
   return withSkipCache(async () => {
     await initDatabase();
     const id = Number(params.id);
@@ -41,9 +45,10 @@ export async function GET(request: NextRequest, { params }: Params) {
     }
     return NextResponse.json({ success: true, data: await withKeys(upstream) });
   });
-}
+});
 
-export async function PATCH(request: NextRequest, { params }: Params) {
+export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
+  const { params } = ctx as Params;
   return withSkipCache(async () => {
     await initDatabase();
     const id = Number(params.id);
@@ -91,6 +96,17 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     if (body.enabled !== undefined) {
       values.enabled = body.enabled ? 1 : 0;
     }
+    if (body.balance !== undefined) {
+      if (body.balance === null || typeof body.balance === "string") {
+        values.balance = body.balance;
+        values.balanceUpdatedAt = new Date().toISOString();
+      } else {
+        return NextResponse.json(
+          { success: false, error: "balance must be a string or null" },
+          { status: 400 }
+        );
+      }
+    }
 
     if (Object.keys(values).length === 0) {
       return NextResponse.json({ success: false, error: "No fields to update" }, { status: 400 });
@@ -112,9 +128,10 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       return NextResponse.json({ success: false, error: "Internal server error" }, { status: 500 });
     }
   });
-}
+});
 
-export async function DELETE(request: NextRequest, { params }: Params) {
+export const DELETE = withAuth(async (request: NextRequest, ctx: any) => {
+  const { params } = ctx as Params;
   return withSkipCache(async () => {
     await initDatabase();
     const id = Number(params.id);
@@ -125,4 +142,4 @@ export async function DELETE(request: NextRequest, { params }: Params) {
     await db.delete(upstreamsTable).where(eq(upstreamsTable.id, id));
     return NextResponse.json({ success: true });
   });
-}
+});

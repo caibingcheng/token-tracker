@@ -2,13 +2,15 @@ import { NextRequest, NextResponse } from "next/server";
 import { eq, desc, sql } from "drizzle-orm";
 import { db, initDatabase, virtualKeysTable, tokenRecords } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
+import { withAuth } from "@/lib/auth/guard";
 
 interface Params {
   params: { id: string };
 }
 
-// 单个虚拟 key 的用量统计（按 agent 名聚合 token_records）
-export async function GET(request: NextRequest, { params }: Params) {
+// 单个虚拟 key 的用量统计（按 virtual_key_id 过滤 token_records；历史数据视为 unknown 不计入）
+export const GET = withAuth(async (request: NextRequest, ctx: any) => {
+  const { params } = ctx as Params;
   return withSkipCache(async () => {
     await initDatabase();
     const id = Number(params.id);
@@ -29,7 +31,7 @@ export async function GET(request: NextRequest, { params }: Params) {
         lastActiveAt: sql<string | null>`MAX(${tokenRecords.createdAt})`,
       })
       .from(tokenRecords)
-      .where(eq(tokenRecords.agent, row.name));
+      .where(eq(tokenRecords.virtualKeyId, id));
 
     const recent = await db
       .select({
@@ -44,7 +46,7 @@ export async function GET(request: NextRequest, { params }: Params) {
         createdAt: tokenRecords.createdAt,
       })
       .from(tokenRecords)
-      .where(eq(tokenRecords.agent, row.name))
+      .where(eq(tokenRecords.virtualKeyId, id))
       .orderBy(desc(tokenRecords.createdAt))
       .limit(20);
 
@@ -54,10 +56,12 @@ export async function GET(request: NextRequest, { params }: Params) {
         id: row.id,
         name: row.name,
         enabled: row.enabled === 1,
+        comment: row.comment ?? null,
+        enabledModels: row.enabledModels,
         lastUsedAt: row.lastUsedAt,
         usage: usage[0],
         recent,
       },
     });
   });
-}
+});

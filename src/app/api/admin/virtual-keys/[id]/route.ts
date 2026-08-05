@@ -2,12 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
 import { db, initDatabase, virtualKeysTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
+import { withAuth } from "@/lib/auth/guard";
 
 interface Params {
   params: { id: string };
 }
 
-export async function PATCH(request: NextRequest, { params }: Params) {
+export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
+  const { params } = ctx as Params;
   return withSkipCache(async () => {
     await initDatabase();
     const id = Number(params.id);
@@ -33,6 +35,27 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       }
       values.name = name;
     }
+    if (typeof body.comment === "string") {
+      values.comment = body.comment.trim() || null;
+    }
+    if (body.enabledModels !== undefined) {
+      if (!Array.isArray(body.enabledModels)) {
+        return NextResponse.json(
+          { success: false, error: "enabledModels must be an array of strings" },
+          { status: 400 }
+        );
+      }
+      const patterns = body.enabledModels.filter(
+        (m): m is string => typeof m === "string" && m.trim().length > 0
+      );
+      if (patterns.length === 0) {
+        return NextResponse.json(
+          { success: false, error: "enabledModels must be a non-empty array" },
+          { status: 400 }
+        );
+      }
+      values.enabledModels = JSON.stringify(patterns);
+    }
     if (body.enabled !== undefined) {
       values.enabled = body.enabled ? 1 : 0;
     }
@@ -52,9 +75,10 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       return NextResponse.json({ success: false, error: "Internal server error" }, { status: 500 });
     }
   });
-}
+});
 
-export async function DELETE(request: NextRequest, { params }: Params) {
+export const DELETE = withAuth(async (request: NextRequest, ctx: any) => {
+  const { params } = ctx as Params;
   return withSkipCache(async () => {
     await initDatabase();
     const id = Number(params.id);
@@ -67,4 +91,4 @@ export async function DELETE(request: NextRequest, { params }: Params) {
     await db.delete(virtualKeysTable).where(eq(virtualKeysTable.id, id));
     return NextResponse.json({ success: true });
   });
-}
+});

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { eq, desc, sql } from "drizzle-orm";
 import { db, initDatabase, virtualKeysTable, tokenRecords } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
+import { withAuth } from "@/lib/auth/guard";
 import {
   encryptSecret,
   decryptSecret,
@@ -16,14 +17,24 @@ function gatewaySecretError() {
   );
 }
 
-export async function GET(request: NextRequest) {
+function parseEnabledModelsInput(body: Record<string, unknown>): string | null {
+  if (body.enabledModels === undefined) return null;
+  if (!Array.isArray(body.enabledModels)) return null;
+  const patterns = body.enabledModels.filter(
+    (m): m is string => typeof m === "string" && m.trim().length > 0
+  );
+  if (patterns.length === 0) return null;
+  return JSON.stringify(patterns);
+}
+
+export const GET = withAuth(async (request: NextRequest) => {
   return withSkipCache(async () => {
     await initDatabase();
     const rows = await db.select().from(virtualKeysTable).orderBy(desc(virtualKeysTable.id));
 
     const usageRows = await db
       .select({
-        agent: tokenRecords.agent,
+        virtualKeyId: tokenRecords.virtualKeyId,
         requestCount: sql<number>`COUNT(*)`,
         totalInput: sql<number>`COALESCE(SUM(${tokenRecords.inputTokens}), 0)`,
         totalOutput: sql<number>`COALESCE(SUM(${tokenRecords.outputTokens}), 0)`,
@@ -31,21 +42,24 @@ export async function GET(request: NextRequest) {
         totalCacheWrite: sql<number>`COALESCE(SUM(${tokenRecords.cacheWrite}), 0)`,
       })
       .from(tokenRecords)
-      .groupBy(tokenRecords.agent);
+      .where(sql`${tokenRecords.virtualKeyId} IS NOT NULL`)
+      .groupBy(tokenRecords.virtualKeyId);
 
-    const usageMap = new Map<string, typeof usageRows[number]>();
+    const usageMap = new Map<number, typeof usageRows[number]>();
     for (const row of usageRows) {
-      usageMap.set(row.agent, row);
+      usageMap.set(Number(row.virtualKeyId), row);
     }
 
     const data = rows.map((row: any) => {
       const plain = decryptSecret(row.apiKeyEncrypted);
-      const usage = usageMap.get(row.name);
+      const usage = usageMap.get(row.id);
       return {
         id: row.id,
         name: row.name,
         apiKey: plain,
         enabled: row.enabled === 1,
+        comment: row.comment ?? null,
+        enabledModels: row.enabledModels,
         lastUsedAt: row.lastUsedAt,
         createdAt: row.createdAt,
         usage: usage
@@ -62,9 +76,9 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({ success: true, data });
   });
-}
+});
 
-export async function POST(request: NextRequest) {
+export const POST = withAuth(async (request: NextRequest) => {
   return withSkipCache(async () => {
     await initDatabase();
     let body: Record<string, unknown>;
@@ -77,6 +91,15 @@ export async function POST(request: NextRequest) {
     const name = typeof body.name === "string" ? body.name.trim() : "";
     if (!name) {
       return NextResponse.json({ success: false, error: "Missing required field: name" }, { status: 400 });
+    }
+
+    const comment = typeof body.comment === "string" ? body.comment.trim() : "";
+    const enabledModels = parseEnabledModelsInput(body);
+    if (body.enabledModels !== undefined && !enabledModels) {
+      return NextResponse.json(
+        { success: false, error: "enabledModels must be a non-empty array of strings" },
+        { status: 400 }
+      );
     }
 
     const plainKey = generateVirtualKey();
@@ -95,6 +118,8 @@ export async function POST(request: NextRequest) {
           name,
           apiKeyEncrypted: encrypted,
           enabled: 1,
+          comment: comment || null,
+          enabledModels: enabledModels ?? '["*"]',
         })
         .returning();
       return NextResponse.json(
@@ -105,6 +130,8 @@ export async function POST(request: NextRequest) {
             name: result[0].name,
             apiKey: plainKey,
             enabled: true,
+            comment: result[0].comment ?? null,
+            enabledModels: result[0].enabledModels,
             lastUsedAt: null,
             createdAt: result[0].createdAt,
           },
@@ -120,4 +147,4 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: "Internal server error" }, { status: 500 });
     }
   });
-}
+});

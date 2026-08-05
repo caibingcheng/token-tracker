@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiFetch } from "@/lib/client/api-client";
+import { PROVIDER_PRESETS } from "@/lib/provider-presets";
 import UpstreamModelsManager from "./UpstreamModelsManager";
 
 export interface UpstreamItem {
@@ -13,6 +14,8 @@ export interface UpstreamItem {
   priority: number;
   enabled: boolean;
   keyCount: number;
+  balance: string | null;
+  balanceUpdatedAt: string | null;
   createdAt: string;
 }
 
@@ -64,8 +67,18 @@ export default function UpstreamsPanel() {
 
   const [keysByUpstream, setKeysByUpstream] = useState<Record<number, UpstreamKeyItem[]>>({});
   const [expandedKeys, setExpandedKeys] = useState<Record<number, boolean>>({});
+  const [expanded, setExpanded] = useState<Record<number, boolean>>({});
   const [newKeyInput, setNewKeyInput] = useState<Record<number, string>>({});
+  const [balanceInput, setBalanceInput] = useState<Record<number, string>>({});
+  const [refreshingBalance, setRefreshingBalance] = useState<Record<number, boolean>>({});
+  const [showPresets, setShowPresets] = useState(false);
   const [testResults, setTestResults] = useState<Record<number, { ok: boolean; modelCount?: number; error?: string } | null>>({});
+
+  const filteredPresets = useMemo(() => {
+    const query = form.name.trim().toLowerCase();
+    if (!query) return PROVIDER_PRESETS;
+    return PROVIDER_PRESETS.filter((p) => p.name.toLowerCase().includes(query));
+  }, [form.name]);
 
   const loadUpstreams = useCallback(async () => {
     try {
@@ -172,6 +185,7 @@ export default function UpstreamsPanel() {
     setFormKeys([""]);
     setFormKeyTests({});
     setModelPicker(null);
+    loadKeys(u.id);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
@@ -229,6 +243,59 @@ export default function UpstreamsPanel() {
     const res = await apiFetch(`/api/admin/upstreams/${u.id}/test`, { method: "POST" });
     const json = await res.json();
     setTestResults((prev) => ({ ...prev, [u.id]: json.data ?? { ok: false, error: json.error } }));
+  };
+
+  const toggleExpand = (id: number) => {
+    const next = { ...expanded, [id]: !expanded[id] };
+    setExpanded(next);
+    if (next[id]) {
+      setBalanceInput((prev) => {
+        if (prev[id] !== undefined) return prev;
+        const u = upstreams.find((x) => x.id === id);
+        return { ...prev, [id]: u?.balance ?? "" };
+      });
+      if (!keysByUpstream[id]) {
+        loadKeys(id);
+      }
+    }
+  };
+
+  const handleSaveBalance = async (u: UpstreamItem) => {
+    const value = (balanceInput[u.id] ?? "").trim();
+    const res = await apiFetch(`/api/admin/upstreams/${u.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ balance: value === "" ? null : value }),
+    });
+    const json = await res.json();
+    if (!json.success) {
+      setError(json.error || "Failed to save balance");
+      return;
+    }
+    loadUpstreams();
+  };
+
+  const handleRefreshBalance = async (u: UpstreamItem) => {
+    setRefreshingBalance((prev) => ({ ...prev, [u.id]: true }));
+    setError(null);
+    try {
+      const res = await apiFetch(`/api/admin/upstreams/${u.id}/balance/refresh`, { method: "POST" });
+      const json = await res.json();
+      if (!json.success) {
+        setError(json.error || "Failed to refresh balance");
+      } else {
+        // 同步展开区输入框与标题显示（refresh 接口返回新余额）
+        setBalanceInput((prev) => ({
+          ...prev,
+          [u.id]: json.data?.balance !== undefined ? String(json.data.balance) : (prev[u.id] ?? ""),
+        }));
+      }
+      loadUpstreams();
+    } catch {
+      setError("Network error");
+    } finally {
+      setRefreshingBalance((prev) => ({ ...prev, [u.id]: false }));
+    }
   };
 
   const addFormKeyRow = () => {
@@ -355,15 +422,44 @@ export default function UpstreamsPanel() {
           {editingId ? `Edit Upstream #${editingId}` : "New Upstream"}
         </h2>
         <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-[1fr_200px_200px] gap-4">
-          <div>
+          <div className="relative">
             <label className="mb-1 block text-sm text-gray-600">Name</label>
             <input
               value={form.name}
-              onChange={(e) => setForm({ ...form, name: e.target.value })}
+              onChange={(e) => {
+                setForm({ ...form, name: e.target.value });
+                setShowPresets(true);
+              }}
+              onFocus={() => setShowPresets(true)}
+              onBlur={() => setTimeout(() => setShowPresets(false), 150)}
               placeholder="e.g. deepseek"
               required
               className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
+            {showPresets && filteredPresets.length > 0 && (
+              <div className="absolute z-10 mt-1 max-h-48 w-full overflow-y-auto rounded border border-gray-200 bg-white shadow-lg">
+                {filteredPresets.map((p) => (
+                  <button
+                    key={p.name}
+                    type="button"
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      setForm({
+                        ...form,
+                        name: p.name,
+                        protocol: p.protocol,
+                        baseUrl: p.baseUrl,
+                      });
+                      setShowPresets(false);
+                    }}
+                    className="flex w-full items-center justify-between px-3 py-1.5 text-left text-sm hover:bg-gray-50"
+                  >
+                    <span>{p.name}</span>
+                    <span className="text-xs text-gray-400">{p.baseUrl}</span>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
           <div>
             <label className="mb-1 block text-sm text-gray-600">Protocol</label>
@@ -400,15 +496,30 @@ export default function UpstreamsPanel() {
             <label className="mb-1 block text-sm text-gray-600">
               API Keys{" "}
               <span className="text-gray-400">
-                ({editingId ? "new keys are appended to this upstream" : "optional at creation, add more later"})
+                ({editingId ? "existing keys are kept, new keys below are appended" : "optional at creation, add more later"})
               </span>
             </label>
+            {editingId && (keysByUpstream[editingId] ?? []).length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-1.5">
+                {(keysByUpstream[editingId] ?? []).map((k) => (
+                  <span
+                    key={k.id}
+                    title={`${k.enabled ? "Enabled" : "Disabled"}${k.lastStatus ? ` · last: ${k.lastStatus}` : ""}`}
+                    className="flex items-center gap-1.5 rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-600"
+                  >
+                    <span className={`h-1.5 w-1.5 rounded-full ${k.enabled ? "bg-green-500" : "bg-gray-300"}`} />
+                    <code>{k.maskedKey}</code>
+                  </span>
+                ))}
+              </div>
+            )}
             <div className="space-y-2">
               {formKeys.map((keyValue, index) => (
                 <div key={index}>
                   <div className="flex items-center gap-2">
                     <input
                       type="password"
+                      autoComplete="new-password"
                       value={keyValue}
                       onChange={(e) => updateFormKey(index, e.target.value)}
                       placeholder={`API key ${index + 1}`}
@@ -582,12 +693,23 @@ export default function UpstreamsPanel() {
           <div key={u.id} className="rounded-lg bg-white p-5 shadow">
             <div className="flex flex-wrap items-center gap-3">
               <span className={`h-2 w-2 rounded-full ${u.enabled ? "bg-green-500" : "bg-gray-300"}`} />
+              <button
+                type="button"
+                onClick={() => toggleExpand(u.id)}
+                className="text-gray-400 hover:text-gray-600"
+                title={expanded[u.id] ? "Collapse" : "Expand"}
+              >
+                {expanded[u.id] ? "▾" : "▸"}
+              </button>
               <span className="font-semibold">{u.name}</span>
               <span className="rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-600">{u.protocol}</span>
               <span className="text-xs text-gray-400 truncate max-w-md">{u.baseUrl}</span>
               <span className="text-xs text-gray-400">
                 {u.enabledModels.length} models · {u.keyCount} keys · priority {u.priority}
               </span>
+              {u.balance !== null && (
+                <span className="text-xs font-medium text-gray-500">balance: {u.balance}</span>
+              )}
               <div className="ml-auto flex items-center gap-2">
                 <button
                   type="button"
@@ -634,70 +756,138 @@ export default function UpstreamsPanel() {
               </div>
             )}
 
-            <div className="mt-3">
-              <div className="flex items-center gap-4">
-                <button
-                  type="button"
-                  onClick={() => toggleKeys(u.id)}
-                  className="text-xs text-gray-500 hover:text-blue-600"
-                >
-                  {expandedKeys[u.id] ? "▾" : "▸"} API Keys
-                </button>
-                <UpstreamModelsManager upstream={u} onUpdated={loadUpstreams} />
-              </div>
-
-              {expandedKeys[u.id] && (
-                <div className="mt-3 space-y-2 border-l-2 border-gray-100 pl-4">
-                  {(keysByUpstream[u.id] || []).map((key) => (
-                    <div key={key.id} className="flex items-center gap-3 text-sm">
-                      <span className={`h-1.5 w-1.5 rounded-full ${key.enabled ? "bg-green-500" : "bg-gray-300"}`} />
-                      <code className="rounded bg-gray-100 px-2 py-0.5 text-xs">{key.maskedKey}</code>
-                      {key.lastStatus && (
-                        <span className="text-xs text-gray-400">last: {key.lastStatus}</span>
+            {expanded[u.id] && (
+              <div className="mt-4 space-y-4 border-l-2 border-gray-100 pl-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                  <div>
+                    <div className="text-xs text-gray-400">Base URL</div>
+                    <code className="break-all text-xs">{u.baseUrl}</code>
+                  </div>
+                  <div className="flex gap-6">
+                    <div>
+                      <div className="text-xs text-gray-400">Priority</div>
+                      <div>{u.priority}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-gray-400">Created</div>
+                      <div className="text-xs">{new Date(u.createdAt).toLocaleString()}</div>
+                    </div>
+                  </div>
+                  <div className="md:col-span-2">
+                    <div className="text-xs text-gray-400">Enabled Models</div>
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {u.enabledModels.length === 0 && (
+                        <span className="text-xs text-gray-300">(none)</span>
                       )}
-                      <div className="ml-auto flex gap-2">
+                      {u.enabledModels.map((m) => (
+                        <code key={m} className="rounded bg-gray-100 px-1.5 py-0.5 text-xs">
+                          {m}
+                        </code>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="md:col-span-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-gray-400">Balance</span>
+                      <input
+                        value={balanceInput[u.id] ?? u.balance ?? ""}
+                        onChange={(e) =>
+                          setBalanceInput((prev) => ({ ...prev, [u.id]: e.target.value }))
+                        }
+                        placeholder="0"
+                        className="w-28 rounded border border-gray-300 px-2 py-1 text-xs focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleSaveBalance(u)}
+                        className="rounded border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-gray-50"
+                      >
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleRefreshBalance(u)}
+                        disabled={refreshingBalance[u.id]}
+                        className="rounded border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40"
+                      >
+                        {refreshingBalance[u.id] ? "Refreshing..." : "↻ Refresh"}
+                      </button>
+                      {u.balanceUpdatedAt && (
+                        <span className="text-xs text-gray-300">
+                          updated {new Date(u.balanceUpdatedAt).toLocaleString()}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center gap-4">
+                    <button
+                      type="button"
+                      onClick={() => toggleKeys(u.id)}
+                      className="text-xs text-gray-500 hover:text-blue-600"
+                    >
+                      {expandedKeys[u.id] ? "▾" : "▸"} API Keys
+                    </button>
+                    <UpstreamModelsManager upstream={u} onUpdated={loadUpstreams} />
+                  </div>
+
+                  {expandedKeys[u.id] && (
+                    <div className="space-y-2">
+                      {(keysByUpstream[u.id] || []).map((key) => (
+                        <div key={key.id} className="flex items-center gap-3 text-sm">
+                          <span className={`h-1.5 w-1.5 rounded-full ${key.enabled ? "bg-green-500" : "bg-gray-300"}`} />
+                          <code className="rounded bg-gray-100 px-2 py-0.5 text-xs">{key.maskedKey}</code>
+                          {key.lastStatus && (
+                            <span className="text-xs text-gray-400">last: {key.lastStatus}</span>
+                          )}
+                          <div className="ml-auto flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleToggleKey(key)}
+                              className="text-xs text-gray-500 hover:text-blue-600"
+                            >
+                              {key.enabled ? "Disable" : "Enable"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteKey(key)}
+                              className="text-xs text-red-500 hover:text-red-700"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                      {keysByUpstream[u.id]?.length === 0 && (
+                        <p className="text-xs text-gray-400">No keys yet.</p>
+                      )}
+                      <div className="flex gap-2">
+                        <input
+                          type="password"
+                          autoComplete="new-password"
+                          value={newKeyInput[u.id] || ""}
+                          onChange={(e) =>
+                            setNewKeyInput((prev) => ({ ...prev, [u.id]: e.target.value }))
+                          }
+                          onKeyDown={(e) => e.key === "Enter" && handleAddKey(u.id)}
+                          placeholder="New upstream API key..."
+                          className="flex-1 rounded border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        />
                         <button
                           type="button"
-                          onClick={() => handleToggleKey(key)}
-                          className="text-xs text-gray-500 hover:text-blue-600"
+                          onClick={() => handleAddKey(u.id)}
+                          className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
                         >
-                          {key.enabled ? "Disable" : "Enable"}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteKey(key)}
-                          className="text-xs text-red-500 hover:text-red-700"
-                        >
-                          Delete
+                          Add
                         </button>
                       </div>
                     </div>
-                  ))}
-                  {keysByUpstream[u.id]?.length === 0 && (
-                    <p className="text-xs text-gray-400">No keys yet.</p>
                   )}
-                  <div className="flex gap-2">
-                    <input
-                      type="password"
-                      value={newKeyInput[u.id] || ""}
-                      onChange={(e) =>
-                        setNewKeyInput((prev) => ({ ...prev, [u.id]: e.target.value }))
-                      }
-                      onKeyDown={(e) => e.key === "Enter" && handleAddKey(u.id)}
-                      placeholder="New upstream API key..."
-                      className="flex-1 rounded border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => handleAddKey(u.id)}
-                      className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
-                    >
-                      Add
-                    </button>
-                  </div>
                 </div>
-              )}
-            </div>
+              </div>
+            )}
           </div>
         ))}
       </div>

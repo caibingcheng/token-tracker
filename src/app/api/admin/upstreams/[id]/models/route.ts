@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
 import { db, initDatabase, upstreamsTable, upstreamKeysTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
+import { withAuth } from "@/lib/auth/guard";
 import { fetchUpstreamModels } from "@/lib/gateway/upstream-client";
 import { decryptSecret, GatewaySecretMissingError } from "@/lib/gateway/crypto";
 import { parseEnabledModels } from "@/lib/gateway/model-router";
@@ -18,7 +19,8 @@ interface Params {
 }
 
 // 拉取上游模型列表，与手动配置的 enabled_models 合并返回
-export async function GET(request: NextRequest, { params }: Params) {
+export const GET = withAuth(async (request: NextRequest, ctx: any) => {
+  const { params } = ctx as Params;
   return withSkipCache(async () => {
     await initDatabase();
     const upstreamId = Number(params.id);
@@ -92,4 +94,4 @@ export async function GET(request: NextRequest, { params }: Params) {
       },
     });
   });
-}
+});

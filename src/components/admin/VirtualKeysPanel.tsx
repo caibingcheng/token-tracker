@@ -10,6 +10,8 @@ export interface VirtualKeyItem {
   name: string;
   apiKey: string;
   enabled: boolean;
+  comment: string | null;
+  enabledModels: string;
   lastUsedAt: string | null;
   createdAt: string;
   usage: {
@@ -46,18 +48,33 @@ interface UsageDetail {
   }>;
 }
 
+function parseEnabledModelsInput(raw: string): string[] {
+  return raw
+    .split(",")
+    .map((m) => m.trim())
+    .filter(Boolean);
+}
+
 export default function VirtualKeysPanel() {
   const [keys, setKeys] = useState<VirtualKeyItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const [nameInput, setNameInput] = useState("");
+  const [commentInput, setCommentInput] = useState("");
+  const [modelsInput, setModelsInput] = useState("*");
   const [creating, setCreating] = useState(false);
   const [createdKey, setCreatedKey] = useState<string | null>(null);
 
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [usageDetail, setUsageDetail] = useState<UsageDetail | null>(null);
   const [copied, setCopied] = useState<number | null>(null);
+
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editComment, setEditComment] = useState("");
+  const [editModels, setEditModels] = useState("");
+  const [savingEdit, setSavingEdit] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -83,13 +100,22 @@ export default function VirtualKeysPanel() {
     e.preventDefault();
     const name = nameInput.trim();
     if (!name || creating) return;
+    const enabledModels = parseEnabledModelsInput(modelsInput);
+    if (enabledModels.length === 0) {
+      setError("Enabled models must be non-empty (use '*' for all)");
+      return;
+    }
     setCreating(true);
     setError(null);
     try {
       const res = await apiFetch("/api/admin/virtual-keys", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name }),
+        body: JSON.stringify({
+          name,
+          comment: commentInput.trim(),
+          enabledModels,
+        }),
       });
       const json = await res.json();
       if (!json.success) {
@@ -98,11 +124,54 @@ export default function VirtualKeysPanel() {
       }
       setCreatedKey(json.data.apiKey as string);
       setNameInput("");
+      setCommentInput("");
+      setModelsInput("*");
       load();
     } catch {
       setError("Network error");
     } finally {
       setCreating(false);
+    }
+  };
+
+  const startEdit = (key: VirtualKeyItem) => {
+    setEditingId(key.id);
+    setEditName(key.name);
+    setEditComment(key.comment ?? "");
+    setEditModels(parseEnabledModelsInput(key.enabledModels).join(", "));
+  };
+
+  const saveEdit = async () => {
+    if (editingId === null) return;
+    const name = editName.trim();
+    if (!name) {
+      setError("Name cannot be empty");
+      return;
+    }
+    const enabledModels = parseEnabledModelsInput(editModels);
+    if (enabledModels.length === 0) {
+      setError("Enabled models must be non-empty (use '*' for all)");
+      return;
+    }
+    setSavingEdit(true);
+    setError(null);
+    try {
+      const res = await apiFetch(`/api/admin/virtual-keys/${editingId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name, comment: editComment, enabledModels }),
+      });
+      const json = await res.json();
+      if (!json.success) {
+        setError(json.error || "Failed to update virtual key");
+        return;
+      }
+      setEditingId(null);
+      load();
+    } catch {
+      setError("Network error");
+    } finally {
+      setSavingEdit(false);
     }
   };
 
@@ -163,21 +232,38 @@ export default function VirtualKeysPanel() {
       {/* 创建表单 */}
       <div className="rounded-lg bg-white p-6 shadow">
         <h2 className="mb-4 text-lg font-semibold">New Virtual Key</h2>
-        <form onSubmit={create} className="flex gap-3">
+        <form onSubmit={create} className="space-y-3">
           <input
             value={nameInput}
             onChange={(e) => setNameInput(e.target.value)}
             placeholder="Agent name, e.g. claude-code-desktop"
+            title="Agent name used to identify this key in usage records. Unique across all virtual keys."
             required
-            className="flex-1 rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
           />
-          <button
-            type="submit"
-            disabled={creating}
-            className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-          >
-            {creating ? "Creating..." : "Create"}
-          </button>
+          <input
+            value={commentInput}
+            onChange={(e) => setCommentInput(e.target.value)}
+            placeholder="Comment (optional)"
+            title="Optional note describing this key's purpose or owner. Editable later."
+            className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          />
+          <div className="flex gap-3">
+            <input
+              value={modelsInput}
+              onChange={(e) => setModelsInput(e.target.value)}
+              placeholder="Enabled models, e.g. * or gpt-4o, claude-*"
+              title="Comma-separated model allowlist. '*' allows all models; prefix wildcards like 'gpt-*' are supported. Requests for other models are rejected with 403."
+              className="flex-1 rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            <button
+              type="submit"
+              disabled={creating}
+              className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            >
+              {creating ? "Creating..." : "Create"}
+            </button>
+          </div>
         </form>
 
         {createdKey && (
@@ -220,6 +306,11 @@ export default function VirtualKeysPanel() {
             <div className="flex flex-wrap items-center gap-3">
               <span className={`h-2 w-2 rounded-full ${key.enabled ? "bg-green-500" : "bg-gray-300"}`} />
               <span className="font-semibold">{key.name}</span>
+              {key.comment && (
+                <span className="text-xs text-gray-400 truncate max-w-[200px]" title={key.comment}>
+                  {key.comment}
+                </span>
+              )}
               <code className="rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-600 break-all max-w-xs">
                 {maskVirtualKey(key.apiKey)}
               </code>
@@ -230,6 +321,9 @@ export default function VirtualKeysPanel() {
               >
                 {copied === key.id ? "Copied!" : "Copy"}
               </button>
+              <span className="text-xs text-gray-400">
+                created {new Date(key.createdAt).toLocaleDateString()}
+              </span>
               {key.lastUsedAt && (
                 <span className="text-xs text-gray-400">
                   last used {new Date(key.lastUsedAt).toLocaleString()}
@@ -242,6 +336,13 @@ export default function VirtualKeysPanel() {
                   className="rounded border border-gray-300 px-2.5 py-1 text-xs text-gray-600 hover:bg-gray-50"
                 >
                   Usage
+                </button>
+                <button
+                  type="button"
+                  onClick={() => startEdit(key)}
+                  className="rounded border border-gray-300 px-2.5 py-1 text-xs text-gray-600 hover:bg-gray-50"
+                >
+                  Edit
                 </button>
                 <button
                   type="button"
@@ -259,6 +360,46 @@ export default function VirtualKeysPanel() {
                 </button>
               </div>
             </div>
+
+            {editingId === key.id && (
+              <div className="mt-4 space-y-3 rounded border border-gray-200 bg-gray-50 p-4">
+                <input
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  placeholder="Name"
+                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+                <input
+                  value={editComment}
+                  onChange={(e) => setEditComment(e.target.value)}
+                  placeholder="Comment (optional)"
+                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+                <input
+                  value={editModels}
+                  onChange={(e) => setEditModels(e.target.value)}
+                  placeholder="Enabled models, e.g. * or gpt-4o, claude-*"
+                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={saveEdit}
+                    disabled={savingEdit}
+                    className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {savingEdit ? "Saving..." : "Save"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditingId(null)}
+                    className="rounded border border-gray-300 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
 
             {expandedId === key.id && usageDetail && (
               <div className="mt-4">

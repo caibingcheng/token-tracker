@@ -73,10 +73,21 @@ npm run lint
 | 路由 | 认证 | 说明 |
 |---|---|---|
 | `/v1/*`, `/v1beta/*` | 虚拟 key | 代理入口（透传） |
-| `/api/dashboard` 等统计 API | `X-API-Key` | Dashboard 数据 |
-| `/api/admin/*` | `X-API-Key` | 上游 / 虚拟 key 管理 |
-| `/admin` | 页面 + `X-API-Key` | 管理界面 |
-| `/` | 页面 + `X-API-Key` | 用量 Dashboard |
+| `/api/auth/login` | 原始 API key（+ 可选 TOTP） | 登录换会话 token |
+| `/api/dashboard` 等统计 API | 会话 token（`X-API-Key` header） | Dashboard 数据 |
+| `/api/admin/*` | 会话 token | 上游 / 虚拟 key / 安全设置管理 |
+| `/admin` | 页面 + 会话 token | 管理界面 |
+| `/` | 页面 + 会话 token | 用量 Dashboard |
+
+> 所有 `/api/*`（login 除外）只接受登录换取的会话 token。脚本调用示例：
+> ```bash
+> TOKEN=$(curl -s -X POST http://host:3000/api/auth/login \
+>   -H 'Content-Type: application/json' \
+>   -d '{"apiKey":"your-api-key"}' | jq -r .token)
+> curl -s http://host:3000/api/dashboard -H "X-API-Key: $TOKEN"
+> ```
+>
+> 忘记登录 key 无法登录时：删除 SQLite `settings` 表中的 `admin_api_key` 行即回退到 env `API_KEYS` 兜底。
 
 ## License
 

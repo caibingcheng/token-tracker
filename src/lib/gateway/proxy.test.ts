@@ -20,7 +20,7 @@ function mkDeps(overrides: Partial<ProxyDeps> = {}): ProxyDeps {
   return {
     resolveVirtualKey: vi.fn(async (token: string) =>
       token === "vk-good"
-        ? { id: 1, name: "claude-code", enabled: true }
+        ? { id: 1, name: "claude-code", enabled: true, enabledModels: ["*"] }
         : null
     ),
     resolveUpstreamKeys: vi.fn(async () => ["key-1", "key-2"]),
@@ -123,6 +123,48 @@ describe("handleProxyRequest - routing errors", () => {
       mkDeps()
     );
     expect(res.status).toBe(400);
+  });
+
+  it("returns 403 when model not allowed by virtual key", async () => {
+    const deps = mkDeps({
+      resolveVirtualKey: vi.fn(async () => ({
+        id: 1,
+        name: "claude-code",
+        enabled: true,
+        enabledModels: ["gpt-4o", "gpt-*"],
+      })),
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "claude-3-5-sonnet" },
+      }),
+      deps
+    );
+    expect(res.status).toBe(403);
+    const json = await res.json();
+    expect(json.error.type).toBe("model_not_allowed");
+  });
+
+  it("allows model matching virtual key wildcard pattern", async () => {
+    const deps = mkDeps({
+      resolveVirtualKey: vi.fn(async () => ({
+        id: 1,
+        name: "claude-code",
+        enabled: true,
+        enabledModels: ["gpt-*"],
+      })),
+      resolveUpstreamKeys: vi.fn(async () => ["key-1"]),
+      loadUpstreams: vi.fn(async () => [mkUpstream({ enabledModels: ["gpt-4o"] })]),
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o" },
+      }),
+      deps
+    );
+    expect(res.status).toBe(502); // 路由成功，仅因无 fetch mock 而 502
   });
 
   it("returns 404 when model not routed", async () => {
@@ -301,7 +343,7 @@ describe("handleProxyRequest - usage capture & write-back", () => {
     await res.text();
 
     expect(deps.onUsage).toHaveBeenCalledWith(
-      expect.objectContaining({ inputTokens: 10, outputTokens: 5, cacheRead: 3, cacheWrite: 0, agent: "claude-code", provider: "openai", model: "gpt-4o" })
+      expect.objectContaining({ inputTokens: 10, outputTokens: 5, cacheRead: 3, cacheWrite: 0, agent: "claude-code", provider: "openai", model: "gpt-4o", virtualKeyId: 1 })
     );
   });
 
@@ -418,5 +460,27 @@ describe("handleProxyRequest - GET /v1/models", () => {
     expect(ids).toContain("gpt-4o-mini");
     expect(ids).toContain("claude-3-5-sonnet");
     expect(ids).not.toContain("gpt-*"); // 通配符不暴露
+  });
+
+  it("filters model list by virtual key enabledModels", async () => {
+    const deps = mkDeps({
+      resolveVirtualKey: vi.fn(async () => ({
+        id: 1,
+        name: "limited",
+        enabled: true,
+        enabledModels: ["gpt-*"],
+      })),
+      loadUpstreams: vi.fn(async () => [
+        mkUpstream({ name: "a", enabledModels: ["gpt-4o", "claude-3-5-sonnet"] }),
+      ]),
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/models", { method: "GET", headers: { authorization: "Bearer vk-good" } }),
+      deps
+    );
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    const ids = json.data.map((m: any) => m.id);
+    expect(ids).toEqual(["gpt-4o"]);
   });
 });

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
 import { db, initDatabase, upstreamsTable, upstreamKeysTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
+import { withAuth } from "@/lib/auth/guard";
 import { encryptSecret, GatewaySecretMissingError } from "@/lib/gateway/crypto";
 
 function maskKey(plain: string): string {
@@ -20,7 +21,8 @@ interface Params {
   params: { id: string };
 }
 
-export async function GET(request: NextRequest, { params }: Params) {
+export const GET = withAuth(async (request: NextRequest, ctx: any) => {
+  const { params } = ctx as Params;
   return withSkipCache(async () => {
     await initDatabase();
     const upstreamId = Number(params.id);
@@ -41,9 +43,10 @@ export async function GET(request: NextRequest, { params }: Params) {
       })),
     });
   });
-}
+});
 
-export async function POST(request: NextRequest, { params }: Params) {
+export const POST = withAuth(async (request: NextRequest, ctx: any) => {
+  const { params } = ctx as Params;
   return withSkipCache(async () => {
     await initDatabase();
     const upstreamId = Number(params.id);
@@ -99,4 +102,4 @@ export async function POST(request: NextRequest, { params }: Params) {
       { status: 201 }
     );
   });
-}
+});
