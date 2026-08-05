@@ -11,6 +11,7 @@ export const tokenRecords = sqliteTable("token_records", {
   cacheWrite: integer("cache_write").notNull().default(0),
   status: text("status"),
   latencyMs: integer("latency_ms"),
+  virtualKeyId: integer("virtual_key_id"),
   createdAt: text("created_at").$defaultFn(() => new Date().toISOString()),
 }, (table) => [
   index("idx_token_records_created_at").on(table.createdAt),
@@ -19,6 +20,7 @@ export const tokenRecords = sqliteTable("token_records", {
   index("idx_token_records_provider_model_created_at").on(table.provider, table.model, table.createdAt),
   index("idx_token_records_agent").on(table.agent),
   index("idx_token_records_agent_created_at").on(table.agent, table.createdAt),
+  index("idx_token_records_virtual_key_id").on(table.virtualKeyId),
 ]);
 
 export type TokenRecord = typeof tokenRecords.$inferSelect;
@@ -32,6 +34,8 @@ export const upstreams = sqliteTable("upstreams", {
   enabledModels: text("enabled_models").notNull().default("[]"), // JSON array, supports 'gpt-*' prefix wildcard
   priority: integer("priority").notNull().default(0),
   enabled: integer("enabled").notNull().default(1),
+  balance: text("balance"),
+  balanceUpdatedAt: text("balance_updated_at"),
   createdAt: text("created_at").$defaultFn(() => new Date().toISOString()),
 });
 
@@ -57,9 +61,19 @@ export const virtualKeys = sqliteTable("virtual_keys", {
   name: text("name").notNull().unique(),
   apiKeyEncrypted: text("api_key_encrypted").notNull(),
   enabled: integer("enabled").notNull().default(1),
+  comment: text("comment"),
+  enabledModels: text("enabled_models").notNull().default('["*"]'), // JSON array, supports 'gpt-*' prefix wildcard
   lastUsedAt: text("last_used_at"),
   createdAt: text("created_at").$defaultFn(() => new Date().toISOString()),
 });
 
 export type VirtualKey = typeof virtualKeys.$inferSelect;
 export type NewVirtualKey = typeof virtualKeys.$inferInsert;
+
+export const settings = sqliteTable("settings", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+});
+
+export type Setting = typeof settings.$inferSelect;
+export type NewSetting = typeof settings.$inferInsert;
