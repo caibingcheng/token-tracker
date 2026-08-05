@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db, initDatabase } from "@/lib/db";
 import { tokenRecords } from "@/lib/db";
+import { withAuth } from "@/lib/auth/guard";
 
 export const dynamic = "force-dynamic";
 import { anonymizeProvider } from "@/lib/provider-utils";
@@ -20,7 +21,7 @@ import { anonymizeProvider } from "@/lib/provider-utils";
  *   ]
  * }
  */
-export async function GET(request: NextRequest) {
+export const GET = withAuth(async (request: NextRequest) => {
   await initDatabase();
   try {
     // Query all unique provider names from the token_records table
@@ -71,4 +72,4 @@ export async function GET(request: NextRequest) {
       { status: 500 }
     );
   }
-}
+});

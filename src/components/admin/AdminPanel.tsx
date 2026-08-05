@@ -3,9 +3,10 @@
 import { useState } from "react";
 import UpstreamsPanel from "./UpstreamsPanel";
 import VirtualKeysPanel from "./VirtualKeysPanel";
+import SecuritySettings from "./SecuritySettings";
 import Link from "next/link";
 
-type Tab = "upstreams" | "virtual-keys";
+type Tab = "upstreams" | "virtual-keys" | "security";
 
 export default function AdminPanel() {
   const [tab, setTab] = useState<Tab>("upstreams");
@@ -28,6 +29,7 @@ export default function AdminPanel() {
               [
                 ["upstreams", "Upstreams"],
                 ["virtual-keys", "Virtual Keys"],
+                ["security", "Security"],
               ] as [Tab, string][]
             ).map(([id, label]) => (
               <button
@@ -46,7 +48,13 @@ export default function AdminPanel() {
           </div>
         </div>
 
-        {tab === "upstreams" ? <UpstreamsPanel /> : <VirtualKeysPanel />}
+        {tab === "upstreams" ? (
+          <UpstreamsPanel />
+        ) : tab === "virtual-keys" ? (
+          <VirtualKeysPanel />
+        ) : (
+          <SecuritySettings />
+        )}
       </div>
     </main>
   );

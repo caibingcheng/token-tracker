@@ -6,10 +6,11 @@ import { resolveProviderFilter } from "@/lib/provider-utils";
 import { normalizeModel, resolveNormalizedModelFilter } from "@/lib/model-utils";
 import { getDisplayName } from "@/lib/model-registry";
 import { withSkipCache } from "@/lib/db/cache";
+import { withAuth } from "@/lib/auth/guard";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(request: NextRequest) {
+export const GET = withAuth(async (request: NextRequest) => {
   return withSkipCache(async () => {
     await initDatabase();
     try {
@@ -152,4 +153,4 @@ export async function GET(request: NextRequest) {
       );
     }
   });
-}
+});

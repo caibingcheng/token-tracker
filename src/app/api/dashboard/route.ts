@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { initDatabase } from "@/lib/db";
+import { withAuth } from "@/lib/auth/guard";
 import {
   executeStatsQuery,
   type StatsQueryResult,
@@ -608,7 +609,7 @@ async function queryDashboard(
 
 const VALID_RANGES = ["3d", "7d", "14d", "30d"];
 
-export async function GET(request: NextRequest) {
+export const GET = withAuth(async (request: NextRequest) => {
   try {
     await initDatabase();
 
@@ -678,4 +679,4 @@ export async function GET(request: NextRequest) {
       { status: 500 }
     );
   }
-}
+});

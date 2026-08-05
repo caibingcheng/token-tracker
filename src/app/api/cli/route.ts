@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { initDatabase, db } from "@/lib/db";
 import { tokenRecords } from "@/lib/db";
+import { withAuth } from "@/lib/auth/guard";
 import { executeStatsQuery, type StatsQueryResult } from "@/lib/stats-query";
 import { resolveProviderFilter } from "@/lib/provider-utils";
 import { getDisplayName, getPricing, normalizeModel } from "@/lib/model-registry";
@@ -140,7 +141,7 @@ async function queryCliData(range: string, provider: string, providerFilter: str
   return { total, totalModels, daily, models };
 }
 
-export async function GET(request: NextRequest) {
+export const GET = withAuth(async (request: NextRequest) => {
   await initDatabase();
 
   try {
@@ -427,4 +428,4 @@ export async function GET(request: NextRequest) {
       headers: { "Content-Type": "text/plain; charset=utf-8" },
     });
   }
-}
+});

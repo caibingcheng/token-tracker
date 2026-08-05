@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db, initDatabase } from "@/lib/db";
 import { tokenRecords } from "@/lib/db";
+import { withAuth } from "@/lib/auth/guard";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(_request: NextRequest) {
+export const GET = withAuth(async (_request: NextRequest) => {
   await initDatabase();
   try {
     const rows = await db
@@ -38,4 +39,4 @@ export async function GET(_request: NextRequest) {
       { status: 500 }
     );
   }
-}
+});

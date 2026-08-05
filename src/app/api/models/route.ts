@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db, initDatabase } from "@/lib/db";
 import { tokenRecords } from "@/lib/db";
 import { normalizeModel } from "@/lib/model-utils";
+import { withAuth } from "@/lib/auth/guard";
 
 export const dynamic = "force-dynamic";
 import { getDisplayName } from "@/lib/model-registry";
@@ -21,7 +22,7 @@ import { getDisplayName } from "@/lib/model-registry";
  *   ]
  * }
  */
-export async function GET(request: NextRequest) {
+export const GET = withAuth(async (request: NextRequest) => {
   await initDatabase();
   try {
     // Query all unique (model, provider) pairs
@@ -63,4 +64,4 @@ export async function GET(request: NextRequest) {
       { status: 500 }
     );
   }
-}
+});
