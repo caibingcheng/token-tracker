@@ -343,7 +343,7 @@ describe("handleProxyRequest - usage capture & write-back", () => {
     await res.text();
 
     expect(deps.onUsage).toHaveBeenCalledWith(
-      expect.objectContaining({ inputTokens: 10, outputTokens: 5, cacheRead: 3, cacheWrite: 0, agent: "claude-code", provider: "openai", model: "gpt-4o", virtualKeyId: 1 })
+      expect.objectContaining({ inputTokens: 7, outputTokens: 5, cacheRead: 3, cacheWrite: 0, agent: "claude-code", provider: "openai", model: "gpt-4o", virtualKeyId: 1 })
     );
   });
 

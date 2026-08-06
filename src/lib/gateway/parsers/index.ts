@@ -12,7 +12,7 @@ export function parseOpenAiNonStreaming(json: unknown): ParsedUsage | null {
   const usage = (json as Record<string, unknown>)?.usage as OpenAIUsage | undefined;
   if (!usage) return null;
   return {
-    inputTokens: Number(usage.prompt_tokens) || 0,
+    inputTokens: Math.max(0, Number(usage.prompt_tokens) - (Number(usage.prompt_tokens_details?.cached_tokens) || 0)),
     outputTokens: Number(usage.completion_tokens) || 0,
     cacheRead: Number(usage.prompt_tokens_details?.cached_tokens) || 0,
     cacheWrite: 0,
@@ -32,7 +32,7 @@ export function parseOpenAiStreaming(sseText: string): ParsedUsage | null {
   }
   if (!lastUsage) return null;
   return {
-    inputTokens: Number(lastUsage.prompt_tokens) || 0,
+    inputTokens: Math.max(0, Number(lastUsage.prompt_tokens) - (Number(lastUsage.prompt_tokens_details?.cached_tokens) || 0)),
     outputTokens: Number(lastUsage.completion_tokens) || 0,
     cacheRead: Number(lastUsage.prompt_tokens_details?.cached_tokens) || 0,
     cacheWrite: 0,
@@ -103,7 +103,7 @@ export function parseGeminiNonStreaming(json: unknown): ParsedUsage | null {
   const metadata = (json as Record<string, unknown>)?.usageMetadata as GeminiUsageMetadata | undefined;
   if (!metadata) return null;
   return {
-    inputTokens: Number(metadata.promptTokenCount) || 0,
+    inputTokens: Math.max(0, Number(metadata.promptTokenCount) - (Number(metadata.cachedContentTokenCount) || 0)),
     outputTokens: Number(metadata.candidatesTokenCount) || 0,
     cacheRead: Number(metadata.cachedContentTokenCount) || 0,
     cacheWrite: 0,
@@ -123,7 +123,7 @@ export function parseGeminiStreaming(sseText: string): ParsedUsage | null {
   }
   if (!last) return null;
   return {
-    inputTokens: Number(last.promptTokenCount) || 0,
+    inputTokens: Math.max(0, Number(last.promptTokenCount) - (Number(last.cachedContentTokenCount) || 0)),
     outputTokens: Number(last.candidatesTokenCount) || 0,
     cacheRead: Number(last.cachedContentTokenCount) || 0,
     cacheWrite: 0,

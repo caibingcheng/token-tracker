@@ -14,7 +14,7 @@ describe("OpenAI parser", () => {
     const result = parseOpenAiNonStreaming({
       usage: { prompt_tokens: 100, completion_tokens: 50, prompt_tokens_details: { cached_tokens: 30 } },
     });
-    expect(result).toEqual({ inputTokens: 100, outputTokens: 50, cacheRead: 30, cacheWrite: 0, hasUsage: true });
+    expect(result).toEqual({ inputTokens: 70, outputTokens: 50, cacheRead: 30, cacheWrite: 0, hasUsage: true });
   });
 
   it("handles missing details", () => {
@@ -36,7 +36,7 @@ describe("OpenAI parser", () => {
       "",
     ].join("\n");
     const result = parseOpenAiStreaming(sse);
-    expect(result).toEqual({ inputTokens: 200, outputTokens: 80, cacheRead: 120, cacheWrite: 0, hasUsage: true });
+    expect(result).toEqual({ inputTokens: 80, outputTokens: 80, cacheRead: 120, cacheWrite: 0, hasUsage: true });
   });
 
   it("returns null when streaming has no usage chunk", () => {
@@ -83,7 +83,7 @@ describe("Gemini parser", () => {
     const result = parseGeminiNonStreaming({
       usageMetadata: { promptTokenCount: 400, candidatesTokenCount: 120, cachedContentTokenCount: 200 },
     });
-    expect(result).toEqual({ inputTokens: 400, outputTokens: 120, cacheRead: 200, cacheWrite: 0, hasUsage: true });
+    expect(result).toEqual({ inputTokens: 200, outputTokens: 120, cacheRead: 200, cacheWrite: 0, hasUsage: true });
   });
 
   it("returns null without usageMetadata", () => {
@@ -98,7 +98,7 @@ describe("Gemini parser", () => {
       "",
     ].join("\n");
     const result = parseGeminiStreaming(sse);
-    expect(result).toEqual({ inputTokens: 500, outputTokens: 150, cacheRead: 300, cacheWrite: 0, hasUsage: true });
+    expect(result).toEqual({ inputTokens: 200, outputTokens: 150, cacheRead: 300, cacheWrite: 0, hasUsage: true });
   });
 });
 

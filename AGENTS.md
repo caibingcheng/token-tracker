@@ -65,7 +65,7 @@ docker compose up -d                                 # 本地运行
 - **路由**：`src/app/v1/[...path]/route.ts` + `src/app/v1beta/[...path]/route.ts`（`runtime = "nodejs"`、`dynamic = "force-dynamic"`）
 - **核心逻辑**：`src/lib/gateway/proxy.ts`（纯逻辑可单测）；依赖注入 `src/lib/gateway/proxy-deps.ts`（DB 访问）
 - **流程**：提取虚拟 key（Authorization Bearer / x-api-key / x-goog-api-key / ?key=）→ 校验（**全表解密比对**，AES-256-GCM 随机 IV 无法索引）→ 提取 model（OpenAI/Anthropic 取 body，Gemini 取 path）→ `routeModel()` 匹配（精确 > 前缀通配，priority 小者胜）→ 故障转移链（429/5xx/网络错误重试，每个 key 内 `MAX_RETRY=2`，4xx 直接透传不重试，**流式输出开始后不可重试**）→ 透传（剥离认证头 + `accept-encoding: identity`，按协议注入真实 key）→ 响应管道边透传边累积 → usage 解析器 → `withSkipCache` 写库
-- **写库**：仅 2xx 响应记录；响应无 usage 时记 0 且 `status='no_usage'`；`status`/`latency_ms` 为新增列
+- **写库**：仅 2xx 响应记录；响应无 usage 时记 0 且 `status='no_usage'`；`status`/`latency_ms` 为新增列。**口径约定**：`input_tokens` 字段统一按不含 cache_read 写入（OpenAI/Gemini 在 parser 层做减法），`cache_read` 单独列示，展示层 Total Input 含 cache。
 - **模型并集**：`GET /v1/models` 返回所有启用上游 `enabled_models` 中非通配条目
 - **注意事项**：
   - 新增写入接口必须在写入成功后调用 `invalidateQueryCache()` 或将 handler 包进 `withSkipCache()`（`src/lib/db/cache.ts`）
@@ -78,12 +78,13 @@ docker compose up -d                                 # 本地运行
 
 | 字段 | OpenAI | Anthropic | Gemini |
 |---|---|---|---|
-| input | `usage.prompt_tokens` | `usage.input_tokens` | `usageMetadata.promptTokenCount` |
+| input | `usage.prompt_tokens - usage.prompt_tokens_details.cached_tokens` | `usage.input_tokens` | `usageMetadata.promptTokenCount - usageMetadata.cachedContentTokenCount` |
 | output | `usage.completion_tokens` | `usage.output_tokens` | `usageMetadata.candidatesTokenCount` |
 | cache_read | `prompt_tokens_details.cached_tokens` | `cache_read_input_tokens` | `cachedContentTokenCount` |
 | cache_write | 0 | `cache_creation_input_tokens` | 0 |
 
-流式来源：OpenAI 末尾 chunk `usage`（依赖 `stream_options.include_usage`）；Anthropic `message_start`(input) + `message_delta`(output)；Gemini 累计 `usageMetadata` 取最后。
+> **统一口径**：写库字段 `input_tokens` **不含 cache_read**；`cache_read` 单独存储。OpenAI/Gemini 的原生 input 字段含 cache，parser 内部会减去 cache 部分后再写入。Anthropic 的 `input_tokens` 原生已不含 cache，无需减法。
+> 展示层 Total Input = `SUM(input_tokens) + SUM(cache_read)`（含 cache），Uncached = `SUM(input_tokens)`，仅单请求（逐条记录）展示区分 uncached / cached。
 
 ### 加密（`src/lib/gateway/crypto.ts`）
 
@@ -92,6 +93,12 @@ docker compose up -d                                 # 本地运行
 - `generateVirtualKey()`：`vk-` + 32 base64url 随机字符
 
 ## 数据处理约定
+
+### 聚合口径
+- 展示层所有 **Total Input** 按 `SUM(input_tokens) + SUM(cache_read)` 计算（含 cache）。
+- **Uncached Input** = `SUM(input_tokens)`（不含 cache）。
+- **Cached Input** = `SUM(cache_read)`（单独列示）。
+- 仅单请求（逐条记录 / `/api/records`）展示区分 `Input (Uncached)` 与 `Input (Cached)`；聚合卡片与图表统一展示 Total Input 含 cache，避免重复扣减。
 
 ### Dashboard 视图
 - `src/components/UsageHeatmap.tsx`：头部 GitHub 风格 365 天使用热力图，按 input + output tokens 分档着色，移动端横向滚动。
@@ -200,7 +207,7 @@ docker compose up -d
   - `src/lib/gateway/balance`：deepseek/openrouter 余额解析（mock fetch）、provider 判定
   - `src/lib/db/migrate`：存量表补列迁移（临时 SQLite 库，幂等性 + NOT NULL 默认值回填）
   - `src/lib/provider-presets`：预设合法性（protocol/baseUrl/唯一性）
-  - `src/lib/stats-query`：静态断言聚合口径（totalInput 不含 cacheRead 双重计入）
+  - `src/lib/stats-query`：静态断言聚合口径（Total Input = `SUM(input_tokens) + SUM(cache_read)`；防止 totalInput 回退为纯 `SUM(input_tokens)` 或 totalInputUncached 再次减去 `cache_read`）
 - 新增纯逻辑模块（如解析器、路由匹配、加密）时应同步提交单测
 
 ## Git Commit

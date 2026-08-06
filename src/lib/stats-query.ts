@@ -187,9 +187,9 @@ export async function executeStatsQuery(params: {
       .select({
         group: sql<string>`'total'`,
         totalInput:
-          sql<number>`SUM(${tokenRecords.inputTokens})`,
+          sql<number>`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead})`,
         totalInputCached: sql<number>`SUM(${tokenRecords.cacheRead})`,
-        totalInputUncached: sql<number>`SUM(${tokenRecords.inputTokens}) - SUM(${tokenRecords.cacheRead})`,
+        totalInputUncached: sql<number>`SUM(${tokenRecords.inputTokens})`,
         totalOutput: sql<number>`SUM(${tokenRecords.outputTokens})`,
         totalCacheWrite: sql<number>`SUM(${tokenRecords.cacheWrite})`,
         count: sql<number>`COUNT(*)`,
@@ -219,9 +219,9 @@ export async function executeStatsQuery(params: {
       .select({
         group: groupExpr,
         totalInput:
-          sql<number>`SUM(${tokenRecords.inputTokens})`,
+          sql<number>`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead})`,
         totalInputCached: sql<number>`SUM(${tokenRecords.cacheRead})`,
-        totalInputUncached: sql<number>`SUM(${tokenRecords.inputTokens}) - SUM(${tokenRecords.cacheRead})`,
+        totalInputUncached: sql<number>`SUM(${tokenRecords.inputTokens})`,
         totalOutput: sql<number>`SUM(${tokenRecords.outputTokens})`,
         totalCacheWrite: sql<number>`SUM(${tokenRecords.cacheWrite})`,
         count: sql<number>`COUNT(*)`,
@@ -253,9 +253,9 @@ export async function executeStatsQuery(params: {
         model: tokenRecords.model,
         provider: tokenRecords.provider,
         totalInput:
-          sql<number>`SUM(${tokenRecords.inputTokens})`,
+          sql<number>`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead})`,
         totalInputCached: sql<number>`SUM(${tokenRecords.cacheRead})`,
-        totalInputUncached: sql<number>`SUM(${tokenRecords.inputTokens}) - SUM(${tokenRecords.cacheRead})`,
+        totalInputUncached: sql<number>`SUM(${tokenRecords.inputTokens})`,
         totalOutput: sql<number>`SUM(${tokenRecords.outputTokens})`,
         totalCacheWrite: sql<number>`SUM(${tokenRecords.cacheWrite})`,
         count: sql<number>`COUNT(*)`,
@@ -295,9 +295,9 @@ export async function executeStatsQuery(params: {
           group: tokenRecords.model,
           provider: tokenRecords.provider,
           totalInput:
-            sql<number>`SUM(${tokenRecords.inputTokens})`,
+            sql<number>`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead})`,
           totalInputCached: sql<number>`SUM(${tokenRecords.cacheRead})`,
-          totalInputUncached: sql<number>`SUM(${tokenRecords.inputTokens}) - SUM(${tokenRecords.cacheRead})`,
+          totalInputUncached: sql<number>`SUM(${tokenRecords.inputTokens})`,
           totalOutput: sql<number>`SUM(${tokenRecords.outputTokens})`,
           totalCacheWrite: sql<number>`SUM(${tokenRecords.cacheWrite})`,
           count: sql<number>`COUNT(*)`,
@@ -315,9 +315,9 @@ export async function executeStatsQuery(params: {
           group: tokenRecords.model,
           provider: tokenRecords.provider,
           totalInput:
-            sql<number>`SUM(${tokenRecords.inputTokens})`,
+            sql<number>`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead})`,
           totalInputCached: sql<number>`SUM(${tokenRecords.cacheRead})`,
-          totalInputUncached: sql<number>`SUM(${tokenRecords.inputTokens}) - SUM(${tokenRecords.cacheRead})`,
+          totalInputUncached: sql<number>`SUM(${tokenRecords.inputTokens})`,
           totalOutput: sql<number>`SUM(${tokenRecords.outputTokens})`,
           totalCacheWrite: sql<number>`SUM(${tokenRecords.cacheWrite})`,
           count: sql<number>`COUNT(*)`,
@@ -354,9 +354,9 @@ export async function executeStatsQuery(params: {
       .select({
         group: tokenRecords.provider,
         totalInput:
-          sql<number>`SUM(${tokenRecords.inputTokens})`,
+          sql<number>`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead})`,
         totalInputCached: sql<number>`SUM(${tokenRecords.cacheRead})`,
-        totalInputUncached: sql<number>`SUM(${tokenRecords.inputTokens}) - SUM(${tokenRecords.cacheRead})`,
+        totalInputUncached: sql<number>`SUM(${tokenRecords.inputTokens})`,
         totalOutput: sql<number>`SUM(${tokenRecords.outputTokens})`,
         totalCacheWrite: sql<number>`SUM(${tokenRecords.cacheWrite})`,
         count: sql<number>`COUNT(*)`,

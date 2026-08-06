@@ -36,7 +36,7 @@ export const GET = withAuth(async (request: NextRequest) => {
       .select({
         virtualKeyId: tokenRecords.virtualKeyId,
         requestCount: sql<number>`COUNT(*)`,
-        totalInput: sql<number>`COALESCE(SUM(${tokenRecords.inputTokens}), 0)`,
+        totalInput: sql<number>`COALESCE(SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead}), 0)`,
         totalOutput: sql<number>`COALESCE(SUM(${tokenRecords.outputTokens}), 0)`,
         totalCacheRead: sql<number>`COALESCE(SUM(${tokenRecords.cacheRead}), 0)`,
         totalCacheWrite: sql<number>`COALESCE(SUM(${tokenRecords.cacheWrite}), 0)`,
