@@ -3,9 +3,24 @@ import { eq } from "drizzle-orm";
 import { db, initDatabase, virtualKeysTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";
+import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 
 interface Params {
   params: { id: string };
+}
+
+// 配额字段校验：undefined → 不传；null/0 → NULL（清除限制）；非负整数 → 值；其余 → 非法
+function parseQuotaField(
+  body: Record<string, unknown>,
+  field: string
+): { ok: true; value?: number | null } | { ok: false } {
+  if (body[field] === undefined) return { ok: true };
+  const value = body[field];
+  if (value === null) return { ok: true, value: null };
+  if (typeof value === "number" && Number.isInteger(value) && value >= 0) {
+    return { ok: true, value: value === 0 ? null : value };
+  }
+  return { ok: false };
 }
 
 export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
@@ -59,12 +74,31 @@ export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
     if (body.enabled !== undefined) {
       values.enabled = body.enabled ? 1 : 0;
     }
+    for (const field of ["maxRpm", "maxTpm", "maxDailyTokens", "maxMonthlyTokens"] as const) {
+      const parsed = parseQuotaField(body, field);
+      if (!parsed.ok) {
+        return NextResponse.json(
+          { success: false, error: `${field} must be a non-negative integer` },
+          { status: 400 }
+        );
+      }
+      if (parsed.value !== undefined) values[field] = parsed.value;
+    }
     if (Object.keys(values).length === 0) {
       return NextResponse.json({ success: false, error: "No fields to update" }, { status: 400 });
     }
 
     try {
       await db.update(virtualKeysTable).set(values).where(eq(virtualKeysTable.id, id));
+      const { ip, userAgent } = extractClientInfo(request);
+      await recordAuditLog({
+        action: "virtual_key_updated",
+        targetType: "virtual_key",
+        targetId: id,
+        ip,
+        userAgent,
+        details: { changed: Object.keys(values) },
+      });
       return NextResponse.json({ success: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -89,6 +123,15 @@ export const DELETE = withAuth(async (request: NextRequest, ctx: any) => {
       return NextResponse.json({ success: false, error: "Virtual key not found" }, { status: 404 });
     }
     await db.delete(virtualKeysTable).where(eq(virtualKeysTable.id, id));
+    const { ip, userAgent } = extractClientInfo(request);
+    await recordAuditLog({
+      action: "virtual_key_deleted",
+      targetType: "virtual_key",
+      targetId: id,
+      ip,
+      userAgent,
+      details: { name: row.name },
+    });
     return NextResponse.json({ success: true });
   });
 });

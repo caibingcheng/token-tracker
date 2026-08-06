@@ -12,6 +12,7 @@ export const tokenRecords = sqliteTable("token_records", {
   status: text("status"),
   latencyMs: integer("latency_ms"),
   virtualKeyId: integer("virtual_key_id"),
+  userAgent: text("user_agent"),
   createdAt: text("created_at").$defaultFn(() => new Date().toISOString()),
 }, (table) => [
   index("idx_token_records_created_at").on(table.createdAt),
@@ -64,11 +65,30 @@ export const virtualKeys = sqliteTable("virtual_keys", {
   comment: text("comment"),
   enabledModels: text("enabled_models").notNull().default('["*"]'), // JSON array, supports 'gpt-*' prefix wildcard
   lastUsedAt: text("last_used_at"),
+  maxRpm: integer("max_rpm"),
+  maxTpm: integer("max_tpm"),
+  maxDailyTokens: integer("max_daily_tokens"),
+  maxMonthlyTokens: integer("max_monthly_tokens"),
   createdAt: text("created_at").$defaultFn(() => new Date().toISOString()),
 });
 
 export type VirtualKey = typeof virtualKeys.$inferSelect;
 export type NewVirtualKey = typeof virtualKeys.$inferInsert;
+
+export const adminAuditLogs = sqliteTable("admin_audit_logs", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  action: text("action").notNull(),
+  actor: text("actor"),
+  targetType: text("target_type"), // upstream | virtual_key | upstream_key | system
+  targetId: integer("target_id"),
+  ip: text("ip"),
+  userAgent: text("user_agent"),
+  details: text("details"),
+  createdAt: text("created_at").$defaultFn(() => new Date().toISOString()),
+});
+
+export type AdminAuditLog = typeof adminAuditLogs.$inferSelect;
+export type NewAdminAuditLog = typeof adminAuditLogs.$inferInsert;
 
 export const settings = sqliteTable("settings", {
   key: text("key").primaryKey(),

@@ -15,6 +15,7 @@ import {
   verifyTotpCode,
   buildOtpAuthUri,
 } from "@/lib/auth/totp";
+import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 
 const PENDING_SECRET_KEY = "totp_pending_secret";
 
@@ -51,6 +52,14 @@ export const POST = withAuth(async (request: NextRequest) => {
     await setTotpSecret(pending);
     await setTotpEnabled(true);
     await deleteSetting(PENDING_SECRET_KEY);
+    const { ip, userAgent } = extractClientInfo(request);
+    await recordAuditLog({
+      action: "totp_enabled",
+      targetType: "system",
+      ip,
+      userAgent,
+      details: {},
+    });
     return NextResponse.json({ success: true, data: { totpEnabled: true } });
   }
 
@@ -85,5 +94,13 @@ export const DELETE = withAuth(async (request: NextRequest) => {
 
   await clearTotp();
   await deleteSetting(PENDING_SECRET_KEY);
+  const { ip, userAgent } = extractClientInfo(request);
+  await recordAuditLog({
+    action: "totp_disabled",
+    targetType: "system",
+    ip,
+    userAgent,
+    details: {},
+  });
   return NextResponse.json({ success: true, data: { totpEnabled: false } });
 });

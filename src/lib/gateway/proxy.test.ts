@@ -27,6 +27,9 @@ function mkDeps(overrides: Partial<ProxyDeps> = {}): ProxyDeps {
     loadUpstreams: vi.fn(async () => [mkUpstream({})]),
     onUsage: vi.fn(async () => {}),
     onComplete: vi.fn(async () => {}),
+    quota: {
+      loadUsage: vi.fn(async () => ({ rpm: 0, tpm: 0, dailyTokens: 0, monthlyTokens: 0 })),
+    },
     log: vi.fn(),
     ...overrides,
   };
@@ -438,6 +441,180 @@ describe("handleProxyRequest - usage capture & write-back", () => {
     await res.text();
 
     expect(deps.onComplete).toHaveBeenCalledWith({ virtualKeyId: 1 });
+  });
+
+  it("passes user-agent header through to onUsage meta", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ usage: { prompt_tokens: 10, completion_tokens: 5 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+
+    const deps = mkDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good", "user-agent": "claude-cli/1.2.3 (x86_64)" },
+        body: { model: "gpt-4o" },
+      }),
+      deps
+    );
+    await res.text();
+
+    expect(deps.onUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ userAgent: "claude-cli/1.2.3 (x86_64)" })
+    );
+  });
+
+  it("sets userAgent null when header missing", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ usage: { prompt_tokens: 10, completion_tokens: 5 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+
+    const deps = mkDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o" },
+      }),
+      deps
+    );
+    await res.text();
+
+    expect(deps.onUsage).toHaveBeenCalledWith(expect.objectContaining({ userAgent: null }));
+  });
+
+  it("truncates user-agent to 512 chars", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ usage: { prompt_tokens: 10, completion_tokens: 5 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+
+    const longUA = "x".repeat(700);
+    const deps = mkDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good", "user-agent": longUA },
+        body: { model: "gpt-4o" },
+      }),
+      deps
+    );
+    await res.text();
+
+    expect(deps.onUsage).toHaveBeenCalledWith(expect.objectContaining({ userAgent: longUA.slice(0, 512) }));
+  });
+});
+
+describe("handleProxyRequest - quota", () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    fetchMock.mockReset();
+  });
+
+  it("returns 429 quota_exceeded and never fetches when rpm exceeded", async () => {
+    const deps = mkDeps({
+      resolveVirtualKey: vi.fn(async () => ({
+        id: 1,
+        name: "claude-code",
+        enabled: true,
+        enabledModels: ["*"],
+        maxRpm: 60,
+        maxTpm: null,
+        maxDailyTokens: null,
+        maxMonthlyTokens: null,
+      })),
+      quota: {
+        loadUsage: vi.fn(async () => ({ rpm: 61, tpm: 0, dailyTokens: 0, monthlyTokens: 0 })),
+      },
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o" },
+      }),
+      deps
+    );
+    expect(res.status).toBe(429);
+    const json = await res.json();
+    expect(json.error.type).toBe("quota_exceeded");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(deps.onUsage).not.toHaveBeenCalled();
+    expect(deps.onComplete).not.toHaveBeenCalled();
+  });
+
+  it("forwards normally when within quota and calls onUsage", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ usage: { prompt_tokens: 10, completion_tokens: 5 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+
+    const deps = mkDeps({
+      resolveVirtualKey: vi.fn(async () => ({
+        id: 1,
+        name: "claude-code",
+        enabled: true,
+        enabledModels: ["*"],
+        maxRpm: 60,
+        maxTpm: 100_000,
+        maxDailyTokens: 1_000_000,
+        maxMonthlyTokens: 10_000_000,
+      })),
+      quota: {
+        loadUsage: vi.fn(async () => ({ rpm: 59, tpm: 100, dailyTokens: 1000, monthlyTokens: 10000 })),
+      },
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o" },
+      }),
+      deps
+    );
+    await res.text();
+
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(deps.onUsage).toHaveBeenCalled();
+  });
+
+  it("returns 429 when tpm exceeded even if rpm ok", async () => {
+    const deps = mkDeps({
+      resolveVirtualKey: vi.fn(async () => ({
+        id: 1,
+        name: "claude-code",
+        enabled: true,
+        enabledModels: ["*"],
+        maxRpm: 60,
+        maxTpm: 100_000,
+        maxDailyTokens: null,
+        maxMonthlyTokens: null,
+      })),
+      quota: {
+        loadUsage: vi.fn(async () => ({ rpm: 5, tpm: 100_001, dailyTokens: 0, monthlyTokens: 0 })),
+      },
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o" },
+      }),
+      deps
+    );
+    expect(res.status).toBe(429);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

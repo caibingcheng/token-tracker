@@ -12,6 +12,7 @@ import {
   keyFingerprint,
 } from "@/lib/auth/session";
 import { verifyTotpCode } from "@/lib/auth/totp";
+import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 
 // 内存滑动窗口限流：按 IP + key 前缀计数，防爆破登录 key 与 TOTP
 const WINDOW_MS = 15 * 60 * 1000;
@@ -34,14 +35,6 @@ function resetAttempts(key: string): void {
   attempts.delete(key);
 }
 
-function getClientIp(request: NextRequest): string {
-  return (
-    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
-    request.headers.get("x-real-ip") ??
-    "unknown"
-  );
-}
-
 export async function POST(request: NextRequest) {
   let body: Record<string, unknown>;
   try {
@@ -56,7 +49,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: false, error: "Missing apiKey" }, { status: 400 });
   }
 
-  const ip = getClientIp(request);
+  const { ip } = extractClientInfo(request);
   if (rateLimited(`${ip}:key`)) {
     return NextResponse.json(
       { success: false, error: "Too many attempts, try again later" },
@@ -78,6 +71,14 @@ export async function POST(request: NextRequest) {
   }
 
   if (!matchedKey) {
+    const { ip, userAgent } = extractClientInfo(request);
+    await recordAuditLog({
+      action: "login_failure",
+      targetType: "system",
+      ip,
+      userAgent,
+      details: { reason: "invalid_api_key" },
+    });
     return NextResponse.json(
       { success: false, error: "Invalid API key" },
       { status: 401 }
@@ -88,6 +89,14 @@ export async function POST(request: NextRequest) {
   if (await isTotpEnabled()) {
     const secret = await getTotpSecret();
     if (!secret || !totpCode || !verifyTotpCode(secret, totpCode)) {
+      const { ip, userAgent } = extractClientInfo(request);
+      await recordAuditLog({
+        action: "login_failure",
+        targetType: "system",
+        ip,
+        userAgent,
+        details: { reason: "invalid_totp" },
+      });
       return NextResponse.json(
         { success: false, error: "TOTP code required or invalid", totpRequired: true },
         { status: 401 }
@@ -96,6 +105,15 @@ export async function POST(request: NextRequest) {
   }
 
   resetAttempts(`${ip}:key`);
+
+  const { ip: auditIp, userAgent } = extractClientInfo(request);
+  await recordAuditLog({
+    action: "login_success",
+    targetType: "system",
+    ip: auditIp,
+    userAgent,
+    details: { totp: await isTotpEnabled() },
+  });
 
   const epoch = await getTokenEpoch();
   const token = signSessionToken(epoch, keyFingerprint(matchedKey));

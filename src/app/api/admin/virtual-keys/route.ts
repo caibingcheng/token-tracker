@@ -9,6 +9,7 @@ import {
   generateVirtualKey,
   GatewaySecretMissingError,
 } from "@/lib/gateway/crypto";
+import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 
 function gatewaySecretError() {
   return NextResponse.json(
@@ -25,6 +26,20 @@ function parseEnabledModelsInput(body: Record<string, unknown>): string | null {
   );
   if (patterns.length === 0) return null;
   return JSON.stringify(patterns);
+}
+
+// 配额字段校验：undefined → 不传；null/0 → NULL（不限制）；非负整数 → 值；其余 → 非法
+function parseQuotaField(
+  body: Record<string, unknown>,
+  field: string
+): { ok: true; value?: number | null } | { ok: false } {
+  if (body[field] === undefined) return { ok: true };
+  const value = body[field];
+  if (value === null) return { ok: true, value: null };
+  if (typeof value === "number" && Number.isInteger(value) && value >= 0) {
+    return { ok: true, value: value === 0 ? null : value };
+  }
+  return { ok: false };
 }
 
 export const GET = withAuth(async (request: NextRequest) => {
@@ -61,6 +76,10 @@ export const GET = withAuth(async (request: NextRequest) => {
         comment: row.comment ?? null,
         enabledModels: row.enabledModels,
         lastUsedAt: row.lastUsedAt,
+        maxRpm: row.maxRpm ?? null,
+        maxTpm: row.maxTpm ?? null,
+        maxDailyTokens: row.maxDailyTokens ?? null,
+        maxMonthlyTokens: row.maxMonthlyTokens ?? null,
         createdAt: row.createdAt,
         usage: usage
           ? {
@@ -102,6 +121,19 @@ export const POST = withAuth(async (request: NextRequest) => {
       );
     }
 
+    const quotaFields = ["maxRpm", "maxTpm", "maxDailyTokens", "maxMonthlyTokens"] as const;
+    const quotaValues: Record<string, number | null> = {};
+    for (const field of quotaFields) {
+      const parsed = parseQuotaField(body, field);
+      if (!parsed.ok) {
+        return NextResponse.json(
+          { success: false, error: `${field} must be a non-negative integer` },
+          { status: 400 }
+        );
+      }
+      if (parsed.value !== undefined) quotaValues[field] = parsed.value;
+    }
+
     const plainKey = generateVirtualKey();
     let encrypted: string;
     try {
@@ -120,8 +152,18 @@ export const POST = withAuth(async (request: NextRequest) => {
           enabled: 1,
           comment: comment || null,
           enabledModels: enabledModels ?? '["*"]',
+          ...quotaValues,
         })
         .returning();
+      const { ip, userAgent } = extractClientInfo(request);
+      await recordAuditLog({
+        action: "virtual_key_created",
+        targetType: "virtual_key",
+        targetId: result[0].id,
+        ip,
+        userAgent,
+        details: { name: result[0].name },
+      });
       return NextResponse.json(
         {
           success: true,
@@ -133,6 +175,10 @@ export const POST = withAuth(async (request: NextRequest) => {
             comment: result[0].comment ?? null,
             enabledModels: result[0].enabledModels,
             lastUsedAt: null,
+            maxRpm: result[0].maxRpm ?? null,
+            maxTpm: result[0].maxTpm ?? null,
+            maxDailyTokens: result[0].maxDailyTokens ?? null,
+            maxMonthlyTokens: result[0].maxMonthlyTokens ?? null,
             createdAt: result[0].createdAt,
           },
         },

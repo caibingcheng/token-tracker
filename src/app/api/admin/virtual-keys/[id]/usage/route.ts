@@ -43,6 +43,7 @@ export const GET = withAuth(async (request: NextRequest, ctx: any) => {
         cacheRead: tokenRecords.cacheRead,
         cacheWrite: tokenRecords.cacheWrite,
         status: tokenRecords.status,
+        userAgent: tokenRecords.userAgent,
         createdAt: tokenRecords.createdAt,
       })
       .from(tokenRecords)
@@ -59,6 +60,10 @@ export const GET = withAuth(async (request: NextRequest, ctx: any) => {
         comment: row.comment ?? null,
         enabledModels: row.enabledModels,
         lastUsedAt: row.lastUsedAt,
+        maxRpm: row.maxRpm ?? null,
+        maxTpm: row.maxTpm ?? null,
+        maxDailyTokens: row.maxDailyTokens ?? null,
+        maxMonthlyTokens: row.maxMonthlyTokens ?? null,
         usage: usage[0],
         recent,
       },

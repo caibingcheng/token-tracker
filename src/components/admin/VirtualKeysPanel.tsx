@@ -13,6 +13,10 @@ export interface VirtualKeyItem {
   comment: string | null;
   enabledModels: string;
   lastUsedAt: string | null;
+  maxRpm: number | null;
+  maxTpm: number | null;
+  maxDailyTokens: number | null;
+  maxMonthlyTokens: number | null;
   createdAt: string;
   usage: {
     requestCount: number;
@@ -27,6 +31,10 @@ interface UsageDetail {
   name: string;
   enabled: boolean;
   lastUsedAt: string | null;
+  maxRpm: number | null;
+  maxTpm: number | null;
+  maxDailyTokens: number | null;
+  maxMonthlyTokens: number | null;
   usage: {
     requestCount: number;
     totalInput: number;
@@ -44,6 +52,7 @@ interface UsageDetail {
     cacheRead: number;
     cacheWrite: number;
     status: string | null;
+    userAgent: string | null;
     createdAt: string;
   }>;
 }
@@ -55,6 +64,21 @@ function parseEnabledModelsInput(raw: string): string[] {
     .filter(Boolean);
 }
 
+function formatQuota(n: number | null | undefined): string {
+  if (n == null) return "—";
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
+function quotaInputToField(raw: string): number | undefined {
+  const trimmed = raw.trim();
+  if (trimmed === "") return undefined;
+  const value = Number(trimmed);
+  if (!Number.isInteger(value) || value < 0) return undefined;
+  return value;
+}
+
 export default function VirtualKeysPanel() {
   const [keys, setKeys] = useState<VirtualKeyItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -63,6 +87,7 @@ export default function VirtualKeysPanel() {
   const [nameInput, setNameInput] = useState("");
   const [commentInput, setCommentInput] = useState("");
   const [modelsInput, setModelsInput] = useState("*");
+  const [quotaInputs, setQuotaInputs] = useState({ rpm: "", tpm: "", daily: "", monthly: "" });
   const [creating, setCreating] = useState(false);
   const [createdKey, setCreatedKey] = useState<string | null>(null);
 
@@ -75,6 +100,7 @@ export default function VirtualKeysPanel() {
   const [editName, setEditName] = useState("");
   const [editComment, setEditComment] = useState("");
   const [editModels, setEditModels] = useState("");
+  const [editQuotaInputs, setEditQuotaInputs] = useState({ rpm: "", tpm: "", daily: "", monthly: "" });
   const [savingEdit, setSavingEdit] = useState(false);
 
   const load = useCallback(async () => {
@@ -116,6 +142,10 @@ export default function VirtualKeysPanel() {
           name,
           comment: commentInput.trim(),
           enabledModels,
+          maxRpm: quotaInputToField(quotaInputs.rpm),
+          maxTpm: quotaInputToField(quotaInputs.tpm),
+          maxDailyTokens: quotaInputToField(quotaInputs.daily),
+          maxMonthlyTokens: quotaInputToField(quotaInputs.monthly),
         }),
       });
       const json = await res.json();
@@ -127,6 +157,7 @@ export default function VirtualKeysPanel() {
       setNameInput("");
       setCommentInput("");
       setModelsInput("*");
+      setQuotaInputs({ rpm: "", tpm: "", daily: "", monthly: "" });
       load();
     } catch {
       setError("Network error");
@@ -140,6 +171,12 @@ export default function VirtualKeysPanel() {
     setEditName(key.name);
     setEditComment(key.comment ?? "");
     setEditModels(parseEnabledModelsInput(key.enabledModels).join(", "));
+    setEditQuotaInputs({
+      rpm: key.maxRpm != null ? String(key.maxRpm) : "",
+      tpm: key.maxTpm != null ? String(key.maxTpm) : "",
+      daily: key.maxDailyTokens != null ? String(key.maxDailyTokens) : "",
+      monthly: key.maxMonthlyTokens != null ? String(key.maxMonthlyTokens) : "",
+    });
   };
 
   const saveEdit = async () => {
@@ -160,7 +197,15 @@ export default function VirtualKeysPanel() {
       const res = await apiFetch(`/api/admin/virtual-keys/${editingId}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name, comment: editComment, enabledModels }),
+        body: JSON.stringify({
+          name,
+          comment: editComment,
+          enabledModels,
+          maxRpm: quotaInputToField(editQuotaInputs.rpm),
+          maxTpm: quotaInputToField(editQuotaInputs.tpm),
+          maxDailyTokens: quotaInputToField(editQuotaInputs.daily),
+          maxMonthlyTokens: quotaInputToField(editQuotaInputs.monthly),
+        }),
       });
       const json = await res.json();
       if (!json.success) {
@@ -282,6 +327,40 @@ export default function VirtualKeysPanel() {
               {creating ? "Creating..." : "Create"}
             </button>
           </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <input
+              value={quotaInputs.rpm}
+              onChange={(e) => setQuotaInputs((q) => ({ ...q, rpm: e.target.value }))}
+              placeholder="Max RPM"
+              title="Max requests per minute (60s window). Empty = unlimited, 0 = unlimited."
+              inputMode="numeric"
+              className="rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            <input
+              value={quotaInputs.tpm}
+              onChange={(e) => setQuotaInputs((q) => ({ ...q, tpm: e.target.value }))}
+              placeholder="Max TPM"
+              title="Max tokens per minute (60s window). Empty = unlimited, 0 = unlimited."
+              inputMode="numeric"
+              className="rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            <input
+              value={quotaInputs.daily}
+              onChange={(e) => setQuotaInputs((q) => ({ ...q, daily: e.target.value }))}
+              placeholder="Max daily tokens"
+              title="Max tokens per UTC calendar day. Empty = unlimited, 0 = unlimited."
+              inputMode="numeric"
+              className="rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            <input
+              value={quotaInputs.monthly}
+              onChange={(e) => setQuotaInputs((q) => ({ ...q, monthly: e.target.value }))}
+              placeholder="Max monthly tokens"
+              title="Max tokens per UTC calendar month. Empty = unlimited, 0 = unlimited."
+              inputMode="numeric"
+              className="rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+          </div>
         </form>
 
         {createdKey && (
@@ -347,6 +426,21 @@ export default function VirtualKeysPanel() {
                   last used {new Date(key.lastUsedAt).toLocaleString()}
                 </span>
               )}
+              <span className="text-xs text-gray-500" title="Quota limits (rpm / tpm / daily / monthly tokens)">
+                {key.maxRpm != null || key.maxTpm != null || key.maxDailyTokens != null || key.maxMonthlyTokens != null ? (
+                  <>
+                    {key.maxRpm != null ? `${key.maxRpm} rpm` : ""}
+                    {key.maxRpm != null && (key.maxTpm != null || key.maxDailyTokens != null || key.maxMonthlyTokens != null) ? " / " : ""}
+                    {key.maxTpm != null ? `${formatQuota(key.maxTpm)} tpm` : ""}
+                    {(key.maxTpm != null || key.maxRpm != null) && (key.maxDailyTokens != null || key.maxMonthlyTokens != null) ? " / " : ""}
+                    {key.maxDailyTokens != null ? `${formatQuota(key.maxDailyTokens)} daily` : ""}
+                    {(key.maxDailyTokens != null) && key.maxMonthlyTokens != null ? " / " : ""}
+                    {key.maxMonthlyTokens != null ? `${formatQuota(key.maxMonthlyTokens)} monthly` : ""}
+                  </>
+                ) : (
+                  "—"
+                )}
+              </span>
               <div className="ml-auto flex items-center gap-2">
                 <button
                   type="button"
@@ -399,6 +493,40 @@ export default function VirtualKeysPanel() {
                   placeholder="Enabled models, e.g. * or gpt-4o, claude-*"
                   className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <input
+                    value={editQuotaInputs.rpm}
+                    onChange={(e) => setEditQuotaInputs((q) => ({ ...q, rpm: e.target.value }))}
+                    placeholder="Max RPM"
+                    title="Max requests per minute. Empty = keep, 0 = unlimited."
+                    inputMode="numeric"
+                    className="rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                  <input
+                    value={editQuotaInputs.tpm}
+                    onChange={(e) => setEditQuotaInputs((q) => ({ ...q, tpm: e.target.value }))}
+                    placeholder="Max TPM"
+                    title="Max tokens per minute. Empty = keep, 0 = unlimited."
+                    inputMode="numeric"
+                    className="rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                  <input
+                    value={editQuotaInputs.daily}
+                    onChange={(e) => setEditQuotaInputs((q) => ({ ...q, daily: e.target.value }))}
+                    placeholder="Max daily tokens"
+                    title="Max tokens per UTC day. Empty = keep, 0 = unlimited."
+                    inputMode="numeric"
+                    className="rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                  <input
+                    value={editQuotaInputs.monthly}
+                    onChange={(e) => setEditQuotaInputs((q) => ({ ...q, monthly: e.target.value }))}
+                    placeholder="Max monthly tokens"
+                    title="Max tokens per UTC month. Empty = keep, 0 = unlimited."
+                    inputMode="numeric"
+                    className="rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                </div>
                 <div className="flex gap-2">
                   <button
                     type="button"
@@ -463,6 +591,20 @@ export default function VirtualKeysPanel() {
                   </div>
                 </div>
 
+                <div className="mb-3 rounded border border-gray-200 bg-white px-3 py-2 text-xs text-gray-600">
+                  <span className="text-gray-400">Quota: </span>
+                  <span>
+                    {usageDetail.maxRpm != null ? `${usageDetail.maxRpm} rpm` : "∞ rpm"}
+                    {usageDetail.maxTpm != null ? ` / ${formatQuota(usageDetail.maxTpm)} tpm` : " / ∞ tpm"}
+                    {usageDetail.maxDailyTokens != null
+                      ? ` / ${formatQuota(usageDetail.maxDailyTokens)} daily`
+                      : " / ∞ daily"}
+                    {usageDetail.maxMonthlyTokens != null
+                      ? ` / ${formatQuota(usageDetail.maxMonthlyTokens)} monthly`
+                      : " / ∞ monthly"}
+                  </span>
+                </div>
+
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
@@ -470,6 +612,7 @@ export default function VirtualKeysPanel() {
                         <th className="px-2 py-1">Date</th>
                         <th className="px-2 py-1">Model</th>
                         <th className="px-2 py-1">Provider</th>
+                        <th className="px-2 py-1">User-Agent</th>
                         <th className="px-2 py-1 text-right">In</th>
                         <th className="px-2 py-1 text-right">Out</th>
                         <th className="px-2 py-1 text-right">Cache</th>
@@ -482,6 +625,9 @@ export default function VirtualKeysPanel() {
                           <td className="px-2 py-1 whitespace-nowrap">{new Date(r.createdAt).toLocaleString()}</td>
                           <td className="px-2 py-1 max-w-[180px] truncate" title={r.model}>{r.model}</td>
                           <td className="px-2 py-1">{r.provider}</td>
+                          <td className="px-2 py-1 max-w-[200px] truncate" title={r.userAgent ?? undefined}>
+                            {r.userAgent ?? <span className="text-gray-300">—</span>}
+                          </td>
                           <td className="px-2 py-1 text-right">{formatNumber(r.inputTokens, true)}</td>
                           <td className="px-2 py-1 text-right">{formatNumber(r.outputTokens, true)}</td>
                           <td className="px-2 py-1 text-right">{formatNumber(r.cacheRead, true)}</td>
@@ -498,7 +644,7 @@ export default function VirtualKeysPanel() {
                       ))}
                       {usageDetail.recent.length === 0 && (
                         <tr>
-                          <td colSpan={7} className="px-2 py-4 text-center text-gray-400">
+                          <td colSpan={8} className="px-2 py-4 text-center text-gray-400">
                             No records yet.
                           </td>
                         </tr>

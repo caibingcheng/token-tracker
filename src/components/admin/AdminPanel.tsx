@@ -4,9 +4,10 @@ import { useState } from "react";
 import UpstreamsPanel from "./UpstreamsPanel";
 import VirtualKeysPanel from "./VirtualKeysPanel";
 import SecuritySettings from "./SecuritySettings";
+import AuditLogsPanel from "./AuditLogsPanel";
 import Link from "next/link";
 
-type Tab = "upstreams" | "virtual-keys" | "security";
+type Tab = "upstreams" | "virtual-keys" | "security" | "audit";
 
 export default function AdminPanel() {
   const [tab, setTab] = useState<Tab>("upstreams");
@@ -30,6 +31,7 @@ export default function AdminPanel() {
                 ["upstreams", "Upstreams"],
                 ["virtual-keys", "Virtual Keys"],
                 ["security", "Security"],
+                ["audit", "Audit"],
               ] as [Tab, string][]
             ).map(([id, label]) => (
               <button
@@ -52,8 +54,10 @@ export default function AdminPanel() {
           <UpstreamsPanel />
         ) : tab === "virtual-keys" ? (
           <VirtualKeysPanel />
-        ) : (
+        ) : tab === "security" ? (
           <SecuritySettings />
+        ) : (
+          <AuditLogsPanel />
         )}
       </div>
     </main>

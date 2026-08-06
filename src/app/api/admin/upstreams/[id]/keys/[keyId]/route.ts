@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { db, initDatabase, upstreamKeysTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";
+import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 
 interface Params {
   params: { id: string; keyId: string };
@@ -39,6 +40,15 @@ export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
     }
 
     await db.update(upstreamKeysTable).set(values).where(eq(upstreamKeysTable.id, keyId));
+    const { ip, userAgent } = extractClientInfo(request);
+    await recordAuditLog({
+      action: "upstream_key_updated",
+      targetType: "upstream_key",
+      targetId: keyId,
+      ip,
+      userAgent,
+      details: { upstreamId: row.upstreamId, changed: Object.keys(values) },
+    });
     return NextResponse.json({ success: true });
   });
 });
@@ -55,6 +65,15 @@ export const DELETE = withAuth(async (request: NextRequest, ctx: any) => {
       return NextResponse.json({ success: false, error: "Upstream key not found" }, { status: 404 });
     }
     await db.delete(upstreamKeysTable).where(eq(upstreamKeysTable.id, keyId));
+    const { ip, userAgent } = extractClientInfo(request);
+    await recordAuditLog({
+      action: "upstream_key_deleted",
+      targetType: "upstream_key",
+      targetId: keyId,
+      ip,
+      userAgent,
+      details: { upstreamId: row.upstreamId },
+    });
     return NextResponse.json({ success: true });
   });
 });

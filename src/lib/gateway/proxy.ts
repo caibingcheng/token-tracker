@@ -17,6 +17,8 @@ import {
   parseGeminiStreaming,
 } from "./parsers";
 import type { ParsedUsage } from "./parsers/types";
+import { checkQuota } from "./quota";
+import type { QuotaUsage } from "./quota";
 
 export const MAX_RETRY = 2; // 每个 key 内最多尝试次数
 const NON_STREAMING_TIMEOUT_MS = 60_000;
@@ -26,6 +28,10 @@ export interface VirtualKeyInfo {
   name: string;
   enabled: boolean;
   enabledModels?: string | string[];
+  maxRpm?: number | null;
+  maxTpm?: number | null;
+  maxDailyTokens?: number | null;
+  maxMonthlyTokens?: number | null;
 }
 
 export interface RecordUsageMeta {
@@ -39,6 +45,7 @@ export interface RecordUsageMeta {
   status?: string;
   latencyMs?: number;
   virtualKeyId?: number;
+  userAgent?: string | null;
 }
 
 export interface ProxyDeps {
@@ -52,6 +59,10 @@ export interface ProxyDeps {
   onUsage?: (meta: RecordUsageMeta) => Promise<void>;
   // 请求完成回调（更新 last_used_at 等）
   onComplete?: (meta: { virtualKeyId: number }) => Promise<void>;
+  // 配额用量加载（必填依赖；实现见 proxy-deps）
+  quota: {
+    loadUsage: (virtualKeyId: number, now: Date) => Promise<QuotaUsage>;
+  };
   log?: (message: string) => void;
 }
 
@@ -140,6 +151,9 @@ export async function handleProxyRequest(
   const path = url.pathname;
   const token = extractVirtualKeyToken(request.headers, url.searchParams);
 
+  const rawUA = request.headers.get("user-agent");
+  const userAgent = rawUA && rawUA.trim() !== "" ? rawUA.slice(0, 512) : null;
+
   if (!token) {
     return proxyError(401, "Missing virtual key", "authentication_error");
   }
@@ -199,6 +213,28 @@ export async function handleProxyRequest(
   const keys = await deps.resolveUpstreamKeys(match.upstream.id);
   if (keys.length === 0) {
     return proxyError(502, `No API keys configured for upstream: ${match.upstream.name}`, "upstream_error");
+  }
+
+  // 配额检查：选上游之后、转发之前；超限直接 429 不转发上游
+  const now = new Date();
+  const quotaUsage = await deps.quota.loadUsage(virtualKey.id, now);
+  const violation = checkQuota(
+    {
+      virtualKeyId: virtualKey.id,
+      maxRpm: virtualKey.maxRpm ?? null,
+      maxTpm: virtualKey.maxTpm ?? null,
+      maxDailyTokens: virtualKey.maxDailyTokens ?? null,
+      maxMonthlyTokens: virtualKey.maxMonthlyTokens ?? null,
+      now,
+    },
+    quotaUsage
+  );
+  if (violation) {
+    return proxyError(
+      429,
+      `Quota exceeded (${violation.dimension}: ${violation.current} / ${violation.limit})`,
+      "quota_exceeded"
+    );
   }
 
   const startTime = Date.now();
@@ -276,6 +312,7 @@ export async function handleProxyRequest(
     cacheWrite: 0,
     latencyMs,
     virtualKeyId: virtualKey.id,
+    userAgent,
   };
 
   return passthroughResponse(lastResponse, {

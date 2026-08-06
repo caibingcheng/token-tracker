@@ -4,6 +4,7 @@ import { db, initDatabase, upstreamsTable, upstreamKeysTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";
 import { isProtocol, parseEnabledModels } from "@/lib/gateway/model-router";
+import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 
 interface Params {
   params: { id: string };
@@ -118,6 +119,15 @@ export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
         .set(values)
         .where(eq(upstreamsTable.id, id))
         .returning();
+      const { ip, userAgent } = extractClientInfo(request);
+      await recordAuditLog({
+        action: "upstream_updated",
+        targetType: "upstream",
+        targetId: id,
+        ip,
+        userAgent,
+        details: { changed: Object.keys(values) },
+      });
       return NextResponse.json({ success: true, data: await withKeys(result[0]) });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -140,6 +150,15 @@ export const DELETE = withAuth(async (request: NextRequest, ctx: any) => {
       return NextResponse.json({ success: false, error: "Upstream not found" }, { status: 404 });
     }
     await db.delete(upstreamsTable).where(eq(upstreamsTable.id, id));
+    const { ip, userAgent } = extractClientInfo(request);
+    await recordAuditLog({
+      action: "upstream_deleted",
+      targetType: "upstream",
+      targetId: id,
+      ip,
+      userAgent,
+      details: { name: upstream.name },
+    });
     return NextResponse.json({ success: true });
   });
 });

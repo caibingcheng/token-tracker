@@ -15,6 +15,7 @@ const TABLES = [
       { name: "status", definition: "status TEXT" },
       { name: "latency_ms", definition: "latency_ms INTEGER" },
       { name: "virtual_key_id", definition: "virtual_key_id INTEGER" },
+      { name: "user_agent", definition: "user_agent TEXT" },
     ],
   },
   {
@@ -22,6 +23,10 @@ const TABLES = [
     columns: [
       { name: "comment", definition: "comment TEXT" },
       { name: "enabled_models", definition: "enabled_models TEXT NOT NULL DEFAULT '[\"*\"]'" },
+      { name: "max_rpm", definition: "max_rpm INTEGER" },
+      { name: "max_tpm", definition: "max_tpm INTEGER" },
+      { name: "max_daily_tokens", definition: "max_daily_tokens INTEGER" },
+      { name: "max_monthly_tokens", definition: "max_monthly_tokens INTEGER" },
     ],
   },
   {
@@ -87,10 +92,17 @@ describe("migrateColumns", () => {
     migrateColumns(db, TABLES);
 
     expect(tableColumns("token_records")).toEqual(
-      expect.arrayContaining(["status", "latency_ms", "virtual_key_id"])
+      expect.arrayContaining(["status", "latency_ms", "virtual_key_id", "user_agent"])
     );
     expect(tableColumns("virtual_keys")).toEqual(
-      expect.arrayContaining(["comment", "enabled_models"])
+      expect.arrayContaining([
+        "comment",
+        "enabled_models",
+        "max_rpm",
+        "max_tpm",
+        "max_daily_tokens",
+        "max_monthly_tokens",
+      ])
     );
     expect(tableColumns("upstreams")).toEqual(
       expect.arrayContaining(["balance", "balance_updated_at"])

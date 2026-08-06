@@ -4,6 +4,7 @@ import { db, initDatabase, upstreamsTable, upstreamKeysTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";
 import { encryptSecret, GatewaySecretMissingError } from "@/lib/gateway/crypto";
+import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 
 function maskKey(plain: string): string {
   if (plain.length <= 10) return `${plain.slice(0, 2)}***`;
@@ -86,6 +87,16 @@ export const POST = withAuth(async (request: NextRequest, ctx: any) => {
         enabled: enabled ? 1 : 0,
       })
       .returning();
+
+    const { ip, userAgent } = extractClientInfo(request);
+    await recordAuditLog({
+      action: "upstream_key_created",
+      targetType: "upstream_key",
+      targetId: result[0].id,
+      ip,
+      userAgent,
+      details: { upstreamId },
+    });
 
     return NextResponse.json(
       {

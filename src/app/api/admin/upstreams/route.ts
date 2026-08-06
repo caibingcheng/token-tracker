@@ -5,6 +5,7 @@ import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";
 import { isProtocol, parseEnabledModels } from "@/lib/gateway/model-router";
 import { GatewaySecretMissingError } from "@/lib/gateway/crypto";
+import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 
 function gatewaySecretError() {
   return NextResponse.json(
@@ -90,6 +91,15 @@ export const POST = withAuth(async (request: NextRequest) => {
           enabled: enabled ? 1 : 0,
         })
         .returning();
+      const { ip, userAgent } = extractClientInfo(request);
+      await recordAuditLog({
+        action: "upstream_created",
+        targetType: "upstream",
+        targetId: result[0].id,
+        ip,
+        userAgent,
+        details: { name, protocol },
+      });
       return NextResponse.json({ success: true, data: result[0] }, { status: 201 });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
