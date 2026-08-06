@@ -7,7 +7,7 @@ services:
       - "3001:3000"
     environment:
       - SQLITE_DATABASE_PATH=/app/data/token-tracker.db
-      - API_KEYS=${API_KEYS:-your-api-key-here}
+      - ADMIN_API_KEY=${ADMIN_API_KEY:-your-api-key-here}
       - GATEWAY_SECRET=${GATEWAY_SECRET:-your-32-byte-hex-secret}
       - HIDDEN_PROVIDERS=${HIDDEN_PROVIDERS:-}
       - API_CACHE_DEBUG=false

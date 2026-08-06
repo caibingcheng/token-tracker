@@ -22,6 +22,9 @@ describe("withAuth static scan (防漏保障第三层)", () => {
   const exempt = new Set([
     // 登录接口：携带原始 API key，不走会话 token 认证
     "src/app/api/auth/login/route.ts",
+    // 首次设置向导：fail-open 闸门自校验（DB 无 key AND env 无 key 才放行），
+    // 未配置 key 时无法签发会话 token，只能走 setup 自身闸门
+    "src/app/api/auth/setup/route.ts",
   ]);
 
   it("finds at least one API route", () => {

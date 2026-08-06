@@ -1,11 +1,16 @@
 import { normalizeModel as registryNormalizeModel } from "@/lib/model-registry";
+import type { HiddenProviderGroup } from "@/lib/provider-utils";
 import { toNum } from "@/lib/number-utils";
 
 export const TOP_N_RAW_MODELS = 20;
 export const TOP_N_DISPLAY = 5;
 
-export function normalizeModel(model: string, provider?: string): string {
-  return registryNormalizeModel(model, provider);
+export function normalizeModel(
+  model: string,
+  provider?: string,
+  groups?: HiddenProviderGroup[]
+): string {
+  return registryNormalizeModel(model, provider, groups);
 }
 
 export interface StatItem {
@@ -31,19 +36,23 @@ export interface StatItem {
 export function resolveNormalizedModelFilter(
   normalizedModel: string,
   allRawModels: string[],
-  providerByModel?: Map<string, string>
+  providerByModel?: Map<string, string>,
+  groups?: HiddenProviderGroup[]
 ): string[] {
   return allRawModels.filter((raw) => {
     const provider = providerByModel?.get(raw);
-    return normalizeModel(raw, provider) === normalizedModel;
+    return normalizeModel(raw, provider, groups) === normalizedModel;
   });
 }
 
-export function aggregateByNormalizedModel(items: StatItem[]): StatItem[] {
+export function aggregateByNormalizedModel(
+  items: StatItem[],
+  groups?: HiddenProviderGroup[]
+): StatItem[] {
   const map = new Map<string, StatItem>();
 
   for (const item of items) {
-    const normalized = normalizeModel(item.group, item.provider);
+    const normalized = normalizeModel(item.group, item.provider, groups);
     const existing = map.get(normalized);
 
     if (existing) {

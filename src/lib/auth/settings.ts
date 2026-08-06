@@ -33,6 +33,23 @@ export async function deleteSetting(key: string): Promise<void> {
   });
 }
 
+// ---- env 登录 key 解析：ADMIN_API_KEY（优先）→ API_KEYS（deprecated 兼容） ----
+
+export function getEnvAdminKeys(): string[] {
+  const primary = process.env.ADMIN_API_KEY;
+  if (primary && primary.trim() !== "") {
+    return primary.split(",").map((k) => k.trim()).filter(Boolean);
+  }
+  const legacy = process.env.API_KEYS;
+  if (legacy && legacy.trim() !== "") {
+    console.warn(
+      "[auth] API_KEYS is deprecated, please use ADMIN_API_KEY instead"
+    );
+    return legacy.split(",").map((k) => k.trim()).filter(Boolean);
+  }
+  return [];
+}
+
 // ---- admin 登录 key（DB 优先，env API_KEYS 仅 bootstrap 兜底） ----
 
 export async function getAdminApiKey(): Promise<string | null> {
@@ -94,4 +111,49 @@ export async function setTotpEnabled(enabled: boolean): Promise<void> {
 export async function clearTotp(): Promise<void> {
   await deleteSetting("totp_secret");
   await deleteSetting("totp_enabled");
+}
+
+// ---- HIDDEN_PROVIDERS：settings 优先，env 仅 fallback（纯展示配置，免重启热更新） ----
+
+// 返回 settings 中的原始字符串；行不存在返回 null（调用方自行区分「已保存」与「未保存」）
+export async function getHiddenProvidersSetting(): Promise<string | null> {
+  return getSetting("hidden_providers");
+}
+
+export async function setHiddenProvidersSetting(raw: string): Promise<void> {
+  await setSetting("hidden_providers", raw);
+  // 清空 normalizeModel 的 rawToCanonical 缓存：
+  // 面板改分组后立即生效，避免与 10s 查询缓存叠加导致旧匿名名残留
+  const { invalidateModelCache } = await import("@/lib/model-registry");
+  invalidateModelCache();
+}
+
+// ---- 会话 token TTL：settings 优先 → env SESSION_TOKEN_TTL_HOURS → 默认 24h ----
+
+const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
+
+export async function resolveSessionTtlMs(): Promise<number> {
+  const stored = await getSetting("session_token_ttl_hours");
+  if (stored !== null) {
+    const n = Number(stored);
+    if (Number.isFinite(n) && n > 0) {
+      return n * 60 * 60 * 1000;
+    }
+  }
+  const hours = Number(process.env.SESSION_TOKEN_TTL_HOURS);
+  if (Number.isFinite(hours) && hours > 0) {
+    return hours * 60 * 60 * 1000;
+  }
+  return DEFAULT_TTL_MS;
+}
+
+export async function getSessionTtlHoursSetting(): Promise<number | null> {
+  const stored = await getSetting("session_token_ttl_hours");
+  if (stored === null) return null;
+  const n = Number(stored);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+export async function setSessionTtlHoursSetting(hours: number): Promise<void> {
+  await setSetting("session_token_ttl_hours", String(hours));
 }

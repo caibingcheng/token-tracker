@@ -3,12 +3,13 @@ import { safeCompare } from "@/lib/gateway/crypto";
 import {
   getTokenEpoch,
   getAdminApiKey,
+  getEnvAdminKeys,
   isTotpEnabled,
   getTotpSecret,
+  resolveSessionTtlMs,
 } from "@/lib/auth/settings";
 import {
   signSessionToken,
-  getSessionTtlMs,
   keyFingerprint,
 } from "@/lib/auth/session";
 import { verifyTotpCode } from "@/lib/auth/totp";
@@ -57,17 +58,13 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // 登录 key 校验：DB 优先，env API_KEYS 兜底（仅 bootstrap 场景）
+  // 登录 key 校验：DB 优先，env ADMIN_API_KEY / API_KEYS 兜底（仅 bootstrap 场景）
   let matchedKey: string | null = null;
   const dbKey = await getAdminApiKey();
   if (dbKey !== null) {
     if (safeCompare(apiKey, dbKey)) matchedKey = dbKey;
   } else {
-    const envKeys =
-      process.env.API_KEYS?.split(",")
-        .map((k) => k.trim())
-        .filter(Boolean) ?? [];
-    matchedKey = envKeys.find((k) => safeCompare(k, apiKey)) ?? null;
+    matchedKey = getEnvAdminKeys().find((k) => safeCompare(k, apiKey)) ?? null;
   }
 
   if (!matchedKey) {
@@ -123,10 +120,11 @@ export async function POST(request: NextRequest) {
   });
 
   const epoch = await getTokenEpoch();
-  const token = signSessionToken(epoch, keyFingerprint(matchedKey));
+  const ttlMs = await resolveSessionTtlMs();
+  const token = signSessionToken(epoch, keyFingerprint(matchedKey), ttlMs);
   return NextResponse.json({
     success: true,
     token,
-    expiresInMs: getSessionTtlMs(),
+    expiresInMs: ttlMs,
   });
 }

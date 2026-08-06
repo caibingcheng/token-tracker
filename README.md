@@ -34,13 +34,13 @@
 ```bash
 docker pull ghcr.io/caibingcheng/token-tracker:latest
 cp docker-compose.example.yml docker-compose.yml
-# 编辑 docker-compose.yml：设置 API_KEYS、GATEWAY_SECRET、SQLITE_DATABASE_PATH
+# 编辑 docker-compose.yml：设置 ADMIN_API_KEY、GATEWAY_SECRET、SQLITE_DATABASE_PATH
 docker compose up -d
 ```
 
 首次启动后：
 
-1. 打开 `http://host:3000/admin`，用 `API_KEYS` 中的任意一个 key 登录
+1. 打开 `http://host:3000/admin`，用 `ADMIN_API_KEY` 中的任意一个 key 登录（未配置时出现首次设置向导）
 2. 添加上游（名称、协议、Base URL），配置 API Key，拉取/勾选启用模型
 3. 创建虚拟 key，按上表配置客户端即可
 
@@ -49,7 +49,7 @@ docker compose up -d
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `SQLITE_DATABASE_PATH` | Yes | SQLite 数据库路径（默认 `/app/data/token-tracker.db`） |
-| `API_KEYS` | Yes | 管理面 API Key，逗号分隔（Dashboard / admin / 统计 API 均需） |
+| `ADMIN_API_KEY` | 启动前建议 | 管理面 API Key，逗号分隔（Dashboard / admin / 统计 API 均需；未配置且 DB 无 key 时出现首次设置向导）。旧名 `API_KEYS` 兼容（deprecated） |
 | `GATEWAY_SECRET` | Yes | 网关主密钥，AES-256-GCM（32 字节 hex/base64，用 `openssl rand -hex 32` 生成）；缺失时代理与 admin API 返回 503 |
 | `HIDDEN_PROVIDERS` | No | 需要在 UI 匿名化的 provider |
 | `API_CACHE_TTL_MS` | No | SELECT 缓存 TTL（毫秒，默认 10000） |
@@ -57,12 +57,16 @@ docker compose up -d
 
 SQLite 数据库文件在首次请求时自动创建（含增量迁移），无需手动操作。
 
+> **⚠️ 首次设置向导安全提示**：未配置 `ADMIN_API_KEY` 且 DB 无 key 时，任何能触达 Web 端的人
+> 都可先到先得地设置 admin key（fail-open 设计）。**生产环境请务必设置 `ADMIN_API_KEY`
+> env 或通过防火墙/内网隔离保护首次配置窗口**。向导限流只防爆破，不防首次接管。
+
 ## Development
 
 ```bash
 npm install
 cp .env.example .env.local
-# 必需：SQLITE_DATABASE_PATH、API_KEYS、GATEWAY_SECRET
+# 必需：SQLITE_DATABASE_PATH、GATEWAY_SECRET
 npm run dev
 npm test        # vitest 单元测试
 npm run lint
@@ -87,7 +91,7 @@ npm run lint
 > curl -s http://host:3000/api/dashboard -H "X-API-Key: $TOKEN"
 > ```
 >
-> 忘记登录 key 无法登录时：删除 SQLite `settings` 表中的 `admin_api_key` 行即回退到 env `API_KEYS` 兜底。
+> 忘记登录 key 无法登录时：删除 SQLite `settings` 表中的 `admin_api_key` 行即回退到 env `ADMIN_API_KEY` 兜底。
 
 ## License
 

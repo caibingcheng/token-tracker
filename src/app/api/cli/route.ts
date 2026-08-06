@@ -3,7 +3,7 @@ import { initDatabase, db } from "@/lib/db";
 import { tokenRecords } from "@/lib/db";
 import { withAuth } from "@/lib/auth/guard";
 import { executeStatsQuery, type StatsQueryResult } from "@/lib/stats-query";
-import { resolveProviderFilter } from "@/lib/provider-utils";
+import { resolveProviderFilter, loadHiddenProviderGroups } from "@/lib/provider-utils";
 import { getDisplayName, getPricing, normalizeModel } from "@/lib/model-registry";
 import {
   calculateCost,
@@ -143,6 +143,7 @@ async function queryCliData(range: string, provider: string, providerFilter: str
 
 export const GET = withAuth(async (request: NextRequest) => {
   await initDatabase();
+  const groups = await loadHiddenProviderGroups();
 
   try {
     const { searchParams } = new URL(request.url);
@@ -171,7 +172,7 @@ export const GET = withAuth(async (request: NextRequest) => {
         .map((r: any) => r.provider)
         .filter((n: any): n is string => n !== null && n !== undefined);
 
-      providerFilter = resolveProviderFilter(provider, allProviderNames);
+      providerFilter = resolveProviderFilter(provider, allProviderNames, groups);
 
       // CLI-specific fallback: case-insensitive match
       if (!providerFilter || providerFilter.length === 0) {

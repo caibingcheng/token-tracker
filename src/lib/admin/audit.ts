@@ -2,6 +2,7 @@ import { db, initDatabase, adminAuditLogsTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 
 export type AuditAction =
+  | "setup_admin_key"
   | "login_success"
   | "login_failure"
   | "api_key_changed"

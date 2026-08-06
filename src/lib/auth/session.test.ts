@@ -85,6 +85,15 @@ describe("session token", () => {
     expect(getSessionTtlMs()).toBe(24 * 60 * 60 * 1000);
   });
 
+  it("signSessionToken 接受显式 ttlMs（settings 解析后传入）", () => {
+    const ttl = 2 * 60 * 60 * 1000;
+    const token = signSessionToken(0, "deadbeef", ttl);
+    const payload = verifySessionToken(token)!;
+    // exp 距签发时刻应等于显式 ttl
+    expect(payload.exp - Date.now()).toBeGreaterThan(ttl - 5000);
+    expect(payload.exp - Date.now()).toBeLessThanOrEqual(ttl);
+  });
+
   it("keyFingerprint differs between keys and is stable per key", () => {
     expect(keyFingerprint("key-a")).not.toBe(keyFingerprint("key-b"));
     expect(keyFingerprint("key-a")).toBe(keyFingerprint("key-a"));

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db, initDatabase } from "@/lib/db";
 import { tokenRecords } from "@/lib/db";
 import { sql, desc, eq, and, gte, lte, inArray, SQL } from "drizzle-orm";
-import { resolveProviderFilter } from "@/lib/provider-utils";
+import { resolveProviderFilter, loadHiddenProviderGroups } from "@/lib/provider-utils";
 import { normalizeModel, resolveNormalizedModelFilter } from "@/lib/model-utils";
 import { getDisplayName } from "@/lib/model-registry";
 import { withSkipCache } from "@/lib/db/cache";
@@ -14,6 +14,7 @@ export const GET = withAuth(async (request: NextRequest) => {
   return withSkipCache(async () => {
     await initDatabase();
     try {
+      const groups = await loadHiddenProviderGroups();
       const { searchParams } = new URL(request.url);
 
       // 分页参数
@@ -35,7 +36,7 @@ export const GET = withAuth(async (request: NextRequest) => {
           .map((r: any) => r.provider)
           .filter((n: any): n is string => n !== null && n !== undefined);
 
-        providerFilter = resolveProviderFilter(provider, allProviderNames);
+        providerFilter = resolveProviderFilter(provider, allProviderNames, groups);
 
         if (!providerFilter || providerFilter.length === 0) {
           return NextResponse.json(
@@ -60,7 +61,7 @@ export const GET = withAuth(async (request: NextRequest) => {
           }
         }
 
-        modelFilter = resolveNormalizedModelFilter(modelParam, allRawModels, providerByModel);
+        modelFilter = resolveNormalizedModelFilter(modelParam, allRawModels, providerByModel, groups);
 
         if (!modelFilter || modelFilter.length === 0) {
           return NextResponse.json(
@@ -123,7 +124,7 @@ export const GET = withAuth(async (request: NextRequest) => {
       const rawData = whereClause ? await query.where(whereClause) : await query;
       const data = rawData.map((record: any) => ({
         ...record,
-        normalizedModel: getDisplayName(normalizeModel(record.model, record.provider ?? undefined)),
+        normalizedModel: getDisplayName(normalizeModel(record.model, record.provider ?? undefined, groups)),
       }));
 
       const countQuery = db

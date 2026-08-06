@@ -2,7 +2,10 @@ import fs from "fs";
 import path from "path";
 import { type ModelPricing } from "@/lib/cost-utils";
 import { toNum } from "@/lib/number-utils";
-import { getHiddenProviderGroups, matchesPattern } from "@/lib/provider-utils";
+import {
+  type HiddenProviderGroup,
+  matchesPattern,
+} from "@/lib/provider-utils";
 
 interface CanonicalInfo {
   displayName: string;
@@ -209,14 +212,29 @@ export function getRegistry(): Registry {
   return ensureRegistry();
 }
 
-function isProviderHidden(providerName: string): boolean {
-  const groups = getHiddenProviderGroups();
+function isProviderHidden(
+  providerName: string,
+  groups: HiddenProviderGroup[]
+): boolean {
   return groups.some((group) =>
     group.patterns.some((pattern) => matchesPattern(providerName, pattern))
   );
 }
 
-export function normalizeModel(raw: string, provider?: string): string {
+// 清空 normalizeModel 的 rawToCanonical 缓存：
+// 当 HIDDEN_PROVIDERS（settings 表）被修改后必须调用，否则旧匿名映射长期残留
+export function invalidateModelCache(): void {
+  const reg = registry;
+  if (reg) {
+    reg.rawToCanonical.clear();
+  }
+}
+
+export function normalizeModel(
+  raw: string,
+  provider?: string,
+  groups: HiddenProviderGroup[] = []
+): string {
   if (!raw || typeof raw !== "string") return raw;
   const trimmed = raw.trim();
   if (!trimmed) return raw;
@@ -255,7 +273,7 @@ export function normalizeModel(raw: string, provider?: string): string {
   }
 
   // 3. hidden provider fallback：只按 model 部分匹配别名
-  if (effectiveProvider && isProviderHidden(effectiveProvider)) {
+  if (effectiveProvider && isProviderHidden(effectiveProvider, groups)) {
     const modelOnly = effectiveModel.toLowerCase();
     const aliased = reg.aliasMap.get(modelOnly);
     if (aliased) {

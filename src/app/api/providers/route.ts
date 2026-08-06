@@ -4,7 +4,7 @@ import { tokenRecords } from "@/lib/db";
 import { withAuth } from "@/lib/auth/guard";
 
 export const dynamic = "force-dynamic";
-import { anonymizeProvider } from "@/lib/provider-utils";
+import { anonymizeProvider, loadHiddenProviderGroups } from "@/lib/provider-utils";
 
 /**
  * GET /api/providers
@@ -24,6 +24,8 @@ import { anonymizeProvider } from "@/lib/provider-utils";
 export const GET = withAuth(async (request: NextRequest) => {
   await initDatabase();
   try {
+    const groups = await loadHiddenProviderGroups();
+
     // Query all unique provider names from the token_records table
     const rows = await db
       .selectDistinct({
@@ -38,7 +40,7 @@ export const GET = withAuth(async (request: NextRequest) => {
 
     // Anonymize each provider name for the response
     const anonymizedList = allProviderNames.map((realName) => {
-      const displayName = anonymizeProvider(realName, allProviderNames);
+      const displayName = anonymizeProvider(realName, allProviderNames, groups);
       return {
         id: displayName,
         name: displayName,

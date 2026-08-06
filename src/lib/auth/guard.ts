@@ -8,7 +8,7 @@ import {
   signSessionToken,
   keyFingerprint,
 } from "./session";
-import { getTokenEpoch, getAdminApiKey } from "./settings";
+import { getTokenEpoch, getAdminApiKey, getEnvAdminKeys, resolveSessionTtlMs } from "./settings";
 
 export type RouteHandler = (
   request: NextRequest,
@@ -19,14 +19,11 @@ export function unauthorized(message = "Invalid or missing session token") {
   return NextResponse.json({ success: false, error: message }, { status: 401 });
 }
 
-// 当前生效的登录 key：DB 优先，env API_KEYS 仅 bootstrap 兜底
+// 当前生效的登录 key：DB 优先，env ADMIN_API_KEY / API_KEYS 仅 bootstrap 兜底
 export async function resolveActiveLoginKey(): Promise<string | null> {
   const dbKey = await getAdminApiKey();
   if (dbKey !== null) return dbKey;
-  const envKeys =
-    process.env.API_KEYS?.split(",")
-      .map((k) => k.trim())
-      .filter(Boolean) ?? [];
+  const envKeys = getEnvAdminKeys();
   return envKeys.length > 0 ? envKeys[0]! : null;
 }
 
@@ -54,16 +51,17 @@ export function withAuth(handler: RouteHandler): RouteHandler {
     const response = await handler(request, ctx);
 
     // 滑动续期：剩余有效期不足一半时签发新 token
+    const ttlMs = await resolveSessionTtlMs();
     if (response instanceof NextResponse) {
-      if (shouldRenewToken(payload)) {
+      if (shouldRenewToken(payload, ttlMs)) {
         response.headers.set(
           "X-Session-Token",
-          signSessionToken(epoch, payload.keyId)
+          signSessionToken(epoch, payload.keyId, ttlMs)
         );
       }
     } else {
       // 普通 Response：包装并附带续期 header
-      if (shouldRenewToken(payload)) {
+      if (shouldRenewToken(payload, ttlMs)) {
         const wrapped = new Response(response.body, {
           status: response.status,
           statusText: response.statusText,
@@ -71,7 +69,7 @@ export function withAuth(handler: RouteHandler): RouteHandler {
         });
         wrapped.headers.set(
           "X-Session-Token",
-          signSessionToken(epoch, payload.keyId)
+          signSessionToken(epoch, payload.keyId, ttlMs)
         );
         return wrapped;
       }

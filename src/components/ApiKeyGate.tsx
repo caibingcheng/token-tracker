@@ -6,6 +6,8 @@ import {
   clearApiKey,
   registerUnauthorizedHandler,
   apiLogin,
+  apiSetup,
+  apiSetupSubmit,
 } from "@/lib/client/api-client";
 
 export default function ApiKeyGate({ children }: { children: React.ReactNode }) {
@@ -16,6 +18,10 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
   const [totpRequired, setTotpRequired] = useState(false);
   const [loggingIn, setLoggingIn] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [setupRequired, setSetupRequired] = useState(false);
+  const [setupKey, setSetupKey] = useState("");
+  const [setupConfirm, setSetupConfirm] = useState("");
+  const [settingUp, setSettingUp] = useState(false);
 
   const handleUnauthorized = useCallback(() => {
     setError("Invalid or missing session");
@@ -24,6 +30,7 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
 
   useEffect(() => {
     setHasKey(getApiKey() !== null);
+    apiSetup().then(({ setupRequired }) => setSetupRequired(setupRequired));
   }, []);
 
   useEffect(() => {
@@ -66,6 +73,76 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
     setError(null);
     setHasKey(false);
   };
+
+  const handleSetup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (setupKey.length < 16 || settingUp) return;
+    if (setupKey !== setupConfirm) {
+      setError("The two keys do not match");
+      return;
+    }
+    setSettingUp(true);
+    setError(null);
+    try {
+      const result = await apiSetupSubmit(setupKey.trim());
+      if (result.ok) {
+        setSetupRequired(false);
+        setSetupKey("");
+        setSetupConfirm("");
+        setHasKey(true);
+        return;
+      }
+      setError(result.error || "Setup failed");
+    } finally {
+      setSettingUp(false);
+    }
+  };
+
+  if (!hasKey && setupRequired) {
+    return (
+      <main className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+        <div className="w-full max-w-sm rounded-lg bg-white p-8 shadow">
+          <div className="mb-6 text-center">
+            <h1 className="text-xl font-bold text-gray-900">Token Tracker</h1>
+            <p className="mt-1 text-sm text-gray-500">
+              First-time setup: create your admin API Key to continue
+            </p>
+          </div>
+          <form onSubmit={handleSetup} className="space-y-4">
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={setupKey}
+              onChange={(e) => setSetupKey(e.target.value)}
+              placeholder="Admin API Key (min 16 characters)"
+              autoFocus
+              className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={setupConfirm}
+              onChange={(e) => setSetupConfirm(e.target.value)}
+              placeholder="Confirm Admin API Key"
+              className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            {error && (
+              <div className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-600">
+                {error}
+              </div>
+            )}
+            <button
+              type="submit"
+              disabled={settingUp || setupKey.length < 16}
+              className="w-full rounded bg-blue-600 py-2 text-sm font-medium text-white hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-50"
+            >
+              {settingUp ? "Setting up..." : "Create & Continue"}
+            </button>
+          </form>
+        </div>
+      </main>
+    );
+  }
 
   if (!hasKey) {
     return (

@@ -53,7 +53,7 @@ export const POST = withAuth(async (request: NextRequest) => {
     }
     const keyRows = (
       await db.select().from(upstreamKeysTable).where(eq(upstreamKeysTable.upstreamId, upstreamId))
-    ).filter((row) => row.enabled === 1);
+    ).filter((row: any) => row.enabled === 1);
     if (keyRows.length === 0) {
       return NextResponse.json(
         { success: false, error: "No enabled API key configured for this upstream" },

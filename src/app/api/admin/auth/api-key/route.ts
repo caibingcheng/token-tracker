@@ -9,7 +9,7 @@ import {
 import { verifyTotpCode } from "@/lib/auth/totp";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 
-// 修改登录 key（DB 持久化；env API_KEYS 立即不再被检查）：
+// 修改登录 key（DB 持久化；env ADMIN_API_KEY / API_KEYS 立即不再被检查）：
 // 写入新 key + token_epoch + 1 → 所有已签发会话 token 立即失效。
 // 若 TOTP 已启用，必须提供当前动态码验证。
 export const PATCH = withAuth(async (request: NextRequest) => {

@@ -9,6 +9,7 @@ import {
 } from "@/lib/stats-query";
 import { aggregateByNormalizedModel, type StatItem } from "@/lib/model-utils";
 import { normalizeModel, getDisplayName, getPricing } from "@/lib/model-registry";
+import { loadHiddenProviderGroups, type HiddenProviderGroup } from "@/lib/provider-utils";
 import { toNum } from "@/lib/number-utils";
 import {
   aggregateCost,
@@ -57,7 +58,8 @@ function toCostInput(item: StatItem): CostInput {
 }
 
 function aggregateTopModelsByDate(
-  rows: Array<StatItem & { group: string; model: string; provider?: string }>
+  rows: Array<StatItem & { group: string; model: string; provider?: string }>,
+  groups: HiddenProviderGroup[]
 ): Map<string, ModelStat[]> {
   const byDate = new Map<string, StatItem[]>();
 
@@ -80,7 +82,7 @@ function aggregateTopModelsByDate(
 
   const result = new Map<string, ModelStat[]>();
   byDate.forEach((items, date) => {
-    const aggregated = aggregateByNormalizedModel(items).slice(0, TOP_N_RAW_MODELS);
+    const aggregated = aggregateByNormalizedModel(items, groups).slice(0, TOP_N_RAW_MODELS);
     const models = aggregated.map((item) => {
       const inputs = [toCostInput(item)];
       const aggregate = aggregateCost(inputs);
@@ -110,7 +112,8 @@ function aggregateTopModelsByDate(
 }
 
 function aggregateCostByDate(
-  rows: Array<StatItem & { group: string; model: string; provider?: string }>
+  rows: Array<StatItem & { group: string; model: string; provider?: string }>,
+  groups: HiddenProviderGroup[]
 ): Map<string, { aggregate: AggregatedCost; inputs: CostInput[] }> {
   const map = new Map<
     string,
@@ -119,7 +122,7 @@ function aggregateCostByDate(
 
   for (const row of rows) {
     const date = String(row.group);
-    const canonicalId = normalizeModel(String(row.model), row.provider);
+    const canonicalId = normalizeModel(String(row.model), row.provider, groups);
     const input: CostInput = {
       inputTokens: toNum(row.totalInputUncached),
       cacheRead: toNum(row.totalInputCached),
@@ -271,7 +274,8 @@ async function queryDashboard(
     model: string,
     modelFilter: string[] | null,
     agentFilter: string | null,
-    timezoneOffsetMinutes?: number
+    timezoneOffsetMinutes?: number,
+    groups: HiddenProviderGroup[] = []
   ): Promise<DashboardData> {
     const [
       total,
@@ -419,7 +423,8 @@ async function queryDashboard(
         totalInputUncached: toNum(row.totalInputUncached),
         totalCacheWrite: toNum(row.totalCacheWrite),
         count: toNum(row.count),
-      }))
+      })),
+      groups
     ).slice(0, TOP_N_DISPLAY);
     const totalTopModelsResult = totalTopModelsAggregated.map((item) => {
       const inputs = [toCostInput(item)];
@@ -448,7 +453,7 @@ async function queryDashboard(
     const dailyModelAllArr = isStatItemsWithModel(dailyModelAll)
       ? dailyModelAll
       : [];
-    const dailyCostMapAll = aggregateCostByDate(dailyModelAllArr);
+    const dailyCostMapAll = aggregateCostByDate(dailyModelAllArr, groups);
 
     // Today / Yesterday keys (local timezone)
     const todayKey = formatDateKey(new Date(), timezoneOffsetMinutes);
@@ -479,7 +484,7 @@ async function queryDashboard(
         totalCacheWrite: toNum(row.totalCacheWrite),
         count: toNum(row.count),
       }));
-    const todayModelsAggregated = aggregateByNormalizedModel(todayModelRows).slice(0, 5);
+    const todayModelsAggregated = aggregateByNormalizedModel(todayModelRows, groups).slice(0, 5);
     const todayModelsResult = todayModelsAggregated.map((item) => {
       const inputs = [toCostInput(item)];
       const aggregate = aggregateCost(inputs);
@@ -505,7 +510,7 @@ async function queryDashboard(
     const dailyModelRangeArr = isStatItemsWithModel(dailyModelRange)
       ? dailyModelRange
       : [];
-    const dailyCostMapRange = aggregateCostByDate(dailyModelRangeArr);
+    const dailyCostMapRange = aggregateCostByDate(dailyModelRangeArr, groups);
 
     const dailyResult = dailyArr.map((item) => {
       const { aggregate, inputs } = dailyCostMapRange.get(item.group) ?? {
@@ -554,7 +559,7 @@ async function queryDashboard(
       };
     });
 
-    const dailyTopModelsMap = aggregateTopModelsByDate(dailyModelRangeArr);
+    const dailyTopModelsMap = aggregateTopModelsByDate(dailyModelRangeArr, groups);
 
     return {
       total: totalResult,
@@ -612,6 +617,7 @@ const VALID_RANGES = ["3d", "7d", "14d", "30d"];
 export const GET = withAuth(async (request: NextRequest) => {
   try {
     await initDatabase();
+    const groups = await loadHiddenProviderGroups();
 
     const { searchParams } = new URL(request.url);
     const range = searchParams.get("range") || "7d";
@@ -663,7 +669,8 @@ export const GET = withAuth(async (request: NextRequest) => {
       model,
       modelFilter?.slice().sort() ?? null,
       agentFilter,
-      timezoneOffsetMinutes
+      timezoneOffsetMinutes,
+      groups
     );
     return NextResponse.json({ success: true, data });
   } catch (error) {

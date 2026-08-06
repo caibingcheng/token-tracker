@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db, initDatabase } from "@/lib/db";
 import { tokenRecords } from "@/lib/db";
 import { normalizeModel } from "@/lib/model-utils";
+import { loadHiddenProviderGroups } from "@/lib/provider-utils";
 import { withAuth } from "@/lib/auth/guard";
 
 export const dynamic = "force-dynamic";
@@ -25,6 +26,8 @@ import { getDisplayName } from "@/lib/model-registry";
 export const GET = withAuth(async (request: NextRequest) => {
   await initDatabase();
   try {
+    const groups = await loadHiddenProviderGroups();
+
     // Query all unique (model, provider) pairs
     const rows = await db
       .selectDistinct({
@@ -39,7 +42,7 @@ export const GET = withAuth(async (request: NextRequest) => {
       const raw = row.model;
       const provider = row.provider ?? undefined;
       if (raw) {
-        normalizedSet.add(normalizeModel(raw, provider));
+        normalizedSet.add(normalizeModel(raw, provider, groups));
       }
     }
 

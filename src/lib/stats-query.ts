@@ -11,7 +11,7 @@ import {
   normalizeModel,
   type StatItem,
 } from "@/lib/model-utils";
-import { resolveProviderFilter } from "@/lib/provider-utils";
+import { resolveProviderFilter, loadHiddenProviderGroups } from "@/lib/provider-utils";
 import { toNum } from "@/lib/number-utils";
 
 export interface StatItemWithGroup extends StatItem {
@@ -98,6 +98,7 @@ export async function executeStatsQuery(params: {
   limit?: number | null;
   timezoneOffsetMinutes?: number;
 }): Promise<StatsQueryResult> {
+  const groups = await loadHiddenProviderGroups();
   const {
     groupBy,
     range,
@@ -142,7 +143,7 @@ export async function executeStatsQuery(params: {
         .map((r: any) => r.provider)
         .filter((n: any): n is string => n !== null && n !== undefined);
 
-    providerFilter = resolveProviderFilter(provider, allProviderNames);
+    providerFilter = resolveProviderFilter(provider, allProviderNames, groups);
 
     if (!providerFilter || providerFilter.length === 0) {
       throw new Error(`Unknown provider: ${provider}`);
@@ -169,7 +170,7 @@ export async function executeStatsQuery(params: {
     const matchedRawModels: string[] = [];
     for (const raw of allRawModels) {
       const provider = providerByModel.get(raw);
-      if (normalizeModel(raw, provider) === model) {
+      if (normalizeModel(raw, provider, groups) === model) {
         matchedRawModels.push(raw);
       }
     }
@@ -341,7 +342,8 @@ export async function executeStatsQuery(params: {
         totalInputUncached: toNum(row.totalInputUncached),
         totalCacheWrite: toNum(row.totalCacheWrite),
         count: toNum(row.count),
-      }))
+      })),
+      groups
     );
 
     if (!modelFilter && effectiveLimit !== null) {

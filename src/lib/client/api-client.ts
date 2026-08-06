@@ -73,6 +73,32 @@ export async function apiLogin(
   return { ok: false, error: json.error || "Login failed" };
 }
 
+// 首次设置：探测是否需设置向导，以及提交初始 admin key 换取会话 token
+export async function apiSetup(): Promise<{ setupRequired: boolean }> {
+  const res = await fetch("/api/auth/setup");
+  if (res.ok) {
+    const json = (await res.json()) as { setupRequired?: boolean };
+    return { setupRequired: json.setupRequired === true };
+  }
+  return { setupRequired: false };
+}
+
+export async function apiSetupSubmit(
+  apiKey: string
+): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetch("/api/auth/setup", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ apiKey }),
+  });
+  const json = await res.json();
+  if (res.ok && json.token) {
+    setApiKey(json.token as string);
+    return { ok: true };
+  }
+  return { ok: false, error: json.error || "Setup failed" };
+}
+
 export async function apiFetch(
   input: RequestInfo | URL,
   init?: RequestInit

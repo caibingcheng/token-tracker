@@ -4,10 +4,11 @@ import { useState } from "react";
 import UpstreamsPanel from "./UpstreamsPanel";
 import VirtualKeysPanel from "./VirtualKeysPanel";
 import SecuritySettings from "./SecuritySettings";
+import DisplaySettings from "./DisplaySettings";
 import AuditLogsPanel from "./AuditLogsPanel";
 import Link from "next/link";
 
-type Tab = "upstreams" | "virtual-keys" | "security" | "audit";
+type Tab = "upstreams" | "virtual-keys" | "security" | "display" | "audit";
 
 export default function AdminPanel() {
   const [tab, setTab] = useState<Tab>("upstreams");
@@ -31,6 +32,7 @@ export default function AdminPanel() {
                 ["upstreams", "Upstreams"],
                 ["virtual-keys", "Virtual Keys"],
                 ["security", "Security"],
+                ["display", "Display"],
                 ["audit", "Audit"],
               ] as [Tab, string][]
             ).map(([id, label]) => (
@@ -56,6 +58,8 @@ export default function AdminPanel() {
           <VirtualKeysPanel />
         ) : tab === "security" ? (
           <SecuritySettings />
+        ) : tab === "display" ? (
+          <DisplaySettings />
         ) : (
           <AuditLogsPanel />
         )}
