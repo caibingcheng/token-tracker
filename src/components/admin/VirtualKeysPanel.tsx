@@ -68,6 +68,7 @@ export default function VirtualKeysPanel() {
 
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [usageDetail, setUsageDetail] = useState<UsageDetail | null>(null);
+  const [refreshingId, setRefreshingId] = useState<number | null>(null);
   const [copied, setCopied] = useState<number | null>(null);
 
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -206,6 +207,23 @@ export default function VirtualKeysPanel() {
     const json = await res.json();
     if (json.success) {
       setUsageDetail(json.data);
+    }
+  };
+
+  const refreshUsage = async (key: VirtualKeyItem) => {
+    setRefreshingId(key.id);
+    try {
+      const res = await apiFetch(`/api/admin/virtual-keys/${key.id}/usage`);
+      const json = await res.json();
+      if (json.success) {
+        setUsageDetail(json.data);
+      } else {
+        setError(json.error || "Failed to refresh usage");
+      }
+    } catch {
+      setError("Network error");
+    } finally {
+      setRefreshingId(null);
     }
   };
 
@@ -403,6 +421,17 @@ export default function VirtualKeysPanel() {
 
             {expandedId === key.id && usageDetail && (
               <div className="mt-4">
+                <div className="mb-3 flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => refreshUsage(key)}
+                    disabled={refreshingId === key.id}
+                    className="rounded border border-gray-300 px-2.5 py-1 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+                  >
+                    {refreshingId === key.id ? "Refreshing..." : "Refresh"}
+                  </button>
+                </div>
+
                 <div className="mb-3 grid grid-cols-2 md:grid-cols-6 gap-3 rounded bg-gray-50 p-3 text-sm">
                   <div>
                     <p className="text-xs text-gray-400">Requests</p>
