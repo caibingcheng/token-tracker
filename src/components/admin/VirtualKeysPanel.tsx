@@ -64,6 +64,27 @@ function parseEnabledModelsInput(raw: string): string[] {
     .filter(Boolean);
 }
 
+function parseEnabledModelsValue(raw: string): string[] {
+  const tryParse = (input: string): string[] | null => {
+    try {
+      const parsed = JSON.parse(input);
+      if (!Array.isArray(parsed)) return null;
+      return parsed.map((m) => String(m));
+    } catch {
+      return null;
+    }
+  };
+  let result = tryParse(raw);
+  let depth = 0;
+  while (result && result.length === 1 && depth < 10) {
+    const nested = tryParse(result[0]);
+    if (!nested) break;
+    result = nested;
+    depth++;
+  }
+  return result ?? parseEnabledModelsInput(raw);
+}
+
 function formatQuota(n: number | null | undefined): string {
   if (n == null) return "—";
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -88,20 +109,16 @@ export default function VirtualKeysPanel() {
   const [commentInput, setCommentInput] = useState("");
   const [modelsInput, setModelsInput] = useState("*");
   const [quotaInputs, setQuotaInputs] = useState({ rpm: "", tpm: "", daily: "", monthly: "" });
-  const [creating, setCreating] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [createdKey, setCreatedKey] = useState<string | null>(null);
 
+  const [expandedConfigId, setExpandedConfigId] = useState<number | null>(null);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [usageDetail, setUsageDetail] = useState<UsageDetail | null>(null);
   const [refreshingId, setRefreshingId] = useState<number | null>(null);
   const [copied, setCopied] = useState<number | null>(null);
 
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [editName, setEditName] = useState("");
-  const [editComment, setEditComment] = useState("");
-  const [editModels, setEditModels] = useState("");
-  const [editQuotaInputs, setEditQuotaInputs] = useState({ rpm: "", tpm: "", daily: "", monthly: "" });
-  const [savingEdit, setSavingEdit] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -123,102 +140,79 @@ export default function VirtualKeysPanel() {
     load();
   }, [load]);
 
-  const create = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const name = nameInput.trim();
-    if (!name || creating) return;
+    if (!name || saving) return;
     const enabledModels = parseEnabledModelsInput(modelsInput);
     if (enabledModels.length === 0) {
       setError("Enabled models must be non-empty (use '*' for all)");
       return;
     }
-    setCreating(true);
+    setSaving(true);
     setError(null);
     try {
-      const res = await apiFetch("/api/admin/virtual-keys", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          name,
-          comment: commentInput.trim(),
-          enabledModels,
-          maxRpm: quotaInputToField(quotaInputs.rpm),
-          maxTpm: quotaInputToField(quotaInputs.tpm),
-          maxDailyTokens: quotaInputToField(quotaInputs.daily),
-          maxMonthlyTokens: quotaInputToField(quotaInputs.monthly),
-        }),
-      });
+      const res = editingId
+        ? await apiFetch(`/api/admin/virtual-keys/${editingId}`, {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              name,
+              comment: commentInput.trim(),
+              enabledModels,
+              maxRpm: quotaInputToField(quotaInputs.rpm),
+              maxTpm: quotaInputToField(quotaInputs.tpm),
+              maxDailyTokens: quotaInputToField(quotaInputs.daily),
+              maxMonthlyTokens: quotaInputToField(quotaInputs.monthly),
+            }),
+          })
+        : await apiFetch("/api/admin/virtual-keys", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              name,
+              comment: commentInput.trim(),
+              enabledModels,
+              maxRpm: quotaInputToField(quotaInputs.rpm),
+              maxTpm: quotaInputToField(quotaInputs.tpm),
+              maxDailyTokens: quotaInputToField(quotaInputs.daily),
+              maxMonthlyTokens: quotaInputToField(quotaInputs.monthly),
+            }),
+          });
       const json = await res.json();
       if (!json.success) {
-        setError(json.error || "Failed to create virtual key");
+        setError(json.error || "Failed to save virtual key");
         return;
       }
-      setCreatedKey(json.data.apiKey as string);
+      if (!editingId) {
+        setCreatedKey(json.data.apiKey as string);
+      }
       setNameInput("");
       setCommentInput("");
       setModelsInput("*");
       setQuotaInputs({ rpm: "", tpm: "", daily: "", monthly: "" });
-      load();
-    } catch {
-      setError("Network error");
-    } finally {
-      setCreating(false);
-    }
-  };
-
-  const startEdit = (key: VirtualKeyItem) => {
-    setEditingId(key.id);
-    setEditName(key.name);
-    setEditComment(key.comment ?? "");
-    setEditModels(parseEnabledModelsInput(key.enabledModels).join(", "));
-    setEditQuotaInputs({
-      rpm: key.maxRpm != null ? String(key.maxRpm) : "",
-      tpm: key.maxTpm != null ? String(key.maxTpm) : "",
-      daily: key.maxDailyTokens != null ? String(key.maxDailyTokens) : "",
-      monthly: key.maxMonthlyTokens != null ? String(key.maxMonthlyTokens) : "",
-    });
-  };
-
-  const saveEdit = async () => {
-    if (editingId === null) return;
-    const name = editName.trim();
-    if (!name) {
-      setError("Name cannot be empty");
-      return;
-    }
-    const enabledModels = parseEnabledModelsInput(editModels);
-    if (enabledModels.length === 0) {
-      setError("Enabled models must be non-empty (use '*' for all)");
-      return;
-    }
-    setSavingEdit(true);
-    setError(null);
-    try {
-      const res = await apiFetch(`/api/admin/virtual-keys/${editingId}`, {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          name,
-          comment: editComment,
-          enabledModels,
-          maxRpm: quotaInputToField(editQuotaInputs.rpm),
-          maxTpm: quotaInputToField(editQuotaInputs.tpm),
-          maxDailyTokens: quotaInputToField(editQuotaInputs.daily),
-          maxMonthlyTokens: quotaInputToField(editQuotaInputs.monthly),
-        }),
-      });
-      const json = await res.json();
-      if (!json.success) {
-        setError(json.error || "Failed to update virtual key");
-        return;
-      }
       setEditingId(null);
       load();
     } catch {
       setError("Network error");
     } finally {
-      setSavingEdit(false);
+      setSaving(false);
     }
+  };
+
+  const startEdit = (key: VirtualKeyItem) => {
+    setEditingId(key.id);
+    setNameInput(key.name);
+    setCommentInput(key.comment ?? "");
+    setModelsInput(parseEnabledModelsValue(key.enabledModels).join(", "));
+    setQuotaInputs({
+      rpm: key.maxRpm != null ? String(key.maxRpm) : "",
+      tpm: key.maxTpm != null ? String(key.maxTpm) : "",
+      daily: key.maxDailyTokens != null ? String(key.maxDailyTokens) : "",
+      monthly: key.maxMonthlyTokens != null ? String(key.maxMonthlyTokens) : "",
+    });
+    setCreatedKey(null);
+    window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
   const toggleEnabled = async (key: VirtualKeyItem) => {
@@ -236,6 +230,9 @@ export default function VirtualKeysPanel() {
     if (expandedId === key.id) {
       setExpandedId(null);
       setUsageDetail(null);
+    }
+    if (expandedConfigId === key.id) {
+      setExpandedConfigId(null);
     }
     load();
   };
@@ -294,72 +291,117 @@ export default function VirtualKeysPanel() {
 
       {/* 创建表单 */}
       <div className="rounded-lg bg-white p-6 shadow">
-        <h2 className="mb-4 text-lg font-semibold">New Virtual Key</h2>
-        <form onSubmit={create} className="space-y-3">
-          <input
-            value={nameInput}
-            onChange={(e) => setNameInput(e.target.value)}
-            placeholder="Agent name, e.g. claude-code-desktop"
-            title="Agent name used to identify this key in usage records. Unique across all virtual keys."
-            required
-            className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-          />
-          <input
-            value={commentInput}
-            onChange={(e) => setCommentInput(e.target.value)}
-            placeholder="Comment (optional)"
-            title="Optional note describing this key's purpose or owner. Editable later."
-            className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-          />
-          <div className="flex gap-3">
+        <h2 className="mb-4 text-lg font-semibold">
+          {editingId ? `Edit Virtual Key #${editingId}` : "New Virtual Key"}
+        </h2>
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <div>
+            <label className="mb-1 block text-sm font-medium text-gray-700">Name</label>
+            <input
+              value={nameInput}
+              onChange={(e) => setNameInput(e.target.value)}
+              placeholder="Agent name, e.g. claude-code-desktop"
+              title="Agent name used to identify this key in usage records. Unique across all virtual keys."
+              required
+              className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-gray-700">Comment</label>
+            <input
+              value={commentInput}
+              onChange={(e) => setCommentInput(e.target.value)}
+              placeholder="Comment (optional)"
+              title="Optional note describing this key's purpose or owner. Editable later."
+              className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-gray-700">Enabled Models</label>
             <input
               value={modelsInput}
               onChange={(e) => setModelsInput(e.target.value)}
               placeholder="Enabled models, e.g. * or gpt-4o, claude-*"
               title="Comma-separated model allowlist. '*' allows all models; prefix wildcards like 'gpt-*' are supported. Requests for other models are rejected with 403."
-              className="flex-1 rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-gray-700">Quota Limits</label>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div>
+                <label className="mb-0.5 block text-xs font-medium text-gray-600">Max RPM</label>
+                <input
+                  value={quotaInputs.rpm}
+                  onChange={(e) => setQuotaInputs((q) => ({ ...q, rpm: e.target.value }))}
+                  placeholder="0 = unlimited"
+                  title="Max requests per minute (60s window). Empty = unlimited, 0 = unlimited."
+                  inputMode="numeric"
+                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+                <p className="mt-0.5 text-xs text-gray-400">Requests per minute</p>
+              </div>
+              <div>
+                <label className="mb-0.5 block text-xs font-medium text-gray-600">Max TPM</label>
+                <input
+                  value={quotaInputs.tpm}
+                  onChange={(e) => setQuotaInputs((q) => ({ ...q, tpm: e.target.value }))}
+                  placeholder="0 = unlimited"
+                  title="Max tokens per minute (60s window). Empty = unlimited, 0 = unlimited."
+                  inputMode="numeric"
+                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+                <p className="mt-0.5 text-xs text-gray-400">Tokens per minute</p>
+              </div>
+              <div>
+                <label className="mb-0.5 block text-xs font-medium text-gray-600">Max Daily Tokens</label>
+                <input
+                  value={quotaInputs.daily}
+                  onChange={(e) => setQuotaInputs((q) => ({ ...q, daily: e.target.value }))}
+                  placeholder="0 = unlimited"
+                  title="Max tokens per UTC calendar day. Empty = unlimited, 0 = unlimited."
+                  inputMode="numeric"
+                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+                <p className="mt-0.5 text-xs text-gray-400">Per UTC calendar day</p>
+              </div>
+              <div>
+                <label className="mb-0.5 block text-xs font-medium text-gray-600">Max Monthly Tokens</label>
+                <input
+                  value={quotaInputs.monthly}
+                  onChange={(e) => setQuotaInputs((q) => ({ ...q, monthly: e.target.value }))}
+                  placeholder="0 = unlimited"
+                  title="Max tokens per UTC calendar month. Empty = unlimited, 0 = unlimited."
+                  inputMode="numeric"
+                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+                <p className="mt-0.5 text-xs text-gray-400">Per UTC calendar month</p>
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
             <button
               type="submit"
-              disabled={creating}
+              disabled={saving}
               className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
             >
-              {creating ? "Creating..." : "Create"}
+              {saving ? "Saving..." : editingId ? "Save" : "Create"}
             </button>
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <input
-              value={quotaInputs.rpm}
-              onChange={(e) => setQuotaInputs((q) => ({ ...q, rpm: e.target.value }))}
-              placeholder="Max RPM"
-              title="Max requests per minute (60s window). Empty = unlimited, 0 = unlimited."
-              inputMode="numeric"
-              className="rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            />
-            <input
-              value={quotaInputs.tpm}
-              onChange={(e) => setQuotaInputs((q) => ({ ...q, tpm: e.target.value }))}
-              placeholder="Max TPM"
-              title="Max tokens per minute (60s window). Empty = unlimited, 0 = unlimited."
-              inputMode="numeric"
-              className="rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            />
-            <input
-              value={quotaInputs.daily}
-              onChange={(e) => setQuotaInputs((q) => ({ ...q, daily: e.target.value }))}
-              placeholder="Max daily tokens"
-              title="Max tokens per UTC calendar day. Empty = unlimited, 0 = unlimited."
-              inputMode="numeric"
-              className="rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            />
-            <input
-              value={quotaInputs.monthly}
-              onChange={(e) => setQuotaInputs((q) => ({ ...q, monthly: e.target.value }))}
-              placeholder="Max monthly tokens"
-              title="Max tokens per UTC calendar month. Empty = unlimited, 0 = unlimited."
-              inputMode="numeric"
-              className="rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            />
+            {editingId && (
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingId(null);
+                  setNameInput("");
+                  setCommentInput("");
+                  setModelsInput("*");
+                  setQuotaInputs({ rpm: "", tpm: "", daily: "", monthly: "" });
+                }}
+                className="rounded border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+            )}
           </div>
         </form>
 
@@ -402,6 +444,16 @@ export default function VirtualKeysPanel() {
           <div key={key.id} className="rounded-lg bg-white p-5 shadow">
             <div className="flex flex-wrap items-center gap-3">
               <span className={`h-2 w-2 rounded-full ${key.enabled ? "bg-green-500" : "bg-gray-300"}`} />
+              <button
+                type="button"
+                onClick={() =>
+                  setExpandedConfigId(expandedConfigId === key.id ? null : key.id)
+                }
+                className="text-gray-400 hover:text-gray-600"
+                title={expandedConfigId === key.id ? "Collapse" : "Expand"}
+              >
+                {expandedConfigId === key.id ? "▾" : "▸"}
+              </button>
               <span className="font-semibold">{key.name}</span>
               {key.comment && (
                 <span className="text-xs text-gray-400 truncate max-w-[200px]" title={key.comment}>
@@ -427,19 +479,14 @@ export default function VirtualKeysPanel() {
                 </span>
               )}
               <span className="text-xs text-gray-500" title="Quota limits (rpm / tpm / daily / monthly tokens)">
-                {key.maxRpm != null || key.maxTpm != null || key.maxDailyTokens != null || key.maxMonthlyTokens != null ? (
-                  <>
-                    {key.maxRpm != null ? `${key.maxRpm} rpm` : ""}
-                    {key.maxRpm != null && (key.maxTpm != null || key.maxDailyTokens != null || key.maxMonthlyTokens != null) ? " / " : ""}
-                    {key.maxTpm != null ? `${formatQuota(key.maxTpm)} tpm` : ""}
-                    {(key.maxTpm != null || key.maxRpm != null) && (key.maxDailyTokens != null || key.maxMonthlyTokens != null) ? " / " : ""}
-                    {key.maxDailyTokens != null ? `${formatQuota(key.maxDailyTokens)} daily` : ""}
-                    {(key.maxDailyTokens != null) && key.maxMonthlyTokens != null ? " / " : ""}
-                    {key.maxMonthlyTokens != null ? `${formatQuota(key.maxMonthlyTokens)} monthly` : ""}
-                  </>
-                ) : (
-                  "—"
-                )}
+                {(() => {
+                  const parts: string[] = [];
+                  if (key.maxRpm != null) parts.push(`${key.maxRpm} rpm`);
+                  if (key.maxTpm != null) parts.push(`${formatQuota(key.maxTpm)} tpm`);
+                  if (key.maxDailyTokens != null) parts.push(`${formatQuota(key.maxDailyTokens)} daily`);
+                  if (key.maxMonthlyTokens != null) parts.push(`${formatQuota(key.maxMonthlyTokens)} monthly`);
+                  return parts.length > 0 ? parts.join(" / ") : "—";
+                })()}
               </span>
               <div className="ml-auto flex items-center gap-2">
                 <button
@@ -473,76 +520,63 @@ export default function VirtualKeysPanel() {
               </div>
             </div>
 
-            {editingId === key.id && (
-              <div className="mt-4 space-y-3 rounded border border-gray-200 bg-gray-50 p-4">
-                <input
-                  value={editName}
-                  onChange={(e) => setEditName(e.target.value)}
-                  placeholder="Name"
-                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
-                <input
-                  value={editComment}
-                  onChange={(e) => setEditComment(e.target.value)}
-                  placeholder="Comment (optional)"
-                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
-                <input
-                  value={editModels}
-                  onChange={(e) => setEditModels(e.target.value)}
-                  placeholder="Enabled models, e.g. * or gpt-4o, claude-*"
-                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                  <input
-                    value={editQuotaInputs.rpm}
-                    onChange={(e) => setEditQuotaInputs((q) => ({ ...q, rpm: e.target.value }))}
-                    placeholder="Max RPM"
-                    title="Max requests per minute. Empty = keep, 0 = unlimited."
-                    inputMode="numeric"
-                    className="rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  />
-                  <input
-                    value={editQuotaInputs.tpm}
-                    onChange={(e) => setEditQuotaInputs((q) => ({ ...q, tpm: e.target.value }))}
-                    placeholder="Max TPM"
-                    title="Max tokens per minute. Empty = keep, 0 = unlimited."
-                    inputMode="numeric"
-                    className="rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  />
-                  <input
-                    value={editQuotaInputs.daily}
-                    onChange={(e) => setEditQuotaInputs((q) => ({ ...q, daily: e.target.value }))}
-                    placeholder="Max daily tokens"
-                    title="Max tokens per UTC day. Empty = keep, 0 = unlimited."
-                    inputMode="numeric"
-                    className="rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  />
-                  <input
-                    value={editQuotaInputs.monthly}
-                    onChange={(e) => setEditQuotaInputs((q) => ({ ...q, monthly: e.target.value }))}
-                    placeholder="Max monthly tokens"
-                    title="Max tokens per UTC month. Empty = keep, 0 = unlimited."
-                    inputMode="numeric"
-                    className="rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  />
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={saveEdit}
-                    disabled={savingEdit}
-                    className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-                  >
-                    {savingEdit ? "Saving..." : "Save"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setEditingId(null)}
-                    className="rounded border border-gray-300 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50"
-                  >
-                    Cancel
-                  </button>
+            {expandedConfigId === key.id && (
+              <div className="mt-4 space-y-4 border-l-2 border-gray-100 pl-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                  <div>
+                    <div className="text-xs text-gray-400">API Key</div>
+                    <code className="break-all text-xs">{maskVirtualKey(key.apiKey)}</code>
+                  </div>
+                  <div className="flex flex-wrap gap-6">
+                    <div>
+                      <div className="text-xs text-gray-400">Status</div>
+                      <div className="text-xs">{key.enabled ? "Enabled" : "Revoked"}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-gray-400">Created</div>
+                      <div className="text-xs">{new Date(key.createdAt).toLocaleString()}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-gray-400">Last Used</div>
+                      <div className="text-xs">
+                        {key.lastUsedAt ? new Date(key.lastUsedAt).toLocaleString() : "—"}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="md:col-span-2">
+                    <div className="text-xs text-gray-400">Comment</div>
+                    <div className="text-xs">{key.comment || "—"}</div>
+                  </div>
+                  <div className="md:col-span-2">
+                    <div className="text-xs text-gray-400">Enabled Models</div>
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {key.enabledModels.length === 0 && (
+                        <span className="text-xs text-gray-300">(none)</span>
+                      )}
+                      {parseEnabledModelsValue(key.enabledModels).map((m) => (
+                        <code key={m} className="rounded bg-gray-100 px-1.5 py-0.5 text-xs">
+                          {m}
+                        </code>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="md:col-span-2">
+                    <div className="text-xs text-gray-400">Quota Limits</div>
+                    <div className="mt-1 flex flex-wrap gap-x-6 gap-y-1 text-xs">
+                      <span>
+                        RPM: <span className="font-medium">{key.maxRpm ?? "∞"}</span>
+                      </span>
+                      <span>
+                        TPM: <span className="font-medium">{formatQuota(key.maxTpm)}</span>
+                      </span>
+                      <span>
+                        Daily: <span className="font-medium">{formatQuota(key.maxDailyTokens)}</span>
+                      </span>
+                      <span>
+                        Monthly: <span className="font-medium">{formatQuota(key.maxMonthlyTokens)}</span>
+                      </span>
+                    </div>
+                  </div>
                 </div>
               </div>
             )}
