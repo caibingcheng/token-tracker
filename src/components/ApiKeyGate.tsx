@@ -46,8 +46,10 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
         return;
       }
       if (result.totpRequired) {
+        const wasTotpStep = totpRequired;
         setTotpRequired(true);
-        setError(result.error || "Enter your TOTP code");
+        // 刚从 API key 进入 TOTP 步骤时不弹错误；仅当动态码本身校验失败才提示
+        setError(wasTotpStep ? result.error || "Invalid TOTP code" : null);
         return;
       }
       setError(result.error || "Login failed");

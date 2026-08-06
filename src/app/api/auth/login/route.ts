@@ -88,7 +88,14 @@ export async function POST(request: NextRequest) {
   // TOTP：启用后必须提供正确的 6 位动态码
   if (await isTotpEnabled()) {
     const secret = await getTotpSecret();
-    if (!secret || !totpCode || !verifyTotpCode(secret, totpCode)) {
+    if (!secret || !totpCode) {
+      // 尚未输入动态码：引导进入第二步，不算失败
+      return NextResponse.json(
+        { success: false, error: "Enter your TOTP code", totpRequired: true },
+        { status: 401 }
+      );
+    }
+    if (!verifyTotpCode(secret, totpCode)) {
       const { ip, userAgent } = extractClientInfo(request);
       await recordAuditLog({
         action: "login_failure",
@@ -98,7 +105,7 @@ export async function POST(request: NextRequest) {
         details: { reason: "invalid_totp" },
       });
       return NextResponse.json(
-        { success: false, error: "TOTP code required or invalid", totpRequired: true },
+        { success: false, error: "Invalid TOTP code", totpRequired: true },
         { status: 401 }
       );
     }
