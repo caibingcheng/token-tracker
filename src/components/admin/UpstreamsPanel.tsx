@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiFetch } from "@/lib/client/api-client";
 import { PROVIDER_PRESETS } from "@/lib/provider-presets";
 import UpstreamModelsManager from "./UpstreamModelsManager";
+import ActionMenu from "./ActionMenu";
 
 export interface UpstreamItem {
   id: number;
@@ -66,8 +67,6 @@ export default function UpstreamsPanel() {
   const [saving, setSaving] = useState(false);
 
   const [keysByUpstream, setKeysByUpstream] = useState<Record<number, UpstreamKeyItem[]>>({});
-  const [expandedKeys, setExpandedKeys] = useState<Record<number, boolean>>({});
-  const [expanded, setExpanded] = useState<Record<number, boolean>>({});
   const [balanceInput, setBalanceInput] = useState<Record<number, string>>({});
   const [refreshingBalance, setRefreshingBalance] = useState<Record<number, boolean>>({});
   const [showPresets, setShowPresets] = useState(false);
@@ -79,26 +78,6 @@ export default function UpstreamsPanel() {
     return PROVIDER_PRESETS.filter((p) => p.name.toLowerCase().includes(query));
   }, [form.name]);
 
-  const loadUpstreams = useCallback(async () => {
-    try {
-      const res = await apiFetch("/api/admin/upstreams");
-      const json = await res.json();
-      if (json.success) {
-        setUpstreams(json.data);
-      } else {
-        setError(json.error || "Failed to load upstreams");
-      }
-    } catch {
-      setError("Network error");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadUpstreams();
-  }, [loadUpstreams]);
-
   const loadKeys = useCallback(async (upstreamId: number) => {
     const res = await apiFetch(`/api/admin/upstreams/${upstreamId}/keys`);
     const json = await res.json();
@@ -107,13 +86,28 @@ export default function UpstreamsPanel() {
     }
   }, []);
 
-  const toggleKeys = (id: number) => {
-    const next = { ...expandedKeys, [id]: !expandedKeys[id] };
-    setExpandedKeys(next);
-    if (next[id] && !keysByUpstream[id]) {
-      loadKeys(id);
+  const loadUpstreams = useCallback(async () => {
+    try {
+      const res = await apiFetch("/api/admin/upstreams");
+      const json = await res.json();
+      if (json.success) {
+        const data = json.data as UpstreamItem[];
+        setUpstreams(data);
+        // 默认展开详情，预加载所有 keys
+        await Promise.all(data.map((u) => loadKeys(u.id)));
+      } else {
+        setError(json.error || "Failed to load upstreams");
+      }
+    } catch {
+      setError("Network error");
+    } finally {
+      setLoading(false);
     }
-  };
+  }, [loadKeys]);
+
+  useEffect(() => {
+    loadUpstreams();
+  }, [loadUpstreams]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -184,7 +178,6 @@ export default function UpstreamsPanel() {
     setFormKeys([""]);
     setFormKeyTests({});
     setModelPicker(null);
-    loadKeys(u.id);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
@@ -227,21 +220,6 @@ export default function UpstreamsPanel() {
     setTestResults((prev) => ({ ...prev, [u.id]: json.data ?? { ok: false, error: json.error } }));
   };
 
-  const toggleExpand = (id: number) => {
-    const next = { ...expanded, [id]: !expanded[id] };
-    setExpanded(next);
-    if (next[id]) {
-      setBalanceInput((prev) => {
-        if (prev[id] !== undefined) return prev;
-        const u = upstreams.find((x) => x.id === id);
-        return { ...prev, [id]: u?.balance ?? "" };
-      });
-      if (!keysByUpstream[id]) {
-        loadKeys(id);
-      }
-    }
-  };
-
   const handleSaveBalance = async (u: UpstreamItem) => {
     const value = (balanceInput[u.id] ?? "").trim();
     const res = await apiFetch(`/api/admin/upstreams/${u.id}`, {
@@ -266,7 +244,6 @@ export default function UpstreamsPanel() {
       if (!json.success) {
         setError(json.error || "Failed to refresh balance");
       } else {
-        // 同步展开区输入框与标题显示（refresh 接口返回新余额）
         setBalanceInput((prev) => ({
           ...prev,
           [u.id]: json.data?.balance !== undefined ? String(json.data.balance) : (prev[u.id] ?? ""),
@@ -398,19 +375,19 @@ export default function UpstreamsPanel() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {error && (
         <div className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-600">{error}</div>
       )}
 
       {/* 新建/编辑表单 */}
-      <div className="rounded-lg bg-white p-6 shadow">
-        <h2 className="mb-4 text-lg font-semibold">
+      <div className="rounded-lg bg-white p-4 shadow">
+        <h2 className="mb-3 text-base font-semibold">
           {editingId ? `Edit Upstream #${editingId}` : "New Upstream"}
         </h2>
-        <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-[1fr_200px_200px] gap-4">
+        <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-[1fr_200px_200px] gap-3">
           <div className="relative">
-            <label className="mb-1 block text-sm text-gray-600">Name</label>
+            <label className="mb-1 block text-xs text-gray-600">Name</label>
             <input
               value={form.name}
               onChange={(e) => {
@@ -449,7 +426,7 @@ export default function UpstreamsPanel() {
             )}
           </div>
           <div>
-            <label className="mb-1 block text-sm text-gray-600">Protocol</label>
+            <label className="mb-1 block text-xs text-gray-600">Protocol</label>
             <select
               value={form.protocol}
               onChange={(e) => setForm({ ...form, protocol: e.target.value })}
@@ -461,7 +438,7 @@ export default function UpstreamsPanel() {
             </select>
           </div>
           <div>
-            <label className="mb-1 block text-sm text-gray-600">Priority (model routing)</label>
+            <label className="mb-1 block text-xs text-gray-600">Priority (model routing)</label>
             <input
               type="number"
               value={form.priority}
@@ -470,7 +447,7 @@ export default function UpstreamsPanel() {
             />
           </div>
           <div className="md:col-span-3">
-            <label className="mb-1 block text-sm text-gray-600">Base URL</label>
+            <label className="mb-1 block text-xs text-gray-600">Base URL</label>
             <input
               value={form.baseUrl}
               onChange={(e) => setForm({ ...form, baseUrl: e.target.value })}
@@ -480,7 +457,7 @@ export default function UpstreamsPanel() {
             />
           </div>
           <div className="md:col-span-3">
-            <label className="mb-1 block text-sm text-gray-600">
+            <label className="mb-1 block text-xs text-gray-600">
               API Keys{" "}
               <span className="text-gray-400">
                 ({editingId ? "existing keys are kept, new keys below are appended" : "optional at creation, add more later"})
@@ -569,7 +546,7 @@ export default function UpstreamsPanel() {
           </div>
           <div className="md:col-span-3">
             <div className="mb-1 flex items-center justify-between">
-              <label className="block text-sm text-gray-600">
+              <label className="block text-xs text-gray-600">
                 Enabled Models <span className="text-gray-400">(comma separated, supports gpt-* wildcard)</span>
               </label>
               <button
@@ -686,33 +663,28 @@ export default function UpstreamsPanel() {
       )}
 
       {/* 上游列表 */}
-      <div className="space-y-4">
+      <div className="space-y-3">
         {upstreams.length === 0 && (
           <div className="rounded-lg border border-dashed border-gray-300 p-8 text-center text-gray-400">
             No upstreams configured yet. Create one above.
           </div>
         )}
         {upstreams.map((u) => (
-          <div key={u.id} className="rounded-lg bg-white p-5 shadow">
-            <div className="flex flex-wrap items-center gap-3">
-              <div
-                onClick={() => toggleExpand(u.id)}
-                title={expanded[u.id] ? "Collapse" : "Expand"}
-                className="flex min-w-0 flex-1 cursor-pointer select-none flex-wrap items-center gap-3 rounded px-1 py-0.5 hover:bg-gray-50"
-              >
+          <div key={u.id} className="rounded-lg bg-white p-3 shadow">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
                 <span className={`h-2 w-2 rounded-full ${u.enabled ? "bg-green-500" : "bg-gray-300"}`} />
-                <span className="text-gray-400">{expanded[u.id] ? "▾" : "▸"}</span>
-                <span className="font-semibold">{u.name}</span>
-                <span className="rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-600">{u.protocol}</span>
-                <span className="text-xs text-gray-400 truncate max-w-md">{u.baseUrl}</span>
+                <span className="font-semibold text-sm">{u.name}</span>
+                <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-600">{u.protocol}</span>
+                <span className="text-xs text-gray-400 truncate max-w-[200px]">{u.baseUrl}</span>
                 <span className="text-xs text-gray-400">
-                  {u.enabledModels.length} models · {u.keyCount} keys · priority {u.priority}
+                  {u.enabledModels.length} models · {u.keyCount} keys · p{u.priority}
                 </span>
                 {u.balance !== null && (
-                  <span className="text-xs font-medium text-gray-500">balance: {u.balance}</span>
+                  <span className="text-xs font-medium text-gray-500">bal {u.balance}</span>
                 )}
               </div>
-              <div className="ml-auto flex items-center gap-2">
+              <div className="hidden md:flex items-center gap-2">
                 <button
                   type="button"
                   onClick={() => handleTest(u)}
@@ -742,11 +714,19 @@ export default function UpstreamsPanel() {
                   Delete
                 </button>
               </div>
+              <ActionMenu
+                items={[
+                  { label: "Test", onClick: () => handleTest(u) },
+                  { label: u.enabled ? "Disable" : "Enable", onClick: () => handleToggleEnabled(u) },
+                  { label: "Edit", onClick: () => handleEdit(u) },
+                  { label: "Delete", onClick: () => handleDelete(u.id), variant: "danger" },
+                ]}
+              />
             </div>
 
             {testResults[u.id] && (
               <div
-                className={`mt-3 rounded p-3 text-sm ${
+                className={`mt-2 rounded p-2 text-xs ${
                   testResults[u.id]?.ok
                     ? "bg-green-50 text-green-700"
                     : "bg-red-50 text-red-600"
@@ -758,108 +738,81 @@ export default function UpstreamsPanel() {
               </div>
             )}
 
-            {expanded[u.id] && (
-              <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
-                <div className="rounded-lg border border-gray-100 bg-gray-50/60 p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-medium text-gray-500">Enabled Models</span>
-                    <UpstreamModelsManager upstream={u} onUpdated={loadUpstreams} />
-                  </div>
-                  <div className="mt-2 flex flex-wrap gap-1">
-                    {u.enabledModels.length === 0 && (
-                      <span className="text-xs text-gray-300">(none)</span>
-                    )}
-                    {u.enabledModels.map((m) => (
-                      <code key={m} className="rounded bg-gray-100 px-1.5 py-0.5 text-xs">
-                        {m}
-                      </code>
-                    ))}
-                  </div>
+            <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+              <div className="rounded border border-gray-100 bg-gray-50/60 p-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-medium text-gray-500">Enabled Models</span>
+                  <UpstreamModelsManager upstream={u} onUpdated={loadUpstreams} />
                 </div>
-
-                <div className="rounded-lg border border-gray-100 bg-gray-50/60 p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-medium text-gray-500">Balance</span>
-                    <span className="text-xs text-gray-300">
-                      created {new Date(u.createdAt).toLocaleString()}
-                    </span>
-                  </div>
-                  <div className="mt-2 flex flex-wrap items-center gap-2">
-                    <input
-                      value={balanceInput[u.id] ?? u.balance ?? ""}
-                      onChange={(e) =>
-                        setBalanceInput((prev) => ({ ...prev, [u.id]: e.target.value }))
-                      }
-                      placeholder="0"
-                      className="w-28 rounded border border-gray-300 px-2 py-1 text-xs focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => handleSaveBalance(u)}
-                      className="rounded border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-gray-50"
-                    >
-                      Save
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleRefreshBalance(u)}
-                      disabled={refreshingBalance[u.id]}
-                      className="rounded border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40"
-                    >
-                      {refreshingBalance[u.id] ? "Refreshing..." : "↻ Refresh"}
-                    </button>
-                    {u.balanceUpdatedAt && (
-                      <span className="text-xs text-gray-300">
-                        updated {new Date(u.balanceUpdatedAt).toLocaleString()}
-                      </span>
-                    )}
-                  </div>
+                <div className="mt-1.5 flex flex-wrap gap-1">
+                  {u.enabledModels.length === 0 && (
+                    <span className="text-xs text-gray-300">(none)</span>
+                  )}
+                  {u.enabledModels.map((m) => (
+                    <code key={m} className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px]">
+                      {m}
+                    </code>
+                  ))}
                 </div>
+              </div>
 
-                <div className="space-y-2 md:col-span-2">
+              <div className="rounded border border-gray-100 bg-gray-50/60 p-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-medium text-gray-500">Balance</span>
+                  <span className="text-[10px] text-gray-300">
+                    {new Date(u.createdAt).toLocaleString()}
+                  </span>
+                </div>
+                <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                  <input
+                    value={balanceInput[u.id] ?? u.balance ?? ""}
+                    onChange={(e) =>
+                      setBalanceInput((prev) => ({ ...prev, [u.id]: e.target.value }))
+                    }
+                    placeholder="0"
+                    className="w-24 rounded border border-gray-300 px-2 py-1 text-xs focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
                   <button
                     type="button"
-                    onClick={() => toggleKeys(u.id)}
-                    className="text-xs font-medium text-gray-500 hover:text-blue-600"
+                    onClick={() => handleSaveBalance(u)}
+                    className="rounded border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-gray-50"
                   >
-                    {expandedKeys[u.id] ? "▾" : "▸"} API Keys
+                    Save
                   </button>
-
-                  {expandedKeys[u.id] && (
-                    <div className="rounded-lg border border-gray-100 p-3 space-y-2">
-                      {(keysByUpstream[u.id] || []).map((key) => (
-                        <div key={key.id} className="flex items-center gap-3 text-sm">
-                          <span className={`h-1.5 w-1.5 rounded-full ${key.enabled ? "bg-green-500" : "bg-gray-300"}`} />
-                          <code className="rounded bg-gray-100 px-2 py-0.5 text-xs">{key.maskedKey}</code>
-                          {key.lastStatus && (
-                            <span className="text-xs text-gray-400">last: {key.lastStatus}</span>
-                          )}
-                          <div className="ml-auto flex gap-2">
-                            <button
-                              type="button"
-                              onClick={() => handleToggleKey(key)}
-                              className="text-xs text-gray-500 hover:text-blue-600"
-                            >
-                              {key.enabled ? "Disable" : "Enable"}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteKey(key)}
-                              className="text-xs text-red-500 hover:text-red-700"
-                            >
-                              Delete
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                      {keysByUpstream[u.id]?.length === 0 && (
-                        <p className="text-xs text-gray-400">No keys. Add keys via Edit.</p>
-                      )}
-                    </div>
+                  <button
+                    type="button"
+                    onClick={() => handleRefreshBalance(u)}
+                    disabled={refreshingBalance[u.id]}
+                    className="rounded border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40"
+                  >
+                    {refreshingBalance[u.id] ? "..." : "↻"}
+                  </button>
+                  {u.balanceUpdatedAt && (
+                    <span className="text-[10px] text-gray-300">
+                      updated {new Date(u.balanceUpdatedAt).toLocaleString()}
+                    </span>
                   )}
                 </div>
               </div>
-            )}
+
+              <div className="md:col-span-2 rounded border border-gray-100 p-2">
+                <span className="text-xs font-medium text-gray-500">API Keys</span>
+                <div className="mt-1.5 space-y-1">
+                  {(keysByUpstream[u.id] || []).map((key) => (
+                    <div key={key.id} className="flex items-center gap-2 text-xs">
+                      <span className={`h-1.5 w-1.5 rounded-full ${key.enabled ? "bg-green-500" : "bg-gray-300"}`} />
+                      <code className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px]">{key.maskedKey}</code>
+                      {key.lastStatus && (
+                        <span className="text-[11px] text-gray-400">last: {key.lastStatus}</span>
+                      )}
+                    </div>
+                  ))}
+                  {keysByUpstream[u.id]?.length === 0 && (
+                    <p className="text-xs text-gray-400">No keys. Add keys via Edit.</p>
+                  )}
+                </div>
+              </div>
+            </div>
           </div>
         ))}
       </div>

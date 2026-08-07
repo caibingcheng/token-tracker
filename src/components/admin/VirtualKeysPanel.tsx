@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { apiFetch } from "@/lib/client/api-client";
 import { formatNumber } from "@/lib/number-utils";
 import { maskVirtualKey } from "@/lib/mask-utils";
+import ActionMenu from "./ActionMenu";
 
 export interface VirtualKeyItem {
   id: number;
@@ -100,6 +101,15 @@ function quotaInputToField(raw: string): number | undefined {
   return value;
 }
 
+function quotaText(key: VirtualKeyItem): string {
+  const parts: string[] = [];
+  if (key.maxRpm != null) parts.push(`${key.maxRpm} rpm`);
+  if (key.maxTpm != null) parts.push(`${formatQuota(key.maxTpm)} tpm`);
+  if (key.maxDailyTokens != null) parts.push(`${formatQuota(key.maxDailyTokens)} daily`);
+  if (key.maxMonthlyTokens != null) parts.push(`${formatQuota(key.maxMonthlyTokens)} monthly`);
+  return parts.length > 0 ? parts.join(" / ") : "—";
+}
+
 export default function VirtualKeysPanel() {
   const [keys, setKeys] = useState<VirtualKeyItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -112,7 +122,6 @@ export default function VirtualKeysPanel() {
   const [saving, setSaving] = useState(false);
   const [createdKey, setCreatedKey] = useState<string | null>(null);
 
-  const [expandedConfigId, setExpandedConfigId] = useState<number | null>(null);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [usageDetail, setUsageDetail] = useState<UsageDetail | null>(null);
   const [refreshingId, setRefreshingId] = useState<number | null>(null);
@@ -231,9 +240,6 @@ export default function VirtualKeysPanel() {
       setExpandedId(null);
       setUsageDetail(null);
     }
-    if (expandedConfigId === key.id) {
-      setExpandedConfigId(null);
-    }
     load();
   };
 
@@ -284,19 +290,19 @@ export default function VirtualKeysPanel() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {error && (
         <div className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-600">{error}</div>
       )}
 
       {/* 创建表单 */}
-      <div className="rounded-lg bg-white p-6 shadow">
-        <h2 className="mb-4 text-lg font-semibold">
+      <div className="rounded-lg bg-white p-4 shadow">
+        <h2 className="mb-3 text-base font-semibold">
           {editingId ? `Edit Virtual Key #${editingId}` : "New Virtual Key"}
         </h2>
         <form onSubmit={handleSubmit} className="space-y-3">
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">Name</label>
+            <label className="mb-1 block text-xs font-medium text-gray-700">Name</label>
             <input
               value={nameInput}
               onChange={(e) => setNameInput(e.target.value)}
@@ -307,7 +313,7 @@ export default function VirtualKeysPanel() {
             />
           </div>
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">Comment</label>
+            <label className="mb-1 block text-xs font-medium text-gray-700">Comment</label>
             <input
               value={commentInput}
               onChange={(e) => setCommentInput(e.target.value)}
@@ -317,7 +323,7 @@ export default function VirtualKeysPanel() {
             />
           </div>
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">Enabled Models</label>
+            <label className="mb-1 block text-xs font-medium text-gray-700">Enabled Models</label>
             <input
               value={modelsInput}
               onChange={(e) => setModelsInput(e.target.value)}
@@ -327,7 +333,7 @@ export default function VirtualKeysPanel() {
             />
           </div>
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">Quota Limits</label>
+            <label className="mb-1 block text-xs font-medium text-gray-700">Quota Limits</label>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <div>
                 <label className="mb-0.5 block text-xs font-medium text-gray-600">Max RPM</label>
@@ -441,31 +447,19 @@ export default function VirtualKeysPanel() {
           </div>
         )}
         {keys.map((key) => (
-          <div key={key.id} className="rounded-lg bg-white p-5 shadow">
-            <div className="flex flex-wrap items-center gap-3">
-              <div
-                onClick={() => setExpandedConfigId(expandedConfigId === key.id ? null : key.id)}
-                title={expandedConfigId === key.id ? "Collapse" : "Expand"}
-                className="flex min-w-0 flex-1 cursor-pointer select-none flex-wrap items-center gap-3 rounded px-1 py-0.5 hover:bg-gray-50"
-              >
+          <div key={key.id} className="rounded-lg bg-white p-3 shadow">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
                 <span className={`h-2 w-2 rounded-full ${key.enabled ? "bg-green-500" : "bg-gray-300"}`} />
-                <span className="text-gray-400">{expandedConfigId === key.id ? "▾" : "▸"}</span>
-                <span className="font-semibold">{key.name}</span>
-                <code className="rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-600 break-all max-w-xs">
+                <span className="font-semibold text-sm">{key.name}</span>
+                <code className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-600 break-all max-w-[200px]">
                   {maskVirtualKey(key.apiKey)}
                 </code>
-                <span className="text-xs text-gray-500" title="Quota limits (rpm / tpm / daily / monthly tokens)">
-                  {(() => {
-                    const parts: string[] = [];
-                    if (key.maxRpm != null) parts.push(`${key.maxRpm} rpm`);
-                    if (key.maxTpm != null) parts.push(`${formatQuota(key.maxTpm)} tpm`);
-                    if (key.maxDailyTokens != null) parts.push(`${formatQuota(key.maxDailyTokens)} daily`);
-                    if (key.maxMonthlyTokens != null) parts.push(`${formatQuota(key.maxMonthlyTokens)} monthly`);
-                    return parts.length > 0 ? parts.join(" / ") : "—";
-                  })()}
+                <span className="text-[11px] text-gray-500" title="Quota limits (rpm / tpm / daily / monthly tokens)">
+                  {quotaText(key)}
                 </span>
               </div>
-              <div className="ml-auto flex items-center gap-2">
+              <div className="hidden md:flex items-center gap-2">
                 <button
                   type="button"
                   onClick={() => copyKey(key)}
@@ -502,43 +496,51 @@ export default function VirtualKeysPanel() {
                   Delete
                 </button>
               </div>
+              <ActionMenu
+                items={[
+                  { label: copied === key.id ? "Copied!" : "Copy", onClick: () => copyKey(key) },
+                  { label: "Usage", onClick: () => toggleUsage(key) },
+                  { label: "Edit", onClick: () => startEdit(key) },
+                  { label: key.enabled ? "Revoke" : "Enable", onClick: () => toggleEnabled(key) },
+                  { label: "Delete", onClick: () => remove(key), variant: "danger" },
+                ]}
+              />
             </div>
 
-            {expandedConfigId === key.id && (
-              <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
-                <div className="md:col-span-2 rounded-lg border border-gray-100 bg-gray-50/60 p-3">
-                  <span className="text-xs font-medium text-gray-500">Comment</span>
-                  <div className="mt-1 text-sm">{key.comment || "—"}</div>
-                </div>
-                <div className="rounded-lg border border-gray-100 bg-gray-50/60 p-3">
-                  <span className="text-xs font-medium text-gray-500">Created</span>
-                  <div className="mt-1 text-sm">{new Date(key.createdAt).toLocaleString()}</div>
-                </div>
-                <div className="rounded-lg border border-gray-100 bg-gray-50/60 p-3">
-                  <span className="text-xs font-medium text-gray-500">Last Used</span>
-                  <div className="mt-1 text-sm">
-                    {key.lastUsedAt ? new Date(key.lastUsedAt).toLocaleString() : "—"}
-                  </div>
-                </div>
-                <div className="md:col-span-2 rounded-lg border border-gray-100 bg-gray-50/60 p-3">
-                  <span className="text-xs font-medium text-gray-500">Enabled Models</span>
-                  <div className="mt-2 flex flex-wrap gap-1">
-                    {key.enabledModels.length === 0 && (
-                      <span className="text-xs text-gray-300">(none)</span>
-                    )}
-                    {parseEnabledModelsValue(key.enabledModels).map((m) => (
-                      <code key={m} className="rounded bg-gray-100 px-1.5 py-0.5 text-xs">
-                        {m}
-                      </code>
-                    ))}
-                  </div>
+            {/* 配置信息默认展开 */}
+            <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+              <div className="md:col-span-2 rounded border border-gray-100 bg-gray-50/60 p-2">
+                <span className="text-xs font-medium text-gray-500">Comment</span>
+                <div className="mt-0.5 text-xs text-gray-700">{key.comment || "—"}</div>
+              </div>
+              <div className="rounded border border-gray-100 bg-gray-50/60 p-2">
+                <span className="text-xs font-medium text-gray-500">Created</span>
+                <div className="mt-0.5 text-xs text-gray-700">{new Date(key.createdAt).toLocaleString()}</div>
+              </div>
+              <div className="rounded border border-gray-100 bg-gray-50/60 p-2">
+                <span className="text-xs font-medium text-gray-500">Last Used</span>
+                <div className="mt-0.5 text-xs text-gray-700">
+                  {key.lastUsedAt ? new Date(key.lastUsedAt).toLocaleString() : "—"}
                 </div>
               </div>
-            )}
+              <div className="md:col-span-2 rounded border border-gray-100 bg-gray-50/60 p-2">
+                <span className="text-xs font-medium text-gray-500">Enabled Models</span>
+                <div className="mt-1.5 flex flex-wrap gap-1">
+                  {parseEnabledModelsValue(key.enabledModels).length === 0 && (
+                    <span className="text-xs text-gray-300">(none)</span>
+                  )}
+                  {parseEnabledModelsValue(key.enabledModels).map((m) => (
+                    <code key={m} className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px]">
+                      {m}
+                    </code>
+                  ))}
+                </div>
+              </div>
+            </div>
 
             {expandedId === key.id && usageDetail && (
-              <div className="mt-4">
-                <div className="mb-3 flex items-center justify-end gap-2">
+              <div className="mt-3">
+                <div className="mb-2 flex items-center justify-end gap-2">
                   <button
                     type="button"
                     onClick={() => refreshUsage(key)}
@@ -549,7 +551,7 @@ export default function VirtualKeysPanel() {
                   </button>
                 </div>
 
-                <div className="mb-3 grid grid-cols-2 md:grid-cols-6 gap-3 rounded bg-gray-50 p-3 text-sm">
+                <div className="mb-2 grid grid-cols-2 md:grid-cols-6 gap-2 rounded bg-gray-50 p-2 text-sm">
                   <div>
                     <p className="text-xs text-gray-400">Requests</p>
                     <p className="font-semibold">{formatNumber(usageDetail.usage.requestCount, true)}</p>
@@ -580,7 +582,7 @@ export default function VirtualKeysPanel() {
                   </div>
                 </div>
 
-                <div className="mb-3 rounded border border-gray-200 bg-white px-3 py-2 text-xs text-gray-600">
+                <div className="mb-2 rounded border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-600">
                   <span className="text-gray-400">Quota: </span>
                   <span>
                     {usageDetail.maxRpm != null ? `${usageDetail.maxRpm} rpm` : "∞ rpm"}
