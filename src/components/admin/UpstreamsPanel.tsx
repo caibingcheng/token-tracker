@@ -63,6 +63,7 @@ interface ModelTestResult {
   ok: boolean;
   status: number;
   error?: string;
+  keysTested?: number;
 }
 
 interface ModelPickerState {
@@ -916,8 +917,8 @@ export default function UpstreamsPanel() {
                           <span
                             title={
                               test.ok
-                                ? `OK (${test.status})`
-                                : `Failed: ${test.error ?? `status ${test.status}`}`
+                                ? `OK (${test.status}${test.keysTested ? `, ${test.keysTested} keys tested` : ""})`
+                                : `Failed: ${test.error ?? `status ${test.status}`}${test.keysTested ? ` (${test.keysTested} keys tested)` : ""}`
                             }
                             className={test.ok ? "text-green-600" : "text-red-500"}
                           >

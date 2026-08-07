@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { buildProbeRequest, probeModel, PROBE_TIMEOUT_MS } from "./probe";
+import { buildProbeRequest, probeModel, probeModelWithKeys, PROBE_TIMEOUT_MS } from "./probe";
 
 describe("buildProbeRequest", () => {
   it("builds openai chat completions request", () => {
@@ -127,5 +127,73 @@ describe("probeModel", () => {
 
   it("default timeout is 15s", () => {
     expect(PROBE_TIMEOUT_MS).toBe(15_000);
+  });
+});
+
+describe("probeModelWithKeys", () => {
+  const fetchMock = vi.fn();
+  const target = { protocol: "openai" as const, baseUrl: "https://api.example" };
+
+  beforeEach(() => {
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    fetchMock.mockReset();
+  });
+
+  it("succeeds on first key without testing the rest", async () => {
+    fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
+    const result = await probeModelWithKeys(target, "gpt-4o", ["k1", "k2", "k3"]);
+    expect(result.ok).toBe(true);
+    expect(result.keyResults.length).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("tries next key when first fails and succeeds on second", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response("unauthorized", { status: 401 }))
+      .mockResolvedValueOnce(new Response("{}", { status: 200 }));
+    const result = await probeModelWithKeys(target, "gpt-4o", ["bad", "good"]);
+    expect(result.ok).toBe(true);
+    expect(result.keyResults).toEqual([
+      { ok: false, status: 401, error: "unauthorized" },
+      { ok: true, status: 200 },
+    ]);
+    expect(result.sawAuthError).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails with sawModelError when all keys return 404", async () => {
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(new Response("model not found", { status: 404 }))
+    );
+    const result = await probeModelWithKeys(target, "gpt-4o", ["k1", "k2"]);
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe(404);
+    expect(result.sawModelError).toBe(true);
+    expect(result.sawAuthError).toBe(false);
+    expect(result.keyResults.length).toBe(2);
+  });
+
+  it("fails with sawAuthError when all keys return 401", async () => {
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(new Response("unauthorized", { status: 401 }))
+    );
+    const result = await probeModelWithKeys(target, "gpt-4o", ["k1", "k2"]);
+    expect(result.ok).toBe(false);
+    expect(result.sawAuthError).toBe(true);
+    expect(result.sawModelError).toBe(false);
+  });
+
+  it("reports last status and error on network failure", async () => {
+    fetchMock.mockRejectedValue(new Error("ECONNREFUSED"));
+    const result = await probeModelWithKeys(target, "gpt-4o", ["k1"]);
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe(0);
+    expect(result.error).toContain("ECONNREFUSED");
+    expect(result.sawModelError).toBe(false);
+    expect(result.sawAuthError).toBe(false);
   });
 });

@@ -77,3 +77,53 @@ export async function probeModel(
     opts.signal?.removeEventListener("abort", onOuterAbort);
   }
 }
+
+export interface ProbeKeyResult {
+  ok: boolean;
+  status: number;
+  error?: string;
+}
+
+export interface ProbeModelWithKeysResult {
+  ok: boolean;
+  status: number;
+  error?: string;
+  keyResults: ProbeKeyResult[];
+  sawModelError: boolean; // 出现 403/404（model 级问题）
+  sawAuthError: boolean; // 出现 401（key 级问题）
+}
+
+// 依次用每个 key 探测同一 model，任一 key 成功即整体成功（与真实请求的 key 链一致）
+export async function probeModelWithKeys(
+  target: ProbeTarget,
+  model: string,
+  keys: string[],
+  opts: { timeoutMs?: number; signal?: AbortSignal } = {}
+): Promise<ProbeModelWithKeysResult> {
+  const keyResults: ProbeKeyResult[] = [];
+  let sawModelError = false;
+  let sawAuthError = false;
+  let lastStatus = 0;
+  let lastError: string | undefined;
+
+  for (const key of keys) {
+    const result = await probeModel(target, model, key, opts);
+    keyResults.push({ ok: result.ok, status: result.status, error: result.error });
+    if (result.ok) {
+      return { ok: true, status: result.status, keyResults, sawModelError, sawAuthError };
+    }
+    lastStatus = result.status;
+    lastError = result.error;
+    if (result.status === 403 || result.status === 404) sawModelError = true;
+    if (result.status === 401) sawAuthError = true;
+  }
+
+  return {
+    ok: false,
+    status: lastStatus,
+    error: lastError,
+    keyResults,
+    sawModelError,
+    sawAuthError,
+  };
+}
