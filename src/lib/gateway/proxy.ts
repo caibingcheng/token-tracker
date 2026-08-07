@@ -4,6 +4,7 @@ import {
   routeModel,
   modelMatchesPattern,
   parseEnabledModels,
+  detectRequestProtocol,
 } from "./model-router";
 import type { UpstreamRoute } from "./model-router";
 import { buildAuthHeaders } from "./upstream-client";
@@ -207,6 +208,15 @@ export async function handleProxyRequest(
   const match = routeModel(model, upstreams);
   if (!match) {
     return proxyError(404, `No upstream configured for model: ${model}`, "model_not_found");
+  }
+
+  const requestProtocol = detectRequestProtocol(path);
+  if (requestProtocol !== match.upstream.protocol) {
+    return proxyError(
+      400,
+      `Protocol mismatch: request path ${path} is ${requestProtocol}, but upstream "${match.upstream.name}" is configured as ${match.upstream.protocol}`,
+      "protocol_mismatch"
+    );
   }
 
   const protocol = match.upstream.protocol;

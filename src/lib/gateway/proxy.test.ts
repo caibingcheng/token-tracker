@@ -194,6 +194,63 @@ describe("handleProxyRequest - routing errors", () => {
   });
 });
 
+describe("handleProxyRequest - protocol mismatch", () => {
+  it("returns 400 when request path is openai but upstream is anthropic", async () => {
+    const deps = mkDeps({
+      loadUpstreams: vi.fn(async () => [mkUpstream({ protocol: "anthropic", name: "anthropic-upstream" })]),
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o" },
+      }),
+      deps
+    );
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json.error.type).toBe("protocol_mismatch");
+    expect(json.error.message).toContain("anthropic");
+  });
+
+  it("returns 400 when request path is anthropic but upstream is openai", async () => {
+    const deps = mkDeps({
+      loadUpstreams: vi.fn(async () => [mkUpstream({ protocol: "openai", name: "openai-upstream", enabledModels: ["claude-3-5-sonnet"] })]),
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/messages", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "claude-3-5-sonnet" },
+      }),
+      deps
+    );
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json.error.type).toBe("protocol_mismatch");
+  });
+
+  it("returns 400 when request path is openai but upstream is gemini", async () => {
+    const deps = mkDeps({
+      loadUpstreams: vi.fn(async () => [
+        mkUpstream({
+          protocol: "gemini",
+          name: "gemini-upstream",
+          enabledModels: ["gemini-1.5-flash"],
+        }),
+      ]),
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gemini-1.5-flash" },
+      }),
+      deps
+    );
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json.error.type).toBe("protocol_mismatch");
+  });
+});
+
 describe("handleProxyRequest - failover chain", () => {
   const fetchMock = vi.fn();
 
