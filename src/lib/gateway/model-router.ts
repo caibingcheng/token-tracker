@@ -69,6 +69,41 @@ export interface RouteMatch {
   matchedPattern: string;
 }
 
+export type MatchType = "exact" | "wildcard";
+
+export interface ModelCandidate {
+  upstream: UpstreamRoute;
+  matchedPattern: string;
+  matchType: MatchType;
+}
+
+function upstreamMatchesModel(upstream: UpstreamRoute, model: string): ModelCandidate[] {
+  const patterns = parseEnabledModels(upstream.enabledModels);
+  const candidates: ModelCandidate[] = [];
+  for (const pattern of patterns) {
+    if (pattern === model) {
+      candidates.push({ upstream, matchedPattern: pattern, matchType: "exact" });
+    } else if (modelMatchesPattern(pattern, model)) {
+      candidates.push({ upstream, matchedPattern: pattern, matchType: "wildcard" });
+    }
+  }
+  return candidates;
+}
+
+function pickWinner(candidates: ModelCandidate[]): ModelCandidate | null {
+  if (candidates.length === 0) return null;
+  // 精确匹配优先；同类型按 priority 升序；priority 相同保持原始顺序
+  return candidates.slice().sort((a, b) => {
+    if (a.matchType !== b.matchType) {
+      return a.matchType === "exact" ? -1 : 1;
+    }
+    if (a.upstream.priority !== b.upstream.priority) {
+      return a.upstream.priority - b.upstream.priority;
+    }
+    return 0;
+  })[0];
+}
+
 // 精确匹配优先于前缀通配；多命中取 priority 最小者
 export function routeModel(model: string, upstreams: UpstreamRoute[]): RouteMatch | null {
   const enabled = upstreams.filter((u) => u.enabled !== false);
@@ -93,4 +128,39 @@ export function routeModel(model: string, upstreams: UpstreamRoute[]): RouteMatc
     }
   }
   return best;
+}
+
+// 在指定 protocol 的启用 upstream 中查找所有匹配候选
+export function findCandidatesByProtocol(
+  model: string,
+  protocol: Protocol,
+  upstreams: UpstreamRoute[]
+): ModelCandidate[] {
+  const enabled = upstreams.filter((u) => u.enabled !== false && u.protocol === protocol);
+  const candidates: ModelCandidate[] = [];
+  for (const upstream of enabled) {
+    candidates.push(...upstreamMatchesModel(upstream, model));
+  }
+  return candidates;
+}
+
+// 在指定 protocol 下决选出最终路由，同时返回所有候选
+export function routeModelByProtocol(
+  model: string,
+  protocol: Protocol,
+  upstreams: UpstreamRoute[]
+): { winner: ModelCandidate | null; candidates: ModelCandidate[] } {
+  const candidates = findCandidatesByProtocol(model, protocol, upstreams);
+  const winner = pickWinner(candidates);
+  // 候选按胜出顺序排列：精确优先，priority 升序
+  const ordered = candidates.slice().sort((a, b) => {
+    if (a.matchType !== b.matchType) {
+      return a.matchType === "exact" ? -1 : 1;
+    }
+    if (a.upstream.priority !== b.upstream.priority) {
+      return a.upstream.priority - b.upstream.priority;
+    }
+    return 0;
+  });
+  return { winner, candidates: ordered };
 }

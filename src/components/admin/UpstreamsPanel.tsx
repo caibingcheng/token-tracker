@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiFetch } from "@/lib/client/api-client";
 import { PROVIDER_PRESETS } from "@/lib/provider-presets";
 import UpstreamModelsManager from "./UpstreamModelsManager";
+import { CopyableCode } from "./CopyableCode";
 import ActionMenu from "./ActionMenu";
 
 export interface UpstreamItem {
@@ -749,9 +750,12 @@ export default function UpstreamsPanel() {
                     <span className="text-xs text-gray-300">(none)</span>
                   )}
                   {u.enabledModels.map((m) => (
-                    <code key={m} className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px]">
+                    <CopyableCode
+                      key={m}
+                      className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px]"
+                    >
                       {m}
-                    </code>
+                    </CopyableCode>
                   ))}
                 </div>
               </div>

@@ -2,13 +2,14 @@
 
 import { useState } from "react";
 import UpstreamsPanel from "./UpstreamsPanel";
+import ModelsPanel from "./ModelsPanel";
 import VirtualKeysPanel from "./VirtualKeysPanel";
 import SecuritySettings from "./SecuritySettings";
 import DisplaySettings from "./DisplaySettings";
 import AuditLogsPanel from "./AuditLogsPanel";
 import Link from "next/link";
 
-type Tab = "upstreams" | "virtual-keys" | "security" | "display" | "audit";
+type Tab = "upstreams" | "models" | "virtual-keys" | "security" | "display" | "audit";
 
 export default function AdminPanel() {
   const [tab, setTab] = useState<Tab>("upstreams");
@@ -30,6 +31,7 @@ export default function AdminPanel() {
             {(
               [
                 ["upstreams", "Upstreams"],
+                ["models", "Models"],
                 ["virtual-keys", "Virtual Keys"],
                 ["security", "Security"],
                 ["display", "Display"],
@@ -54,6 +56,8 @@ export default function AdminPanel() {
 
         {tab === "upstreams" ? (
           <UpstreamsPanel />
+        ) : tab === "models" ? (
+          <ModelsPanel />
         ) : tab === "virtual-keys" ? (
           <VirtualKeysPanel />
         ) : tab === "security" ? (

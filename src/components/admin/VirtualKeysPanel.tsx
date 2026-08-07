@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import { apiFetch } from "@/lib/client/api-client";
 import { formatNumber } from "@/lib/number-utils";
 import { maskVirtualKey } from "@/lib/mask-utils";
+import { modelMatchesPattern, type Protocol } from "@/lib/gateway/model-router";
+import { CopyableCode } from "./CopyableCode";
 import ActionMenu from "./ActionMenu";
 
 export interface VirtualKeyItem {
@@ -58,6 +60,15 @@ interface UsageDetail {
   }>;
 }
 
+interface ResolvedModelRoute {
+  protocol: Protocol;
+  model: string;
+}
+
+interface ModelsData {
+  resolvedRoutes: ResolvedModelRoute[];
+}
+
 function parseEnabledModelsInput(raw: string): string[] {
   return raw
     .split(",")
@@ -110,6 +121,14 @@ function quotaText(key: VirtualKeyItem): string {
   return parts.length > 0 ? parts.join(" / ") : "—";
 }
 
+function computeResolvedModels(vkEnabledModels: string, modelsData: ModelsData | null): string[] {
+  if (!modelsData) return [];
+  const patterns = parseEnabledModelsValue(vkEnabledModels);
+  const models = Array.from(new Set(modelsData.resolvedRoutes.map((r) => r.model)));
+  if (patterns.includes("*")) return models.sort();
+  return models.filter((m) => patterns.some((p) => modelMatchesPattern(p, m))).sort();
+}
+
 export default function VirtualKeysPanel() {
   const [keys, setKeys] = useState<VirtualKeyItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -128,6 +147,7 @@ export default function VirtualKeysPanel() {
   const [copied, setCopied] = useState<number | null>(null);
 
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [modelsData, setModelsData] = useState<ModelsData | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -145,9 +165,22 @@ export default function VirtualKeysPanel() {
     }
   }, []);
 
+  const loadModels = useCallback(async () => {
+    try {
+      const res = await apiFetch("/api/admin/models");
+      const json = await res.json();
+      if (json.success) {
+        setModelsData(json.data);
+      }
+    } catch {
+      // ignore: non-critical display data
+    }
+  }, []);
+
   useEffect(() => {
     load();
-  }, [load]);
+    loadModels();
+  }, [load, loadModels]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -530,10 +563,43 @@ export default function VirtualKeysPanel() {
                     <span className="text-xs text-gray-300">(none)</span>
                   )}
                   {parseEnabledModelsValue(key.enabledModels).map((m) => (
-                    <code key={m} className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px]">
+                    <CopyableCode
+                      key={m}
+                      className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px]"
+                    >
                       {m}
-                    </code>
+                    </CopyableCode>
                   ))}
+                </div>
+              </div>
+
+              <div className="md:col-span-2 rounded border border-gray-100 bg-blue-50/40 p-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-medium text-gray-500">Resolved Allowed Models</span>
+                  <span className="text-[10px] text-gray-400">
+                    {computeResolvedModels(key.enabledModels, modelsData).length} concrete models
+                  </span>
+                </div>
+                <div className="mt-1.5 max-h-32 overflow-y-auto">
+                  {(() => {
+                    const resolved = computeResolvedModels(key.enabledModels, modelsData);
+                    return resolved.length === 0 ? (
+                      <span className="text-xs text-gray-400">
+                        No concrete models matched by this allowlist.
+                      </span>
+                    ) : (
+                      <div className="flex flex-wrap gap-1">
+                        {resolved.map((m) => (
+                          <CopyableCode
+                            key={m}
+                            className="rounded border border-blue-100 bg-white px-1.5 py-0.5 text-[11px] text-blue-700"
+                          >
+                            {m}
+                          </CopyableCode>
+                        ))}
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
             </div>
