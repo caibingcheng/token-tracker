@@ -80,6 +80,7 @@ export default function UpstreamsPanel() {
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [formKeys, setFormKeys] = useState<string[]>([""]);
   const [formKeyTests, setFormKeyTests] = useState<Record<number, FormKeyTestResult | null>>({});
+  const [formKeyShown, setFormKeyShown] = useState<Record<number, boolean>>({});
   const [modelPicker, setModelPicker] = useState<ModelPickerState | null>(null);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -180,6 +181,7 @@ export default function UpstreamsPanel() {
       setForm(EMPTY_FORM);
       setFormKeys([""]);
       setFormKeyTests({});
+      setFormKeyShown({});
       setEditingId(null);
       loadUpstreams();
     } catch {
@@ -201,6 +203,7 @@ export default function UpstreamsPanel() {
     });
     setFormKeys([""]);
     setFormKeyTests({});
+    setFormKeyShown({});
     setModelPicker(null);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -345,6 +348,10 @@ export default function UpstreamsPanel() {
   const updateFormKey = (index: number, value: string) => {
     setFormKeys((prev) => prev.map((k, i) => (i === index ? value : k)));
     setFormKeyTests((prev) => ({ ...prev, [index]: null }));
+  };
+
+  const toggleFormKeyShown = (index: number) => {
+    setFormKeyShown((prev) => ({ ...prev, [index]: !prev[index] }));
   };
 
   const testFormKey = async (index: number) => {
@@ -568,15 +575,26 @@ export default function UpstreamsPanel() {
             <div className="space-y-2">
               {formKeys.map((keyValue, index) => (
                 <div key={index}>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-1 items-center gap-2">
                     <input
-                      type="password"
-                      autoComplete="new-password"
+                      type="text"
+                      autoComplete="off"
+                      data-1p-ignore
+                      data-bitwarden-ignore
                       value={keyValue}
                       onChange={(e) => updateFormKey(index, e.target.value)}
                       placeholder={`API key ${index + 1}`}
-                      className="flex-1 rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      className={`flex-1 rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 ${
+                        formKeyShown[index] ? "" : "[-webkit-text-security:disc]"
+                      }`}
                     />
+                    <button
+                      type="button"
+                      onClick={() => toggleFormKeyShown(index)}
+                      className="rounded border border-gray-300 px-3 py-2 text-xs text-gray-600 hover:bg-gray-50"
+                    >
+                      {formKeyShown[index] ? "Hide" : "Show"}
+                    </button>
                     <button
                       type="button"
                       onClick={() => testFormKey(index)}

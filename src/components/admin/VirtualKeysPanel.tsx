@@ -7,6 +7,7 @@ import { maskVirtualKey } from "@/lib/mask-utils";
 import { modelMatchesPattern, type Protocol } from "@/lib/gateway/model-router";
 import { CopyableCode } from "./CopyableCode";
 import ActionMenu from "./ActionMenu";
+import { copyText } from "@/lib/clipboard";
 
 export interface VirtualKeyItem {
   id: number;
@@ -309,13 +310,13 @@ export default function VirtualKeysPanel() {
   };
 
   const copyKey = async (key: VirtualKeyItem) => {
-    try {
-      await navigator.clipboard.writeText(key.apiKey);
-    } catch {
-      // clipboard unavailable
+    const ok = await copyText(key.apiKey);
+    if (ok) {
+      setCopied(key.id);
+      setTimeout(() => setCopied(null), 1500);
+    } else {
+      setError("Copy failed. Please copy the key manually.");
     }
-    setCopied(key.id);
-    setTimeout(() => setCopied(null), 1500);
   };
 
   if (loading) {
@@ -455,7 +456,10 @@ export default function VirtualKeysPanel() {
               </code>
               <button
                 type="button"
-                onClick={() => navigator.clipboard?.writeText(createdKey)}
+                onClick={async () => {
+                  const ok = await copyText(createdKey);
+                  if (!ok) setError("Copy failed. Please copy the key manually.");
+                }}
                 className="rounded border border-green-300 px-3 py-2 text-sm text-green-700 hover:bg-green-100"
               >
                 Copy
