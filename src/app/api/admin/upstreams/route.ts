@@ -5,6 +5,7 @@ import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";
 import { isProtocol, parseEnabledModels } from "@/lib/gateway/model-router";
 import { GatewaySecretMissingError } from "@/lib/gateway/crypto";
+import { healthTracker } from "@/lib/gateway/proxy-deps";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 
 function gatewaySecretError() {
@@ -28,19 +29,25 @@ export const GET = withAuth(async () => {
       countMap.set(row.upstreamId, row.count);
     }
 
-    const data = rows.map((row: any) => ({
-      id: row.id,
-      name: row.name,
-      protocol: row.protocol,
-      baseUrl: row.baseUrl,
-      enabledModels: parseEnabledModels(row.enabledModels),
-      priority: row.priority,
-      enabled: row.enabled === 1,
-      keyCount: countMap.get(row.id) || 0,
-      balance: row.balance ?? null,
-      balanceUpdatedAt: row.balanceUpdatedAt ?? null,
-      createdAt: row.createdAt,
-    }));
+    const data = [];
+    for (const row of rows) {
+      data.push({
+        id: row.id,
+        name: row.name,
+        protocol: row.protocol,
+        baseUrl: row.baseUrl,
+        enabledModels: parseEnabledModels(row.enabledModels),
+        priority: row.priority,
+        enabled: row.enabled === 1,
+        healthCheckModel: row.healthCheckModel ?? null,
+        unhealthy: !(await healthTracker.isHealthy(row.id)),
+        modelUnhealthy: await healthTracker.listModelUnhealthy(row.id),
+        keyCount: countMap.get(row.id) || 0,
+        balance: row.balance ?? null,
+        balanceUpdatedAt: row.balanceUpdatedAt ?? null,
+        createdAt: row.createdAt,
+      });
+    }
 
     return NextResponse.json({ success: true, data });
   });
@@ -78,6 +85,10 @@ export const POST = withAuth(async (request: NextRequest) => {
       : [];
     const priority = Number.isFinite(Number(body.priority)) ? Number(body.priority) : 0;
     const enabled = body.enabled === undefined ? true : Boolean(body.enabled);
+    const healthCheckModel =
+      typeof body.healthCheckModel === "string" && body.healthCheckModel.trim() !== ""
+        ? body.healthCheckModel.trim()
+        : null;
 
     try {
       const result = await db
@@ -89,6 +100,7 @@ export const POST = withAuth(async (request: NextRequest) => {
           enabledModels: JSON.stringify(enabledModels),
           priority,
           enabled: enabled ? 1 : 0,
+          healthCheckModel,
         })
         .returning();
       const { ip, userAgent } = extractClientInfo(request);

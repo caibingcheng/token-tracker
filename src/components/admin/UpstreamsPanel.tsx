@@ -15,6 +15,9 @@ export interface UpstreamItem {
   enabledModels: string[];
   priority: number;
   enabled: boolean;
+  unhealthy: boolean;
+  healthCheckModel: string | null;
+  modelUnhealthy: string[];
   keyCount: number;
   balance: string | null;
   balanceUpdatedAt: string | null;
@@ -38,11 +41,25 @@ interface FormState {
   baseUrl: string;
   enabledModels: string;
   priority: string;
+  healthCheckModel: string;
 }
 
-const EMPTY_FORM: FormState = { name: "", protocol: "openai", baseUrl: "", enabledModels: "", priority: "0" };
+const EMPTY_FORM: FormState = {
+  name: "",
+  protocol: "openai",
+  baseUrl: "",
+  enabledModels: "",
+  priority: "0",
+  healthCheckModel: "",
+};
 
 interface FormKeyTestResult {
+  ok: boolean;
+  status: number;
+  error?: string;
+}
+
+interface ModelTestResult {
   ok: boolean;
   status: number;
   error?: string;
@@ -72,6 +89,9 @@ export default function UpstreamsPanel() {
   const [refreshingBalance, setRefreshingBalance] = useState<Record<number, boolean>>({});
   const [showPresets, setShowPresets] = useState(false);
   const [testResults, setTestResults] = useState<Record<number, { ok: boolean; modelCount?: number; error?: string } | null>>({});
+  const [modelTests, setModelTests] = useState<Record<number, Record<string, ModelTestResult | null>>>({});
+  const [testingModels, setTestingModels] = useState<Record<number, Record<string, boolean>>>({});
+  const [testingAll, setTestingAll] = useState<Record<number, boolean>>({});
 
   const filteredPresets = useMemo(() => {
     const query = form.name.trim().toLowerCase();
@@ -123,6 +143,7 @@ export default function UpstreamsPanel() {
         .map((m) => m.trim())
         .filter(Boolean),
       priority: Number(form.priority) || 0,
+      healthCheckModel: form.healthCheckModel.trim() || null,
     };
     const newKeys = formKeys.map((k) => k.trim()).filter(Boolean);
     try {
@@ -175,6 +196,7 @@ export default function UpstreamsPanel() {
       baseUrl: u.baseUrl,
       enabledModels: u.enabledModels.join(", "),
       priority: String(u.priority),
+      healthCheckModel: u.healthCheckModel ?? "",
     });
     setFormKeys([""]);
     setFormKeyTests({});
@@ -220,6 +242,54 @@ export default function UpstreamsPanel() {
     const json = await res.json();
     setTestResults((prev) => ({ ...prev, [u.id]: json.data ?? { ok: false, error: json.error } }));
   };
+
+  const handleTestModel = async (u: UpstreamItem, model: string) => {
+    setTestingModels((prev) => ({ ...prev, [u.id]: { ...(prev[u.id] ?? {}), [model]: true } }));
+    try {
+      const res = await apiFetch(`/api/admin/upstreams/${u.id}/test-model`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model }),
+      });
+      const json = await res.json();
+      const result: ModelTestResult = json.data ?? { ok: false, status: 0, error: json.error || "Test failed" };
+      setModelTests((prev) => ({ ...prev, [u.id]: { ...(prev[u.id] ?? {}), [model]: result } }));
+      loadUpstreams(); // 刷新健康标记（测试会立即更新服务端健康状态）
+    } finally {
+      setTestingModels((prev) => ({ ...prev, [u.id]: { ...(prev[u.id] ?? {}), [model]: false } }));
+    }
+  };
+
+  const handleTestAllModels = async (u: UpstreamItem) => {
+    setTestingAll((prev) => ({ ...prev, [u.id]: true }));
+    const allTesting = Object.fromEntries(u.enabledModels.map((m) => [m, true]));
+    setTestingModels((prev) => ({ ...prev, [u.id]: allTesting }));
+    setError(null);
+    try {
+      const res = await apiFetch(`/api/admin/upstreams/${u.id}/test-all-models`, { method: "POST" });
+      const json = await res.json();
+      if (json.success && json.data?.results) {
+        const map: Record<string, ModelTestResult> = {};
+        for (const r of json.data.results) {
+          map[r.model] = r;
+        }
+        setModelTests((prev) => ({ ...prev, [u.id]: { ...(prev[u.id] ?? {}), ...map } }));
+      } else {
+        setError(json.error || "Failed to test models");
+      }
+      loadUpstreams(); // 刷新健康标记（测试会立即更新服务端健康状态）
+    } catch {
+      setError("Network error");
+    } finally {
+      setTestingAll((prev) => ({ ...prev, [u.id]: false }));
+      const allIdle = Object.fromEntries(u.enabledModels.map((m) => [m, false]));
+      setTestingModels((prev) => ({ ...prev, [u.id]: allIdle }));
+    }
+  };
+
+  // 实际用于 unhealthy upstream 探活的模型：healthCheckModel 优先，否则第一个非通配
+  const probeModelFor = (u: UpstreamItem): string | null =>
+    u.healthCheckModel || u.enabledModels.find((m) => !m.endsWith("*")) || null;
 
   const handleSaveBalance = async (u: UpstreamItem) => {
     const value = (balanceInput[u.id] ?? "").trim();
@@ -566,6 +636,18 @@ export default function UpstreamsPanel() {
               className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>
+          <div className="md:col-span-3">
+            <label className="mb-1 block text-xs text-gray-600">
+              Health Check Model{" "}
+              <span className="text-gray-400">(optional, used for probing unhealthy upstream)</span>
+            </label>
+            <input
+              value={form.healthCheckModel}
+              onChange={(e) => setForm({ ...form, healthCheckModel: e.target.value })}
+              placeholder="deepseek-chat"
+              className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+          </div>
           <div className="md:col-span-3 flex items-center gap-2">
             <button
               type="submit"
@@ -674,13 +756,32 @@ export default function UpstreamsPanel() {
           <div key={u.id} className="rounded-lg bg-white p-3 shadow">
             <div className="flex flex-wrap items-center gap-2">
               <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-                <span className={`h-2 w-2 rounded-full ${u.enabled ? "bg-green-500" : "bg-gray-300"}`} />
+                <span
+                  className={`h-2 w-2 rounded-full ${
+                    !u.enabled ? "bg-gray-300" : u.unhealthy ? "bg-red-500" : "bg-green-500"
+                  }`}
+                  title={
+                    !u.enabled
+                      ? "Disabled"
+                      : u.unhealthy
+                        ? "Unhealthy — all keys failed, skipped in routing until probe recovers"
+                        : "Healthy"
+                  }
+                />
                 <span className="font-semibold text-sm">{u.name}</span>
                 <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-600">{u.protocol}</span>
                 <span className="text-xs text-gray-400 truncate max-w-[200px]">{u.baseUrl}</span>
                 <span className="text-xs text-gray-400">
                   {u.enabledModels.length} models · {u.keyCount} keys · p{u.priority}
                 </span>
+                {u.unhealthy && (
+                  <span
+                    className="rounded bg-red-50 px-1.5 py-0.5 text-[10px] font-medium text-red-600"
+                    title="All keys failed on real requests. Auto-probed every 30 min; requests are routed to other upstreams meanwhile."
+                  >
+                    unhealthy
+                  </span>
+                )}
                 {u.balance !== null && (
                   <span className="text-xs font-medium text-gray-500">bal {u.balance}</span>
                 )}
@@ -743,20 +844,106 @@ export default function UpstreamsPanel() {
               <div className="rounded border border-gray-100 bg-gray-50/60 p-2">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-xs font-medium text-gray-500">Enabled Models</span>
-                  <UpstreamModelsManager upstream={u} onUpdated={loadUpstreams} />
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleTestAllModels(u)}
+                      disabled={testingAll[u.id] || u.enabledModels.length === 0}
+                      className="rounded border border-gray-300 px-2 py-0.5 text-[11px] text-gray-500 hover:bg-gray-50 disabled:opacity-40"
+                      title="Test all models against this upstream"
+                    >
+                      {testingAll[u.id] ? "Testing..." : "Test all"}
+                    </button>
+                    <UpstreamModelsManager upstream={u} onUpdated={loadUpstreams} />
+                  </div>
                 </div>
                 <div className="mt-1.5 flex flex-wrap gap-1">
                   {u.enabledModels.length === 0 && (
                     <span className="text-xs text-gray-300">(none)</span>
                   )}
-                  {u.enabledModels.map((m) => (
-                    <CopyableCode
-                      key={m}
-                      className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px]"
-                    >
-                      {m}
-                    </CopyableCode>
-                  ))}
+                  {u.enabledModels.map((m) => {
+                    const test = modelTests[u.id]?.[m];
+                    const testing = testingModels[u.id]?.[m];
+                    const unavailable = u.modelUnhealthy?.includes(m);
+                    return (
+                      <span
+                        key={m}
+                        className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] ${
+                          unavailable ? "bg-amber-50" : "bg-gray-100"
+                        }`}
+                      >
+                        <CopyableCode>{m}</CopyableCode>
+                        {unavailable && (
+                          <span
+                            title="This model returned 404/403 on this upstream and was skipped in routing. Auto-recovers after 30 min."
+                            className="rounded bg-amber-100 px-1 py-px text-[9px] font-medium text-amber-600"
+                          >
+                            unavailable
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => handleTestModel(u, m)}
+                          disabled={testing}
+                          title={testing ? `Testing ${m}...` : `Test ${m}`}
+                          className="flex h-4 w-8 items-center justify-center text-gray-400 hover:text-blue-600 disabled:opacity-50"
+                        >
+                          {testing ? (
+                            <svg
+                              className="h-2.5 w-2.5 animate-spin text-gray-500"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                            >
+                              <circle
+                                className="opacity-25"
+                                cx="12"
+                                cy="12"
+                                r="10"
+                                stroke="currentColor"
+                                strokeWidth="4"
+                              />
+                              <path
+                                className="opacity-75"
+                                fill="currentColor"
+                                d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+                              />
+                            </svg>
+                          ) : (
+                            "Test"
+                          )}
+                        </button>
+                        {test && (
+                          <span
+                            title={
+                              test.ok
+                                ? `OK (${test.status})`
+                                : `Failed: ${test.error ?? `status ${test.status}`}`
+                            }
+                            className={test.ok ? "text-green-600" : "text-red-500"}
+                          >
+                            {test.ok ? "✓" : "✗"}
+                          </span>
+                        )}
+                      </span>
+                    );
+                  })}
+                </div>
+                <div className="mt-1.5 text-[10px] text-gray-400">
+                  {probeModelFor(u) ? (
+                    <>
+                      Probe model:{" "}
+                      <code className="rounded bg-gray-100 px-1 py-0.5">
+                        {probeModelFor(u)}
+                      </code>
+                      {!u.healthCheckModel && (
+                        <span> (auto: first non-wildcard model)</span>
+                      )}
+                    </>
+                  ) : (
+                    <span className="text-amber-500">
+                      No probe model — unhealthy upstream cannot auto-recover
+                    </span>
+                  )}
                 </div>
               </div>
 

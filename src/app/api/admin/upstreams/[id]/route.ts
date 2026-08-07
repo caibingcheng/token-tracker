@@ -97,6 +97,18 @@ export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
     if (body.enabled !== undefined) {
       values.enabled = body.enabled ? 1 : 0;
     }
+    if (body.healthCheckModel !== undefined) {
+      if (body.healthCheckModel === null || body.healthCheckModel === "") {
+        values.healthCheckModel = null;
+      } else if (typeof body.healthCheckModel === "string") {
+        values.healthCheckModel = body.healthCheckModel.trim() || null;
+      } else {
+        return NextResponse.json(
+          { success: false, error: "healthCheckModel must be a string or null" },
+          { status: 400 }
+        );
+      }
+    }
     if (body.balance !== undefined) {
       if (body.balance === null || typeof body.balance === "string") {
         values.balance = body.balance;

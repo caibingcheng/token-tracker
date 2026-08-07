@@ -2,13 +2,16 @@ import type { Protocol } from "./model-router";
 import {
   extractRequestModel,
   routeModel,
+  routeModelByProtocol,
   modelMatchesPattern,
   parseEnabledModels,
   detectRequestProtocol,
 } from "./model-router";
-import type { UpstreamRoute } from "./model-router";
+import type { UpstreamRoute, ModelCandidate } from "./model-router";
 import { buildAuthHeaders } from "./upstream-client";
 import { joinUrlPath } from "./url-utils";
+import { buildSessionId } from "./session";
+import type { SessionBinding } from "./session";
 import {
   parseOpenAiNonStreaming,
   parseOpenAiStreaming,
@@ -63,6 +66,18 @@ export interface ProxyDeps {
   // 配额用量加载（必填依赖；实现见 proxy-deps）
   quota: {
     loadUsage: (virtualKeyId: number, now: Date) => Promise<QuotaUsage>;
+  };
+  // 会话粘性 binding（跨 upstream failover 时保存/查询；可选，缺省则无粘性）
+  session?: {
+    getBinding: (sessionId: string) => SessionBinding | undefined;
+    setBinding: (sessionId: string, upstreamId: number) => void;
+  };
+  // upstream / model 健康状态（可选，缺省视为全部健康且不标记）
+  health?: {
+    isHealthy: (upstreamId: number) => Promise<boolean>;
+    markUnhealthy: (upstreamId: number) => Promise<void> | void;
+    isModelHealthy?: (upstreamId: number, model: string) => Promise<boolean>;
+    markModelUnhealthy?: (upstreamId: number, model: string) => Promise<void> | void;
   };
   log?: (message: string) => void;
 }
@@ -128,6 +143,12 @@ export function isStreamingResponse(headers: Headers): boolean {
 
 function isRetryableStatus(status: number): boolean {
   return status === 429 || status >= 500;
+}
+
+// 认证类错误（key 无效/无权限）：该 key 不可用，不重试，
+// 尝试下一个 key；全部 key 均失败则 failover 到下一个 upstream
+function isAuthStatus(status: number): boolean {
+  return status === 401 || status === 403;
 }
 
 function isNonStreamingRequestBody(bodyJson: unknown): boolean {
@@ -205,24 +226,50 @@ export async function handleProxyRequest(
   }
 
   const upstreams = await deps.loadUpstreams();
-  const match = routeModel(model, upstreams);
-  if (!match) {
+  const protocol = detectRequestProtocol(path);
+
+  // 按协议路由：获取所有匹配候选（exact 优先，priority 升序）
+  const { candidates } = routeModelByProtocol(model, protocol, upstreams);
+  if (candidates.length === 0) {
+    // 保留原语义：model 仅配置在其他协议的 upstream 上 → 400 protocol_mismatch
+    const global = routeModel(model, upstreams);
+    if (global) {
+      return proxyError(
+        400,
+        `Protocol mismatch: request path ${path} is ${protocol}, but upstream "${global.upstream.name}" is configured as ${global.upstream.protocol}`,
+        "protocol_mismatch"
+      );
+    }
     return proxyError(404, `No upstream configured for model: ${model}`, "model_not_found");
   }
 
-  const requestProtocol = detectRequestProtocol(path);
-  if (requestProtocol !== match.upstream.protocol) {
-    return proxyError(
-      400,
-      `Protocol mismatch: request path ${path} is ${requestProtocol}, but upstream "${match.upstream.name}" is configured as ${match.upstream.protocol}`,
-      "protocol_mismatch"
-    );
+  // 候选去重（同一 upstream 可因 exact + wildcard 命中多次）+ 过滤 unhealthy（upstream 级 + model 级）
+  let chain: UpstreamRoute[] = [];
+  for (const candidate of dedupeByUpstreamId(candidates)) {
+    if (deps.health && !(await deps.health.isHealthy(candidate.id))) continue;
+    if (deps.health?.isModelHealthy && !(await deps.health.isModelHealthy(candidate.id, model))) {
+      continue;
+    }
+    chain.push(candidate);
+  }
+  if (chain.length === 0) {
+    return proxyError(502, `All upstreams are unhealthy for model: ${model}`, "upstream_error");
   }
 
-  const protocol = match.upstream.protocol;
-  const keys = await deps.resolveUpstreamKeys(match.upstream.id);
-  if (keys.length === 0) {
-    return proxyError(502, `No API keys configured for upstream: ${match.upstream.name}`, "upstream_error");
+  // 默认 upstream = 排序后第一个
+  const defaultUpstream = chain[0];
+
+  // 多候选时计算 session 粘性：binding 存在且仍可用（启用/协议/健康/模型匹配均已由链过滤）
+  // 则把 sticky upstream 提到链首；单候选跳过 session 计算
+  let sessionId: string | null = null;
+  if (chain.length > 1 && deps.session) {
+    sessionId = buildSessionId(bodyJson, model, virtualKey.id, protocol);
+    const binding = deps.session.getBinding(sessionId);
+    if (binding && chain.some((u) => u.id === binding.upstreamId)) {
+      const bound = chain.filter((u) => u.id === binding.upstreamId);
+      const rest = chain.filter((u) => u.id !== binding.upstreamId);
+      chain = [...bound, ...rest];
+    }
   }
 
   // 配额检查：选上游之后、转发之前；超限直接 429 不转发上游
@@ -248,58 +295,140 @@ export async function handleProxyRequest(
   }
 
   const startTime = Date.now();
-  const targetUrl = `${joinUrlPath(match.upstream.baseUrl, path)}${stripQueryKey(url)}`;
   const isNonStreaming = isNonStreamingRequestBody(bodyJson);
 
   let lastError: { status: number; text?: string } | null = null;
   let lastResponse: Response | null = null;
+  let successUpstream: UpstreamRoute | null = null;
+  // 全部候选均对该 model 返回 4xx 业务错误（404/403）时，透传最后一个原始响应
+  let fallbackBusinessResponse: Response | null = null;
 
-  // 故障转移链：按配置顺序遍历 key，每个 key 内重试 MAX_RETRY 次；
-  // 只在收到响应头之前允许重试/切换（流式输出开始后不可重试）
-  for (const apiKey of keys) {
-    for (let attempt = 0; attempt < MAX_RETRY; attempt++) {
-      let upstreamResponse: Response | null = null;
-      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-      try {
-        const controller = new AbortController();
-        if (isNonStreaming) {
-          timeoutHandle = setTimeout(() => controller.abort(), NON_STREAMING_TIMEOUT_MS);
-        }
-
-        upstreamResponse = await fetch(targetUrl, {
-          method: request.method,
-          headers: buildUpstreamHeaders(request.headers, protocol, apiKey),
-          body: bodyBuffer.length > 0 ? bodyBuffer : null,
-          duplex: "half",
-          redirect: "follow",
-          signal: controller.signal,
-        } as RequestInit & { duplex: "half" });
-
-        if (isRetryableStatus(upstreamResponse.status)) {
-          lastError = { status: upstreamResponse.status };
-          await upstreamResponse.body?.cancel();
-          continue; // 重试
-        }
-        lastResponse = upstreamResponse; // 成功（含 4xx 业务错误）：直接透传
-        break;
-      } catch (err) {
-        lastError = {
-          status: 0,
-          text: err instanceof Error ? err.message : String(err),
-        };
-        // 网络错误/超时 → 重试
-      } finally {
-        clearTimeout(timeoutHandle);
-      }
-
-      if (lastResponse) break;
+  // 跨 upstream 故障转移链：按链序遍历 upstream，每个 upstream 内遍历 key，
+  // 每个 key 内重试 MAX_RETRY 次；只在收到响应头之前允许重试/切换（流式输出开始后不可重试）
+  for (const upstream of chain) {
+    const keys = await deps.resolveUpstreamKeys(upstream.id);
+    if (keys.length === 0) {
+      lastError = { status: 0, text: `No API keys configured for upstream: ${upstream.name}` };
+      continue;
     }
-    if (lastResponse) break;
+    const targetUrl = `${joinUrlPath(upstream.baseUrl, path)}${stripQueryKey(url)}`;
+
+    let upstreamFailed = true;
+    let modelNotFound = false;
+    let saw403 = false; // 出现过 403（可能为 key 对该 model 无权限 → model 级处理）
+    for (const apiKey of keys) {
+      for (let attempt = 0; attempt < MAX_RETRY; attempt++) {
+        let upstreamResponse: Response | null = null;
+        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+        try {
+          const controller = new AbortController();
+          if (isNonStreaming) {
+            timeoutHandle = setTimeout(() => controller.abort(), NON_STREAMING_TIMEOUT_MS);
+          }
+
+          upstreamResponse = await fetch(targetUrl, {
+            method: request.method,
+            headers: buildUpstreamHeaders(request.headers, protocol, apiKey),
+            body: bodyBuffer.length > 0 ? bodyBuffer : null,
+            duplex: "half",
+            redirect: "follow",
+            signal: controller.signal,
+          } as RequestInit & { duplex: "half" });
+
+          if (isRetryableStatus(upstreamResponse.status)) {
+            lastError = { status: upstreamResponse.status };
+            await upstreamResponse.body?.cancel();
+            continue; // 重试
+          }
+          if (isAuthStatus(upstreamResponse.status)) {
+            lastError = { status: upstreamResponse.status };
+            if (upstreamResponse.status === 403) {
+              // 403 可能是"key 对该 model 无权限"：保留响应（全部候选失败时透传），
+              // 换下一个 key；全部 key 均 403 时按 model 级标记，不误伤其他 model
+              fallbackBusinessResponse = upstreamResponse;
+              saw403 = true;
+            } else {
+              await upstreamResponse.body?.cancel();
+            }
+            break; // 尝试下一个 key
+          }
+          if (upstreamResponse.status === 404) {
+            // model 在该 upstream 不存在：标记 model 级不可用（仅此 model，不影响其他），
+            // 继续尝试下一个候选 upstream；全部 404 时透传最后一个 404
+            lastError = { status: 404 };
+            fallbackBusinessResponse = upstreamResponse; // 不 cancel：保留透传
+            modelNotFound = true;
+            deps.health?.markModelUnhealthy?.(upstream.id, model);
+            deps.log?.(
+              `[gateway] model "${model}" marked unavailable on upstream "${upstream.name}" (404)`
+            );            break;
+          }
+          lastResponse = upstreamResponse; // 成功（含其他 4xx 业务错误）：直接透传
+          successUpstream = upstream;
+          upstreamFailed = false;
+          break;
+        } catch (err) {
+          lastError = {
+            status: 0,
+            text: err instanceof Error ? err.message : String(err),
+          };
+          // 网络错误/超时 → 重试
+        } finally {
+          clearTimeout(timeoutHandle);
+        }
+
+        if (lastResponse) break;
+      }
+      if (lastResponse || modelNotFound) break;
+    }
+
+    if (lastResponse) {
+      // 后续候选成功：释放未透传的业务错误 body，避免连接泄漏
+      await fallbackBusinessResponse?.body?.cancel().catch(() => {});
+      fallbackBusinessResponse = null;
+      break;
+    }
+    if (modelNotFound) continue; // model 级不可用：不标记 upstream unhealthy，继续下一个
+    // 该 upstream 全部 key 均失败 → 标记 unhealthy，继续下一个 upstream
+    if (upstreamFailed) {
+      if (saw403) {
+        // 全部 key 均 403：大概率是该 key 对该 model 无权限 → model 级标记，不误伤其他 model
+        deps.health?.markModelUnhealthy?.(upstream.id, model);
+        deps.log?.(
+          `[gateway] model "${model}" marked unavailable on upstream "${upstream.name}" (403 on all keys)`
+        );
+      } else {
+        deps.health?.markUnhealthy(upstream.id);
+        deps.log?.(
+          `[gateway] upstream "${upstream.name}" marked unhealthy after all keys failed`
+        );
+      }
+    }
   }
 
-  // 全部失败：返回最后一个上游错误原样透传
+  // 全部失败：优先透传最后一个业务错误响应（404/403），其余返回 502
   if (!lastResponse) {
     deps.onComplete?.({ virtualKeyId: virtualKey.id }).catch(() => {});
+    if (fallbackBusinessResponse) {
+      const meta: RecordUsageMeta = {
+        model,
+        provider: defaultUpstream.name,
+        agent: virtualKey.name,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        virtualKeyId: virtualKey.id,
+        userAgent,
+      };
+      return passthroughResponse(fallbackBusinessResponse, {
+        meta,
+        deps,
+        bodyJson,
+        protocol,
+        virtualKeyId: virtualKey.id,
+      });
+    }
     if (lastError && lastError.status > 0) {
       return new Response(
         JSON.stringify({
@@ -311,10 +440,22 @@ export async function handleProxyRequest(
     return proxyError(502, lastError?.text ?? "Upstream request failed", "upstream_error");
   }
 
+  // 成功落点不是默认 upstream 时保存 session binding（粘性绑定）；仅 2xx 落点生效
+  if (
+    sessionId &&
+    deps.session &&
+    lastResponse.status >= 200 &&
+    lastResponse.status < 300 &&
+    successUpstream &&
+    successUpstream.id !== defaultUpstream.id
+  ) {
+    deps.session.setBinding(sessionId, successUpstream.id);
+  }
+
   const latencyMs = Date.now() - startTime;
   const meta: RecordUsageMeta = {
     model,
-    provider: match.upstream.name,
+    provider: (successUpstream ?? defaultUpstream).name,
     agent: virtualKey.name,
     inputTokens: 0,
     outputTokens: 0,
@@ -452,6 +593,18 @@ function toRecordUsage(parsed: ParsedUsage | null, meta: RecordUsageMeta): Recor
 }
 
 // ---- 工具 ----
+
+// 候选按 upstream 去重（同一 upstream 可因 exact + wildcard 命中多次），保留首次出现顺序
+function dedupeByUpstreamId(candidates: ModelCandidate[]): UpstreamRoute[] {
+  const seen = new Set<number>();
+  const result: UpstreamRoute[] = [];
+  for (const candidate of candidates) {
+    if (seen.has(candidate.upstream.id)) continue;
+    seen.add(candidate.upstream.id);
+    result.push(candidate.upstream);
+  }
+  return result;
+}
 
 function stripQueryKey(url: URL): string {
   url.searchParams.delete("key");

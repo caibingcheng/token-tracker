@@ -32,8 +32,9 @@ docker compose up -d                                 # 本地运行
 - **自动初始化**：`initDatabase()` 在首次 API 调用时自动建表 + 索引
 - **表结构**：
   - `token_records`（id, model, provider, agent, input_tokens, output_tokens, cache_read, cache_write, status, latency_ms, virtual_key_id, created_at）
-  - `upstreams`（id, name, protocol, base_url, enabled_models(JSON), priority, enabled, balance, balance_updated_at, created_at）
+  - `upstreams`（id, name, protocol, base_url, enabled_models(JSON), priority, enabled, health_check_model, health_status, health_updated_at, balance, balance_updated_at, created_at）
   - `upstream_keys`（id, upstream_id, api_key_encrypted, enabled, last_status, created_at）
+  - `upstream_model_health`（upstream_id+model 复合主键, status, expires_at, updated_at）：model 级不可用标记（持久化）
   - `virtual_keys`（id, name, api_key_encrypted, enabled, comment, enabled_models(JSON, 默认 '["*"]'), last_used_at, created_at）
   - `settings`（key TEXT PRIMARY KEY, value TEXT）：`admin_api_key`（AES-256-GCM 加密）、`totp_secret`、`totp_enabled`、`token_epoch`、`hidden_providers`（明文）、`session_token_ttl_hours`（明文）
 - **存量迁移**：`migrateColumns()` 泛化支持多表（token_records / virtual_keys / upstreams），通过 `PRAGMA table_info` 检测缺失列并 `ALTER TABLE` 补列（`CREATE TABLE IF NOT EXISTS` 不会补列）
@@ -66,8 +67,10 @@ docker compose up -d                                 # 本地运行
 ## AI Gateway 代理链路（核心）
 
 - **路由**：`src/app/v1/[...path]/route.ts` + `src/app/v1beta/[...path]/route.ts`（`runtime = "nodejs"`、`dynamic = "force-dynamic"`）
-- **核心逻辑**：`src/lib/gateway/proxy.ts`（纯逻辑可单测）；依赖注入 `src/lib/gateway/proxy-deps.ts`（DB 访问）
-- **流程**：提取虚拟 key（Authorization Bearer / x-api-key / x-goog-api-key / ?key=）→ 校验（**全表解密比对**，AES-256-GCM 随机 IV 无法索引）→ 提取 model（OpenAI/Anthropic 取 body，Gemini 取 path）→ `routeModel()` 匹配（精确 > 前缀通配，priority 小者胜）→ 故障转移链（429/5xx/网络错误重试，每个 key 内 `MAX_RETRY=2`，4xx 直接透传不重试，**流式输出开始后不可重试**）→ 透传（剥离认证头 + `accept-encoding: identity`，按协议注入真实 key）→ 响应管道边透传边累积 → usage 解析器 → `withSkipCache` 写库
+- **核心逻辑**：`src/lib/gateway/proxy.ts`（纯逻辑可单测）；依赖注入 `src/lib/gateway/proxy-deps.ts`（DB 访问；session/health 为**模块级单例**，因 `createProxyDeps()` 每请求创建）
+- **流程**：提取虚拟 key（Authorization Bearer / x-api-key / x-goog-api-key / ?key=）→ 校验（**全表解密比对**，AES-256-GCM 随机 IV 无法索引）→ 提取 model（OpenAI/Anthropic 取 body，Gemini 取 path）→ `routeModelByProtocol()` 取候选（精确 > 前缀通配，priority 小者胜，协议过滤）→ **跨 upstream 故障转移链**（session 粘性 binding 优先 → 其余 healthy 候选按 priority；每个 upstream 内遍历 key、每个 key 内 `MAX_RETRY=2`，**401/403 认证错误不重试直接换 key/upstream 并触发 failover**，其余 4xx 直接透传不重试、不触发 failover，**流式输出开始后不可重试**；某 upstream 全部 key 失败标记 unhealthy 并继续下一个）→ 透传（剥离认证头 + `accept-encoding: identity`，按协议注入真实 key）→ 响应管道边透传边累积 → usage 解析器 → `withSkipCache` 写库
+- **Session 粘性**：`src/lib/gateway/session.ts` — `sessionId = sha256(system 拼接尾部 1024 + 首条 user 文本前 1024 + model + vkId + protocol)`；内存 LRU（max 5000 / ttl 24h），仅 failover 落点 ≠ 默认 upstream 时保存 binding；binding 失效条件：upstream 被禁用/无 key/协议不匹配/不 healthy/不再匹配 model（链过滤自动覆盖）；单候选跳过 session 计算
+- **健康状态**：`src/lib/gateway/health.ts`（内存缓存 + **DB 持久化**：upstream 级存 `upstreams.health_status`，model 级存 `upstream_model_health`，重启后懒加载恢复探活调度）+ `src/lib/gateway/probe.ts`（非流式小请求探活，不记 token）；**upstream 级** healthy → unhealthy：真实请求中全部 key 失败（401 认证失败触发；403/404 为 model 级，不误伤）；unhealthy 不进入候选池，30 分钟定时探活恢复（`upstreams.health_check_model` 优先，否则 `enabled_models` 第一个非通配，无则保持 unhealthy）；**model 级**：某 upstream 对该 model 返回 404/403（全部 key）时标记该 model 不可用（TTL 30 分钟自动恢复），路由时跳过该 upstream 并 failover，UI 模型列表显示 unavailable 徽标；**手动测试（`/api/admin/upstreams/[id]/test-model|test-all-models`）成功即立即恢复健康状态（markHealthy + markModelHealthy），404/403 失败立即标记**，不依赖 30 分钟探活；**全部 unhealthy 时直接 502 不尝试**
 - **写库**：仅 2xx 响应记录；响应无 usage 时记 0 且 `status='no_usage'`；`status`/`latency_ms` 为新增列。**口径约定**：`input_tokens` 字段统一按不含 cache_read 写入（OpenAI/Gemini 在 parser 层做减法），`cache_read` 单独列示，展示层 Total Input 含 cache。
 - **模型并集**：`GET /v1/models` 返回所有启用上游 `enabled_models` 中非通配条目
 - **注意事项**：
@@ -203,7 +206,9 @@ docker compose up -d
 - 首次引入 vitest（`src/**/*.test.ts`，`npm test`），测试范围均为不依赖 Next.js 运行时的纯逻辑模块：
   - `src/lib/gateway/parsers/`：三协议 usage 解析
   - `src/lib/gateway/model-router`：精确/通配/priority 匹配、Gemini path 提取
-  - `src/lib/gateway/proxy`：认证、故障转移链（mock fetch）、usage 写库回调、vk model allowlist 403
+  - `src/lib/gateway/proxy`：认证、跨 upstream 故障转移链 + session 粘性（mock fetch）、usage 写库回调、vk model allowlist 403
+  - `src/lib/gateway/session`：会话指纹提取（截断/多 system/多模态/无 user）+ hash 稳定性 + LRU binding store
+  - `src/lib/gateway/health`：健康状态机（失败 → unhealthy → 探活成功 → healthy、失败重调度、幂等）
   - `src/lib/gateway/crypto`：AES-256-GCM 往返/篡改
   - `src/lib/auth/totp`：RFC 6238 测试向量 + 时间窗容差
   - `src/lib/auth/session`：会话 token 签发/验签/过期/滑动续期判定

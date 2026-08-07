@@ -1,4 +1,4 @@
-import { sqliteTable, integer, text, index } from "drizzle-orm/sqlite-core";
+import { sqliteTable, integer, text, index, primaryKey } from "drizzle-orm/sqlite-core";
 
 export const tokenRecords = sqliteTable("token_records", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -35,6 +35,9 @@ export const upstreams = sqliteTable("upstreams", {
   enabledModels: text("enabled_models").notNull().default("[]"), // JSON array, supports 'gpt-*' prefix wildcard
   priority: integer("priority").notNull().default(0),
   enabled: integer("enabled").notNull().default(1),
+  healthCheckModel: text("health_check_model"),
+  healthStatus: text("health_status"), // 'unhealthy' | NULL(healthy)，持久化健康状态
+  healthUpdatedAt: text("health_updated_at"),
   balance: text("balance"),
   balanceUpdatedAt: text("balance_updated_at"),
   createdAt: text("created_at").$defaultFn(() => new Date().toISOString()),
@@ -42,6 +45,24 @@ export const upstreams = sqliteTable("upstreams", {
 
 export type Upstream = typeof upstreams.$inferSelect;
 export type NewUpstream = typeof upstreams.$inferInsert;
+
+// upstream 级 model 不可用标记（持久化；TTL 过期由 HealthTracker 懒清理）
+export const upstreamModelHealth = sqliteTable(
+  "upstream_model_health",
+  {
+    upstreamId: integer("upstream_id")
+      .notNull()
+      .references(() => upstreams.id, { onDelete: "cascade" }),
+    model: text("model").notNull(),
+    status: text("status").notNull(), // 'unavailable'
+    expiresAt: text("expires_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.upstreamId, table.model] })]
+);
+
+export type UpstreamModelHealth = typeof upstreamModelHealth.$inferSelect;
+export type NewUpstreamModelHealth = typeof upstreamModelHealth.$inferInsert;
 
 export const upstreamKeys = sqliteTable("upstream_keys", {
   id: integer("id").primaryKey({ autoIncrement: true }),

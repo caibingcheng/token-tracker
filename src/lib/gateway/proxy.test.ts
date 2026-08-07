@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { handleProxyRequest, extractVirtualKeyToken, MAX_RETRY } from "./proxy";
 import type { ProxyDeps } from "./proxy";
 import type { UpstreamRoute } from "./model-router";
+import { buildSessionId } from "./session";
 
 function mkUpstream(overrides: Partial<UpstreamRoute>): UpstreamRoute {
   return {
@@ -672,6 +673,556 @@ describe("handleProxyRequest - quota", () => {
     );
     expect(res.status).toBe(429);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("handleProxyRequest - cross-upstream failover & session stickiness", () => {
+  const fetchMock = vi.fn();
+  const sessionId = buildSessionId(
+    { messages: [{ role: "user", content: "hi" }] },
+    "gpt-4o",
+    1,
+    "openai"
+  );
+
+  function mkUpstreams(): UpstreamRoute[] {
+    return [
+      mkUpstream({ id: 1, name: "openai-primary", baseUrl: "https://primary.example", priority: 0 }),
+      mkUpstream({ id: 2, name: "openai-alt", baseUrl: "https://alt.example", priority: 1 }),
+    ];
+  }
+
+  function mkFailoverDeps(overrides: Partial<ProxyDeps> = {}): {
+    deps: ProxyDeps;
+    getBinding: ReturnType<typeof vi.fn>;
+    setBinding: ReturnType<typeof vi.fn>;
+    isHealthy: ReturnType<typeof vi.fn>;
+    markUnhealthy: ReturnType<typeof vi.fn>;
+  } {
+    const getBinding = vi.fn();
+    const setBinding = vi.fn();
+    const isHealthy = vi.fn(() => true);
+    const markUnhealthy = vi.fn();
+    const deps = mkDeps({
+      loadUpstreams: vi.fn(async () => mkUpstreams()),
+      resolveUpstreamKeys: vi.fn(async () => ["key-1"]),
+      session: { getBinding, setBinding },
+      health: { isHealthy, markUnhealthy },
+      ...overrides,
+    });
+    return { deps, getBinding, setBinding, isHealthy, markUnhealthy };
+  }
+
+  beforeEach(() => {
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    fetchMock.mockReset();
+  });
+
+  it("does not create binding when default upstream succeeds", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    const { deps, getBinding, setBinding } = mkFailoverDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    expect(getBinding).toHaveBeenCalledWith(sessionId);
+    expect(setBinding).not.toHaveBeenCalled();
+  });
+
+  it("fails over to next upstream when default is down and creates binding", async () => {
+    fetchMock.mockImplementation((url: string) =>
+      url.startsWith("https://alt.example")
+        ? Promise.resolve(
+            new Response(JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            })
+          )
+        : Promise.resolve(new Response("server error", { status: 503 }))
+    );
+    const { deps, setBinding, markUnhealthy } = mkFailoverDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    expect(markUnhealthy).toHaveBeenCalledWith(1);
+    expect(setBinding).toHaveBeenCalledWith(sessionId, 2);
+  });
+
+  it("records usage with actual fallback upstream provider", async () => {
+    fetchMock.mockImplementation((url: string) =>
+      url.startsWith("https://alt.example")
+        ? Promise.resolve(
+            new Response(JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            })
+          )
+        : Promise.resolve(new Response("server error", { status: 503 }))
+    );
+    const { deps } = mkFailoverDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    await res.text();
+    expect(deps.onUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "openai-alt", model: "gpt-4o" })
+    );
+  });
+
+  it("prefers bound (sticky) upstream over default even when default is healthy", async () => {
+    fetchMock.mockImplementation((url: string) =>
+      url.startsWith("https://alt.example")
+        ? Promise.resolve(
+            new Response(JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            })
+          )
+        : Promise.resolve(new Response("should not be called", { status: 200 }))
+    );
+    const getBinding = vi.fn(() => ({ upstreamId: 2, boundAt: Date.now() }));
+    const { deps } = mkFailoverDeps({ session: { getBinding, setBinding: vi.fn() } });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    expect(getBinding).toHaveBeenCalledWith(sessionId);
+    expect(fetchMock).toHaveBeenCalledTimes(1); // 只请求 alt
+    expect(fetchMock.mock.calls[0][0]).toContain("alt.example");
+  });
+
+  it("skips unhealthy upstream and routes to healthy one", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    const { deps, isHealthy } = mkFailoverDeps();
+    isHealthy.mockImplementation((id: number) => id !== 1);
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    expect(fetchMock.mock.calls[0][0]).toContain("alt.example");
+    expect(deps.onUsage).toHaveBeenCalledWith(expect.objectContaining({ provider: "openai-alt" }));
+  });
+
+  it("discards binding pointing to unhealthy upstream", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    const { deps, isHealthy } = mkFailoverDeps({
+      session: {
+        getBinding: vi.fn(() => ({ upstreamId: 2, boundAt: Date.now() })),
+        setBinding: vi.fn(),
+      },
+    });
+    isHealthy.mockImplementation((id: number) => id !== 2);
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    expect(fetchMock.mock.calls[0][0]).toContain("primary.example");
+  });
+
+  it("returns 502 and marks all upstreams unhealthy when all fail", async () => {
+    fetchMock.mockResolvedValue(new Response("server error", { status: 503 }));
+    const { deps, markUnhealthy } = mkFailoverDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    expect(res.status).toBe(502);
+    expect(markUnhealthy).toHaveBeenCalledWith(1);
+    expect(markUnhealthy).toHaveBeenCalledWith(2);
+  });
+
+  it("returns 502 without fetching when all upstreams unhealthy", async () => {
+    const { deps, isHealthy } = mkFailoverDeps();
+    isHealthy.mockReturnValue(false);
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    expect(res.status).toBe(502);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("skips session computation with a single candidate", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    const getBinding = vi.fn();
+    const deps = mkDeps({
+      loadUpstreams: vi.fn(async () => [mkUpstream({ id: 1, name: "solo" })]),
+      resolveUpstreamKeys: vi.fn(async () => ["key-1"]),
+      session: { getBinding, setBinding: vi.fn() },
+      health: { isHealthy: vi.fn(() => true), markUnhealthy: vi.fn() },
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    expect(getBinding).not.toHaveBeenCalled();
+  });
+
+  it("keeps key-level retry within a failed upstream before moving on", async () => {
+    const { deps } = mkFailoverDeps();
+    fetchMock
+      .mockResolvedValueOnce(new Response("rate limited", { status: 429 }))
+      .mockResolvedValueOnce(new Response("rate limited", { status: 429 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })
+      );
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(3); // primary 重试 2 次 + alt 成功
+  });
+
+  it("passes 4xx through without failover or health change", async () => {
+    fetchMock.mockImplementation((url: string) =>
+      url.startsWith("https://alt.example")
+        ? Promise.resolve(
+            new Response(JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            })
+          )
+        : Promise.resolve(
+            new Response(JSON.stringify({ error: { message: "bad request" } }), {
+              status: 400,
+              headers: { "content-type": "application/json" },
+            })
+          )
+    );
+    const { deps, markUnhealthy } = mkFailoverDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(400);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(markUnhealthy).not.toHaveBeenCalled();
+  });
+
+  it("moves to next key when current key returns 401", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response("unauthorized", { status: 401 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })
+      );
+    const deps = mkDeps({
+      loadUpstreams: vi.fn(async () => [mkUpstream({ id: 1, name: "multi-key" })]),
+      resolveUpstreamKeys: vi.fn(async () => ["bad-key", "good-key"]),
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2); // bad-key 401 不重试直接换 key
+  });
+
+  it("fails over to next upstream when all keys return 401 and marks unhealthy", async () => {
+    fetchMock.mockImplementation((url: string) =>
+      url.startsWith("https://alt.example")
+        ? Promise.resolve(
+            new Response(JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            })
+          )
+        : Promise.resolve(new Response("unauthorized", { status: 401 }))
+    );
+    const { deps, markUnhealthy } = mkFailoverDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2); // primary 401 不重试 → alt 成功
+    expect(fetchMock.mock.calls[1][0]).toContain("alt.example");
+    expect(markUnhealthy).toHaveBeenCalledWith(1);
+    expect(deps.onUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "openai-alt" })
+    );
+  });
+
+  it("fails over to next upstream on 404 and marks model-level unavailable only", async () => {
+    fetchMock.mockImplementation((url: string) =>
+      url.startsWith("https://alt.example")
+        ? Promise.resolve(
+            new Response(JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            })
+          )
+        : Promise.resolve(new Response("model not found", { status: 404 }))
+    );
+    const markModelUnhealthy = vi.fn();
+    const { deps, markUnhealthy } = mkFailoverDeps({
+      health: {
+        isHealthy: vi.fn(() => true),
+        markUnhealthy: vi.fn(),
+        isModelHealthy: vi.fn(() => true),
+        markModelUnhealthy,
+      },
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(markModelUnhealthy).toHaveBeenCalledWith(1, "gpt-4o");
+    expect(markUnhealthy).not.toHaveBeenCalled(); // 404 不标记 upstream unhealthy
+    expect(deps.onUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "openai-alt" })
+    );
+  });
+
+  it("passes through 404 when all candidates return 404 and marks them", async () => {
+    fetchMock.mockResolvedValue(new Response("model not found", { status: 404 }));
+    const markModelUnhealthy = vi.fn();
+    const { deps, markUnhealthy } = mkFailoverDeps({
+      health: {
+        isHealthy: vi.fn(() => true),
+        markUnhealthy: vi.fn(),
+        isModelHealthy: vi.fn(() => true),
+        markModelUnhealthy,
+      },
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    const body = await res.text();
+    expect(res.status).toBe(404);
+    expect(body).toContain("model not found");
+    expect(markModelUnhealthy).toHaveBeenCalledWith(1, "gpt-4o");
+    expect(markModelUnhealthy).toHaveBeenCalledWith(2, "gpt-4o");
+    expect(markUnhealthy).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("skips upstream whose model is marked unavailable", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    const isModelHealthy = vi.fn((id: number) => id !== 1);
+    const { deps } = mkFailoverDeps({
+      health: {
+        isHealthy: vi.fn(() => true),
+        markUnhealthy: vi.fn(),
+        isModelHealthy,
+        markModelUnhealthy: vi.fn(),
+      },
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toContain("alt.example");
+    expect(deps.onUsage).toHaveBeenCalledWith(expect.objectContaining({ provider: "openai-alt" }));
+  });
+
+  it("marks model-level unavailable when all keys return 403 and fails over", async () => {
+    fetchMock.mockImplementation((url: string) =>
+      url.startsWith("https://alt.example")
+        ? Promise.resolve(
+            new Response(JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            })
+          )
+        : Promise.resolve(new Response("forbidden", { status: 403 }))
+    );
+    const markModelUnhealthy = vi.fn();
+    const { deps, markUnhealthy } = mkFailoverDeps({
+      health: {
+        isHealthy: vi.fn(() => true),
+        markUnhealthy: vi.fn(),
+        isModelHealthy: vi.fn(() => true),
+        markModelUnhealthy,
+      },
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(markModelUnhealthy).toHaveBeenCalledWith(1, "gpt-4o");
+    expect(markUnhealthy).not.toHaveBeenCalled(); // 403 不标记 upstream unhealthy
+    expect(deps.onUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "openai-alt" })
+    );
+  });
+
+  it("tries next key on 403 before failing over", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response("forbidden", { status: 403 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })
+      );
+    const { deps } = mkFailoverDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("passes through 403 when all candidates return 403", async () => {
+    fetchMock.mockResolvedValue(new Response("forbidden", { status: 403 }));
+    const { deps } = mkFailoverDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    const body = await res.text();
+    expect(res.status).toBe(403);
+    expect(body).toContain("forbidden");
+  });
+
+  it("dedupes upstream matched by both exact and wildcard patterns", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    const deps = mkDeps({
+      loadUpstreams: vi.fn(async () => [
+        mkUpstream({ id: 1, name: "dup", enabledModels: ["gpt-4o", "gpt-*"] }),
+      ]),
+      resolveUpstreamKeys: vi.fn(async () => ["key-1"]),
+      session: { getBinding: vi.fn(), setBinding: vi.fn() },
+      health: { isHealthy: vi.fn(() => true), markUnhealthy: vi.fn() },
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 

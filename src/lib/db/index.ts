@@ -10,6 +10,7 @@ let upstreamKeysTable: any;
 let virtualKeysTable: any;
 let settingsTable: any;
 let adminAuditLogsTable: any;
+let upstreamModelHealthTable: any;
 let initialized = false;
 
 export async function initDatabase() {
@@ -43,6 +44,7 @@ async function ensureClient() {
   virtualKeysTable = sqliteModule.virtualKeys;
   settingsTable = sqliteModule.settings;
   adminAuditLogsTable = sqliteModule.adminAuditLogs;
+  upstreamModelHealthTable = sqliteModule.upstreamModelHealth;
 
   client.exec(`
     CREATE TABLE IF NOT EXISTS token_records (
@@ -71,6 +73,9 @@ async function ensureClient() {
       enabled_models TEXT NOT NULL DEFAULT '[]',
       priority INTEGER NOT NULL DEFAULT 0,
       enabled INTEGER NOT NULL DEFAULT 1,
+      health_check_model TEXT,
+      health_status TEXT,
+      health_updated_at TEXT,
       created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     );
     CREATE TABLE IF NOT EXISTS upstream_keys (
@@ -109,6 +114,14 @@ async function ensureClient() {
     );
     CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_created_at ON admin_audit_logs(created_at);
     CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_action_created_at ON admin_audit_logs(action, created_at);
+    CREATE TABLE IF NOT EXISTS upstream_model_health (
+      upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
+      model TEXT NOT NULL,
+      status TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (upstream_id, model)
+    );
   `);
 
   // 存量补列必须在所有 CREATE TABLE 之后执行：全新库先建表再补列，旧库表已存在、幂等补列
@@ -136,6 +149,9 @@ async function ensureClient() {
     {
       table: "upstreams",
       columns: [
+        { name: "health_check_model", definition: "health_check_model TEXT" },
+        { name: "health_status", definition: "health_status TEXT" },
+        { name: "health_updated_at", definition: "health_updated_at TEXT" },
         { name: "balance", definition: "balance TEXT" },
         { name: "balance_updated_at", definition: "balance_updated_at TEXT" },
       ],
@@ -201,5 +217,5 @@ export function getDateGroupExpr(
   return sql<string>`strftime('%Y-%m-%d', ${tokenRecords.createdAt}, ${modifiers[0]}, ${modifiers[1]})`;
 }
 
-export { db, tokenRecords, upstreamsTable, upstreamKeysTable, virtualKeysTable, settingsTable, adminAuditLogsTable };
+export { db, tokenRecords, upstreamsTable, upstreamKeysTable, virtualKeysTable, settingsTable, adminAuditLogsTable, upstreamModelHealthTable };
 export type { TokenRecord, NewTokenRecord } from "./schema-sqlite";
