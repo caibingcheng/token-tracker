@@ -16,6 +16,24 @@ export interface UpstreamRoute {
   enabledModels?: string | string[];
 }
 
+// 手动路由规则：客户端请求的虚拟名 name + protocol → 目标 upstream 的真实模型 targetModel
+export interface RoutingRule {
+  id: number;
+  name: string;
+  protocol: Protocol;
+  upstreamId: number;
+  targetModel: string;
+}
+
+// 手动路由精确匹配：name + protocol 均一致才命中（不做跨 upstream fallback）
+export function findRoutingRule(
+  model: string,
+  protocol: Protocol,
+  rules: RoutingRule[]
+): RoutingRule | null {
+  return rules.find((r) => r.protocol === protocol && r.name === model) ?? null;
+}
+
 // 前缀通配（如 "gpt-*"）匹配："gpt-4o" 命中，但 "gpt" 本身不命中
 export function wildcardMatch(pattern: string, model: string): boolean {
   if (!pattern.endsWith("*")) return false;

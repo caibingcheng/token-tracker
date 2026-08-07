@@ -11,6 +11,7 @@ let virtualKeysTable: any;
 let settingsTable: any;
 let adminAuditLogsTable: any;
 let upstreamModelHealthTable: any;
+let routingRulesTable: any;
 let initialized = false;
 
 export async function initDatabase() {
@@ -45,6 +46,7 @@ async function ensureClient() {
   settingsTable = sqliteModule.settings;
   adminAuditLogsTable = sqliteModule.adminAuditLogs;
   upstreamModelHealthTable = sqliteModule.upstreamModelHealth;
+  routingRulesTable = sqliteModule.routingRules;
 
   client.exec(`
     CREATE TABLE IF NOT EXISTS token_records (
@@ -122,6 +124,16 @@ async function ensureClient() {
       updated_at TEXT NOT NULL,
       PRIMARY KEY (upstream_id, model)
     );
+    CREATE TABLE IF NOT EXISTS routing_rules (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      protocol TEXT NOT NULL,
+      upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
+      target_model TEXT NOT NULL,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      UNIQUE(name, protocol)
+    );
+    CREATE INDEX IF NOT EXISTS idx_routing_rules_protocol_name ON routing_rules(protocol, name);
   `);
 
   // 存量补列必须在所有 CREATE TABLE 之后执行：全新库先建表再补列，旧库表已存在、幂等补列
@@ -133,6 +145,7 @@ async function ensureClient() {
         { name: "latency_ms", definition: "latency_ms INTEGER" },
         { name: "virtual_key_id", definition: "virtual_key_id INTEGER" },
         { name: "user_agent", definition: "user_agent TEXT" },
+        { name: "target_model", definition: "target_model TEXT" },
       ],
     },
     {
@@ -217,5 +230,5 @@ export function getDateGroupExpr(
   return sql<string>`strftime('%Y-%m-%d', ${tokenRecords.createdAt}, ${modifiers[0]}, ${modifiers[1]})`;
 }
 
-export { db, tokenRecords, upstreamsTable, upstreamKeysTable, virtualKeysTable, settingsTable, adminAuditLogsTable, upstreamModelHealthTable };
+export { db, tokenRecords, upstreamsTable, upstreamKeysTable, virtualKeysTable, settingsTable, adminAuditLogsTable, upstreamModelHealthTable, routingRulesTable };
 export type { TokenRecord, NewTokenRecord } from "./schema-sqlite";

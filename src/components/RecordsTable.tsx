@@ -14,6 +14,7 @@ export interface Record {
   outputTokens: number;
   cacheRead: number;
   cacheWrite: number;
+  targetModel?: string | null;
   createdAt: string;
 }
 
@@ -203,9 +204,14 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
                 </td>
                 <td
                   className="px-6 py-4 whitespace-nowrap text-sm text-gray-900"
-                  title={`Original Model: ${record.model}`}
+                  title={`Original Model: ${record.model}${record.targetModel ? ` → ${record.targetModel}` : ""}`}
                 >
                   {record.normalizedModel}
+                  {record.targetModel && (
+                    <span className="ml-1.5 text-[10px] text-gray-400" title={`Routed to ${record.targetModel}`}>
+                      → {record.targetModel}
+                    </span>
+                  )}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                   {record.agent}
@@ -237,6 +243,11 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
                 <p className="text-sm font-medium text-gray-900" title={`Original: ${record.model}`}>
                   {record.normalizedModel}
                 </p>
+                {record.targetModel && (
+                  <p className="text-xs text-gray-400 mt-0.5" title="Routed to upstream model">
+                    → {record.targetModel}
+                  </p>
+                )}
                 <p className="text-xs text-gray-400 mt-1">{record.agent}</p>
               </div>
             </div>

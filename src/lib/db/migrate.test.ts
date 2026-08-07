@@ -16,6 +16,7 @@ const TABLES = [
       { name: "latency_ms", definition: "latency_ms INTEGER" },
       { name: "virtual_key_id", definition: "virtual_key_id INTEGER" },
       { name: "user_agent", definition: "user_agent TEXT" },
+      { name: "target_model", definition: "target_model TEXT" },
     ],
   },
   {
@@ -92,7 +93,7 @@ describe("migrateColumns", () => {
     migrateColumns(db, TABLES);
 
     expect(tableColumns("token_records")).toEqual(
-      expect.arrayContaining(["status", "latency_ms", "virtual_key_id", "user_agent"])
+      expect.arrayContaining(["status", "latency_ms", "virtual_key_id", "user_agent", "target_model"])
     );
     expect(tableColumns("virtual_keys")).toEqual(
       expect.arrayContaining([

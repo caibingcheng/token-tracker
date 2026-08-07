@@ -16,9 +16,16 @@ export type AuditAction =
   | "virtual_key_deleted"
   | "upstream_key_created"
   | "upstream_key_updated"
-  | "upstream_key_deleted";
+  | "upstream_key_deleted"
+  | "routing_rule_created"
+  | "routing_rule_deleted";
 
-export type AuditTargetType = "upstream" | "virtual_key" | "upstream_key" | "system";
+export type AuditTargetType =
+  | "upstream"
+  | "virtual_key"
+  | "upstream_key"
+  | "routing_rule"
+  | "system";
 
 export interface AuditLogInput {
   action: AuditAction;

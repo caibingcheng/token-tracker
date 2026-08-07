@@ -7,11 +7,12 @@ import {
   virtualKeysTable,
   tokenRecords,
   upstreamModelHealthTable,
+  routingRulesTable,
 } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { decryptSecret, safeCompare } from "./crypto";
 import type { ProxyDeps, RecordUsageMeta } from "./proxy";
-import type { UpstreamRoute } from "./model-router";
+import type { UpstreamRoute, RoutingRule } from "./model-router";
 import type { QuotaUsage } from "./quota";
 import { parseEnabledModels } from "./model-router";
 import type { Protocol } from "./model-router";
@@ -150,6 +151,19 @@ const healthTracker = new HealthTracker(probeUpstream, healthPersistence);
 
 export { healthTracker };
 
+// 加载全部手动路由规则（SELECT 走现有 10s 查询缓存，命中即短路自动路由）
+export async function loadRoutingRules(): Promise<RoutingRule[]> {
+  await initDatabase();
+  const rows = await db.select().from(routingRulesTable);
+  return rows.map((row: any): RoutingRule => ({
+    id: row.id,
+    name: row.name,
+    protocol: row.protocol,
+    upstreamId: row.upstreamId,
+    targetModel: row.targetModel,
+  }));
+}
+
 // 惰性构建：tokenRecords 在模块加载时为 undefined，必须在首次使用（函数体内）时引用
 function tokenSumSql() {
   return sql`COALESCE(SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.outputTokens}) + SUM(${tokenRecords.cacheRead}) + SUM(${tokenRecords.cacheWrite}), 0)`;
@@ -205,6 +219,10 @@ export function createProxyDeps(): ProxyDeps {
         );
     },
 
+    async loadRoutingRules() {
+      return loadRoutingRules();
+    },
+
     // 写库走 withSkipCache：INSERT 自动触发 invalidateQueryCache()，Dashboard 即时可见
     async onUsage(usage: RecordUsageMeta) {
       await initDatabase();
@@ -221,6 +239,7 @@ export function createProxyDeps(): ProxyDeps {
           latencyMs: usage.latencyMs ?? null,
           virtualKeyId: usage.virtualKeyId ?? null,
           userAgent: usage.userAgent ?? null,
+          targetModel: usage.targetModel ?? null,
         });
       });
     },

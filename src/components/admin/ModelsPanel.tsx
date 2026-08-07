@@ -31,8 +31,19 @@ interface CandidateInfo {
 interface ResolvedRoute {
   protocol: Protocol;
   model: string;
+  source: "manual" | "auto";
   winner: CandidateInfo | null;
   candidates: CandidateInfo[];
+}
+
+interface ManualRouteInfo {
+  id: number;
+  name: string;
+  protocol: Protocol;
+  upstreamId: number;
+  upstreamName: string;
+  upstreamProtocol: Protocol;
+  targetModel: string;
 }
 
 interface WildcardInfo {
@@ -47,6 +58,7 @@ interface ModelsData {
   protocols: Protocol[];
   resolvedRoutes: ResolvedRoute[];
   wildcardPatternsByProtocol: Record<Protocol, WildcardInfo[]>;
+  manualRoutes: ManualRouteInfo[];
 }
 
 function toUpstreamRoute(u: UpstreamSummary): UpstreamRoute {
@@ -76,13 +88,15 @@ function protocolBadgeClass(protocol: Protocol): string {
   }
 }
 
-function MatchTypeBadge({ type }: { type: "exact" | "wildcard" }) {
+function MatchTypeBadge({ type }: { type: "exact" | "wildcard" | "manual" }) {
+  const cls =
+    type === "exact"
+      ? "bg-green-50 text-green-700"
+      : type === "wildcard"
+        ? "bg-purple-50 text-purple-700"
+        : "bg-blue-50 text-blue-700";
   return (
-    <span
-      className={`rounded px-1.5 py-0.5 text-[10px] ${
-        type === "exact" ? "bg-green-50 text-green-700" : "bg-purple-50 text-purple-700"
-      }`}
-    >
+    <span className={`rounded px-1.5 py-0.5 text-[10px] ${cls}`}>
       {type}
     </span>
   );
@@ -104,6 +118,14 @@ export default function ModelsPanel() {
 
   const [selectedProtocol, setSelectedProtocol] = useState<Protocol>("openai");
   const [expandedModels, setExpandedModels] = useState<Set<string>>(new Set());
+
+  // Manual Routing 表单
+  const [ruleName, setRuleName] = useState("");
+  const [ruleProtocol, setRuleProtocol] = useState<Protocol>("openai");
+  const [ruleUpstreamId, setRuleUpstreamId] = useState<number | "">("");
+  const [ruleTargetModel, setRuleTargetModel] = useState("");
+  const [showTargetSuggestions, setShowTargetSuggestions] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -131,6 +153,66 @@ export default function ModelsPanel() {
     () => (data ? data.upstreams.filter((u) => u.enabled).map(toUpstreamRoute) : []),
     [data]
   );
+
+  // provider 下拉选项：按所选 protocol 过滤 + enabled 过滤
+  const ruleUpstreamOptions = useMemo(() => {
+    if (!data) return [];
+    return data.upstreams.filter(
+      (u) => u.enabled && u.protocol === ruleProtocol
+    );
+  }, [data, ruleProtocol]);
+
+  // target model 候选 = 所选 upstream 的 enabledModels 非通配项
+  const ruleTargetCandidates = useMemo(() => {
+    const upstream = ruleUpstreamOptions.find((u) => u.id === ruleUpstreamId);
+    if (!upstream) return [];
+    return upstream.enabledModels.filter((m) => !m.endsWith("*"));
+  }, [ruleUpstreamOptions, ruleUpstreamId]);
+
+  const createRule = async () => {
+    if (!ruleName.trim() || !ruleUpstreamId || !ruleTargetModel.trim()) return;
+    setSubmitting(true);
+    try {
+      const res = await apiFetch("/api/admin/routing-rules", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: ruleName.trim(),
+          protocol: ruleProtocol,
+          upstreamId: ruleUpstreamId,
+          targetModel: ruleTargetModel.trim(),
+        }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        setRuleName("");
+        setRuleUpstreamId("");
+        setRuleTargetModel("");
+        await load();
+      } else {
+        setError(json.error || "Failed to create routing rule");
+      }
+    } catch {
+      setError("Network error");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const deleteRule = async (rule: ManualRouteInfo) => {
+    if (!window.confirm(`Delete manual route "${rule.name}" → ${rule.targetModel}?`)) return;
+    try {
+      const res = await apiFetch(`/api/admin/routing-rules/${rule.id}`, { method: "DELETE" });
+      const json = await res.json();
+      if (json.success) {
+        await load();
+      } else {
+        setError(json.error || "Failed to delete routing rule");
+      }
+    } catch {
+      setError("Network error");
+    }
+  };
 
   const runSimulation = () => {
     const model = modelInput.trim();
@@ -302,6 +384,160 @@ export default function ModelsPanel() {
         )}
       </div>
 
+      {/* 手动路由规则 */}
+      <div className="rounded-lg bg-white p-4 shadow">
+        <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <h2 className="text-base font-semibold">Manual Routing</h2>
+          <p className="text-xs text-gray-400">
+            Manual rules take precedence over automatic routing. No cross-upstream fallback.
+          </p>
+        </div>
+
+        {/* 新增行：name / protocol / provider / target model */}
+        <div className="grid grid-cols-1 md:grid-cols-[1fr_150px_1fr_1fr_auto] gap-3">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-700">New Model Name</label>
+            <input
+              value={ruleName}
+              onChange={(e) => setRuleName(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && createRule()}
+              placeholder="Virtual name clients request"
+              className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-700">Protocol</label>
+            <select
+              value={ruleProtocol}
+              onChange={(e) => {
+                setRuleProtocol(e.target.value as Protocol);
+                setRuleUpstreamId("");
+                setRuleTargetModel("");
+              }}
+              className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              {data?.protocols.map((p) => (
+                <option key={p} value={p}>{p}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-700">Provider</label>
+            <select
+              value={ruleUpstreamId}
+              onChange={(e) => {
+                setRuleUpstreamId(e.target.value === "" ? "" : Number(e.target.value));
+                setRuleTargetModel("");
+              }}
+              className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              <option value="">Select upstream…</option>
+              {ruleUpstreamOptions.map((u) => (
+                <option key={u.id} value={u.id}>{u.name}</option>
+              ))}
+            </select>
+            {ruleUpstreamOptions.length === 0 && (
+              <p className="mt-1 text-[11px] text-gray-400">
+                No enabled {ruleProtocol} upstreams
+              </p>
+            )}
+          </div>
+          <div className="relative">
+            <label className="mb-1 block text-xs font-medium text-gray-700">Target Model</label>
+            <input
+              value={ruleTargetModel}
+              onChange={(e) => {
+                setRuleTargetModel(e.target.value);
+                setShowTargetSuggestions(true);
+              }}
+              onFocus={() => setShowTargetSuggestions(true)}
+              onBlur={() => setTimeout(() => setShowTargetSuggestions(false), 150)}
+              onKeyDown={(e) => e.key === "Enter" && createRule()}
+              placeholder="Real model on upstream"
+              disabled={!ruleUpstreamId}
+              className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50"
+            />
+            {showTargetSuggestions && ruleTargetCandidates.length > 0 && (
+              <div className="absolute z-10 mt-1 max-h-48 w-full overflow-y-auto rounded border border-gray-200 bg-white shadow-lg">
+                {ruleTargetCandidates.map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      setRuleTargetModel(m);
+                      setShowTargetSuggestions(false);
+                    }}
+                    className="flex w-full items-center justify-between px-3 py-1.5 text-left text-sm hover:bg-gray-50"
+                  >
+                    <span>{m}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="flex items-end">
+            <button
+              type="button"
+              onClick={createRule}
+              disabled={!ruleName.trim() || !ruleUpstreamId || !ruleTargetModel.trim() || submitting}
+              className="w-full rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 md:w-auto"
+            >
+              {submitting ? "Adding…" : "Add Rule"}
+            </button>
+          </div>
+        </div>
+
+        {/* 规则列表 */}
+        {data && data.manualRoutes.length > 0 && (
+          <div className="mt-4 overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs text-gray-400">
+                  <th className="px-2 py-2">Name</th>
+                  <th className="px-2 py-2">Protocol</th>
+                  <th className="px-2 py-2">Provider</th>
+                  <th className="px-2 py-2">Target Model</th>
+                  <th className="px-2 py-2"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {data.manualRoutes.map((rule) => (
+                  <tr key={rule.id}>
+                    <td className="px-2 py-2">
+                      <CopyableCode className="text-xs">{rule.name}</CopyableCode>
+                    </td>
+                    <td className="px-2 py-2">
+                      <span className={`rounded border px-1.5 py-0.5 text-[10px] ${protocolBadgeClass(rule.protocol)}`}>
+                        {rule.protocol}
+                      </span>
+                    </td>
+                    <td className="px-2 py-2">
+                      <span className="font-medium">{rule.upstreamName}</span>
+                      <span className={`ml-1.5 rounded border px-1.5 py-0.5 text-[10px] ${protocolBadgeClass(rule.upstreamProtocol)}`}>
+                        {rule.upstreamProtocol}
+                      </span>
+                    </td>
+                    <td className="px-2 py-2">
+                      <CopyableCode className="text-xs">{rule.targetModel}</CopyableCode>
+                    </td>
+                    <td className="px-2 py-2 text-right">
+                      <button
+                        type="button"
+                        onClick={() => deleteRule(rule)}
+                        className="text-xs text-red-500 hover:text-red-700"
+                      >
+                        Delete
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
       {/* 静态路由表 */}
       <div className="rounded-lg bg-white p-4 shadow">
         <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -387,7 +623,13 @@ export default function ModelsPanel() {
                           )}
                         </td>
                         <td className="px-2 py-2">
-                          {route.winner ? <MatchTypeBadge type={route.winner.matchType} /> : "—"}
+                          {route.source === "manual" ? (
+                            <MatchTypeBadge type="manual" />
+                          ) : route.winner ? (
+                            <MatchTypeBadge type={route.winner.matchType} />
+                          ) : (
+                            "—"
+                          )}
                         </td>
                         <td className="px-2 py-2 text-xs text-gray-500">
                           {route.candidates.length}

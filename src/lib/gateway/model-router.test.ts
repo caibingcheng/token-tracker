@@ -132,7 +132,40 @@ describe("detectRequestProtocol", () => {
   });
 });
 
-import { findCandidatesByProtocol, routeModelByProtocol } from "./model-router";
+import { findCandidatesByProtocol, routeModelByProtocol, findRoutingRule } from "./model-router";
+import type { RoutingRule } from "./model-router";
+
+function mkRule(overrides: Partial<RoutingRule>): RoutingRule {
+  return {
+    id: 1,
+    name: "my-alias",
+    protocol: "openai",
+    upstreamId: 3,
+    targetModel: "gpt-4o-real",
+    ...overrides,
+  };
+}
+
+describe("findRoutingRule", () => {
+  it("matches exact name + protocol", () => {
+    const rule = mkRule({ id: 2, name: "alias-x", protocol: "anthropic" });
+    expect(findRoutingRule("alias-x", "anthropic", [rule])?.id).toBe(2);
+  });
+
+  it("does not match when protocol differs", () => {
+    const rule = mkRule({ name: "alias-x", protocol: "openai" });
+    expect(findRoutingRule("alias-x", "anthropic", [rule])).toBeNull();
+  });
+
+  it("does not match when name differs", () => {
+    const rule = mkRule({ name: "alias-x" });
+    expect(findRoutingRule("alias-y", "openai", [rule])).toBeNull();
+  });
+
+  it("returns null with no rules", () => {
+    expect(findRoutingRule("anything", "openai", [])).toBeNull();
+  });
+});
 
 describe("findCandidatesByProtocol", () => {
   it("only returns candidates with matching protocol", () => {

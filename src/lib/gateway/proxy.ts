@@ -6,8 +6,9 @@ import {
   modelMatchesPattern,
   parseEnabledModels,
   detectRequestProtocol,
+  findRoutingRule,
 } from "./model-router";
-import type { UpstreamRoute, ModelCandidate } from "./model-router";
+import type { UpstreamRoute, ModelCandidate, RoutingRule } from "./model-router";
 import { buildAuthHeaders } from "./upstream-client";
 import { joinUrlPath } from "./url-utils";
 import { buildSessionId } from "./session";
@@ -23,6 +24,7 @@ import {
 import type { ParsedUsage } from "./parsers/types";
 import { checkQuota } from "./quota";
 import type { QuotaUsage } from "./quota";
+import { rewriteModelNonStreaming, createSseModelRewriter } from "./response-rewriter";
 
 export const MAX_RETRY = 2; // 每个 key 内最多尝试次数
 const NON_STREAMING_TIMEOUT_MS = 60_000;
@@ -50,6 +52,7 @@ export interface RecordUsageMeta {
   latencyMs?: number;
   virtualKeyId?: number;
   userAgent?: string | null;
+  targetModel?: string | null; // 手动路由映射后的上游真实模型名
 }
 
 export interface ProxyDeps {
@@ -59,6 +62,8 @@ export interface ProxyDeps {
   resolveUpstreamKeys: (upstreamId: number) => Promise<string[]>;
   // 加载所有启用的上游（含 enabledModels）
   loadUpstreams: () => Promise<UpstreamRoute[]>;
+  // 加载全部手动路由规则（可选；未实现则手动路由不生效）
+  loadRoutingRules?: () => Promise<RoutingRule[]>;
   // usage 解析完成回调（写库）
   onUsage?: (meta: RecordUsageMeta) => Promise<void>;
   // 请求完成回调（更新 last_used_at 等）
@@ -185,10 +190,15 @@ export async function handleProxyRequest(
     return proxyError(401, "Invalid or revoked virtual key", "authentication_error");
   }
 
-  // GET /v1/models：返回所有启用上游模型的并集（按 vk enabledModels 过滤）
+  // GET /v1/models：返回所有启用上游模型的并集 + 手动路由虚拟名（按请求协议过滤，均过 vk allowlist）
   if (request.method === "GET" && path.endsWith("/models")) {
     const upstreams = await deps.loadUpstreams();
-    const models = collectEnabledModels(upstreams).filter((id) =>
+    const protocol = detectRequestProtocol(path);
+    const rules = deps.loadRoutingRules ? await deps.loadRoutingRules() : [];
+    const manualNames = rules
+      .filter((r) => r.protocol === protocol)
+      .map((r) => r.name);
+    const models = collectEnabledModels(upstreams, manualNames).filter((id) =>
       isModelAllowedByVirtualKey(virtualKey, id)
     );
     return Response.json(
@@ -228,32 +238,71 @@ export async function handleProxyRequest(
   const upstreams = await deps.loadUpstreams();
   const protocol = detectRequestProtocol(path);
 
-  // 按协议路由：获取所有匹配候选（exact 优先，priority 升序）
-  const { candidates } = routeModelByProtocol(model, protocol, upstreams);
-  if (candidates.length === 0) {
-    // 保留原语义：model 仅配置在其他协议的 upstream 上 → 400 protocol_mismatch
-    const global = routeModel(model, upstreams);
-    if (global) {
-      return proxyError(
-        400,
-        `Protocol mismatch: request path ${path} is ${protocol}, but upstream "${global.upstream.name}" is configured as ${global.upstream.protocol}`,
-        "protocol_mismatch"
-      );
+  // 手动路由短路：命中即走目标 upstream 单元素 chain，先于自动路由；
+  // 目标 upstream 禁用/不存在/unhealthy 或 target_model 被 model 级标记 → 502 manual_route_unavailable
+  let manualRoute: { virtualName: string; targetModel: string } | null = null;
+  let chain: UpstreamRoute[] = [];
+  if (deps.loadRoutingRules) {
+    const rules = await deps.loadRoutingRules();
+    const rule = findRoutingRule(model, protocol, rules);
+    if (rule) {
+      const target = upstreams.find((u) => u.id === rule.upstreamId);
+      if (!target) {
+        return proxyError(
+          502,
+          `Manual route target upstream (id=${rule.upstreamId}) is disabled or does not exist`,
+          "manual_route_unavailable"
+        );
+      }
+      if (deps.health && !(await deps.health.isHealthy(target.id))) {
+        return proxyError(
+          502,
+          `Manual route target upstream "${target.name}" is unhealthy`,
+          "manual_route_unavailable"
+        );
+      }
+      if (
+        deps.health?.isModelHealthy &&
+        !(await deps.health.isModelHealthy(target.id, rule.targetModel))
+      ) {
+        return proxyError(
+          502,
+          `Manual route target model "${rule.targetModel}" is unavailable on upstream "${target.name}"`,
+          "manual_route_unavailable"
+        );
+      }
+      chain = [target];
+      manualRoute = { virtualName: model, targetModel: rule.targetModel };
     }
-    return proxyError(404, `No upstream configured for model: ${model}`, "model_not_found");
   }
 
-  // 候选去重（同一 upstream 可因 exact + wildcard 命中多次）+ 过滤 unhealthy（upstream 级 + model 级）
-  let chain: UpstreamRoute[] = [];
-  for (const candidate of dedupeByUpstreamId(candidates)) {
-    if (deps.health && !(await deps.health.isHealthy(candidate.id))) continue;
-    if (deps.health?.isModelHealthy && !(await deps.health.isModelHealthy(candidate.id, model))) {
-      continue;
+  if (!manualRoute) {
+    // 按协议路由：获取所有匹配候选（exact 优先，priority 升序）
+    const { candidates } = routeModelByProtocol(model, protocol, upstreams);
+    if (candidates.length === 0) {
+      // 保留原语义：model 仅配置在其他协议的 upstream 上 → 400 protocol_mismatch
+      const global = routeModel(model, upstreams);
+      if (global) {
+        return proxyError(
+          400,
+          `Protocol mismatch: request path ${path} is ${protocol}, but upstream "${global.upstream.name}" is configured as ${global.upstream.protocol}`,
+          "protocol_mismatch"
+        );
+      }
+      return proxyError(404, `No upstream configured for model: ${model}`, "model_not_found");
     }
-    chain.push(candidate);
-  }
-  if (chain.length === 0) {
-    return proxyError(502, `All upstreams are unhealthy for model: ${model}`, "upstream_error");
+
+    // 候选去重（同一 upstream 可因 exact + wildcard 命中多次）+ 过滤 unhealthy（upstream 级 + model 级）
+    for (const candidate of dedupeByUpstreamId(candidates)) {
+      if (deps.health && !(await deps.health.isHealthy(candidate.id))) continue;
+      if (deps.health?.isModelHealthy && !(await deps.health.isModelHealthy(candidate.id, model))) {
+        continue;
+      }
+      chain.push(candidate);
+    }
+    if (chain.length === 0) {
+      return proxyError(502, `All upstreams are unhealthy for model: ${model}`, "upstream_error");
+    }
   }
 
   // 默认 upstream = 排序后第一个
@@ -297,6 +346,23 @@ export async function handleProxyRequest(
   const startTime = Date.now();
   const isNonStreaming = isNonStreamingRequestBody(bodyJson);
 
+  // 手动路由请求改写：OpenAI/Anthropic 改 body.model，Gemini 改 path 中模型段
+  let effectivePath = path;
+  let effectiveBodyBuffer = bodyBuffer;
+  const effectiveModel = manualRoute ? manualRoute.targetModel : model;
+  if (manualRoute) {
+    if (protocol === "gemini") {
+      effectivePath = path.replace(
+        /^(\/v1(?:\/?beta)?\/models\/)[^/:]+/,
+        `$1${manualRoute.targetModel}`
+      );
+    } else if (bodyJson && typeof bodyJson === "object") {
+      effectiveBodyBuffer = new TextEncoder().encode(
+        JSON.stringify({ ...(bodyJson as Record<string, unknown>), model: manualRoute.targetModel })
+      );
+    }
+  }
+
   let lastError: { status: number; text?: string } | null = null;
   let lastResponse: Response | null = null;
   let successUpstream: UpstreamRoute | null = null;
@@ -311,7 +377,7 @@ export async function handleProxyRequest(
       lastError = { status: 0, text: `No API keys configured for upstream: ${upstream.name}` };
       continue;
     }
-    const targetUrl = `${joinUrlPath(upstream.baseUrl, path)}${stripQueryKey(url)}`;
+    const targetUrl = `${joinUrlPath(upstream.baseUrl, effectivePath)}${stripQueryKey(url)}`;
 
     let upstreamFailed = true;
     let modelNotFound = false;
@@ -329,7 +395,7 @@ export async function handleProxyRequest(
           upstreamResponse = await fetch(targetUrl, {
             method: request.method,
             headers: buildUpstreamHeaders(request.headers, protocol, apiKey),
-            body: bodyBuffer.length > 0 ? bodyBuffer : null,
+            body: effectiveBodyBuffer.length > 0 ? effectiveBodyBuffer : null,
             duplex: "half",
             redirect: "follow",
             signal: controller.signal,
@@ -358,9 +424,9 @@ export async function handleProxyRequest(
             lastError = { status: 404 };
             fallbackBusinessResponse = upstreamResponse; // 不 cancel：保留透传
             modelNotFound = true;
-            deps.health?.markModelUnhealthy?.(upstream.id, model);
+            deps.health?.markModelUnhealthy?.(upstream.id, effectiveModel);
             deps.log?.(
-              `[gateway] model "${model}" marked unavailable on upstream "${upstream.name}" (404)`
+              `[gateway] model "${effectiveModel}" marked unavailable on upstream "${upstream.name}" (404)`
             );            break;
           }
           lastResponse = upstreamResponse; // 成功（含其他 4xx 业务错误）：直接透传
@@ -393,9 +459,9 @@ export async function handleProxyRequest(
     if (upstreamFailed) {
       if (saw403) {
         // 全部 key 均 403：大概率是该 key 对该 model 无权限 → model 级标记，不误伤其他 model
-        deps.health?.markModelUnhealthy?.(upstream.id, model);
+        deps.health?.markModelUnhealthy?.(upstream.id, effectiveModel);
         deps.log?.(
-          `[gateway] model "${model}" marked unavailable on upstream "${upstream.name}" (403 on all keys)`
+          `[gateway] model "${effectiveModel}" marked unavailable on upstream "${upstream.name}" (403 on all keys)`
         );
       } else {
         deps.health?.markUnhealthy(upstream.id);
@@ -420,6 +486,7 @@ export async function handleProxyRequest(
         cacheWrite: 0,
         virtualKeyId: virtualKey.id,
         userAgent,
+        targetModel: manualRoute ? manualRoute.targetModel : null,
       };
       return passthroughResponse(fallbackBusinessResponse, {
         meta,
@@ -427,7 +494,16 @@ export async function handleProxyRequest(
         bodyJson,
         protocol,
         virtualKeyId: virtualKey.id,
+        virtualModelName: manualRoute?.virtualName,
       });
+    }
+    if (manualRoute) {
+      // 手动路由不做跨 upstream fallback：目标 upstream 无 key / 全部 key 失败 → 502
+      const detail =
+        lastError?.text ??
+        (lastError && lastError.status > 0 ? `upstream returned status ${lastError.status}` : null) ??
+        "upstream request failed";
+      return proxyError(502, `Manual route target unavailable: ${detail}`, "manual_route_unavailable");
     }
     if (lastError && lastError.status > 0) {
       return new Response(
@@ -464,6 +540,7 @@ export async function handleProxyRequest(
     latencyMs,
     virtualKeyId: virtualKey.id,
     userAgent,
+    targetModel: manualRoute ? manualRoute.targetModel : null,
   };
 
   return passthroughResponse(lastResponse, {
@@ -472,10 +549,12 @@ export async function handleProxyRequest(
     bodyJson,
     protocol,
     virtualKeyId: virtualKey.id,
+    virtualModelName: manualRoute?.virtualName,
   });
 }
 
-// 透传上游响应（单 reader，边透传边累积副本），usage 解析与写库由 deps 完成
+// 透传上游响应（单 reader，边透传边累积副本），usage 解析与写库由 deps 完成；
+// 仅手动路由命中时启用响应 model 回写（virtualModelName），正常流量零开销
 async function passthroughResponse(
   upstreamResponse: Response,
   opts: {
@@ -484,9 +563,10 @@ async function passthroughResponse(
     bodyJson: unknown;
     protocol: Protocol;
     virtualKeyId: number;
+    virtualModelName?: string;
   }
 ): Promise<Response> {
-  const { meta, deps, bodyJson, protocol, virtualKeyId } = opts;
+  const { meta, deps, bodyJson, protocol, virtualKeyId, virtualModelName } = opts;
   const headers = new Headers(PROXY_RESPONSE_HEADERS);
   copyHeader(upstreamResponse.headers, headers, "content-type");
   copyHeader(upstreamResponse.headers, headers, "x-ratelimit-remaining-requests");
@@ -503,17 +583,40 @@ async function passthroughResponse(
   const chunks: Uint8Array[] = [];
   let onDone: () => void = () => {};
 
+  const rewriter = virtualModelName
+    ? createSseModelRewriter(protocol, virtualModelName)
+    : null;
+
   const passthrough = new ReadableStream<Uint8Array>({
     start(controller) {
       const pump = async () => {
         try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            chunks.push(value);
-            controller.enqueue(value);
+          if (!isStreaming && rewriter) {
+            // 非流式回写：先攒完整 body → 一次性改写 → 再 enqueue（改写失败回退原始 body）
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              chunks.push(value);
+            }
+            const fullText = new TextDecoder().decode(concatUint8Arrays(chunks));
+            const rewritten = rewriteModelNonStreaming(fullText, protocol, virtualModelName!);
+            const bytes = new TextEncoder().encode(rewritten);
+            if (bytes.length > 0) controller.enqueue(bytes);
+            controller.close();
+          } else {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              chunks.push(value);
+              controller.enqueue(rewriter ? rewriter.transform(value) : value);
+            }
+            if (rewriter) {
+              // 流结束 flush 残余缓冲（未凑成完整事件的部分原样输出）
+              const rest = rewriter.flush();
+              if (rest.length > 0) controller.enqueue(rest);
+            }
+            controller.close();
           }
-          controller.close();
         } catch (err) {
           controller.error(err);
         }
@@ -612,8 +715,8 @@ function stripQueryKey(url: URL): string {
   return qs ? `?${qs}` : "";
 }
 
-function collectEnabledModels(upstreams: UpstreamRoute[]): string[] {
-  const result = new Set<string>();
+function collectEnabledModels(upstreams: UpstreamRoute[], manualNames: string[] = []): string[] {
+  const result = new Set<string>(manualNames);
   for (const upstream of upstreams) {
     if (upstream.enabled === false) continue;
     const raw = upstream.enabledModels;

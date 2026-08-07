@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { db, initDatabase, upstreamsTable } from "@/lib/db";
+import { db, initDatabase, upstreamsTable, routingRulesTable } from "@/lib/db";
 import { withAuth } from "@/lib/auth/guard";
 import {
   isProtocol,
@@ -31,8 +31,19 @@ interface CandidateInfo {
 interface ResolvedRoute {
   protocol: Protocol;
   model: string;
+  source: "manual" | "auto";
   winner: CandidateInfo | null;
   candidates: CandidateInfo[];
+}
+
+interface ManualRouteInfo {
+  id: number;
+  name: string;
+  protocol: Protocol;
+  upstreamId: number;
+  upstreamName: string;
+  upstreamProtocol: Protocol;
+  targetModel: string;
 }
 
 interface WildcardInfo {
@@ -70,6 +81,26 @@ export const GET = withAuth(async () => {
 
   const upstreamRoutes = rows.map(toUpstreamRoute);
 
+  // 手动路由规则（join upstream 供 UI 展示）
+  const ruleRows = await db.select().from(routingRulesTable).orderBy(routingRulesTable.name);
+  const upstreamById = new Map<number, any>(rows.map((r: any) => [r.id, r]));
+  const manualRoutes: ManualRouteInfo[] = ruleRows.map((r: any) => {
+    const u = upstreamById.get(r.upstreamId);
+    return {
+      id: r.id,
+      name: r.name,
+      protocol: isProtocol(r.protocol) ? r.protocol : "openai",
+      upstreamId: r.upstreamId,
+      upstreamName: u?.name ?? "(deleted)",
+      upstreamProtocol: u && isProtocol(u.protocol) ? u.protocol : "openai",
+      targetModel: r.targetModel,
+    };
+  });
+  const manualByKey = new Map<string, ManualRouteInfo>();
+  for (const m of manualRoutes) {
+    manualByKey.set(`${m.protocol}:${m.name}`, m);
+  }
+
   // 按 protocol 收集具体模型（非通配）和通配模式
   const concreteModelsByProtocol = new Map<Protocol, Set<string>>();
   const wildcardPatternsByProtocol = new Map<Protocol, WildcardInfo[]>();
@@ -101,10 +132,36 @@ export const GET = withAuth(async () => {
     if (!models) continue;
     const sortedModels = Array.from(models).sort((a, b) => a.localeCompare(b));
     for (const model of sortedModels) {
+      const manual = manualByKey.get(`${protocol}:${model}`);
+      if (manual) {
+        // 手动路由行排在自动行之前（winner = 配置的目标 upstream，candidates 单元素）
+        resolvedRoutes.push({
+          protocol,
+          model,
+          source: "manual",
+          winner: {
+            upstreamId: manual.upstreamId,
+            name: manual.upstreamName,
+            priority: 0,
+            matchedPattern: manual.name,
+            matchType: "exact",
+          },
+          candidates: [
+            {
+              upstreamId: manual.upstreamId,
+              name: manual.upstreamName,
+              priority: 0,
+              matchedPattern: manual.name,
+              matchType: "exact",
+            },
+          ],
+        });
+      }
       const { winner, candidates } = routeModelByProtocol(model, protocol, upstreamRoutes);
       resolvedRoutes.push({
         protocol,
         model,
+        source: "auto",
         winner: winner
           ? {
               upstreamId: winner.upstream.id,
@@ -121,6 +178,33 @@ export const GET = withAuth(async () => {
           matchedPattern: c.matchedPattern,
           matchType: c.matchType,
         })),
+      });
+    }
+    // 未配置在任何 upstream 的纯手动路由名（如仅用于手动转发的虚拟名）
+    const manualOnly = manualRoutes
+      .filter((m) => m.protocol === protocol && !models.has(m.name))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    for (const manual of manualOnly) {
+      resolvedRoutes.push({
+        protocol,
+        model: manual.name,
+        source: "manual",
+        winner: {
+          upstreamId: manual.upstreamId,
+          name: manual.upstreamName,
+          priority: 0,
+          matchedPattern: manual.name,
+          matchType: "exact",
+        },
+        candidates: [
+          {
+            upstreamId: manual.upstreamId,
+            name: manual.upstreamName,
+            priority: 0,
+            matchedPattern: manual.name,
+            matchType: "exact",
+          },
+        ],
       });
     }
   }
@@ -144,6 +228,7 @@ export const GET = withAuth(async () => {
       protocols: VALID_PROTOCOLS,
       resolvedRoutes,
       wildcardPatternsByProtocol: wildcardPatterns,
+      manualRoutes,
     },
   });
 });

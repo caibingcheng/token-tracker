@@ -13,6 +13,7 @@ export const tokenRecords = sqliteTable("token_records", {
   latencyMs: integer("latency_ms"),
   virtualKeyId: integer("virtual_key_id"),
   userAgent: text("user_agent"),
+  targetModel: text("target_model"), // 手动路由映射后的上游真实模型名（虚拟名存 model）
   createdAt: text("created_at").$defaultFn(() => new Date().toISOString()),
 }, (table) => [
   index("idx_token_records_created_at").on(table.createdAt),
@@ -45,6 +46,27 @@ export const upstreams = sqliteTable("upstreams", {
 
 export type Upstream = typeof upstreams.$inferSelect;
 export type NewUpstream = typeof upstreams.$inferInsert;
+
+// 手动路由规则：虚拟名 + protocol → 目标 upstream 的某个 model（优先级高于自动路由）
+export const routingRules = sqliteTable(
+  "routing_rules",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    name: text("name").notNull(), // 客户端请求的虚拟模型名
+    protocol: text("protocol").notNull(), // 'openai' | 'anthropic' | 'gemini'
+    upstreamId: integer("upstream_id")
+      .notNull()
+      .references(() => upstreams.id, { onDelete: "cascade" }),
+    targetModel: text("target_model").notNull(), // 上游真实模型名
+    createdAt: text("created_at").$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [
+    index("idx_routing_rules_protocol_name").on(table.protocol, table.name),
+  ]
+);
+
+export type RoutingRule = typeof routingRules.$inferSelect;
+export type NewRoutingRule = typeof routingRules.$inferInsert;
 
 // upstream 级 model 不可用标记（持久化；TTL 过期由 HealthTracker 懒清理）
 export const upstreamModelHealth = sqliteTable(

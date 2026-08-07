@@ -115,6 +115,7 @@ export const GET = withAuth(async (request: NextRequest) => {
           outputTokens: tokenRecords.outputTokens,
           cacheRead: tokenRecords.cacheRead,
           cacheWrite: tokenRecords.cacheWrite,
+          targetModel: tokenRecords.targetModel,
           createdAt: tokenRecords.createdAt,
         })
         .from(tokenRecords)

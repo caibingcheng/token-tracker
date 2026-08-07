@@ -1268,4 +1268,368 @@ describe("handleProxyRequest - GET /v1/models", () => {
     const ids = json.data.map((m: any) => m.id);
     expect(ids).toEqual(["gpt-4o"]);
   });
+
+  it("includes manual route names filtered by request protocol and vk allowlist", async () => {
+    const deps = mkDeps({
+      resolveVirtualKey: vi.fn(async () => ({
+        id: 1,
+        name: "limited",
+        enabled: true,
+        enabledModels: ["my-*"],
+      })),
+      loadUpstreams: vi.fn(async () => [
+        mkUpstream({ name: "a", enabledModels: ["gpt-4o"] }),
+        mkUpstream({ id: 2, name: "anthropic-up", protocol: "anthropic", enabledModels: ["claude-3-5-sonnet"] }),
+      ]),
+      loadRoutingRules: vi.fn(async () => [
+        { id: 1, name: "my-alias", protocol: "openai", upstreamId: 1, targetModel: "gpt-4o-real" },
+        { id: 2, name: "my-claude", protocol: "anthropic", upstreamId: 2, targetModel: "claude-3-5-sonnet" },
+      ]),
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/models", { method: "GET", headers: { authorization: "Bearer vk-good" } }),
+      deps
+    );
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    const ids = json.data.map((m: any) => m.id);
+    expect(ids).toContain("my-alias"); // openai 协议并入
+    expect(ids).not.toContain("my-claude"); // anthropic 协议不入 openai 列表
+    expect(ids).not.toContain("gpt-4o"); // vk allowlist my-* 过滤
+  });
+});
+
+describe("handleProxyRequest - manual routing", () => {
+  const fetchMock = vi.fn();
+
+  const RULE = {
+    id: 1,
+    name: "my-alias",
+    protocol: "openai" as const,
+    upstreamId: 1,
+    targetModel: "gpt-4o-real",
+  };
+
+  function mkManualDeps(overrides: Partial<ProxyDeps> = {}): ProxyDeps {
+    return mkDeps({
+      loadUpstreams: vi.fn(async () => [
+        mkUpstream({ id: 1, name: "target-up", baseUrl: "https://target.example", enabledModels: ["gpt-4o-real"] }),
+      ]),
+      resolveUpstreamKeys: vi.fn(async () => ["key-1"]),
+      loadRoutingRules: vi.fn(async () => [RULE]),
+      ...overrides,
+    });
+  }
+
+  beforeEach(() => {
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    fetchMock.mockReset();
+  });
+
+  it("routes to target upstream and rewrites body model to target_model", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ model: "gpt-4o-real", usage: { prompt_tokens: 5, completion_tokens: 3 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    const deps = mkManualDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "my-alias", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("target.example");
+    const sentBody = JSON.parse(new TextDecoder().decode(init.body as Uint8Array));
+    expect(sentBody.model).toBe("gpt-4o-real");
+    expect(sentBody.messages).toEqual([{ role: "user", content: "hi" }]);
+  });
+
+  it("manual route wins over auto candidates (chain only contains target upstream)", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ model: "gpt-4o-real", usage: { prompt_tokens: 5, completion_tokens: 3 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    const deps = mkDeps({
+      loadUpstreams: vi.fn(async () => [
+        mkUpstream({ id: 1, name: "target-up", baseUrl: "https://target.example", enabledModels: ["gpt-4o-real"] }),
+        mkUpstream({ id: 2, name: "auto-up", baseUrl: "https://auto.example", priority: 0, enabledModels: ["my-alias"] }),
+      ]),
+      resolveUpstreamKeys: vi.fn(async () => ["key-1"]),
+      loadRoutingRules: vi.fn(async () => [RULE]),
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "my-alias", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toContain("target.example");
+  });
+
+  it("falls back to auto routing when no manual rule matches (regression)", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ usage: { prompt_tokens: 5, completion_tokens: 3 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    const deps = mkDeps({
+      loadUpstreams: vi.fn(async () => [mkUpstream({ id: 1, name: "auto-up", enabledModels: ["gpt-4o"] })]),
+      resolveUpstreamKeys: vi.fn(async () => ["key-1"]),
+      loadRoutingRules: vi.fn(async () => [RULE]),
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o" },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    expect(deps.onUsage).toHaveBeenCalledWith(expect.objectContaining({ model: "gpt-4o", targetModel: null }));
+  });
+
+  it("returns 502 manual_route_unavailable when target upstream is disabled/missing", async () => {
+    const deps = mkManualDeps({ loadUpstreams: vi.fn(async () => []) });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "my-alias" },
+      }),
+      deps
+    );
+    expect(res.status).toBe(502);
+    const json = await res.json();
+    expect(json.error.type).toBe("manual_route_unavailable");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 502 manual_route_unavailable when target upstream has no keys", async () => {
+    const deps = mkManualDeps({ resolveUpstreamKeys: vi.fn(async () => []) });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "my-alias" },
+      }),
+      deps
+    );
+    expect(res.status).toBe(502);
+    const json = await res.json();
+    expect(json.error.type).toBe("manual_route_unavailable");
+    expect(json.error.message).toContain("Manual route target unavailable");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 502 manual_route_unavailable when target upstream is unhealthy", async () => {
+    const deps = mkManualDeps({
+      health: {
+        isHealthy: vi.fn(async () => false),
+        markUnhealthy: vi.fn(),
+        isModelHealthy: vi.fn(async () => true),
+        markModelUnhealthy: vi.fn(),
+      },
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "my-alias" },
+      }),
+      deps
+    );
+    expect(res.status).toBe(502);
+    const json = await res.json();
+    expect(json.error.type).toBe("manual_route_unavailable");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 502 manual_route_unavailable when target_model marked unavailable (checked by target model name)", async () => {
+    const isModelHealthy = vi.fn(async () => false);
+    const deps = mkManualDeps({
+      health: {
+        isHealthy: vi.fn(async () => true),
+        markUnhealthy: vi.fn(),
+        isModelHealthy,
+        markModelUnhealthy: vi.fn(),
+      },
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "my-alias" },
+      }),
+      deps
+    );
+    expect(res.status).toBe(502);
+    const json = await res.json();
+    expect(json.error.type).toBe("manual_route_unavailable");
+    expect(isModelHealthy).toHaveBeenCalledWith(1, "gpt-4o-real"); // 用映射后的真实名检查
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("tries next key within the same upstream on 401 (no cross-upstream fallback)", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response("unauthorized", { status: 401 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ model: "gpt-4o-real", usage: { prompt_tokens: 5, completion_tokens: 3 } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })
+      );
+    const deps = mkManualDeps({ resolveUpstreamKeys: vi.fn(async () => ["bad-key", "good-key"]) });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "my-alias" },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("marks target_model model-level unavailable on 404 and passes 404 through", async () => {
+    fetchMock.mockResolvedValue(new Response("model not found", { status: 404 }));
+    const markModelUnhealthy = vi.fn();
+    const deps = mkManualDeps({
+      health: {
+        isHealthy: vi.fn(async () => true),
+        markUnhealthy: vi.fn(),
+        isModelHealthy: vi.fn(async () => true),
+        markModelUnhealthy,
+      },
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "my-alias" },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(404);
+    expect(markModelUnhealthy).toHaveBeenCalledWith(1, "gpt-4o-real"); // 按真实模型名标记
+  });
+
+  it("rewrites gemini path model segment", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ modelVersion: "gemini-2.0-flash-001" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    const deps = mkManualDeps({
+      loadUpstreams: vi.fn(async () => [
+        mkUpstream({ id: 1, name: "target-up", protocol: "gemini", baseUrl: "https://target.example", enabledModels: ["gemini-2.0-flash"] }),
+      ]),
+      loadRoutingRules: vi.fn(async () => [
+        { id: 1, name: "my-gemini", protocol: "gemini", upstreamId: 1, targetModel: "gemini-2.0-flash" },
+      ]),
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1beta/models/my-gemini:generateContent", {
+        headers: { authorization: "Bearer vk-good", "x-goog-api-key": "vk-good" },
+        body: { contents: [{ role: "user", parts: [{ text: "hi" }] }] },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("/v1beta/models/gemini-2.0-flash:generateContent");
+    // gemini 不改写 body model
+    const sentBody = JSON.parse(new TextDecoder().decode(init.body as Uint8Array));
+    expect(sentBody.contents[0].parts[0].text).toBe("hi");
+  });
+
+  it("rewrites model back to virtual name in non-streaming response", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ id: "x", model: "gpt-4o-real", choices: [{ text: "hi" }], usage: { prompt_tokens: 5, completion_tokens: 3 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    const deps = mkManualDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "my-alias", stream: false },
+      }),
+      deps
+    );
+    const body = await res.text();
+    expect(res.status).toBe(200);
+    const json = JSON.parse(body);
+    expect(json.model).toBe("my-alias");
+    expect(json.choices).toEqual([{ text: "hi" }]);
+  });
+
+  it("rewrites model back to virtual name in streaming response", async () => {
+    const sse =
+      'data: {"id":"1","model":"gpt-4o-real","choices":[{"delta":{"content":"hi"}}]}\n\n' +
+      'data: {"id":"1","model":"gpt-4o-real","choices":[],"usage":{"prompt_tokens":5,"completion_tokens":3}}\n\n' +
+      "data: [DONE]\n\n";
+    fetchMock.mockResolvedValue(
+      new Response(sse, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      })
+    );
+    const deps = mkManualDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "my-alias", stream: true },
+      }),
+      deps
+    );
+    const received = await res.text();
+    expect(res.status).toBe(200);
+    expect(received).toContain('"model":"my-alias"');
+    expect(received).not.toContain("gpt-4o-real");
+    expect(received).toContain("data: [DONE]");
+    // usage 解析仍基于原始内容
+    expect(deps.onUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ inputTokens: 5, outputTokens: 3 })
+    );
+  });
+
+  it("records usage with virtual model name and real target model", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ model: "gpt-4o-real", usage: { prompt_tokens: 5, completion_tokens: 3 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    const deps = mkManualDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "my-alias" },
+      }),
+      deps
+    );
+    await res.text();
+    expect(deps.onUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "my-alias", targetModel: "gpt-4o-real", provider: "target-up" })
+    );
+  });
 });
