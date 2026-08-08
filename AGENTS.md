@@ -202,6 +202,14 @@ docker compose up -d
 | `dev` | `ghcr.io/caibingcheng/token-tracker:dev` | 测试 |
 | 任意 | `ghcr.io/caibingcheng/token-tracker:<sha>` | 指定版本 |
 
+## 移动端适配约定
+
+- 任何 UI 改动必须同时考虑移动端（<768px）：新表格必须做「桌面 table + `md:hidden` 卡片」双轨；
+  新弹窗移动端全屏（`w-full h-full md:...`）；新导航/按钮触摸区 ≥40px；input 移动端字号 ≥16px
+- 移动端专属 UI 一律 `md:hidden` 门控，桌面端 DOM 只新增不修改
+- 复用现有范式：RecordsTable 双轨、ActionMenu、FiltersModal、PriceSimulatorModal
+- 提交前自检：375px 视口无横向溢出，桌面端视觉无回归
+
 ## 测试
 
 - 首次引入 vitest（`src/**/*.test.ts`，`npm test`），测试范围均为不依赖 Next.js 运行时的纯逻辑模块：

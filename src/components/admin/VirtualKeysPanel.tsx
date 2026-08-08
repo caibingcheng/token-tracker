@@ -666,7 +666,7 @@ export default function VirtualKeysPanel() {
                   </span>
                 </div>
 
-                <div className="overflow-x-auto">
+                <div className="hidden md:block overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="text-left text-xs text-gray-400">
@@ -712,6 +712,46 @@ export default function VirtualKeysPanel() {
                       )}
                     </tbody>
                   </table>
+                </div>
+                <div className="md:hidden space-y-3">
+                  {usageDetail.recent.map((r) => (
+                    <div key={r.id} className="rounded-lg border border-gray-200 p-3">
+                      <div className="flex justify-between items-start gap-2 mb-2">
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium text-gray-900 truncate" title={r.model}>{r.model}</p>
+                          <p className="text-xs text-gray-500">{r.provider}</p>
+                        </div>
+                        {r.status ? (
+                          <span className="shrink-0 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-600">
+                            {r.status}
+                          </span>
+                        ) : (
+                          <span className="shrink-0 text-gray-300">—</span>
+                        )}
+                      </div>
+                      <p className="text-xs text-gray-500 mb-2">
+                        {new Date(r.createdAt).toLocaleString()}
+                        {r.userAgent && <span className="block truncate mt-0.5" title={r.userAgent}>{r.userAgent}</span>}
+                      </p>
+                      <div className="grid grid-cols-3 gap-2 text-xs">
+                        <div>
+                          <p className="text-gray-400">In</p>
+                          <p className="font-semibold text-gray-900">{formatNumber(r.inputTokens, true)}</p>
+                        </div>
+                        <div>
+                          <p className="text-gray-400">Out</p>
+                          <p className="font-semibold text-gray-900">{formatNumber(r.outputTokens, true)}</p>
+                        </div>
+                        <div>
+                          <p className="text-gray-400">Cache</p>
+                          <p className="font-semibold text-gray-900">{formatNumber(r.cacheRead, true)}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  {usageDetail.recent.length === 0 && (
+                    <div className="py-4 text-center text-gray-400">No records yet.</div>
+                  )}
                 </div>
               </div>
             )}

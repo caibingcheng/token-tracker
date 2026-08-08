@@ -252,7 +252,7 @@ export default function SecuritySettings() {
             value={newApiKey}
             onChange={(e) => setNewApiKey(e.target.value)}
             placeholder="New API key (min 8 chars)"
-            className="w-56 rounded border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            className="w-full sm:w-56 rounded border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
           />
           <input
             type="password"
@@ -260,7 +260,7 @@ export default function SecuritySettings() {
             value={newApiKeyConfirm}
             onChange={(e) => setNewApiKeyConfirm(e.target.value)}
             placeholder="Confirm new key"
-            className="w-56 rounded border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            className="w-full sm:w-56 rounded border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
           />
           {status?.totpEnabled && (
             <input
@@ -269,7 +269,7 @@ export default function SecuritySettings() {
               placeholder="TOTP code"
               inputMode="numeric"
               maxLength={6}
-              className="w-28 rounded border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="w-full sm:w-28 rounded border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           )}
           <button

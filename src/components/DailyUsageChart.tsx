@@ -21,19 +21,6 @@ import {
 } from "recharts";
 import { useNumberFormat } from "./NumberFormatContext";
 
-function useIsMobile(): boolean {
-  const [isMobile, setIsMobile] = useState(false);
-
-  useEffect(() => {
-    const check = () => setIsMobile(window.innerWidth < 768);
-    check();
-    window.addEventListener("resize", check);
-    return () => window.removeEventListener("resize", check);
-  }, []);
-
-  return isMobile;
-}
-
 export interface DailyData {
   group: string;
   totalInput: number;
@@ -274,7 +261,7 @@ function HourlyDistributionCard({ hourly, range, timezoneOffsetMinutes }: { hour
   }, [hourly, range]);
 
   return (
-    <div className="bg-white rounded-lg shadow p-4 flex flex-col">
+    <div className="col-span-2 sm:col-span-1 bg-white rounded-lg shadow p-4 flex flex-col">
       <p className="text-xs text-gray-400">
         Hourly Distribution
       </p>
@@ -517,7 +504,6 @@ export default function DailyUsageChart({
   timezoneOffsetMinutes = 0,
 }: DailyUsageChartProps) {
   const { compact } = useNumberFormat();
-  const isMobile = useIsMobile();
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [hoveredDate, setHoveredDate] = useState<string | null>(null);
   const chartRef = useRef<HTMLDivElement>(null);
@@ -695,7 +681,7 @@ export default function DailyUsageChart({
               onClick={() => onRangeChange(days)}
               aria-pressed={range === days}
               className={`
-                px-2 md:px-3 py-1 text-xs md:text-sm font-medium transition-all active:scale-95
+                px-2 md:px-3 py-1 text-xs md:text-sm font-medium transition-all active:scale-95 min-h-[40px] md:min-h-0
                 ${range === days
                   ? "bg-blue-600 text-white md:hover:bg-blue-700"
                   : "bg-gray-100 text-gray-600 md:hover:bg-blue-50 md:hover:text-blue-700"
@@ -898,12 +884,6 @@ export default function DailyUsageChart({
               </div>
             </div>
           </div>
-
-          {isMobile && (
-            <div className="md:hidden my-4 rounded-lg border border-dashed border-gray-300 bg-gray-50 p-4 text-center text-sm text-gray-500">
-              Charts are available on desktop
-            </div>
-          )}
 
           {activeTopModels && activeTopModels.length > 0 && (
             <div className="mt-8">

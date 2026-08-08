@@ -33,7 +33,7 @@ export default function ActionMenu({ label = "Actions", items }: ActionMenuProps
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="rounded border border-gray-300 px-2.5 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
+        className="min-h-[40px] rounded border border-gray-300 px-2.5 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
       >
         {label} ▾
       </button>

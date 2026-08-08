@@ -9,6 +9,7 @@ import {
   apiSetup,
   apiSetupSubmit,
 } from "@/lib/client/api-client";
+import MobileTabBar from "./MobileTabBar";
 
 export default function ApiKeyGate({ children }: { children: React.ReactNode }) {
   // 初始一律未认证（SSR 无 sessionStorage，避免 hydration mismatch），挂载后读取
@@ -211,10 +212,11 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
   return (
     <>
       {children}
+      <MobileTabBar onLogout={handleLogout} />
       <button
         type="button"
         onClick={handleLogout}
-        className="fixed bottom-4 right-4 z-50 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs text-gray-500 shadow-sm hover:bg-gray-50 hover:text-red-600 transition-colors"
+        className="hidden md:block fixed bottom-4 right-4 z-50 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs text-gray-500 shadow-sm hover:bg-gray-50 hover:text-red-600 transition-colors"
         title="Logout"
       >
         Logout

@@ -274,7 +274,7 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
           type="button"
           onClick={() => setPage((p) => Math.max(1, p - 1))}
           disabled={page === 1}
-          className="px-3 py-2 text-sm bg-gray-100 rounded disabled:opacity-50 flex items-center justify-center"
+          className="px-3 py-2 text-sm bg-gray-100 rounded disabled:opacity-50 flex items-center justify-center min-h-[40px] min-w-[40px] md:min-h-0 md:min-w-0"
           title="Previous"
         >
           <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -288,7 +288,7 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
           type="button"
           onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
           disabled={page === totalPages}
-          className="px-3 py-2 text-sm bg-gray-100 rounded disabled:opacity-50 flex items-center justify-center"
+          className="px-3 py-2 text-sm bg-gray-100 rounded disabled:opacity-50 flex items-center justify-center min-h-[40px] min-w-[40px] md:min-h-0 md:min-w-0"
           title="Next"
         >
           <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

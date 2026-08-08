@@ -490,50 +490,90 @@ export default function ModelsPanel() {
 
         {/* 规则列表 */}
         {data && data.manualRoutes.length > 0 && (
-          <div className="mt-4 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-xs text-gray-400">
-                  <th className="px-2 py-2">Name</th>
-                  <th className="px-2 py-2">Protocol</th>
-                  <th className="px-2 py-2">Provider</th>
-                  <th className="px-2 py-2">Target Model</th>
-                  <th className="px-2 py-2"></th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {data.manualRoutes.map((rule) => (
-                  <tr key={rule.id}>
-                    <td className="px-2 py-2">
+          <div className="mt-4">
+            <div className="hidden md:block overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-gray-400">
+                    <th className="px-2 py-2">Name</th>
+                    <th className="px-2 py-2">Protocol</th>
+                    <th className="px-2 py-2">Provider</th>
+                    <th className="px-2 py-2">Target Model</th>
+                    <th className="px-2 py-2"></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {data.manualRoutes.map((rule) => (
+                    <tr key={rule.id}>
+                      <td className="px-2 py-2">
+                        <CopyableCode className="text-xs">{rule.name}</CopyableCode>
+                      </td>
+                      <td className="px-2 py-2">
+                        <span className={`rounded border px-1.5 py-0.5 text-[10px] ${protocolBadgeClass(rule.protocol)}`}>
+                          {rule.protocol}
+                        </span>
+                      </td>
+                      <td className="px-2 py-2">
+                        <span className="font-medium">{rule.upstreamName}</span>
+                        <span className={`ml-1.5 rounded border px-1.5 py-0.5 text-[10px] ${protocolBadgeClass(rule.upstreamProtocol)}`}>
+                          {rule.upstreamProtocol}
+                        </span>
+                      </td>
+                      <td className="px-2 py-2">
+                        <CopyableCode className="text-xs">{rule.targetModel}</CopyableCode>
+                      </td>
+                      <td className="px-2 py-2 text-right">
+                        <button
+                          type="button"
+                          onClick={() => deleteRule(rule)}
+                          className="text-xs text-red-500 hover:text-red-700"
+                        >
+                          Delete
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="md:hidden space-y-3">
+              {data.manualRoutes.map((rule) => (
+                <div key={rule.id} className="border border-gray-200 rounded-lg p-4">
+                  <div className="flex justify-between items-start gap-2 mb-3">
+                    <div className="min-w-0">
+                      <p className="text-xs text-gray-500">Name</p>
                       <CopyableCode className="text-xs">{rule.name}</CopyableCode>
-                    </td>
-                    <td className="px-2 py-2">
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => deleteRule(rule)}
+                      className="shrink-0 rounded border border-red-200 px-2 py-1 text-xs text-red-500 hover:bg-red-50"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <p className="text-xs text-gray-500">Protocol</p>
                       <span className={`rounded border px-1.5 py-0.5 text-[10px] ${protocolBadgeClass(rule.protocol)}`}>
                         {rule.protocol}
                       </span>
-                    </td>
-                    <td className="px-2 py-2">
-                      <span className="font-medium">{rule.upstreamName}</span>
-                      <span className={`ml-1.5 rounded border px-1.5 py-0.5 text-[10px] ${protocolBadgeClass(rule.upstreamProtocol)}`}>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-500">Provider</p>
+                      <p className="text-sm font-medium">{rule.upstreamName}</p>
+                      <span className={`rounded border px-1.5 py-0.5 text-[10px] ${protocolBadgeClass(rule.upstreamProtocol)}`}>
                         {rule.upstreamProtocol}
                       </span>
-                    </td>
-                    <td className="px-2 py-2">
+                    </div>
+                    <div className="col-span-2">
+                      <p className="text-xs text-gray-500">Target Model</p>
                       <CopyableCode className="text-xs">{rule.targetModel}</CopyableCode>
-                    </td>
-                    <td className="px-2 py-2 text-right">
-                      <button
-                        type="button"
-                        onClick={() => deleteRule(rule)}
-                        className="text-xs text-red-500 hover:text-red-700"
-                      >
-                        Delete
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </div>
@@ -542,13 +582,13 @@ export default function ModelsPanel() {
       <div className="rounded-lg bg-white p-4 shadow">
         <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <h2 className="text-base font-semibold">Model Routing Table</h2>
-          <div className="flex rounded-md overflow-hidden border border-gray-300">
+          <div className="flex overflow-x-auto overflow-y-hidden scrollbar-hide rounded-md border border-gray-300">
             {data?.protocols.map((p) => (
               <button
                 key={p}
                 type="button"
                 onClick={() => setSelectedProtocol(p)}
-                className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+                className={`shrink-0 whitespace-nowrap px-3 py-1.5 text-xs font-medium transition-colors min-h-[40px] md:min-h-0 ${
                   selectedProtocol === p
                     ? "bg-blue-600 text-white"
                     : "bg-white text-gray-600 hover:bg-gray-50"
@@ -577,115 +617,197 @@ export default function ModelsPanel() {
             No concrete models configured for {selectedProtocol}.
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-xs text-gray-400">
-                  <th className="px-2 py-2">Model</th>
-                  <th className="px-2 py-2">Winner Upstream</th>
-                  <th className="px-2 py-2">Priority</th>
-                  <th className="px-2 py-2">Pattern</th>
-                  <th className="px-2 py-2">Type</th>
-                  <th className="px-2 py-2">Candidates</th>
-                  <th className="px-2 py-2"></th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {routesForProtocol.map((route) => {
-                  const key = `${route.protocol}:${route.model}`;
-                  const expanded = expandedModels.has(key);
-                  const hasConflict = route.candidates.length > 1;
-                  return (
-                    <>
-                      <tr
-                        key={key}
-                        className={`cursor-pointer hover:bg-gray-50 ${
-                          hasConflict ? "bg-amber-50/30" : ""
-                        }`}
-                        onClick={() => toggleExpanded(key)}
-                      >
-                        <td className="px-2 py-2">
-                          <CopyableCode className="text-xs">{route.model}</CopyableCode>
-                        </td>
-                        <td className="px-2 py-2 font-medium">
-                          {route.winner ? route.winner.name : (
-                            <span className="text-gray-400">—</span>
-                          )}
-                        </td>
-                        <td className="px-2 py-2 text-xs text-gray-500">
-                          {route.winner ? route.winner.priority : "—"}
-                        </td>
-                        <td className="px-2 py-2">
-                          {route.winner ? (
-                            <CopyableCode className="text-xs">{route.winner.matchedPattern}</CopyableCode>
-                          ) : (
-                            <span className="text-gray-400">—</span>
-                          )}
-                        </td>
-                        <td className="px-2 py-2">
-                          {route.source === "manual" ? (
-                            <MatchTypeBadge type="manual" />
-                          ) : route.winner ? (
-                            <MatchTypeBadge type={route.winner.matchType} />
-                          ) : (
-                            "—"
-                          )}
-                        </td>
-                        <td className="px-2 py-2 text-xs text-gray-500">
-                          {route.candidates.length}
-                        </td>
-                        <td className="px-2 py-2 text-right text-xs text-gray-400">
-                          {expanded ? "▲" : "▼"}
-                        </td>
-                      </tr>
-                      {expanded && (
-                        <tr key={`${key}-detail`}>
-                          <td colSpan={7} className="px-2 py-2">
-                            <div className="rounded border border-gray-200 bg-gray-50 p-2 text-xs">
-                              <div className="mb-2 font-medium text-gray-600">
-                                All matching upstreams
-                              </div>
-                              <div className="space-y-1">
-                                {route.candidates.map((c) => {
-                                  const isWinner = c.upstreamId === route.winner?.upstreamId;
-                                  return (
-                                    <div
-                                      key={c.upstreamId}
-                                      className={`flex flex-wrap items-center gap-2 rounded border px-2 py-1 ${
-                                        isWinner
-                                          ? "border-green-200 bg-green-50"
-                                          : "border-gray-200 bg-white"
-                                      }`}
-                                    >
-                                      <span className={isWinner ? "font-semibold text-green-700" : ""}>
-                                        {c.name}
-                                      </span>
-                                      <span className="text-gray-500">priority {c.priority}</span>
-                                      <CopyableCode className="rounded bg-gray-100 px-1 py-0.5">{c.matchedPattern}</CopyableCode>
-                                      <MatchTypeBadge type={c.matchType} />
-                                      {isWinner && (
-                                        <span className="ml-auto font-medium text-green-700">winner</span>
-                                      )}
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                              {hasConflict && route.winner && (
-                                <p className="mt-2 text-[11px] text-gray-500">
-                                  Winner is determined by exact match first, then lowest priority number.
-                                  Ties are broken by upstream order.
-                                </p>
-                              )}
-                            </div>
+          <>
+            <div className="hidden md:block overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-gray-400">
+                    <th className="px-2 py-2">Model</th>
+                    <th className="px-2 py-2">Winner Upstream</th>
+                    <th className="px-2 py-2">Priority</th>
+                    <th className="px-2 py-2">Pattern</th>
+                    <th className="px-2 py-2">Type</th>
+                    <th className="px-2 py-2">Candidates</th>
+                    <th className="px-2 py-2"></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {routesForProtocol.map((route) => {
+                    const key = `${route.protocol}:${route.model}`;
+                    const expanded = expandedModels.has(key);
+                    const hasConflict = route.candidates.length > 1;
+                    return (
+                      <>
+                        <tr
+                          key={key}
+                          className={`cursor-pointer hover:bg-gray-50 ${
+                            hasConflict ? "bg-amber-50/30" : ""
+                          }`}
+                          onClick={() => toggleExpanded(key)}
+                        >
+                          <td className="px-2 py-2">
+                            <CopyableCode className="text-xs">{route.model}</CopyableCode>
+                          </td>
+                          <td className="px-2 py-2 font-medium">
+                            {route.winner ? route.winner.name : (
+                              <span className="text-gray-400">—</span>
+                            )}
+                          </td>
+                          <td className="px-2 py-2 text-xs text-gray-500">
+                            {route.winner ? route.winner.priority : "—"}
+                          </td>
+                          <td className="px-2 py-2">
+                            {route.winner ? (
+                              <CopyableCode className="text-xs">{route.winner.matchedPattern}</CopyableCode>
+                            ) : (
+                              <span className="text-gray-400">—</span>
+                            )}
+                          </td>
+                          <td className="px-2 py-2">
+                            {route.source === "manual" ? (
+                              <MatchTypeBadge type="manual" />
+                            ) : route.winner ? (
+                              <MatchTypeBadge type={route.winner.matchType} />
+                            ) : (
+                              "—"
+                            )}
+                          </td>
+                          <td className="px-2 py-2 text-xs text-gray-500">
+                            {route.candidates.length}
+                          </td>
+                          <td className="px-2 py-2 text-right text-xs text-gray-400">
+                            {expanded ? "▲" : "▼"}
                           </td>
                         </tr>
-                      )}
-                    </>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                        {expanded && (
+                          <tr key={`${key}-detail`}>
+                            <td colSpan={7} className="px-2 py-2">
+                              <div className="rounded border border-gray-200 bg-gray-50 p-2 text-xs">
+                                <div className="mb-2 font-medium text-gray-600">
+                                  All matching upstreams
+                                </div>
+                                <div className="space-y-1">
+                                  {route.candidates.map((c) => {
+                                    const isWinner = c.upstreamId === route.winner?.upstreamId;
+                                    return (
+                                      <div
+                                        key={c.upstreamId}
+                                        className={`flex flex-wrap items-center gap-2 rounded border px-2 py-1 ${
+                                          isWinner
+                                            ? "border-green-200 bg-green-50"
+                                            : "border-gray-200 bg-white"
+                                        }`}
+                                      >
+                                        <span className={isWinner ? "font-semibold text-green-700" : ""}>
+                                          {c.name}
+                                        </span>
+                                        <span className="text-gray-500">priority {c.priority}</span>
+                                        <CopyableCode className="rounded bg-gray-100 px-1 py-0.5">{c.matchedPattern}</CopyableCode>
+                                        <MatchTypeBadge type={c.matchType} />
+                                        {isWinner && (
+                                          <span className="ml-auto font-medium text-green-700">winner</span>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                                {hasConflict && route.winner && (
+                                  <p className="mt-2 text-[11px] text-gray-500">
+                                    Winner is determined by exact match first, then lowest priority number.
+                                    Ties are broken by upstream order.
+                                  </p>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div className="md:hidden space-y-3">
+              {routesForProtocol.map((route) => {
+                const key = `${route.protocol}:${route.model}`;
+                const expanded = expandedModels.has(key);
+                const hasConflict = route.candidates.length > 1;
+                return (
+                  <div key={key} className="border border-gray-200 rounded-lg overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => toggleExpanded(key)}
+                      className={`w-full px-4 py-3 text-left ${hasConflict ? "bg-amber-50/30" : ""}`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <CopyableCode className="text-xs">{route.model}</CopyableCode>
+                          <div className="mt-1 text-sm font-medium text-gray-900">
+                            {route.winner ? route.winner.name : <span className="text-gray-400">—</span>}
+                          </div>
+                        </div>
+                        <span className="shrink-0 text-xs text-gray-400">{expanded ? "▲" : "▼"}</span>
+                      </div>
+                      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-500">
+                        {route.winner && (
+                          <>
+                            <span>priority {route.winner.priority}</span>
+                            <CopyableCode className="rounded bg-gray-100 px-1 py-0.5">{route.winner.matchedPattern}</CopyableCode>
+                          </>
+                        )}
+                        {route.source === "manual" ? (
+                          <MatchTypeBadge type="manual" />
+                        ) : route.winner ? (
+                          <MatchTypeBadge type={route.winner.matchType} />
+                        ) : (
+                          "—"
+                        )}
+                        <span className="text-gray-400">{route.candidates.length} candidate(s)</span>
+                      </div>
+                    </button>
+                    {expanded && (
+                      <div className="border-t border-gray-100 bg-gray-50 p-3 text-xs">
+                        <div className="mb-2 font-medium text-gray-600">
+                          All matching upstreams
+                        </div>
+                        <div className="space-y-1">
+                          {route.candidates.map((c) => {
+                            const isWinner = c.upstreamId === route.winner?.upstreamId;
+                            return (
+                              <div
+                                key={c.upstreamId}
+                                className={`flex flex-wrap items-center gap-2 rounded border px-2 py-1 ${
+                                  isWinner
+                                    ? "border-green-200 bg-green-50"
+                                    : "border-gray-200 bg-white"
+                                }`}
+                              >
+                                <span className={isWinner ? "font-semibold text-green-700" : ""}>
+                                  {c.name}
+                                </span>
+                                <span className="text-gray-500">priority {c.priority}</span>
+                                <CopyableCode className="rounded bg-gray-100 px-1 py-0.5">{c.matchedPattern}</CopyableCode>
+                                <MatchTypeBadge type={c.matchType} />
+                                {isWinner && (
+                                  <span className="ml-auto font-medium text-green-700">winner</span>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                        {hasConflict && route.winner && (
+                          <p className="mt-2 text-[11px] text-gray-500">
+                            Winner is determined by exact match first, then lowest priority number.
+                            Ties are broken by upstream order.
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </>
         )}
       </div>
     </div>
