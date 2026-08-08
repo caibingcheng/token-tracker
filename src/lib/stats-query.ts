@@ -1,7 +1,7 @@
 import { db, tokenRecords, getDateGroupExpr } from "@/lib/db";
 import { sql, and, eq, inArray } from "drizzle-orm";
 import {
-  offsetMinutesToSqlModifiers,
+  localDateKeyToUtcStartISO,
   localDateKeyFromUtcDate,
 } from "@/lib/timezone-utils";
 import {
@@ -46,16 +46,9 @@ function buildWhereClause(
 
   if (dateFilter) {
     if (typeof dateFilter === "string" && timezoneOffsetMinutes !== undefined) {
-      const modifiers = offsetMinutesToSqlModifiers(timezoneOffsetMinutes);
-      if (modifiers.length === 1) {
-        conditions.push(
-          sql`strftime('%Y-%m-%d', ${tokenRecords.createdAt}, ${modifiers[0]}) >= ${dateFilter}`
-        );
-      } else {
-        conditions.push(
-          sql`strftime('%Y-%m-%d', ${tokenRecords.createdAt}, ${modifiers[0]}, ${modifiers[1]}) >= ${dateFilter}`
-        );
-      }
+      // 直比较 UTC 日界起始时刻：可命中 idx_token_records_created_at（strftime 套列不可命中）
+      const utcStart = localDateKeyToUtcStartISO(dateFilter, timezoneOffsetMinutes);
+      conditions.push(sql`${tokenRecords.createdAt} >= ${utcStart}`);
     } else if (dateFilter instanceof Date) {
       conditions.push(
         sql`${tokenRecords.createdAt} >= ${dateFilter.toISOString()}`

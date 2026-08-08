@@ -15,12 +15,10 @@ import { buildSessionId } from "./session";
 import type { SessionBinding } from "./session";
 import {
   parseOpenAiNonStreaming,
-  parseOpenAiStreaming,
   parseAnthropicNonStreaming,
-  parseAnthropicStreaming,
   parseGeminiNonStreaming,
-  parseGeminiStreaming,
 } from "./parsers";
+import { StreamUsageExtractor } from "./parsers/stream-usage";
 import type { ParsedUsage } from "./parsers/types";
 import { checkQuota } from "./quota";
 import type { QuotaUsage } from "./quota";
@@ -28,6 +26,7 @@ import { rewriteModelNonStreaming, createSseModelRewriter } from "./response-rew
 
 export const MAX_RETRY = 2; // 每个 key 内最多尝试次数
 const NON_STREAMING_TIMEOUT_MS = 60_000;
+const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 流式空闲超时默认 30min（面板可调）
 
 export interface VirtualKeyInfo {
   id: number;
@@ -68,6 +67,8 @@ export interface ProxyDeps {
   onUsage?: (meta: RecordUsageMeta) => Promise<void>;
   // 请求完成回调（更新 last_used_at 等）
   onComplete?: (meta: { virtualKeyId: number }) => Promise<void>;
+  // 流式空闲超时（毫秒，可选；缺省 DEFAULT_STREAM_IDLE_TIMEOUT_MS）
+  resolveStreamIdleTimeoutMs?: () => Promise<number>;
   // 配额用量加载（必填依赖；实现见 proxy-deps）
   quota: {
     loadUsage: (virtualKeyId: number, now: Date) => Promise<QuotaUsage>;
@@ -581,6 +582,8 @@ async function passthroughResponse(
   const isSuccess = upstreamResponse.status >= 200 && upstreamResponse.status < 300;
   const reader = upstreamResponse.body.getReader();
   const chunks: Uint8Array[] = [];
+  // 流式响应：增量解析 usage，不持有完整响应体（内存 O(1)）
+  const extractor = isStreaming ? new StreamUsageExtractor(protocol) : null;
   let onDone: () => void = () => {};
 
   const rewriter = virtualModelName
@@ -590,6 +593,26 @@ async function passthroughResponse(
   const passthrough = new ReadableStream<Uint8Array>({
     start(controller) {
       const pump = async () => {
+        let idleTimeoutMs = DEFAULT_STREAM_IDLE_TIMEOUT_MS;
+        try {
+          idleTimeoutMs =
+            (await deps.resolveStreamIdleTimeoutMs?.()) ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS;
+        } catch {
+          // 解析失败保持默认
+        }
+        // 每次 read 前重置空闲计时器：超时未收到任何数据则中断流（防卡死连接长期占用）
+        const readWithIdleTimeout = () => {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          return Promise.race([
+            reader.read(),
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(
+                () => reject(new Error(`stream idle timeout after ${idleTimeoutMs}ms`)),
+                idleTimeoutMs
+              );
+            }),
+          ]).finally(() => clearTimeout(timer));
+        };
         try {
           if (!isStreaming && rewriter) {
             // 非流式回写：先攒完整 body → 一次性改写 → 再 enqueue（改写失败回退原始 body）
@@ -605,9 +628,16 @@ async function passthroughResponse(
             controller.close();
           } else {
             while (true) {
-              const { done, value } = await reader.read();
+              const { done, value } = await (isStreaming
+                ? readWithIdleTimeout()
+                : reader.read());
               if (done) break;
-              chunks.push(value);
+              if (isStreaming) {
+                // feed 原始 chunk（rewriter 改写不影响 usage 提取）
+                extractor!.feed(value);
+              } else {
+                chunks.push(value);
+              }
               controller.enqueue(rewriter ? rewriter.transform(value) : value);
             }
             if (rewriter) {
@@ -618,6 +648,8 @@ async function passthroughResponse(
             controller.close();
           }
         } catch (err) {
+          // 释放上游连接，避免超时/异常后连接泄漏
+          await reader.cancel().catch(() => {});
           controller.error(err);
         }
       };
@@ -631,10 +663,13 @@ async function passthroughResponse(
   onDone = async () => {
     try {
       if (isSuccess) {
-        const fullText = new TextDecoder().decode(concatUint8Arrays(chunks));
-        const parsed = isStreaming
-          ? parseUsageStreaming(fullText, protocol)
-          : parseUsageNonStreaming(fullText, protocol);
+        const parsed =
+          isStreaming && extractor
+            ? extractor.finish()
+            : parseUsageNonStreaming(
+                new TextDecoder().decode(concatUint8Arrays(chunks)),
+                protocol
+              );
         const usage = toRecordUsage(parsed, meta);
         await deps.onUsage?.(usage);
       }
@@ -674,17 +709,6 @@ function parseUsageNonStreaming(fullText: string, protocol: Protocol): ParsedUsa
       return parseGeminiNonStreaming(json);
     default:
       return parseOpenAiNonStreaming(json);
-  }
-}
-
-function parseUsageStreaming(sseText: string, protocol: Protocol): ParsedUsage | null {
-  switch (protocol) {
-    case "anthropic":
-      return parseAnthropicStreaming(sseText);
-    case "gemini":
-      return parseGeminiStreaming(sseText);
-    default:
-      return parseOpenAiStreaming(sseText);
   }
 }
 

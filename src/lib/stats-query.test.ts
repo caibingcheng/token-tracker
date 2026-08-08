@@ -61,3 +61,18 @@ describe("stats-query aggregation semantics", () => {
     expect(orderByAssignments?.length).toBe(3);
   });
 });
+
+describe("stats-query sargable date filter", () => {
+  it("WHERE must not wrap created_at in strftime (breaks index usage)", () => {
+    expect(SOURCE).not.toMatch(
+      /strftime\('%Y-%m-%d', \$\{tokenRecords\.createdAt\}.*>=\s*\$\{dateFilter\}/
+    );
+  });
+
+  it("date filter compares created_at directly against UTC day-boundary ISO", () => {
+    expect(SOURCE).toMatch(
+      /sql`\$\{tokenRecords\.createdAt\} >= \$\{utcStart\}`/
+    );
+    expect(SOURCE).toMatch(/localDateKeyToUtcStartISO\(dateFilter, timezoneOffsetMinutes\)/);
+  });
+});

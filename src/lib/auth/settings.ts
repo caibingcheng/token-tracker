@@ -157,3 +157,29 @@ export async function getSessionTtlHoursSetting(): Promise<number | null> {
 export async function setSessionTtlHoursSetting(hours: number): Promise<void> {
   await setSetting("session_token_ttl_hours", String(hours));
 }
+
+// ---- 流式空闲超时（分钟）：settings 表配置（面板优先），默认 30min，无 env ----
+
+const DEFAULT_STREAM_IDLE_TIMEOUT_MINUTES = 30;
+
+export async function resolveStreamIdleTimeoutMs(): Promise<number> {
+  const stored = await getSetting("stream_idle_timeout_minutes");
+  if (stored !== null) {
+    const n = Number(stored);
+    if (Number.isFinite(n) && n > 0) {
+      return n * 60 * 1000;
+    }
+  }
+  return DEFAULT_STREAM_IDLE_TIMEOUT_MINUTES * 60 * 1000;
+}
+
+export async function getStreamIdleTimeoutMinutesSetting(): Promise<number | null> {
+  const stored = await getSetting("stream_idle_timeout_minutes");
+  if (stored === null) return null;
+  const n = Number(stored);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+export async function setStreamIdleTimeoutMinutesSetting(minutes: number): Promise<void> {
+  await setSetting("stream_idle_timeout_minutes", String(minutes));
+}

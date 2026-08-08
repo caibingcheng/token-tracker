@@ -172,41 +172,46 @@ function tokenSumSql() {
 // 代理路由的依赖实现（Next.js 服务端使用）
 export function createProxyDeps(): ProxyDeps {
   return {
+    // 认证类读取必须 withSkipCache：vk/上游被吊销或禁用后立即生效，
+    // 否则查询缓存 10s 内旧结果仍可透传
     async resolveVirtualKey(token) {
       await initDatabase();
-      const rows = await db.select().from(virtualKeysTable);
-      for (const row of rows) {
-        try {
-          const plain = decryptSecret(row.apiKeyEncrypted);
-          if (safeCompare(plain, token)) {
-            return {
-              id: row.id,
-              name: row.name,
-              enabled: row.enabled === 1,
-              enabledModels: row.enabledModels,
-              maxRpm: row.maxRpm ?? null,
-              maxTpm: row.maxTpm ?? null,
-              maxDailyTokens: row.maxDailyTokens ?? null,
-              maxMonthlyTokens: row.maxMonthlyTokens ?? null,
-            };
+      return withSkipCache(async () => {
+        const rows = await db.select().from(virtualKeysTable);
+        for (const row of rows) {
+          try {
+            const plain = decryptSecret(row.apiKeyEncrypted);
+            if (safeCompare(plain, token)) {
+              return {
+                id: row.id,
+                name: row.name,
+                enabled: row.enabled === 1,
+                enabledModels: row.enabledModels,
+                maxRpm: row.maxRpm ?? null,
+                maxTpm: row.maxTpm ?? null,
+                maxDailyTokens: row.maxDailyTokens ?? null,
+                maxMonthlyTokens: row.maxMonthlyTokens ?? null,
+              };
+            }
+          } catch {
+            continue;
           }
-        } catch {
-          continue;
         }
-      }
-      return null;
+        return null;
+      });
     },
 
     async resolveUpstreamKeys(upstreamId) {
-      return loadPlainUpstreamKeys(upstreamId);
+      return withSkipCache(() => loadPlainUpstreamKeys(upstreamId));
     },
 
     async loadUpstreams() {
       await initDatabase();
-      const rows = await db.select().from(upstreamsTable).orderBy(upstreamsTable.priority);
-      return rows
-        .filter((row: any) => row.enabled === 1)
-        .map(
+      return withSkipCache(async () => {
+        const rows = await db.select().from(upstreamsTable).orderBy(upstreamsTable.priority);
+        return rows
+          .filter((row: any) => row.enabled === 1)
+          .map(
           (row: any): UpstreamRoute => ({
             id: row.id,
             name: row.name,
@@ -217,10 +222,16 @@ export function createProxyDeps(): ProxyDeps {
             enabledModels: row.enabledModels,
           })
         );
+      });
     },
 
     async loadRoutingRules() {
       return loadRoutingRules();
+    },
+
+    async resolveStreamIdleTimeoutMs() {
+      const { resolveStreamIdleTimeoutMs } = await import("@/lib/auth/settings");
+      return resolveStreamIdleTimeoutMs();
     },
 
     // 写库走 withSkipCache：INSERT 自动触发 invalidateQueryCache()，Dashboard 即时可见

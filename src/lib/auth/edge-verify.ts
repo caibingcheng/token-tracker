@@ -6,18 +6,28 @@
 const KEY_SALT = ":session-token";
 const encoder = new TextEncoder();
 
+// GATEWAY_SECRET 进程内不变：按 secret 键控缓存派生结果，避免每请求重复 digest+importKey
+const keyCache = new Map<string, Promise<CryptoKey>>();
+
 export async function deriveEdgeSessionKey(secret: string): Promise<CryptoKey> {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    encoder.encode(`${secret}${KEY_SALT}`)
-  );
-  return crypto.subtle.importKey(
-    "raw",
-    digest,
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["verify"]
-  );
+  let cached = keyCache.get(secret);
+  if (!cached) {
+    cached = (async () => {
+      const digest = await crypto.subtle.digest(
+        "SHA-256",
+        encoder.encode(`${secret}${KEY_SALT}`)
+      );
+      return crypto.subtle.importKey(
+        "raw",
+        digest,
+        { name: "HMAC", hash: "SHA-256" },
+        false,
+        ["verify"]
+      );
+    })();
+    keyCache.set(secret, cached);
+  }
+  return cached;
 }
 
 export function decodeBase64Url(input: string): Uint8Array<ArrayBuffer> | null {

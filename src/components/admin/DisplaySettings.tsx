@@ -15,6 +15,10 @@ interface SessionTtlData {
   envOverridden: boolean;
 }
 
+interface StreamTimeoutData {
+  value: number | null;
+}
+
 export default function DisplaySettings() {
   const [data, setData] = useState<DisplayData | null>(null);
   const [draft, setDraft] = useState("");
@@ -26,14 +30,21 @@ export default function DisplaySettings() {
   const [ttlBusy, setTtlBusy] = useState(false);
   const [ttlError, setTtlError] = useState<string | null>(null);
   const [ttlSaved, setTtlSaved] = useState(false);
+  const [streamData, setStreamData] = useState<StreamTimeoutData | null>(null);
+  const [streamDraft, setStreamDraft] = useState("");
+  const [streamBusy, setStreamBusy] = useState(false);
+  const [streamError, setStreamError] = useState<string | null>(null);
+  const [streamSaved, setStreamSaved] = useState(false);
 
   const load = useCallback(async () => {
-    const [res, ttlRes] = await Promise.all([
+    const [res, ttlRes, streamRes] = await Promise.all([
       apiFetch("/api/admin/settings/display"),
       apiFetch("/api/admin/settings/session"),
+      apiFetch("/api/admin/settings/stream"),
     ]);
     const json = await res.json();
     const ttlJson = await ttlRes.json();
+    const streamJson = await streamRes.json();
     if (json.success) {
       setData(json.data as DisplayData);
       setDraft((json.data as DisplayData).value);
@@ -42,6 +53,11 @@ export default function DisplaySettings() {
       const t = ttlJson.data as SessionTtlData;
       setTtlData(t);
       setTtlDraft(t.value !== null ? String(t.value) : "");
+    }
+    if (streamJson.success) {
+      const s = streamJson.data as StreamTimeoutData;
+      setStreamData(s);
+      setStreamDraft(s.value !== null ? String(s.value) : "");
     }
   }, []);
 
@@ -100,6 +116,30 @@ export default function DisplaySettings() {
       setTtlError("Network error");
     } finally {
       setTtlBusy(false);
+    }
+  };
+
+  const handleSaveStream = async () => {
+    setStreamBusy(true);
+    setStreamError(null);
+    setStreamSaved(false);
+    try {
+      const res = await apiFetch("/api/admin/settings/stream", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ value: streamDraft }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        setStreamSaved(true);
+        load();
+      } else {
+        setStreamError(json.error || "Failed to save");
+      }
+    } catch {
+      setStreamError("Network error");
+    } finally {
+      setStreamBusy(false);
     }
   };
 
@@ -231,6 +271,56 @@ export default function DisplaySettings() {
         {ttlSaved && (
           <div className="mt-3 rounded border border-green-200 bg-green-50 p-3 text-sm text-green-700">
             Saved. New logins will use the updated lifetime.
+          </div>
+        )}
+      </div>
+
+      <div className="mt-8 border-t border-gray-100 pt-6">
+        <h3 className="mb-1 text-base font-semibold text-gray-900">
+          Stream idle timeout
+        </h3>
+        <p className="mb-4 text-sm text-gray-500">
+          Streaming responses are aborted after receiving no data for this
+          duration (prevents stuck upstream connections from lingering). Applies
+          to new streams; default 30 minutes.
+        </p>
+
+        <div className="flex items-center gap-3">
+          <input
+            type="number"
+            min={1}
+            max={1440}
+            value={streamDraft}
+            onChange={(e) => {
+              setStreamDraft(e.target.value);
+              setStreamSaved(false);
+            }}
+            placeholder="30"
+            className="w-32 rounded border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          />
+          <span className="text-sm text-gray-500">minutes (1–1440)</span>
+          <button
+            type="button"
+            onClick={handleSaveStream}
+            disabled={streamBusy}
+            className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-50"
+          >
+            {streamBusy ? "Saving..." : "Save"}
+          </button>
+        </div>
+        {streamDraft.trim() === "" && (
+          <p className="mt-2 text-xs text-gray-400">
+            Empty = fall back to default 30 minutes.
+          </p>
+        )}
+        {streamError && (
+          <div className="mt-3 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-600">
+            {streamError}
+          </div>
+        )}
+        {streamSaved && (
+          <div className="mt-3 rounded border border-green-200 bg-green-50 p-3 text-sm text-green-700">
+            Saved. New streams will use the updated timeout.
           </div>
         )}
       </div>

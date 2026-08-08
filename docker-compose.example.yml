@@ -13,3 +13,8 @@ services:
       - API_CACHE_DEBUG=false
     volumes:
       - ./data:/app/data
+    # 可选：显式内存上限（与 Dockerfile 的 NODE_OPTIONS 512MB 对齐）
+    # deploy:
+    #   resources:
+    #     limits:
+    #       memory: 1g
