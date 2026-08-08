@@ -12,7 +12,7 @@ import {
 import MobileTabBar from "./MobileTabBar";
 
 export default function ApiKeyGate({ children }: { children: React.ReactNode }) {
-  // 初始一律未认证（SSR 无 sessionStorage，避免 hydration mismatch），挂载后读取
+  // 初始一律未认证（SSR 无 localStorage，避免 hydration mismatch），挂载后读取
   const [hasKey, setHasKey] = useState<boolean>(false);
   const [inputKey, setInputKey] = useState("");
   const [totpCode, setTotpCode] = useState("");

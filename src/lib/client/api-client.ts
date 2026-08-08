@@ -7,7 +7,7 @@ let unauthorizedHandler: (() => void) | null = null;
 
 function readFromStorage(): string | null {
   try {
-    return sessionStorage.getItem(STORAGE_KEY);
+    return localStorage.getItem(STORAGE_KEY);
   } catch {
     return null;
   }
@@ -23,7 +23,7 @@ export function getApiKey(): string | null {
 export function setApiKey(key: string): void {
   storedKey = key;
   try {
-    sessionStorage.setItem(STORAGE_KEY, key);
+    localStorage.setItem(STORAGE_KEY, key);
   } catch {
     // ignore storage errors
   }
@@ -32,7 +32,7 @@ export function setApiKey(key: string): void {
 export function clearApiKey(): void {
   storedKey = null;
   try {
-    sessionStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(STORAGE_KEY);
   } catch {
     // ignore storage errors
   }
