@@ -7,6 +7,12 @@ interface OpenAIUsage {
   prompt_tokens_details?: {
     cached_tokens?: number;
   };
+  input_tokens?: number;
+  output_tokens?: number;
+  input_tokens_details?: {
+    cached_tokens?: number;
+    cache_write_tokens?: number;
+  };
 }
 
 interface AnthropicUsage {
@@ -25,6 +31,38 @@ interface GeminiUsageMetadata {
 // 流式 SSE 增量 usage 提取器：边读边解析，只保留首尾 usage 小对象，
 // 不持有完整响应体（内存 O(1)）。字段口径与 parsers/index.ts 的
 // parseOpenAiStreaming / parseAnthropicStreaming / parseGeminiStreaming 完全一致。
+// 与 parsers/index.ts 的 openAiUsageOf 字段口径一致：
+// chat 风格（prompt_tokens/completion_tokens）与 responses 风格（input_tokens/output_tokens）
+function openAiInputTokens(usage: OpenAIUsage): number {
+  return Number(usage.input_tokens ?? usage.prompt_tokens) || 0;
+}
+
+function openAiOutputTokens(usage: OpenAIUsage): number {
+  return Number(usage.output_tokens ?? usage.completion_tokens) || 0;
+}
+
+function openAiCachedTokens(usage: OpenAIUsage): number {
+  return (
+    Number(usage.input_tokens_details?.cached_tokens ?? usage.prompt_tokens_details?.cached_tokens) ||
+    0
+  );
+}
+
+// 提取 usage：chat 流式为事件顶层 usage；responses 流式在 response.completed 的嵌套 response.usage
+function openAiUsageOf(event: unknown): OpenAIUsage | undefined {
+  const obj = event as Record<string, unknown> | undefined;
+  if (!obj || typeof obj !== "object") return undefined;
+  const direct = obj.usage as OpenAIUsage | undefined;
+  if (direct && typeof direct === "object") return direct;
+  if (obj.type === "response.completed") {
+    const nested = (obj.response as Record<string, unknown> | undefined)?.usage as
+      | OpenAIUsage
+      | undefined;
+    if (nested && typeof nested === "object") return nested;
+  }
+  return undefined;
+}
+
 export class StreamUsageExtractor {
   private decoder = new TextDecoder();
   private lineBuffer = "";
@@ -142,7 +180,7 @@ export class StreamUsageExtractor {
       }
       return;
     }
-    const usage = event?.usage as OpenAIUsage | undefined;
+    const usage = openAiUsageOf(event);
     if (usage && typeof usage === "object") {
       this.lastOpenAiUsage = usage;
     }
@@ -173,10 +211,10 @@ export class StreamUsageExtractor {
     const usage = this.lastOpenAiUsage;
     if (!usage) return null;
     return {
-      inputTokens: Math.max(0, Number(usage.prompt_tokens) - (Number(usage.prompt_tokens_details?.cached_tokens) || 0)),
-      outputTokens: Number(usage.completion_tokens) || 0,
-      cacheRead: Number(usage.prompt_tokens_details?.cached_tokens) || 0,
-      cacheWrite: 0,
+      inputTokens: Math.max(0, openAiInputTokens(usage) - openAiCachedTokens(usage)),
+      outputTokens: openAiOutputTokens(usage),
+      cacheRead: openAiCachedTokens(usage),
+      cacheWrite: Number(usage.input_tokens_details?.cache_write_tokens) || 0,
       hasUsage: true,
     };
   }

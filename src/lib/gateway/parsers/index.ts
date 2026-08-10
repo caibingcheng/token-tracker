@@ -1,23 +1,62 @@
 import type { ParsedUsage } from "./types";
 
+// OpenAI usage 双风格：chat completions（prompt_tokens/completion_tokens）
+// 与 responses API（input_tokens/output_tokens）字段命名不同，统一归一化
 interface OpenAIUsage {
   prompt_tokens?: number;
   completion_tokens?: number;
   prompt_tokens_details?: {
     cached_tokens?: number;
   };
+  input_tokens?: number;
+  output_tokens?: number;
+  input_tokens_details?: {
+    cached_tokens?: number;
+    cache_write_tokens?: number;
+  };
+}
+
+function openAiInputTokens(usage: OpenAIUsage): number {
+  return Number(usage.input_tokens ?? usage.prompt_tokens) || 0;
+}
+
+function openAiOutputTokens(usage: OpenAIUsage): number {
+  return Number(usage.output_tokens ?? usage.completion_tokens) || 0;
+}
+
+function openAiCachedTokens(usage: OpenAIUsage): number {
+  return (
+    Number(usage.input_tokens_details?.cached_tokens ?? usage.prompt_tokens_details?.cached_tokens) ||
+    0
+  );
 }
 
 export function parseOpenAiNonStreaming(json: unknown): ParsedUsage | null {
   const usage = (json as Record<string, unknown>)?.usage as OpenAIUsage | undefined;
   if (!usage) return null;
   return {
-    inputTokens: Math.max(0, Number(usage.prompt_tokens) - (Number(usage.prompt_tokens_details?.cached_tokens) || 0)),
-    outputTokens: Number(usage.completion_tokens) || 0,
-    cacheRead: Number(usage.prompt_tokens_details?.cached_tokens) || 0,
-    cacheWrite: 0,
+    inputTokens: Math.max(0, openAiInputTokens(usage) - openAiCachedTokens(usage)),
+    outputTokens: openAiOutputTokens(usage),
+    cacheRead: openAiCachedTokens(usage),
+    cacheWrite: Number(usage.input_tokens_details?.cache_write_tokens) || 0,
     hasUsage: true,
   };
+}
+
+// 提取 usage：chat 流式为末尾 chunk 顶层 usage（依赖 stream_options.include_usage）；
+// responses 流式在 response.completed 事件的嵌套 response.usage 中
+function openAiUsageOf(event: unknown): OpenAIUsage | undefined {
+  const obj = event as Record<string, unknown> | undefined;
+  if (!obj || typeof obj !== "object") return undefined;
+  const direct = obj.usage as OpenAIUsage | undefined;
+  if (direct && typeof direct === "object") return direct;
+  if (obj.type === "response.completed") {
+    const nested = (obj.response as Record<string, unknown> | undefined)?.usage as
+      | OpenAIUsage
+      | undefined;
+    if (nested && typeof nested === "object") return nested;
+  }
+  return undefined;
 }
 
 // 流式：末尾 chunk 的 usage 字段（依赖客户端 stream_options.include_usage）
@@ -25,17 +64,17 @@ export function parseOpenAiStreaming(sseText: string): ParsedUsage | null {
   const events = parseSseEvents(sseText);
   let lastUsage: OpenAIUsage | null = null;
   for (const event of events) {
-    const usage = (event as Record<string, unknown>)?.usage as OpenAIUsage | undefined;
-    if (usage && typeof usage === "object") {
+    const usage = openAiUsageOf(event);
+    if (usage) {
       lastUsage = usage;
     }
   }
   if (!lastUsage) return null;
   return {
-    inputTokens: Math.max(0, Number(lastUsage.prompt_tokens) - (Number(lastUsage.prompt_tokens_details?.cached_tokens) || 0)),
-    outputTokens: Number(lastUsage.completion_tokens) || 0,
-    cacheRead: Number(lastUsage.prompt_tokens_details?.cached_tokens) || 0,
-    cacheWrite: 0,
+    inputTokens: Math.max(0, openAiInputTokens(lastUsage) - openAiCachedTokens(lastUsage)),
+    outputTokens: openAiOutputTokens(lastUsage),
+    cacheRead: openAiCachedTokens(lastUsage),
+    cacheWrite: Number(lastUsage.input_tokens_details?.cache_write_tokens) || 0,
     hasUsage: true,
   };
 }

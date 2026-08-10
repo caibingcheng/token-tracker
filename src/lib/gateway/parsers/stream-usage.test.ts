@@ -42,6 +42,17 @@ const GEMINI_SSE = [
   "",
 ].join("\n");
 
+const RESPONSES_SSE = [
+  'data: {"type":"response.created","response":{"id":"resp_1"}}',
+  "",
+  'data: {"type":"response.output_text.delta","delta":"hi"}',
+  "",
+  'data: {"type":"response.output_text.delta","delta":" there"}',
+  "",
+  'data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":200,"output_tokens":80,"input_tokens_details":{"cached_tokens":120,"cache_write_tokens":15}}}}',
+  "",
+].join("\n");
+
 // 以固定小步长切分，模拟网络 chunk 边界落在任意位置（含多字节字符中间）
 function splitIntoChunks(text: string, chunkSize: number): Uint8Array[] {
   const bytes = new TextEncoder().encode(text);
@@ -62,6 +73,7 @@ function extractIncrementally(sse: string, protocol: Protocol, chunkSize: number
 
 describe.each([
   { name: "OpenAI", protocol: "openai" as Protocol, sse: OPENAI_SSE, expected: parseOpenAiStreaming(OPENAI_SSE) },
+  { name: "Responses API", protocol: "openai" as Protocol, sse: RESPONSES_SSE, expected: parseOpenAiStreaming(RESPONSES_SSE) },
   { name: "Anthropic", protocol: "anthropic" as Protocol, sse: ANTHROPIC_SSE, expected: parseAnthropicStreaming(ANTHROPIC_SSE) },
   { name: "Gemini", protocol: "gemini" as Protocol, sse: GEMINI_SSE, expected: parseGeminiStreaming(GEMINI_SSE) },
 ])("$name incremental extractor", ({ protocol, sse, expected }) => {

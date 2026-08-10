@@ -9,10 +9,13 @@ export interface ProbeTarget {
   baseUrl: string;
 }
 
+export type ProbeStyle = "chat" | "responses";
+
 export interface ProbeResult {
   ok: boolean;
   status: number;
   error?: string;
+  style?: ProbeStyle; // 成功/失败时使用的探测风格（openai 双风格探测后标注）
 }
 
 export const PROBE_TIMEOUT_MS = 15_000;
@@ -20,7 +23,8 @@ export const PROBE_TIMEOUT_MS = 15_000;
 export function buildProbeRequest(
   protocol: Protocol,
   baseUrl: string,
-  model: string
+  model: string,
+  apiStyle: ProbeStyle = "chat"
 ): { url: string; body: Record<string, unknown> } {
   switch (protocol) {
     case "anthropic":
@@ -37,6 +41,14 @@ export function buildProbeRequest(
         },
       };
     default:
+      if (apiStyle === "responses") {
+        return {
+          url: joinUrlPath(baseUrl, "/v1/responses"),
+          // 不显式声明 stream: false（responses API 默认非流式；部分兼容实现
+          // 会拒绝未知/冗余参数返回 5xx，反而掩盖真实的 4xx 错误信息）
+          body: { model, input: "hi" },
+        };
+      }
       return {
         url: joinUrlPath(baseUrl, "/v1/chat/completions"),
         body: { model, messages: [{ role: "user", content: "hi" }], max_tokens: 1, stream: false },
@@ -44,13 +56,14 @@ export function buildProbeRequest(
   }
 }
 
-export async function probeModel(
+async function probeOnce(
   target: ProbeTarget,
   model: string,
   apiKey: string,
+  apiStyle: ProbeStyle,
   opts: { timeoutMs?: number; signal?: AbortSignal } = {}
 ): Promise<ProbeResult> {
-  const { url, body } = buildProbeRequest(target.protocol, target.baseUrl, model);
+  const { url, body } = buildProbeRequest(target.protocol, target.baseUrl, model, apiStyle);
   const controller = new AbortController();
   const timeoutMs = opts.timeoutMs ?? PROBE_TIMEOUT_MS;
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -67,15 +80,48 @@ export async function probeModel(
       body: JSON.stringify(body),
       signal: controller.signal,
     });
-    if (res.ok) return { ok: true, status: res.status };
+    if (res.ok) return { ok: true, status: res.status, style: apiStyle };
     const text = await res.text();
-    return { ok: false, status: res.status, error: text.slice(0, 300) };
+    return { ok: false, status: res.status, error: text.slice(0, 300), style: apiStyle };
   } catch (err) {
-    return { ok: false, status: 0, error: err instanceof Error ? err.message : String(err) };
+    return {
+      ok: false,
+      status: 0,
+      error: err instanceof Error ? err.message : String(err),
+      style: apiStyle,
+    };
   } finally {
     clearTimeout(timer);
     opts.signal?.removeEventListener("abort", onOuterAbort);
   }
+}
+
+// openai 协议双风格探测：chat 基线优先（openai 兼容的定义），失败且与风格相关时
+// 补发一次 responses 探测（可能是 responses-only model），任一成功即可用。
+// 补发条件：任何 4xx（401 除外）或 501（未实现端点）——400/403/404/405/422/501 都可能是
+// "该 upstream 不支持 chat 风格"的信号；401（key 问题）、429/其余 5xx（限流/服务端）、
+// 网络错误与风格无关，不补发。健康语义：model 级健康 = 任一风格可用。
+export async function probeModel(
+  target: ProbeTarget,
+  model: string,
+  apiKey: string,
+  opts: { timeoutMs?: number; signal?: AbortSignal } = {}
+): Promise<ProbeResult> {
+  const chatResult = await probeOnce(target, model, apiKey, "chat", opts);
+  if (chatResult.ok || target.protocol !== "openai") return chatResult;
+  const shouldFallback =
+    chatResult.status === 501 ||
+    (chatResult.status >= 400 &&
+      chatResult.status < 500 &&
+      chatResult.status !== 401 &&
+      chatResult.status !== 429);
+  if (shouldFallback) {
+    const responsesResult = await probeOnce(target, model, apiKey, "responses", opts);
+    if (responsesResult.ok) return responsesResult;
+    // 双风格均失败：返回最后一次尝试结果，error 回退 chat 的原始错误
+    return { ...responsesResult, error: responsesResult.error ?? chatResult.error };
+  }
+  return chatResult;
 }
 
 export interface ProbeKeyResult {

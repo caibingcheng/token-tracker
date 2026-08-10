@@ -211,6 +211,13 @@ export async function handleProxyRequest(
     );
   }
 
+  // responses 辅助端点（/v1/responses/{id} 及子路径：retrieve/cancel/update/input_items/output_items）：
+  // 请求体无 model 字段，无法按 model 路由；response id 由创建它的 upstream 记忆，
+  // 无状态遍历收敛（其余 upstream 必然 404/403）。纯透传：过 vk 认证、不过配额、不记录 usage。
+  if (path.startsWith("/v1/responses/")) {
+    return handleSubresourcePassthrough(request, { path, url, deps, virtualKey, userAgent });
+  }
+
   if (!["POST", "PUT", "PATCH"].includes(request.method)) {
     return proxyError(405, "Method not allowed", "method_not_allowed");
   }
@@ -230,6 +237,10 @@ export async function handleProxyRequest(
   if (!model) {
     return proxyError(400, "Unable to determine model from request", "invalid_request_error");
   }
+
+  // responses create（POST /v1/responses）：404/403 可能是"该 upstream 不支持 responses API"
+  // 而非"model 不存在"，不触发 model 级健康标记（防误伤）
+  const isResponsesCreate = path === "/v1/responses";
 
   // vk model allowlist 检查：'*' 全放行，其余按通配规则匹配
   if (!isModelAllowedByVirtualKey(virtualKey, model)) {
@@ -425,10 +436,13 @@ export async function handleProxyRequest(
             lastError = { status: 404 };
             fallbackBusinessResponse = upstreamResponse; // 不 cancel：保留透传
             modelNotFound = true;
-            deps.health?.markModelUnhealthy?.(upstream.id, effectiveModel);
-            deps.log?.(
-              `[gateway] model "${effectiveModel}" marked unavailable on upstream "${upstream.name}" (404)`
-            );            break;
+            if (!isResponsesCreate) {
+              deps.health?.markModelUnhealthy?.(upstream.id, effectiveModel);
+              deps.log?.(
+                `[gateway] model "${effectiveModel}" marked unavailable on upstream "${upstream.name}" (404)`
+              );
+            }
+            break;
           }
           lastResponse = upstreamResponse; // 成功（含其他 4xx 业务错误）：直接透传
           successUpstream = upstream;
@@ -458,13 +472,14 @@ export async function handleProxyRequest(
     if (modelNotFound) continue; // model 级不可用：不标记 upstream unhealthy，继续下一个
     // 该 upstream 全部 key 均失败 → 标记 unhealthy，继续下一个 upstream
     if (upstreamFailed) {
-      if (saw403) {
+      if (saw403 && !isResponsesCreate) {
         // 全部 key 均 403：大概率是该 key 对该 model 无权限 → model 级标记，不误伤其他 model
+        // （responses create 除外：403 可能是"不支持 responses"而非 key 权限问题）
         deps.health?.markModelUnhealthy?.(upstream.id, effectiveModel);
         deps.log?.(
           `[gateway] model "${effectiveModel}" marked unavailable on upstream "${upstream.name}" (403 on all keys)`
         );
-      } else {
+      } else if (!saw403) {
         deps.health?.markUnhealthy(upstream.id);
         deps.log?.(
           `[gateway] upstream "${upstream.name}" marked unhealthy after all keys failed`
@@ -554,6 +569,173 @@ export async function handleProxyRequest(
   });
 }
 
+// responses 辅助端点（/v1/responses/{id} 及子路径）纯透传：
+// 无 model 可路由，response id 由创建它的 upstream 记忆（provider 侧有状态），
+// 其余 upstream 对该 id 必然 404/403 → 按 priority 遍历全部 openai healthy upstream 收敛到创建者。
+// 404/403 不标记任何 health（id 每次不同，标记会污染）；不解析 usage（retrieve 重复调用会重复统计）、
+// 不过配额（无 model 归属维度）；仍过 vk 认证（由调用方保证）。
+async function handleSubresourcePassthrough(
+  request: Request,
+  opts: {
+    path: string;
+    url: URL;
+    deps: ProxyDeps;
+    virtualKey: VirtualKeyInfo;
+    userAgent: string | null;
+  }
+): Promise<Response> {
+  const { path, url, deps, virtualKey, userAgent } = opts;
+
+  const upstreams = await deps.loadUpstreams();
+  const chain = upstreams
+    .filter((u) => u.enabled !== false && u.protocol === "openai")
+    .sort((a, b) => a.priority - b.priority);
+
+  // 健康过滤（仅 upstream 级；不过 model 级——response 记忆与 model 健康无关）
+  const healthy: UpstreamRoute[] = [];
+  for (const upstream of chain) {
+    if (deps.health && !(await deps.health.isHealthy(upstream.id))) continue;
+    healthy.push(upstream);
+  }
+  if (healthy.length === 0) {
+    return proxyError(502, "No healthy upstream available", "upstream_error");
+  }
+
+  const bodyBuffer = new Uint8Array(await request.arrayBuffer());
+  let lastError: { status: number; text?: string } | null = null;
+  let fallbackBusinessResponse: Response | null = null;
+
+  for (const upstream of healthy) {
+    const keys = await deps.resolveUpstreamKeys(upstream.id);
+    if (keys.length === 0) {
+      lastError = { status: 0, text: `No API keys configured for upstream: ${upstream.name}` };
+      continue;
+    }
+    const targetUrl = `${joinUrlPath(upstream.baseUrl, path)}${stripQueryKey(url)}`;
+
+    let lastResponse: Response | null = null;
+    let upstreamFailed = true;
+    for (const apiKey of keys) {
+      for (let attempt = 0; attempt < MAX_RETRY; attempt++) {
+        let upstreamResponse: Response | null = null;
+        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+        try {
+          const controller = new AbortController();
+          timeoutHandle = setTimeout(() => controller.abort(), NON_STREAMING_TIMEOUT_MS);
+
+          upstreamResponse = await fetch(targetUrl, {
+            method: request.method,
+            headers: buildUpstreamHeaders(request.headers, "openai", apiKey),
+            body: bodyBuffer.length > 0 ? bodyBuffer : null,
+            duplex: "half",
+            redirect: "follow",
+            signal: controller.signal,
+          } as RequestInit & { duplex: "half" });
+
+          if (isRetryableStatus(upstreamResponse.status)) {
+            lastError = { status: upstreamResponse.status };
+            // 保留 5xx/429 响应用于全部失败时透传：客户端可见真实状态码与错误体
+            fallbackBusinessResponse = upstreamResponse;
+            continue; // 重试
+          }
+          if (upstreamResponse.status === 401) {
+            lastError = { status: 401 };
+            await upstreamResponse.body?.cancel();
+            break; // key 无效：换下一个 key
+          }
+          if (upstreamResponse.status === 404 || upstreamResponse.status === 403) {
+            // 该 upstream 不认识此 response id（非创建者）：保留业务响应，换下一个 upstream，
+            // 不标记 health（response id 每次不同，标记会污染 model/upstream 健康状态）
+            lastError = { status: upstreamResponse.status };
+            fallbackBusinessResponse = upstreamResponse;
+            upstreamFailed = false;
+            break;
+          }
+          lastResponse = upstreamResponse; // 成功（含其他 4xx 业务错误）：直接透传
+          upstreamFailed = false;
+          break;
+        } catch (err) {
+          lastError = {
+            status: 0,
+            text: err instanceof Error ? err.message : String(err),
+          };
+          // 网络错误/超时 → 重试
+        } finally {
+          clearTimeout(timeoutHandle);
+        }
+
+        if (lastResponse) break;
+      }
+      if (lastResponse || !upstreamFailed) break;
+    }
+
+    if (lastResponse) {
+      // 成功：释放未透传的业务错误 body，避免连接泄漏
+      await fallbackBusinessResponse?.body?.cancel().catch(() => {});
+      fallbackBusinessResponse = null;
+      deps.onComplete?.({ virtualKeyId: virtualKey.id }).catch(() => {});
+      return passthroughResponse(lastResponse, {
+        meta: {
+          model: path,
+          provider: upstream.name,
+          agent: virtualKey.name,
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          virtualKeyId: virtualKey.id,
+          userAgent,
+        },
+        deps,
+        bodyJson: null,
+        protocol: "openai",
+        virtualKeyId: virtualKey.id,
+        recordUsage: false, // 辅助端点不记录 usage（retrieve 重复调用会重复统计）
+      });
+    }
+
+    // 全部 key 均 401/网络失败：照常标记 unhealthy（key 级真实问题，与主链路一致）
+    if (upstreamFailed) {
+      deps.health?.markUnhealthy(upstream.id);
+      deps.log?.(
+        `[gateway] upstream "${upstream.name}" marked unhealthy during responses subresource request`
+      );
+    }
+  }
+
+  // 全部 upstream 均未命中：优先透传最后一个业务响应（404/403）
+  deps.onComplete?.({ virtualKeyId: virtualKey.id }).catch(() => {});
+  if (fallbackBusinessResponse) {
+    return passthroughResponse(fallbackBusinessResponse, {
+      meta: {
+        model: path,
+        provider: healthy[0]?.name ?? "unknown",
+        agent: virtualKey.name,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        virtualKeyId: virtualKey.id,
+        userAgent,
+      },
+      deps,
+      bodyJson: null,
+      protocol: "openai",
+      virtualKeyId: virtualKey.id,
+      recordUsage: false,
+    });
+  }
+  if (lastError && lastError.status > 0) {
+    return new Response(
+      JSON.stringify({
+        error: { message: `Upstream returned status ${lastError.status}`, type: "upstream_error" },
+      }),
+      { status: 502, headers: PROXY_RESPONSE_HEADERS }
+    );
+  }
+  return proxyError(502, lastError?.text ?? "Upstream request failed", "upstream_error");
+}
+
 // 透传上游响应（单 reader，边透传边累积副本），usage 解析与写库由 deps 完成；
 // 仅手动路由命中时启用响应 model 回写（virtualModelName），正常流量零开销
 async function passthroughResponse(
@@ -565,9 +747,10 @@ async function passthroughResponse(
     protocol: Protocol;
     virtualKeyId: number;
     virtualModelName?: string;
+    recordUsage?: boolean; // 辅助端点等场景跳过 usage 解析与写库（默认 true）
   }
 ): Promise<Response> {
-  const { meta, deps, bodyJson, protocol, virtualKeyId, virtualModelName } = opts;
+  const { meta, deps, bodyJson, protocol, virtualKeyId, virtualModelName, recordUsage = true } = opts;
   const headers = new Headers(PROXY_RESPONSE_HEADERS);
   copyHeader(upstreamResponse.headers, headers, "content-type");
   copyHeader(upstreamResponse.headers, headers, "x-ratelimit-remaining-requests");
@@ -662,7 +845,7 @@ async function passthroughResponse(
 
   onDone = async () => {
     try {
-      if (isSuccess) {
+      if (isSuccess && recordUsage) {
         const parsed =
           isStreaming && extractor
             ? extractor.finish()

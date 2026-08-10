@@ -13,6 +13,12 @@ describe("buildProbeRequest", () => {
     });
   });
 
+  it("builds openai responses request when apiStyle is responses", () => {
+    const { url, body } = buildProbeRequest("openai", "https://api.example", "gpt-4o", "responses");
+    expect(url).toBe("https://api.example/v1/responses");
+    expect(body).toEqual({ model: "gpt-4o", input: "hi" });
+  });
+
   it("dedupes /v1 prefix when baseUrl already ends with it", () => {
     const { url } = buildProbeRequest("openai", "https://api.example/v1", "gpt-4o");
     expect(url).toBe("https://api.example/v1/chat/completions");
@@ -69,12 +75,12 @@ describe("probeModel", () => {
       "gpt-4o",
       "sk-test"
     );
-    expect(result).toEqual({ ok: true, status: 200 });
+    expect(result).toEqual({ ok: true, status: 200, style: "chat" });
   });
 
   it("returns error with body snippet for non-2xx", async () => {
-    fetchMock.mockResolvedValue(
-      new Response("{\"error\":{\"message\":\"model not found\"}}", { status: 404 })
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(new Response('{"error":{"message":"model not found"}}', { status: 404 }))
     );
     const result = await probeModel(
       { protocol: "openai", baseUrl: "https://api.example" },
@@ -96,6 +102,97 @@ describe("probeModel", () => {
     expect(result.ok).toBe(false);
     expect(result.status).toBe(0);
     expect(result.error).toContain("ECONNREFUSED");
+  });
+
+  it("falls back to responses probe when chat returns 404 and responses succeeds", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response("model not found", { status: 404 }))
+      .mockResolvedValueOnce(new Response("{}", { status: 200 }));
+    const result = await probeModel(
+      { protocol: "openai", baseUrl: "https://api.example" },
+      "gpt-4o",
+      "sk-test"
+    );
+    expect(result).toEqual({ ok: true, status: 200, style: "responses" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const urls = fetchMock.mock.calls.map((c) => c[0]);
+    expect(urls[0]).toContain("/v1/chat/completions");
+    expect(urls[1]).toContain("/v1/responses");
+  });
+
+  it("falls back to responses probe when chat returns 403", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response("forbidden", { status: 403 }))
+      .mockResolvedValueOnce(new Response("{}", { status: 200 }));
+    const result = await probeModel(
+      { protocol: "openai", baseUrl: "https://api.example" },
+      "gpt-4o",
+      "sk-test"
+    );
+    expect(result).toEqual({ ok: true, status: 200, style: "responses" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("falls back to responses probe when chat returns 400", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response("bad request", { status: 400 }))
+      .mockResolvedValueOnce(new Response("{}", { status: 200 }));
+    const result = await probeModel(
+      { protocol: "openai", baseUrl: "https://api.example" },
+      "gpt-4o",
+      "sk-test"
+    );
+    expect(result).toEqual({ ok: true, status: 200, style: "responses" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("falls back to responses probe when chat returns 501 (not implemented)", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response("not implemented", { status: 501 }))
+      .mockResolvedValueOnce(new Response("{}", { status: 200 }));
+    const result = await probeModel(
+      { protocol: "openai", baseUrl: "https://api.example" },
+      "gpt-4o",
+      "sk-test"
+    );
+    expect(result).toEqual({ ok: true, status: 200, style: "responses" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not fall back on 401 (key-level error)", async () => {
+    fetchMock.mockResolvedValue(new Response("unauthorized", { status: 401 }));
+    const result = await probeModel(
+      { protocol: "openai", baseUrl: "https://api.example" },
+      "gpt-4o",
+      "sk-test"
+    );
+    expect(result).toEqual({ ok: false, status: 401, error: "unauthorized", style: "chat" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns responses result when both styles fail", async () => {
+    fetchMock.mockImplementation(() => Promise.resolve(new Response("nope", { status: 404 })));
+    const result = await probeModel(
+      { protocol: "openai", baseUrl: "https://api.example" },
+      "gpt-4o",
+      "sk-test"
+    );
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe(404);
+    expect(result.style).toBe("responses");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not fall back for anthropic", async () => {
+    fetchMock.mockImplementation(() => Promise.resolve(new Response("nope", { status: 404 })));
+    const result = await probeModel(
+      { protocol: "anthropic", baseUrl: "https://api.anthropic.com" },
+      "claude-3-5-sonnet",
+      "sk-ant"
+    );
+    expect(result.ok).toBe(false);
+    expect(result.style).toBe("chat");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("uses anthropic auth headers and version", async () => {

@@ -933,14 +933,28 @@ export default function UpstreamsPanel() {
                         </button>
                         {test && (
                           <span
+                            onClick={
+                              test.ok
+                                ? undefined
+                                : () =>
+                                    alert(
+                                      `Test failed for ${m} (status ${test.status}): ${
+                                        test.error ?? "unknown error"
+                                      }`
+                                    )
+                            }
                             title={
                               test.ok
                                 ? `OK (${test.status}${test.keysTested ? `, ${test.keysTested} keys tested` : ""})`
                                 : `Failed: ${test.error ?? `status ${test.status}`}${test.keysTested ? ` (${test.keysTested} keys tested)` : ""}`
                             }
-                            className={test.ok ? "text-green-600" : "text-red-500"}
+                            className={
+                              test.ok
+                                ? "text-green-600"
+                                : "cursor-pointer text-red-500 underline decoration-dotted underline-offset-2"
+                            }
                           >
-                            {test.ok ? "✓" : "✗"}
+                            {test.ok ? "✓" : `✗ ${test.status}`}
                           </span>
                         )}
                       </span>

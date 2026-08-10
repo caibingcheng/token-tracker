@@ -17,6 +17,17 @@ describe("OpenAI parser", () => {
     expect(result).toEqual({ inputTokens: 70, outputTokens: 50, cacheRead: 30, cacheWrite: 0, hasUsage: true });
   });
 
+  it("parses responses API non-streaming usage (input_tokens style)", () => {
+    const result = parseOpenAiNonStreaming({
+      usage: {
+        input_tokens: 200,
+        output_tokens: 80,
+        input_tokens_details: { cached_tokens: 120, cache_write_tokens: 10 },
+      },
+    });
+    expect(result).toEqual({ inputTokens: 80, outputTokens: 80, cacheRead: 120, cacheWrite: 10, hasUsage: true });
+  });
+
   it("handles missing details", () => {
     const result = parseOpenAiNonStreaming({ usage: { prompt_tokens: 10, completion_tokens: 5 } });
     expect(result?.cacheRead).toBe(0);
@@ -37,6 +48,19 @@ describe("OpenAI parser", () => {
     ].join("\n");
     const result = parseOpenAiStreaming(sse);
     expect(result).toEqual({ inputTokens: 80, outputTokens: 80, cacheRead: 120, cacheWrite: 0, hasUsage: true });
+  });
+
+  it("parses responses API streaming usage from response.completed nested usage", () => {
+    const sse = [
+      'data: {"type":"response.created","response":{"id":"resp_1"}}',
+      "",
+      'data: {"type":"response.output_text.delta","delta":"hi"}',
+      "",
+      'data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":300,"output_tokens":90,"input_tokens_details":{"cached_tokens":150,"cache_write_tokens":20}}}}',
+      "",
+    ].join("\n");
+    const result = parseOpenAiStreaming(sse);
+    expect(result).toEqual({ inputTokens: 150, outputTokens: 90, cacheRead: 150, cacheWrite: 20, hasUsage: true });
   });
 
   it("returns null when streaming has no usage chunk", () => {
