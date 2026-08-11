@@ -36,7 +36,7 @@ docker compose up -d                                 # 本地运行
   - `upstream_keys`（id, upstream_id, api_key_encrypted, enabled, last_status, created_at）
   - `upstream_model_health`（upstream_id+model 复合主键, status, expires_at, updated_at）：model 级不可用标记（持久化）
   - `virtual_keys`（id, name, api_key_encrypted, enabled, comment, enabled_models(JSON, 默认 '["*"]'), last_used_at, created_at）
-  - `settings`（key TEXT PRIMARY KEY, value TEXT）：`admin_api_key`（AES-256-GCM 加密）、`totp_secret`、`totp_enabled`、`token_epoch`、`hidden_providers`（明文）、`session_token_ttl_hours`（明文）、`stream_idle_timeout_minutes`（明文）、`status_page_config`（明文 JSON：`{enabled, elements:{total,today,daily,heatmap,hourly,topModels,cost}}`，**默认 enabled=false**）、`totp_fail_count`（明文，TOTP 失败计数）、`totp_locked_until`（明文，TOTP 锁定截止时间戳）
+  - `settings`（key TEXT PRIMARY KEY, value TEXT）：`admin_api_key`（AES-256-GCM 加密）、`totp_secret`、`totp_enabled`、`token_epoch`、`hidden_providers`（明文）、`session_token_ttl_hours`（明文）、`stream_idle_timeout_minutes`（明文）、`status_page_config`（明文 JSON：`{enabled, elements:{total,today,daily,heatmap,hourly,topModels,cost}}`，**默认 enabled=false**）、`totp_fail_count`（明文，TOTP 失败计数）、`totp_locked_until`（明文，TOTP 锁定截止时间戳）、`recovery_codes`（明文 JSON：`{hashes:[sha256...], used:[bool...]}`，只存哈希不存明文）、`recovery_code_login_reminder`（明文，recovery code 登录提醒标记）
 - **存量迁移**：`migrateColumns()` 泛化支持多表（token_records / virtual_keys / upstreams），通过 `PRAGMA table_info` 检测缺失列并 `ALTER TABLE` 补列（`CREATE TABLE IF NOT EXISTS` 不会补列）
 
 ## API 路由与认证
@@ -44,13 +44,13 @@ docker compose up -d                                 # 本地运行
 | 路由 | 方法 | 认证 | 说明 |
 |------|------|------|------|
 | `/v1/*`, `/v1beta/*` | 全部 | 虚拟 key（`vk-` 前缀，DB 加密比对） | 代理入口：虚拟 key 校验 → vk model allowlist → model 路由 → 上游 key 故障转移链 → 纯透传 + usage 解析写库 |
-| `POST /api/auth/login` | POST | 原始 API key（DB 优先，env 兜底）+ 可选 TOTP | 登录换会话 token（唯一换取入口，可信 IP 限流；key 无效/缺 TOTP/TOTP 错误统一 401 同文案，无 oracle） |
+| `POST /api/auth/login` | POST | 原始 API key（DB 优先，env 兜底）+ 可选第二因素（TOTP 动态码或 recovery code） | 登录换会话 token（唯一换取入口，可信 IP 限流；key 无效/缺 TOTP/TOTP 错误统一 401 同文案，无 oracle） |
 | `GET/POST /api/auth/setup` | GET/POST | 无（fail-open 闸门自校验） | 首次设置向导：GET 探测 `{setupRequired}`；POST 设置初始 admin key + 返回会话 token（仅当 DB 无 key AND env 无 key，限流 + 事务 re-check） |
 | `/api/dashboard` | GET | 会话 token（`X-API-Key` header） | 聚合统计（total + today + yesterday + daily + models + 365 天 heatmap + 24h 分布） |
 | `/api/providers` `/api/models` `/api/agents` `/api/cli` `/api/model-pricing` `/api/records` | GET | 会话 token | 统计/查询 API |
 | `/api/admin/upstreams*` | CRUD | 会话 token | 上游管理（含 keys、模型拉取、连接测试、余额刷新） |
 | `/api/admin/virtual-keys*` | CRUD | 会话 token | 虚拟 key 管理（创建/编辑/吊销/用量，支持 comment + enabledModels） |
-| `/api/admin/auth/totp` `/api/admin/auth/api-key` `/api/admin/auth/sessions` | CRUD | 会话 token + TOTP 动态码 | TOTP 绑定/解绑、修改登录 key、全局登出（token_epoch+1 吊销全部会话） |
+| `/api/admin/auth/totp` `/api/admin/auth/api-key` `/api/admin/auth/sessions` `/api/admin/auth/recovery-codes` `/api/admin/auth/recovery-codes/reminder` | CRUD | 会话 token + TOTP 动态码 | TOTP 绑定/换绑/解绑、修改登录 key、全局登出（token_epoch+1 吊销全部会话）、recovery codes 查询/重新生成/清除提醒标记 |
 | `/api/admin/settings/display` `/api/admin/settings/session` `/api/admin/settings/stream` | GET/PUT | 会话 token | Display tab：HIDDEN_PROVIDERS 分组语法 + 会话 TTL + 流式空闲超时（分钟，settings 表，面板优先） |
 | `/api/admin/settings/status` | GET/PUT | 会话 token | Display tab：公开 Status 页配置（status_page_config，`isValidStatusPageConfig` 校验） |
 | `/status` `/status/data` | GET | **无（有意公开）** | 公开用量状态页 + 数据端点：详见下方「公开 Status 页」小节 |
@@ -66,6 +66,8 @@ docker compose up -d                                 # 本地运行
 - **限流 IP 来源**：`src/lib/net/client-ip.ts` 的 `getRateLimitKey()` 统一取值 —— `TRUSTED_PROXY=true` 时取 `x-real-ip`（回退 XFF 末位，反代追加的真实 IP）；默认 false 时忽略全部客户端可控头，退化为全局桶（不可伪造，防 XFF 绕过；代价是攻击者可阻塞登录窗口，但无法爆破）。`extractClientInfo`（审计展示用）只取可信 IP，原始 XFF 存 `xffRaw` 仅供排查
 - **页面认证**：`/`、`/admin` 由客户端 `ApiKeyGate`（sessionStorage 存会话 token + 401 拦截 + 本地两步登录：先 key 后 TOTP，第二步触网，未启用 TOTP 留空即可）处理，无 middleware；全局 fetch 走 `src/lib/client/api-client.ts` 的 `apiFetch`
 - **TOTP**：RFC 6238 自实现（`src/lib/auth/totp.ts`，30s 窗口 ±1 容差）；admin + dashboard 共用一次登录；暴力防护 `src/lib/auth/totp-lock.ts`（连续 5 次失败锁 15min，之后每 5 次翻倍封顶 24h，计数持久化 settings 表防重启清零，成功清零；锁定期间本人也无法登录，sqlite3 删除 `totp_locked_until` 行恢复；login 与 admin TOTP 绑定/解绑/改 key 共用）
+- **换绑**：已启用 TOTP 时生成新 pending 必须带 `currentCode`（旧 secret 验证，失败 `recordTotpFailure()` 计入锁定计数）；换绑成功 `bumpTokenEpoch()` 吊销全部会话（首次启用**不**吊销，保持登录立即展示恢复码）；解绑成功同步 `clearRecoveryCodes()`。⚠️ **前端时序**：换绑成功后 SecuritySettings **不得**再发任何 API 请求（token 已失效会 401 提前踢人，recovery codes 弹窗来不及展示），应仅展示弹窗，关闭弹窗时提示会话已吊销并调 `notifyUnauthorized()` 跳登录
+- **Recovery codes**（`src/lib/auth/recovery-codes.ts`）：格式 `XXXX-XXXX-XXXX-XXXX`，字符集排除 `0/O/I/1`；每次生成 4 个一次性码，存储**只存 SHA-256 哈希 + used 标记**（JSON），明文仅在生成成功响应返回一次；登录分流 `classifySecondFactorInput`（6 位纯数字 → TOTP；归一化 16 位 → recovery；其余 → TOTP 分支必然失败）；recovery 验证**绕过 TOTP 锁定**、失败**不计入** `totp_fail_count`（走 login 全局限流桶）、成功清除锁定计数 + 写 `recovery_code_login_reminder='1'`；login 响应带 `viaRecoveryCode: true`，ApiKeyGate 弹 alert，Security 面板显示黄色横幅（「我已检查」DELETE reminder 路由清除）；重新生成（POST recovery-codes）需当前 TOTP 验证，**不**吊销会话；GET 返回 `{remaining, reminder, exists}`（exists 区分「从未生成」黄横幅与「全部用完」红横幅）
 
 ### 公开 Status 页（`/status` + `/status/data`）
 
@@ -245,6 +247,8 @@ docker compose up -d
   - `src/lib/gateway/health`：健康状态机（失败 → unhealthy → 探活成功 → healthy、失败重调度、幂等）
   - `src/lib/gateway/crypto`：AES-256-GCM 往返/篡改
   - `src/lib/auth/totp`：RFC 6238 测试向量 + 时间窗容差
+  - `src/lib/auth/recovery-codes`：生成格式/互斥/字符集、SHA-256 哈希、验证+标记已用（重复失败）、归一化、剩余数量递减、提醒标记往返、classifySecondFactorInput 分流
+  - `src/app/api/admin/auth/totp/route.test`：TOTP 路由集成测试（临时 SQLite + 真实 handler + 签名 token）：换绑无 currentCode → 400、错误计入 totp_fail_count、换绑成功替换 secret + token_epoch+1、首次启用 epoch 不变、解绑清理 recovery_codes/reminder
   - `src/lib/auth/session`：会话 token 签发/验签/过期/滑动续期判定
   - `src/lib/auth/edge-verify`：WebCrypto 验签（与 node 侧签名互认）
   - `src/lib/auth/guard-scan`：静态扫描所有 /api 路由必须用 withAuth（login 除外）

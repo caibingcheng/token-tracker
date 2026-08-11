@@ -19,6 +19,12 @@ import {
   recordTotpFailure,
   clearTotpFailures,
 } from "@/lib/auth/totp-lock";
+import {
+  classifySecondFactorInput,
+  verifyRecoveryCode,
+  getRemainingRecoveryCodes,
+  setRecoveryCodeReminder,
+} from "@/lib/auth/recovery-codes";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 
 // 内存滑动窗口限流：按可信 IP 计数（默认全局桶，防 XFF 伪造绕过），防爆破登录 key 与 TOTP
@@ -99,8 +105,56 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // TOTP：启用后必须提供正确的 6 位动态码
+  // TOTP：启用后必须提供正确的动态码（6 位）或 recovery code（16 位一次性备用码）。
+  // 分流规则：6 位纯数字 → TOTP；归一化后 16 位合法 → recovery；否则走 TOTP 分支（必然失败 → 统一 401）
   if (await isTotpEnabled()) {
+    const secondFactorKind = classifySecondFactorInput(totpCode);
+
+    // Recovery code 路径：可绕过 TOTP 锁定（设备丢失时唯一备用入口）；
+    // 失败不计入 totp_fail_count，由 login 全局限流桶统一计数（不新增独立 bucket）
+    if (secondFactorKind === "recovery") {
+      if (await verifyRecoveryCode(totpCode)) {
+        await clearTotpFailures();
+        await setRecoveryCodeReminder();
+        const remaining = await getRemainingRecoveryCodes();
+        resetAttempts(rateKey);
+        const { ip: auditIp, userAgent } = extractClientInfo(request);
+        await recordAuditLog({
+          action: "login_success",
+          targetType: "system",
+          ip: auditIp,
+          userAgent,
+          details: {
+            totp: true,
+            via_recovery_code: true,
+            remaining_recovery_codes: remaining,
+          },
+        });
+        const epoch = await getTokenEpoch();
+        const ttlMs = await resolveSessionTtlMs();
+        const token = signSessionToken(epoch, keyFingerprint(matchedKey), ttlMs);
+        return NextResponse.json({
+          success: true,
+          token,
+          expiresInMs: ttlMs,
+          viaRecoveryCode: true,
+        });
+      }
+      const { ip, userAgent } = extractClientInfo(request);
+      await recordAuditLog({
+        action: "login_failure",
+        targetType: "system",
+        ip,
+        userAgent,
+        details: { reason: "invalid_recovery_code" },
+      });
+      return NextResponse.json(
+        { success: false, error: "Invalid credentials" },
+        { status: 401 }
+      );
+    }
+
+    // TOTP 分支（含 invalid 输入，统一 401 文案消除第二因素有效性 oracle）
     const lockedUntil = await isTotpLocked();
     if (lockedUntil !== null) {
       const { ip, userAgent } = extractClientInfo(request);

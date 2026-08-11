@@ -52,13 +52,14 @@ export function notifyUnauthorized(): void {
   unauthorizedHandler?.();
 }
 
-// 登录：原始 API key（+ 可选 TOTP 动态码）换取会话 token，仅此接口接受原始 key。
+// 登录：原始 API key（+ 可选 TOTP 动态码或 recovery code）换取会话 token，仅此接口接受原始 key。
 // 服务端对 key 无效 / 缺 TOTP / TOTP 错误统一返回 401 同文案（不暴露 key 有效性），
 // 前端两步流程（先 key 后 code）由组件本地驱动，不依赖服务端区分。
+// viaRecoveryCode：本次登录是否通过 recovery code 完成（true 时前端需弹窗提醒）
 export async function apiLogin(
   apiKey: string,
   totpCode?: string
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; error?: string; viaRecoveryCode?: boolean }> {
   const res = await fetch("/api/auth/login", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -67,7 +68,7 @@ export async function apiLogin(
   const json = await res.json();
   if (res.ok && json.token) {
     setApiKey(json.token as string);
-    return { ok: true };
+    return { ok: true, viaRecoveryCode: json.viaRecoveryCode === true };
   }
   return { ok: false, error: json.error || "Login failed" };
 }

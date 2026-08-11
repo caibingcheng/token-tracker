@@ -58,6 +58,11 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
       }
       const result = await apiLogin(trimmed, totpCode.trim() || undefined);
       if (result.ok) {
+        if (result.viaRecoveryCode) {
+          alert(
+            "You logged in with a recovery code. Please review your authenticator app and regenerate your recovery codes in Security settings."
+          );
+        }
         setInputKey("");
         setTotpCode("");
         setShowTotp(false);
@@ -165,7 +170,7 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
             <h1 className="text-xl font-bold text-gray-900">Token Tracker</h1>
             <p className="mt-1 text-sm text-gray-500">
               {showTotp
-                ? "Enter your TOTP code (leave empty if not enabled)"
+                ? "Enter your TOTP code or recovery code (leave empty if not enabled)"
                 : "Please enter your API Key to continue"}
             </p>
           </div>
@@ -186,10 +191,8 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
                 type="text"
                 value={totpCode}
                 onChange={(e) => setTotpCode(e.target.value)}
-                placeholder="6-digit code"
+                placeholder="6-digit code or recovery code"
                 autoFocus
-                inputMode="numeric"
-                maxLength={6}
                 className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
               />
             )}
