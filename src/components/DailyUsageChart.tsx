@@ -104,11 +104,14 @@ interface DailyUsageChartProps {
   loading: boolean;
   error: string | null;
   range: number;
-  onRangeChange: (range: number) => void;
+  onRangeChange?: (range: number) => void;
   topModels?: TopModel[];
   dailyTopModels?: Record<string, TopModel[]>;
   hourly?: DailyData[];
   timezoneOffsetMinutes?: number;
+  showCost?: boolean;
+  showHourly?: boolean;
+  showTopModels?: boolean;
 }
 
 const COLORS = {
@@ -300,6 +303,8 @@ function SummarySection({
   hourly,
   range,
   timezoneOffsetMinutes,
+  showCost = true,
+  showHourly = true,
 }: {
   summary: {
     totalInput: number;
@@ -316,6 +321,8 @@ function SummarySection({
   hourly?: DailyData[];
   range: number;
   timezoneOffsetMinutes?: number;
+  showCost?: boolean;
+  showHourly?: boolean;
 }) {
   const { compact } = useNumberFormat();
   const animatedTotalInput = useAnimatedNumber(summary.totalInput, 600);
@@ -368,20 +375,24 @@ function SummarySection({
       breakdown: [
         { label: "Avg input / req", value: Math.round(avgInputPerReq) },
         { label: "Avg output / req", value: Math.round(avgOutputPerReq) },
-        { label: "Avg cost / req", value: avgCostPerReq, isCost: true },
+        ...(showCost
+          ? [{ label: "Avg cost / req", value: avgCostPerReq, isCost: true as const }]
+          : []),
       ],
     },
-    {
-      label: "Avg cost / 1M tokens",
-      value: animatedCostPerMillion,
-      isCost: true,
-      breakdown: [
-        { label: "In", value: animatedCostPerMillionInput, isCost: true },
-        { label: "Cache", value: animatedCostPerMillionCacheRead, isCost: true },
-        { label: "Out", value: animatedCostPerMillionOutput, isCost: true },
-        { label: "Total Cost", value: summary.totalCost, isCost: true },
-      ],
-    },
+    ...(showCost
+      ? [{
+          label: "Avg cost / 1M tokens",
+          value: animatedCostPerMillion,
+          isCost: true,
+          breakdown: [
+            { label: "In", value: animatedCostPerMillionInput, isCost: true },
+            { label: "Cache", value: animatedCostPerMillionCacheRead, isCost: true },
+            { label: "Out", value: animatedCostPerMillionOutput, isCost: true },
+            { label: "Total Cost", value: summary.totalCost, isCost: true },
+          ],
+        }]
+      : []),
   ];
 
   return (
@@ -408,7 +419,9 @@ function SummarySection({
           )}
         </div>
       ))}
-      <HourlyDistributionCard hourly={hourly} range={range} timezoneOffsetMinutes={timezoneOffsetMinutes} />
+      {showHourly && (
+        <HourlyDistributionCard hourly={hourly} range={range} timezoneOffsetMinutes={timezoneOffsetMinutes} />
+      )}
     </div>
   );
 }
@@ -502,6 +515,9 @@ export default function DailyUsageChart({
   dailyTopModels,
   hourly,
   timezoneOffsetMinutes = 0,
+  showCost = true,
+  showHourly = true,
+  showTopModels = true,
 }: DailyUsageChartProps) {
   const { compact } = useNumberFormat();
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
@@ -673,26 +689,28 @@ export default function DailyUsageChart({
     <div ref={chartRef} className="bg-white rounded-lg shadow p-3 md:p-6 mb-8">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-4 gap-2">
         <h2 className="text-lg font-semibold">Last {range} Daily Usage</h2>
-        <div className="inline-flex rounded-md overflow-hidden flex-shrink-0">
-          {RANGE_OPTIONS.map((days, index) => (
-            <button
-              key={days}
-              type="button"
-              onClick={() => onRangeChange(days)}
-              aria-pressed={range === days}
-              className={`
-                px-2 md:px-3 py-1 text-xs md:text-sm font-medium transition-all active:scale-95 min-h-[40px] md:min-h-0
-                ${range === days
-                  ? "bg-blue-600 text-white md:hover:bg-blue-700"
-                  : "bg-gray-100 text-gray-600 md:hover:bg-blue-50 md:hover:text-blue-700"
-                }
-                ${index !== RANGE_OPTIONS.length - 1 ? "border-r border-gray-200" : ""}
-              `}
-            >
-              {days}d
-            </button>
-          ))}
-        </div>
+        {onRangeChange && (
+          <div className="inline-flex rounded-md overflow-hidden flex-shrink-0">
+            {RANGE_OPTIONS.map((days, index) => (
+              <button
+                key={days}
+                type="button"
+                onClick={() => onRangeChange(days)}
+                aria-pressed={range === days}
+                className={`
+                  px-2 md:px-3 py-1 text-xs md:text-sm font-medium transition-all active:scale-95 min-h-[40px] md:min-h-0
+                  ${range === days
+                    ? "bg-blue-600 text-white md:hover:bg-blue-700"
+                    : "bg-gray-100 text-gray-600 md:hover:bg-blue-50 md:hover:text-blue-700"
+                  }
+                  ${index !== RANGE_OPTIONS.length - 1 ? "border-r border-gray-200" : ""}
+                `}
+              >
+                {days}d
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {loading && (
@@ -708,7 +726,14 @@ export default function DailyUsageChart({
           {!loading && !error && data.length > 0 && (
         <div>
           {summary && (
-            <SummarySection summary={summary} hourly={hourly} range={range} timezoneOffsetMinutes={timezoneOffsetMinutes} />
+            <SummarySection
+              summary={summary}
+              hourly={hourly}
+              range={range}
+              timezoneOffsetMinutes={timezoneOffsetMinutes}
+              showCost={showCost}
+              showHourly={showHourly}
+            />
           )}
 
           <div className="space-y-6 hidden md:block">
@@ -801,9 +826,10 @@ export default function DailyUsageChart({
               </div>
             </div>
 
-            <div>
-              <h3 className="text-sm font-medium text-gray-700 mb-2">Daily Ratio & Cost</h3>
-              <div className="h-[240px]">
+            {showCost && (
+              <div>
+                <h3 className="text-sm font-medium text-gray-700 mb-2">Daily Ratio & Cost</h3>
+                <div className="h-[240px]">
                 <ResponsiveContainer width="100%" height="100%">
                   <ComposedChart
                     data={data}
@@ -882,10 +908,11 @@ export default function DailyUsageChart({
                   </ComposedChart>
                 </ResponsiveContainer>
               </div>
-            </div>
+              </div>
+            )}
           </div>
 
-          {activeTopModels && activeTopModels.length > 0 && (
+          {showTopModels && activeTopModels && activeTopModels.length > 0 && (
             <div className="mt-8">
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-1 gap-2">
                 <h3 className="text-lg font-semibold">
@@ -1033,7 +1060,7 @@ export default function DailyUsageChart({
               </div>
             </div>
           )}
-          {activeTopModels && activeTopModels.length === 0 && (
+          {showTopModels && activeTopModels && activeTopModels.length === 0 && (
             <div className="mt-8">
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-1 gap-2">
                 <h3 className="text-lg font-semibold">

@@ -19,6 +19,31 @@ interface StreamTimeoutData {
   value: number | null;
 }
 
+interface StatusPageElementsData {
+  total: boolean;
+  today: boolean;
+  daily: boolean;
+  heatmap: boolean;
+  hourly: boolean;
+  topModels: boolean;
+  cost: boolean;
+}
+
+interface StatusPageConfigData {
+  enabled: boolean;
+  elements: StatusPageElementsData;
+}
+
+const STATUS_ELEMENT_LABELS: Array<{ key: keyof StatusPageElementsData; label: string; hint?: string }> = [
+  { key: "total", label: "Total summary", hint: "All-time totals" },
+  { key: "today", label: "Today overview", hint: "Today vs yesterday" },
+  { key: "daily", label: "Daily trend chart", hint: "Last 30 days (fixed)" },
+  { key: "heatmap", label: "Heatmap", hint: "Last 365 days" },
+  { key: "hourly", label: "24h distribution", hint: "Requires daily trend" },
+  { key: "topModels", label: "Top Models", hint: "Reveals model names & costs" },
+  { key: "cost", label: "Cost amounts", hint: "Reveals USD costs" },
+];
+
 export default function DisplaySettings() {
   const [data, setData] = useState<DisplayData | null>(null);
   const [draft, setDraft] = useState("");
@@ -35,16 +60,22 @@ export default function DisplaySettings() {
   const [streamBusy, setStreamBusy] = useState(false);
   const [streamError, setStreamError] = useState<string | null>(null);
   const [streamSaved, setStreamSaved] = useState(false);
+  const [statusConfig, setStatusConfig] = useState<StatusPageConfigData | null>(null);
+  const [statusBusy, setStatusBusy] = useState(false);
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const [statusSaved, setStatusSaved] = useState(false);
 
   const load = useCallback(async () => {
-    const [res, ttlRes, streamRes] = await Promise.all([
+    const [res, ttlRes, streamRes, statusRes] = await Promise.all([
       apiFetch("/api/admin/settings/display"),
       apiFetch("/api/admin/settings/session"),
       apiFetch("/api/admin/settings/stream"),
+      apiFetch("/api/admin/settings/status"),
     ]);
     const json = await res.json();
     const ttlJson = await ttlRes.json();
     const streamJson = await streamRes.json();
+    const statusJson = await statusRes.json();
     if (json.success) {
       setData(json.data as DisplayData);
       setDraft((json.data as DisplayData).value);
@@ -58,6 +89,10 @@ export default function DisplaySettings() {
       const s = streamJson.data as StreamTimeoutData;
       setStreamData(s);
       setStreamDraft(s.value !== null ? String(s.value) : "");
+    }
+    if (statusJson.success) {
+      const d = statusJson.data as { config: StatusPageConfigData };
+      setStatusConfig(d.config);
     }
   }, []);
 
@@ -141,6 +176,43 @@ export default function DisplaySettings() {
     } finally {
       setStreamBusy(false);
     }
+  };
+
+  const handleSaveStatus = async () => {
+    if (!statusConfig) return;
+    setStatusBusy(true);
+    setStatusError(null);
+    setStatusSaved(false);
+    try {
+      const res = await apiFetch("/api/admin/settings/status", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ config: statusConfig }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        setStatusSaved(true);
+        load();
+      } else {
+        setStatusError(json.error || "Failed to save");
+      }
+    } catch {
+      setStatusError("Network error");
+    } finally {
+      setStatusBusy(false);
+    }
+  };
+
+  const toggleStatusElement = (key: keyof StatusPageElementsData) => {
+    if (!statusConfig) return;
+    setStatusSaved(false);
+    setStatusConfig((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        elements: { ...prev.elements, [key]: !prev.elements[key] },
+      };
+    });
   };
 
   return (
@@ -321,6 +393,96 @@ export default function DisplaySettings() {
         {streamSaved && (
           <div className="mt-3 rounded border border-green-200 bg-green-50 p-3 text-sm text-green-700">
             Saved. New streams will use the updated timeout.
+          </div>
+        )}
+      </div>
+
+      <div className="mt-8 border-t border-gray-100 pt-6">
+        <h3 className="mb-1 text-base font-semibold text-gray-900">
+          Public Status Page
+        </h3>
+        <p className="mb-4 text-sm text-gray-500">
+          Exposes a public usage page at{" "}
+          <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">/status</code>{" "}
+          with no authentication. Disabled by default; enable explicitly to
+          open the endpoint. Data is cached for 60s and rate-limited.
+        </p>
+
+        {statusConfig && (
+          <div className="space-y-4">
+            <label className="flex items-center gap-3 min-h-[40px] cursor-pointer">
+              <input
+                type="checkbox"
+                checked={statusConfig.enabled}
+                onChange={() => {
+                  setStatusSaved(false);
+                  setStatusConfig((prev) =>
+                    prev ? { ...prev, enabled: !prev.enabled } : prev
+                  );
+                }}
+                className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+              <span className="text-sm font-medium text-gray-700">
+                Enable public status page
+              </span>
+            </label>
+
+            <div>
+              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">
+                Elements
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {STATUS_ELEMENT_LABELS.map(({ key, label, hint }) => (
+                  <label
+                    key={key}
+                    className="flex items-center gap-3 min-h-[40px] rounded border border-gray-200 bg-gray-50 px-3 py-2 cursor-pointer"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={statusConfig.elements[key]}
+                      onChange={() => toggleStatusElement(key)}
+                      className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    <span className="min-w-0">
+                      <span className="block text-sm font-medium text-gray-700">
+                        {label}
+                      </span>
+                      {hint && (
+                        <span className="block text-xs text-gray-400">
+                          {hint}
+                        </span>
+                      )}
+                    </span>
+                  </label>
+                ))}
+              </div>
+              <p className="mt-2 text-xs text-gray-400">
+                Default: Total summary, Today overview, Daily trend chart.
+                Top Models &amp; Cost reveal sensitive data — leave off unless
+                intended for public display.
+              </p>
+            </div>
+
+            {statusError && (
+              <div className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-600">
+                {statusError}
+              </div>
+            )}
+            {statusSaved && (
+              <div className="rounded border border-green-200 bg-green-50 p-3 text-sm text-green-700">
+                Saved. The public page reflects the new configuration
+                immediately.
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={handleSaveStatus}
+              disabled={statusBusy}
+              className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-50"
+            >
+              {statusBusy ? "Saving..." : "Save Status Page"}
+            </button>
           </div>
         )}
       </div>

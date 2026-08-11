@@ -34,6 +34,8 @@ interface StatsCardsProps {
   loading: boolean;
   error: string | null;
   topModels?: TopModel[];
+  showCost?: boolean;
+  showTopModels?: boolean;
 }
 
 function formatCost(num: number): string {
@@ -64,7 +66,7 @@ function formatValue(num: number, isCost: boolean, isRatio?: boolean, compact?: 
   return isCost ? formatCost(num) : formatNumber(num, compact ?? false);
 }
 
-export default function StatsCards({ stats, totalDays = 0, loading, error, topModels }: StatsCardsProps) {
+export default function StatsCards({ stats, totalDays = 0, loading, error, topModels, showCost = true, showTopModels = true }: StatsCardsProps) {
   const { compact } = useNumberFormat();
   const animatedTotalInput = useAnimatedNumber(stats?.totalInput || 0, 600);
   const animatedTotalOutput = useAnimatedNumber(stats?.totalOutput || 0, 600);
@@ -113,20 +115,24 @@ export default function StatsCards({ stats, totalDays = 0, loading, error, topMo
       breakdown: [
         { label: "Avg input / req", value: Math.round(avgInputPerReq), isCost: false },
         { label: "Avg output / req", value: Math.round(avgOutputPerReq), isCost: false },
-        { label: "Avg cost / req", value: avgCostPerReq, isCost: true },
+        ...(showCost
+          ? [{ label: "Avg cost / req", value: avgCostPerReq, isCost: true as const }]
+          : []),
       ],
     },
-    {
-      label: "Avg cost / 1M tokens",
-      value: animatedCostPerMillion,
-      isCost: true,
-      breakdown: [
-        { label: "Input / 1M", value: stats?.costPerMillionInput || 0, isCost: true },
-        { label: "Cache read / 1M", value: stats?.costPerMillionCacheRead || 0, isCost: true },
-        { label: "Output / 1M", value: stats?.costPerMillionOutput || 0, isCost: true },
-        { label: "Total Cost", value: stats?.totalCost || 0, isCost: true },
-      ],
-    },
+    ...(showCost
+      ? [{
+          label: "Avg cost / 1M tokens",
+          value: animatedCostPerMillion,
+          isCost: true,
+          breakdown: [
+            { label: "Input / 1M", value: stats?.costPerMillionInput || 0, isCost: true },
+            { label: "Cache read / 1M", value: stats?.costPerMillionCacheRead || 0, isCost: true },
+            { label: "Output / 1M", value: stats?.costPerMillionOutput || 0, isCost: true },
+            { label: "Total Cost", value: stats?.totalCost || 0, isCost: true },
+          ],
+        }]
+      : []),
   ];
 
   if (loading) {
@@ -141,7 +147,7 @@ export default function StatsCards({ stats, totalDays = 0, loading, error, topMo
             </div>
           ))}
         </div>
-        <TopModelsCards title="Top 5 Models" models={[]} loading />
+        {showTopModels && <TopModelsCards title="Top 5 Models" models={[]} loading />}
       </div>
     );
   }
@@ -181,7 +187,9 @@ export default function StatsCards({ stats, totalDays = 0, loading, error, topMo
           </div>
         ))}
       </div>
-      <TopModelsCards title="Top 5 Models" models={topModels ?? []} loading={loading} />
+      {showTopModels && (
+        <TopModelsCards title="Top 5 Models" models={topModels ?? []} loading={loading} />
+      )}
     </div>
   );
 }

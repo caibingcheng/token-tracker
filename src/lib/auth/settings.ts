@@ -183,3 +183,91 @@ export async function getStreamIdleTimeoutMinutesSetting(): Promise<number | nul
 export async function setStreamIdleTimeoutMinutesSetting(minutes: number): Promise<void> {
   await setSetting("stream_idle_timeout_minutes", String(minutes));
 }
+
+// ---- Status 公开页配置：settings 表 status_page_config（JSON 明文）----
+// fail-closed：未配置时 enabled=false，/status 与 /status/data 返回 404
+
+export interface StatusPageElementsConfig {
+  total: boolean;
+  today: boolean;
+  daily: boolean;
+  heatmap: boolean;
+  hourly: boolean;
+  topModels: boolean;
+  cost: boolean;
+}
+
+export interface StatusPageConfig {
+  enabled: boolean;
+  elements: StatusPageElementsConfig;
+}
+
+export const DEFAULT_STATUS_PAGE_ELEMENTS: StatusPageElementsConfig = {
+  total: true,
+  today: true,
+  daily: true,
+  heatmap: false,
+  hourly: false,
+  topModels: false,
+  cost: false,
+};
+
+export const DEFAULT_STATUS_PAGE_CONFIG: StatusPageConfig = {
+  enabled: false,
+  elements: { ...DEFAULT_STATUS_PAGE_ELEMENTS },
+};
+
+// 解析 settings 原始字符串，与默认值逐 key 合并（未知/非法字段忽略，返回全新对象）
+export function parseStatusPageConfig(raw: string | null): StatusPageConfig {
+  const result: StatusPageConfig = {
+    enabled: DEFAULT_STATUS_PAGE_CONFIG.enabled,
+    elements: { ...DEFAULT_STATUS_PAGE_ELEMENTS },
+  };
+  if (!raw) return result;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (parsed && typeof parsed === "object") {
+      if (typeof parsed.enabled === "boolean") {
+        result.enabled = parsed.enabled;
+      }
+      const elements = parsed.elements as Record<string, unknown> | undefined;
+      if (elements && typeof elements === "object") {
+        for (const key of Object.keys(result.elements) as Array<keyof StatusPageElementsConfig>) {
+          if (typeof elements[key] === "boolean") {
+            result.elements[key] = elements[key] as boolean;
+          }
+        }
+      }
+    }
+    return result;
+  } catch {
+    return result;
+  }
+}
+
+export async function getStatusPageConfig(): Promise<StatusPageConfig> {
+  const raw = await getSetting("status_page_config");
+  return parseStatusPageConfig(raw);
+}
+
+export async function setStatusPageConfig(config: StatusPageConfig): Promise<void> {
+  await setSetting("status_page_config", JSON.stringify(config));
+  // 清空 status 公开端点响应缓存，配置变更立即生效
+  const { invalidateStatusCache } = await import("@/lib/status-query");
+  invalidateStatusCache();
+}
+
+export function isValidStatusPageConfig(config: unknown): config is StatusPageConfig {
+  if (!config || typeof config !== "object") return false;
+  const c = config as Record<string, unknown>;
+  if (typeof c.enabled !== "boolean") return false;
+  const elements = c.elements as Record<string, unknown> | undefined;
+  if (!elements || typeof elements !== "object") return false;
+  for (const key of Object.keys(DEFAULT_STATUS_PAGE_ELEMENTS)) {
+    if (typeof elements[key] !== "boolean") return false;
+  }
+  for (const key of Object.keys(elements)) {
+    if (!(key in DEFAULT_STATUS_PAGE_ELEMENTS)) return false;
+  }
+  return true;
+}

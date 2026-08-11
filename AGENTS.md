@@ -36,7 +36,7 @@ docker compose up -d                                 # 本地运行
   - `upstream_keys`（id, upstream_id, api_key_encrypted, enabled, last_status, created_at）
   - `upstream_model_health`（upstream_id+model 复合主键, status, expires_at, updated_at）：model 级不可用标记（持久化）
   - `virtual_keys`（id, name, api_key_encrypted, enabled, comment, enabled_models(JSON, 默认 '["*"]'), last_used_at, created_at）
-  - `settings`（key TEXT PRIMARY KEY, value TEXT）：`admin_api_key`（AES-256-GCM 加密）、`totp_secret`、`totp_enabled`、`token_epoch`、`hidden_providers`（明文）、`session_token_ttl_hours`（明文）、`stream_idle_timeout_minutes`（明文）、`totp_fail_count`（明文，TOTP 失败计数）、`totp_locked_until`（明文，TOTP 锁定截止时间戳）
+  - `settings`（key TEXT PRIMARY KEY, value TEXT）：`admin_api_key`（AES-256-GCM 加密）、`totp_secret`、`totp_enabled`、`token_epoch`、`hidden_providers`（明文）、`session_token_ttl_hours`（明文）、`stream_idle_timeout_minutes`（明文）、`status_page_config`（明文 JSON：`{enabled, elements:{total,today,daily,heatmap,hourly,topModels,cost}}`，**默认 enabled=false**）、`totp_fail_count`（明文，TOTP 失败计数）、`totp_locked_until`（明文，TOTP 锁定截止时间戳）
 - **存量迁移**：`migrateColumns()` 泛化支持多表（token_records / virtual_keys / upstreams），通过 `PRAGMA table_info` 检测缺失列并 `ALTER TABLE` 补列（`CREATE TABLE IF NOT EXISTS` 不会补列）
 
 ## API 路由与认证
@@ -52,6 +52,8 @@ docker compose up -d                                 # 本地运行
 | `/api/admin/virtual-keys*` | CRUD | 会话 token | 虚拟 key 管理（创建/编辑/吊销/用量，支持 comment + enabledModels） |
 | `/api/admin/auth/totp` `/api/admin/auth/api-key` `/api/admin/auth/sessions` | CRUD | 会话 token + TOTP 动态码 | TOTP 绑定/解绑、修改登录 key、全局登出（token_epoch+1 吊销全部会话） |
 | `/api/admin/settings/display` `/api/admin/settings/session` `/api/admin/settings/stream` | GET/PUT | 会话 token | Display tab：HIDDEN_PROVIDERS 分组语法 + 会话 TTL + 流式空闲超时（分钟，settings 表，面板优先） |
+| `/api/admin/settings/status` | GET/PUT | 会话 token | Display tab：公开 Status 页配置（status_page_config，`isValidStatusPageConfig` 校验） |
+| `/status` `/status/data` | GET | **无（有意公开）** | 公开用量状态页 + 数据端点：详见下方「公开 Status 页」小节 |
 
 - **认证架构（多层防漏）**：验签 middleware（第一层，WebCrypto 验 HMAC 签名 + exp，Edge runtime）→ 路由内 `withAuth`（第二层，epoch 检查 + DB key 指纹校验）→ vitest 静态扫描测试（第三层，`src/lib/auth/guard-scan.test.ts`，login + setup 白名单）→ 本文件约定（第四层）
 - **⚠️ breaking change**：所有 `/api/*`（login、setup 除外）只接受会话 token（HMAC-SHA256 签名，GATEWAY_SECRET 派生密钥），**原始 API key 不能直接调 API**。脚本/curl 必须先 `POST /api/auth/login`（body `{apiKey, totpCode?}`）换 token，再带 `X-API-Key: <token>` 调用
@@ -64,6 +66,17 @@ docker compose up -d                                 # 本地运行
 - **限流 IP 来源**：`src/lib/net/client-ip.ts` 的 `getRateLimitKey()` 统一取值 —— `TRUSTED_PROXY=true` 时取 `x-real-ip`（回退 XFF 末位，反代追加的真实 IP）；默认 false 时忽略全部客户端可控头，退化为全局桶（不可伪造，防 XFF 绕过；代价是攻击者可阻塞登录窗口，但无法爆破）。`extractClientInfo`（审计展示用）只取可信 IP，原始 XFF 存 `xffRaw` 仅供排查
 - **页面认证**：`/`、`/admin` 由客户端 `ApiKeyGate`（sessionStorage 存会话 token + 401 拦截 + 本地两步登录：先 key 后 TOTP，第二步触网，未启用 TOTP 留空即可）处理，无 middleware；全局 fetch 走 `src/lib/client/api-client.ts` 的 `apiFetch`
 - **TOTP**：RFC 6238 自实现（`src/lib/auth/totp.ts`，30s 窗口 ±1 容差）；admin + dashboard 共用一次登录；暴力防护 `src/lib/auth/totp-lock.ts`（连续 5 次失败锁 15min，之后每 5 次翻倍封顶 24h，计数持久化 settings 表防重启清零，成功清零；锁定期间本人也无法登录，sqlite3 删除 `totp_locked_until` 行恢复；login 与 admin TOTP 绑定/解绑/改 key 共用）
+
+### 公开 Status 页（`/status` + `/status/data`）
+
+- **唯一有意公开的用量端点**：位于 `/status` 下（**不是 `/api` 下**），middleware matcher（`/api/*`）天然不匹配，auth 四层防漏零改动；guard-scan 扫描范围外
+- **fail-closed**：`status_page_config.enabled` 默认 false（未保存 = 关闭），`/status`（server component `notFound()`）与 `/status/data` 均返回 404；必须 admin panel Display tab 显式开启
+- **数据面最小化**（`src/lib/status-query.ts`）：只接受 `tzOffset`（-720..720），无任何过滤参数；按启用元素**按需查询**（`executeStatsQuery` 固定参数），cost/topModels 关闭时**跳过全部 model 级查询**，响应不含模型名/provider 名/成本数据；topModels 开启时复用 hidden_providers 匿名化
+- **元素联动**：hourly 依赖 daily，hourly 开启时 `resolveStatusElements` 强制 daily=true；topModels 开启时隐式返回成本字段（TopModelsCards 组件固定显示 cost）
+- **60s 响应级 LRU 缓存**（key=tzOffset，max 50）：整包缓存不感知写库，故 60s 滞后可接受；`setStatusPageConfig()` 主动调 `invalidateStatusCache()` 立即失效
+- **限流**：`checkStatusRateLimit()`（status-query.ts 导出，60 req/min 固定窗口，`getRateLimitKey()` 取 key），与 setup/login 同款内存 bucket 模式
+- **⚠️ 两处 route 必须 `dynamic = "force-dynamic"`**（`/status/page.tsx` + `/status/data/route.ts`）：否则构建期预渲染会把 enabled/disabled 决策烘焙进产物
+- **配置**：`parseStatusPageConfig` 逐 key 与默认值合并（非法 JSON/字段回退默认，返回全新对象不污染共享默认）；PUT 校验 `isValidStatusPageConfig`（enabled + 全部 7 元素 boolean，未知 key 拒绝）
 
 ## AI Gateway 代理链路（核心）
 
@@ -244,6 +257,8 @@ docker compose up -d
   - `src/lib/auth/totp-lock`：TOTP 失败计数 + 指数锁定（settings 表持久化，防重启清零）
   - `src/lib/stats-query`：静态断言聚合口径（Total Input = `SUM(input_tokens) + SUM(cache_read)`；防止 totalInput 回退为纯 `SUM(input_tokens)` 或 totalInputUncached 再次减去 `cache_read`）+ 日期过滤必须直比较（sargable，防 strftime 套列导致索引失效）
   - `src/lib/timezone-utils`：`localDateKeyToUtcStartISO` 时区换算（含互逆 round-trip）
+  - `src/lib/auth/settings-status`：status_page_config 默认值合并（fail-closed、非法 JSON/字段回退、不污染共享默认）+ 合法性校验
+  - `src/lib/status-query`：元素联动（hourly→daily）+ 按需查询断言（cost/topModels 关闭不执行 model 级查询）+ 响应裁剪（不泄露模型名）+ 响应缓存失效 + 60 req/min 限流
 - 新增纯逻辑模块（如解析器、路由匹配、加密）时应同步提交单测
 
 ## Git Commit
