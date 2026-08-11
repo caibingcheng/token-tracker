@@ -15,6 +15,11 @@ import {
   verifyTotpCode,
   buildOtpAuthUri,
 } from "@/lib/auth/totp";
+import {
+  isTotpLocked,
+  recordTotpFailure,
+  clearTotpFailures,
+} from "@/lib/auth/totp-lock";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 
 const PENDING_SECRET_KEY = "totp_pending_secret";
@@ -44,11 +49,19 @@ export const POST = withAuth(async (request: NextRequest) => {
       );
     }
     if (!verifyTotpCode(pending, body.code.trim())) {
+      if (await isTotpLocked()) {
+        return NextResponse.json(
+          { success: false, error: "Account temporarily locked, try again later" },
+          { status: 429 }
+        );
+      }
+      await recordTotpFailure();
       return NextResponse.json(
         { success: false, error: "Invalid TOTP code" },
         { status: 400 }
       );
     }
+    await clearTotpFailures();
     await setTotpSecret(pending);
     await setTotpEnabled(true);
     await deleteSetting(PENDING_SECRET_KEY);
@@ -89,8 +102,16 @@ export const DELETE = withAuth(async (request: NextRequest) => {
 
   const secret = await getTotpSecret();
   if (!secret || !verifyTotpCode(secret, code)) {
+    if (await isTotpLocked()) {
+      return NextResponse.json(
+        { success: false, error: "Account temporarily locked, try again later" },
+        { status: 429 }
+      );
+    }
+    await recordTotpFailure();
     return NextResponse.json({ success: false, error: "Invalid TOTP code" }, { status: 400 });
   }
+  await clearTotpFailures();
 
   await clearTotp();
   await deleteSetting(PENDING_SECRET_KEY);

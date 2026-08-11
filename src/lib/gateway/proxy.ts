@@ -1,4 +1,5 @@
 import type { Protocol } from "./model-router";
+import { GatewaySecretMissingError } from "./crypto";
 import {
   extractRequestModel,
   routeModel,
@@ -10,7 +11,7 @@ import {
 } from "./model-router";
 import type { UpstreamRoute, ModelCandidate, RoutingRule } from "./model-router";
 import { buildAuthHeaders } from "./upstream-client";
-import { joinUrlPath } from "./url-utils";
+import { joinUrlPath, sanitizePathSegments } from "./url-utils";
 import { buildSessionId } from "./session";
 import type { SessionBinding } from "./session";
 import {
@@ -27,6 +28,51 @@ import { rewriteModelNonStreaming, createSseModelRewriter } from "./response-rew
 export const MAX_RETRY = 2; // 每个 key 内最多尝试次数
 const NON_STREAMING_TIMEOUT_MS = 60_000;
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 流式空闲超时默认 30min（面板可调）
+
+// 请求体上限：默认 32MB（覆盖多图 base64 场景，base64 膨胀 33%），env GATEWAY_MAX_BODY_MB 可调
+const DEFAULT_MAX_REQUEST_BODY_BYTES = 32 * 1024 * 1024;
+// 非流式响应整包缓冲上限：仅 usage 解析需要（流式路径 O(1) 不受影响）
+const MAX_NON_STREAMING_RESPONSE_BYTES = 50 * 1024 * 1024;
+
+export function getMaxRequestBodyBytes(): number {
+  const mb = Number(process.env.GATEWAY_MAX_BODY_MB);
+  return Number.isFinite(mb) && mb > 0 ? mb * 1024 * 1024 : DEFAULT_MAX_REQUEST_BODY_BYTES;
+}
+
+// 读取请求体并限制大小：超限返回 null（调用方返回 413）；
+// content-length 超限直接拒绝，chunked（无 content-length）边读边计数，超限即中断
+async function readRequestBody(request: Request): Promise<Uint8Array | null> {
+  const maxBytes = getMaxRequestBodyBytes();
+  const declared = request.headers.get("content-length");
+  if (declared !== null) {
+    const n = Number(declared);
+    if (Number.isFinite(n) && n > maxBytes) return null;
+  }
+  const raw = request.body;
+  if (!raw) {
+    return new Uint8Array(await request.arrayBuffer());
+  }
+  const reader = raw.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.length;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => {});
+        return null;
+      }
+      chunks.push(value);
+    }
+  } catch {
+    await reader.cancel().catch(() => {});
+    throw new Error("Failed to read request body");
+  }
+  if (chunks.length === 0) return new Uint8Array(0);
+  return concatUint8Arrays(chunks);
+}
 
 export interface VirtualKeyInfo {
   id: number;
@@ -129,6 +175,18 @@ export function buildUpstreamHeaders(
     "x-api-key",
     "x-goog-api-key",
     "accept-encoding", // 强制 identity，保证响应体可解析 usage
+    // 客户端可控的源信息/会话头一律不透明传给上游（防伪造 IP 溯源、会话窃取）
+    "x-forwarded-for",
+    "x-forwarded-proto",
+    "x-forwarded-host",
+    "x-forwarded-port",
+    "x-real-ip",
+    "forwarded",
+    "via",
+    "cookie",
+    "cf-connecting-ip",
+    "true-client-ip",
+    "x-client-ip",
   ]);
   clientHeaders.forEach((value, key) => {
     const lower = key.toLowerCase();
@@ -149,6 +207,11 @@ export function isStreamingResponse(headers: Headers): boolean {
 
 function isRetryableStatus(status: number): boolean {
   return status === 429 || status >= 500;
+}
+
+// 重定向：手动模式不跟随（防上游 key 随重定向跨源泄露），3xx 一律视为失败
+function isRedirectStatus(status: number): boolean {
+  return status >= 300 && status < 400;
 }
 
 // 认证类错误（key 无效/无权限）：该 key 不可用，不重试，
@@ -176,7 +239,12 @@ export async function handleProxyRequest(
   deps: ProxyDeps
 ): Promise<Response> {
   const url = new URL(request.url);
-  const path = url.pathname;
+  const rawPath = url.pathname;
+  // `..` 段净化：拒绝逃逸出上游 base 前缀的路径（/v1/../internal 等）
+  const path = sanitizePathSegments(rawPath);
+  if (path === null) {
+    return proxyError(400, "Invalid request path", "invalid_request_error");
+  }
   const token = extractVirtualKeyToken(request.headers, url.searchParams);
 
   const rawUA = request.headers.get("user-agent");
@@ -186,7 +254,15 @@ export async function handleProxyRequest(
     return proxyError(401, "Missing virtual key", "authentication_error");
   }
 
-  const virtualKey = await deps.resolveVirtualKey(token);
+  let virtualKey;
+  try {
+    virtualKey = await deps.resolveVirtualKey(token);
+  } catch (err) {
+    if (err instanceof GatewaySecretMissingError) {
+      return proxyError(503, "Gateway secret is not configured", "gateway_error");
+    }
+    throw err;
+  }
   if (!virtualKey || !virtualKey.enabled) {
     return proxyError(401, "Invalid or revoked virtual key", "authentication_error");
   }
@@ -222,7 +298,10 @@ export async function handleProxyRequest(
     return proxyError(405, "Method not allowed", "method_not_allowed");
   }
 
-  const bodyBuffer = new Uint8Array(await request.arrayBuffer());
+  const bodyBuffer = await readRequestBody(request);
+  if (bodyBuffer === null) {
+    return proxyError(413, "Request body exceeds size limit", "invalid_request_error");
+  }
   const contentType = request.headers.get("content-type") ?? "";
   let bodyJson: unknown = null;
   if (bodyBuffer.length > 0 && contentType.includes("application/json")) {
@@ -236,6 +315,10 @@ export async function handleProxyRequest(
   const model = extractRequestModel(path, bodyJson);
   if (!model) {
     return proxyError(400, "Unable to determine model from request", "invalid_request_error");
+  }
+  // model 名长度上限：防超长 model 写入健康持久化 / 缓存 key 膨胀
+  if (model.length > 256) {
+    return proxyError(400, "Model name too long", "invalid_request_error");
   }
 
   // responses create（POST /v1/responses）：404/403 可能是"该 upstream 不支持 responses API"
@@ -295,9 +378,10 @@ export async function handleProxyRequest(
       // 保留原语义：model 仅配置在其他协议的 upstream 上 → 400 protocol_mismatch
       const global = routeModel(model, upstreams);
       if (global) {
+        // 不回显内部 upstream 名称与协议配置（防拓扑泄露）
         return proxyError(
           400,
-          `Protocol mismatch: request path ${path} is ${protocol}, but upstream "${global.upstream.name}" is configured as ${global.upstream.protocol}`,
+          `Protocol mismatch: model "${model}" is not configured for the ${protocol} protocol`,
           "protocol_mismatch"
         );
       }
@@ -409,10 +493,16 @@ export async function handleProxyRequest(
             headers: buildUpstreamHeaders(request.headers, protocol, apiKey),
             body: effectiveBodyBuffer.length > 0 ? effectiveBodyBuffer : null,
             duplex: "half",
-            redirect: "follow",
+            redirect: "manual",
             signal: controller.signal,
           } as RequestInit & { duplex: "half" });
 
+          if (isRedirectStatus(upstreamResponse.status)) {
+            // 手动模式：3xx 一律视为失败（LLM API 不应重定向），防认证头跨源泄露
+            lastError = { status: upstreamResponse.status };
+            await upstreamResponse.body?.cancel();
+            break; // 尝试下一个 key
+          }
           if (isRetryableStatus(upstreamResponse.status)) {
             lastError = { status: upstreamResponse.status };
             await upstreamResponse.body?.cancel();
@@ -514,11 +604,15 @@ export async function handleProxyRequest(
       });
     }
     if (manualRoute) {
-      // 手动路由不做跨 upstream fallback：目标 upstream 无 key / 全部 key 失败 → 502
+      // 手动路由不做跨 upstream fallback：目标 upstream 无 key / 全部 key 失败 → 502。
+      // 不回显 lastError.text（可能含内网地址等内部细节），仅日志保留
+      if (lastError?.text) {
+        deps.log?.(`[gateway] manual route failed: ${lastError.text}`);
+      }
       const detail =
-        lastError?.text ??
-        (lastError && lastError.status > 0 ? `upstream returned status ${lastError.status}` : null) ??
-        "upstream request failed";
+        lastError && lastError.status > 0
+          ? `upstream returned status ${lastError.status}`
+          : "upstream request failed";
       return proxyError(502, `Manual route target unavailable: ${detail}`, "manual_route_unavailable");
     }
     if (lastError && lastError.status > 0) {
@@ -529,7 +623,10 @@ export async function handleProxyRequest(
         { status: 502, headers: PROXY_RESPONSE_HEADERS }
       );
     }
-    return proxyError(502, lastError?.text ?? "Upstream request failed", "upstream_error");
+    if (lastError?.text) {
+      deps.log?.(`[gateway] upstream request failed: ${lastError.text}`);
+    }
+    return proxyError(502, "Upstream request failed", "upstream_error");
   }
 
   // 成功落点不是默认 upstream 时保存 session binding（粘性绑定）；仅 2xx 落点生效
@@ -601,7 +698,34 @@ async function handleSubresourcePassthrough(
     return proxyError(502, "No healthy upstream available", "upstream_error");
   }
 
-  const bodyBuffer = new Uint8Array(await request.arrayBuffer());
+  // 配额检查：subresource 无 model 维度，按 vk 聚合限额（RPM/TPM/Daily/Monthly）检查
+  if (deps.quota) {
+    const now = new Date();
+    const quotaUsage = await deps.quota.loadUsage(virtualKey.id, now);
+    const violation = checkQuota(
+      {
+        virtualKeyId: virtualKey.id,
+        maxRpm: virtualKey.maxRpm ?? null,
+        maxTpm: virtualKey.maxTpm ?? null,
+        maxDailyTokens: virtualKey.maxDailyTokens ?? null,
+        maxMonthlyTokens: virtualKey.maxMonthlyTokens ?? null,
+        now,
+      },
+      quotaUsage
+    );
+    if (violation) {
+      return proxyError(
+        429,
+        `Quota exceeded (${violation.dimension}: ${violation.current} / ${violation.limit})`,
+        "quota_exceeded"
+      );
+    }
+  }
+
+  const bodyBuffer = await readRequestBody(request);
+  if (bodyBuffer === null) {
+    return proxyError(413, "Request body exceeds size limit", "invalid_request_error");
+  }
   let lastError: { status: number; text?: string } | null = null;
   let fallbackBusinessResponse: Response | null = null;
 
@@ -628,10 +752,16 @@ async function handleSubresourcePassthrough(
             headers: buildUpstreamHeaders(request.headers, "openai", apiKey),
             body: bodyBuffer.length > 0 ? bodyBuffer : null,
             duplex: "half",
-            redirect: "follow",
+            redirect: "manual",
             signal: controller.signal,
           } as RequestInit & { duplex: "half" });
 
+          if (isRedirectStatus(upstreamResponse.status)) {
+            // 手动模式：3xx 一律视为失败（LLM API 不应重定向），防认证头跨源泄露
+            lastError = { status: upstreamResponse.status };
+            await upstreamResponse.body?.cancel();
+            break; // 尝试下一个 key
+          }
           if (isRetryableStatus(upstreamResponse.status)) {
             lastError = { status: upstreamResponse.status };
             // 保留 5xx/429 响应用于全部失败时透传：客户端可见真实状态码与错误体
@@ -733,7 +863,10 @@ async function handleSubresourcePassthrough(
       { status: 502, headers: PROXY_RESPONSE_HEADERS }
     );
   }
-  return proxyError(502, lastError?.text ?? "Upstream request failed", "upstream_error");
+  if (lastError?.text) {
+    deps.log?.(`[gateway] upstream request failed: ${lastError.text}`);
+  }
+  return proxyError(502, "Upstream request failed", "upstream_error");
 }
 
 // 透传上游响应（单 reader，边透传边累积副本），usage 解析与写库由 deps 完成；
@@ -799,9 +932,14 @@ async function passthroughResponse(
         try {
           if (!isStreaming && rewriter) {
             // 非流式回写：先攒完整 body → 一次性改写 → 再 enqueue（改写失败回退原始 body）
+            let totalBytes = 0;
             while (true) {
               const { done, value } = await reader.read();
               if (done) break;
+              totalBytes += value.length;
+              if (totalBytes > MAX_NON_STREAMING_RESPONSE_BYTES) {
+                throw new Error("Upstream response exceeds size limit");
+              }
               chunks.push(value);
             }
             const fullText = new TextDecoder().decode(concatUint8Arrays(chunks));
@@ -810,6 +948,7 @@ async function passthroughResponse(
             if (bytes.length > 0) controller.enqueue(bytes);
             controller.close();
           } else {
+            let totalBytes = 0;
             while (true) {
               const { done, value } = await (isStreaming
                 ? readWithIdleTimeout()
@@ -819,6 +958,10 @@ async function passthroughResponse(
                 // feed 原始 chunk（rewriter 改写不影响 usage 提取）
                 extractor!.feed(value);
               } else {
+                totalBytes += value.length;
+                if (totalBytes > MAX_NON_STREAMING_RESPONSE_BYTES) {
+                  throw new Error("Upstream response exceeds size limit");
+                }
                 chunks.push(value);
               }
               controller.enqueue(rewriter ? rewriter.transform(value) : value);

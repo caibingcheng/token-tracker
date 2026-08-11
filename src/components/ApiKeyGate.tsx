@@ -16,7 +16,7 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
   const [hasKey, setHasKey] = useState<boolean>(false);
   const [inputKey, setInputKey] = useState("");
   const [totpCode, setTotpCode] = useState("");
-  const [totpRequired, setTotpRequired] = useState(false);
+  const [showTotp, setShowTotp] = useState(false);
   const [loggingIn, setLoggingIn] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [setupRequired, setSetupRequired] = useState(false);
@@ -45,22 +45,20 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
     setLoggingIn(true);
     setError(null);
     try {
-      const result = await apiLogin(trimmed, totpRequired ? totpCode.trim() : undefined);
+      if (!showTotp) {
+        // 第一步：仅收集 key，不触网（服务端统一 401 文案，前端本地切到 TOTP 步骤）
+        setShowTotp(true);
+        return;
+      }
+      const result = await apiLogin(trimmed, totpCode.trim() || undefined);
       if (result.ok) {
         setInputKey("");
         setTotpCode("");
-        setTotpRequired(false);
+        setShowTotp(false);
         setHasKey(true);
         return;
       }
-      if (result.totpRequired) {
-        const wasTotpStep = totpRequired;
-        setTotpRequired(true);
-        // 刚从 API key 进入 TOTP 步骤时不弹错误；仅当动态码本身校验失败才提示
-        setError(wasTotpStep ? result.error || "Invalid TOTP code" : null);
-        return;
-      }
-      setError(result.error || "Login failed");
+      setError(result.error || "Invalid credentials");
     } finally {
       setLoggingIn(false);
     }
@@ -70,7 +68,7 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
     clearApiKey();
     setInputKey("");
     setTotpCode("");
-    setTotpRequired(false);
+    setShowTotp(false);
     setError(null);
     setHasKey(false);
   };
@@ -152,11 +150,13 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
           <div className="mb-6 text-center">
             <h1 className="text-xl font-bold text-gray-900">Token Tracker</h1>
             <p className="mt-1 text-sm text-gray-500">
-              {totpRequired ? "Enter your TOTP code" : "Please enter your API Key to continue"}
+              {showTotp
+                ? "Enter your TOTP code (leave empty if not enabled)"
+                : "Please enter your API Key to continue"}
             </p>
           </div>
           <form onSubmit={handleSubmit} className="space-y-4">
-            {!totpRequired && (
+            {!showTotp && (
               <input
                 type="password"
                 autoComplete="off"
@@ -167,7 +167,7 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
                 className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
               />
             )}
-            {totpRequired && (
+            {showTotp && (
               <input
                 type="text"
                 value={totpCode}
@@ -189,13 +189,13 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
               disabled={loggingIn}
               className="w-full rounded bg-blue-600 py-2 text-sm font-medium text-white hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-50"
             >
-              {loggingIn ? "Signing in..." : totpRequired ? "Verify" : "Continue"}
+              {loggingIn ? "Signing in..." : showTotp ? "Verify" : "Continue"}
             </button>
-            {totpRequired && (
+            {showTotp && (
               <button
                 type="button"
                 onClick={() => {
-                  setTotpRequired(false);
+                  setShowTotp(false);
                   setError(null);
                 }}
                 className="w-full text-center text-xs text-gray-400 hover:text-gray-600"

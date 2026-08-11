@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { joinUrlPath } from "./url-utils";
+import { joinUrlPath, sanitizePathSegments } from "./url-utils";
 
 describe("joinUrlPath", () => {
   it("joins root base with full path", () => {
@@ -53,5 +53,34 @@ describe("joinUrlPath", () => {
     expect(joinUrlPath("https://api.deepseek.com", "v1/chat/completions")).toBe(
       "https://api.deepseek.com/v1/chat/completions"
     );
+  });
+});
+
+describe("sanitizePathSegments", () => {
+  it("keeps normal paths unchanged", () => {
+    expect(sanitizePathSegments("/v1/chat/completions")).toBe("/v1/chat/completions");
+    expect(sanitizePathSegments("/")).toBe("/");
+  });
+
+  it("collapses duplicate slashes and dot segments", () => {
+    expect(sanitizePathSegments("/v1//chat/./completions")).toBe("/v1/chat/completions");
+  });
+
+  it("resolves internal dot-dot segments", () => {
+    expect(sanitizePathSegments("/v1/chat/../messages")).toBe("/v1/messages");
+  });
+
+  it("returns null when dot-dot escapes above root", () => {
+    expect(sanitizePathSegments("/../internal")).toBeNull();
+    expect(sanitizePathSegments("/v1/../../internal")).toBeNull();
+    expect(sanitizePathSegments("/..")).toBeNull();
+  });
+
+  it("rejects non-slash paths", () => {
+    expect(sanitizePathSegments("v1/chat")).toBeNull();
+  });
+
+  it("preserves trailing slash", () => {
+    expect(sanitizePathSegments("/v1/")).toBe("/v1/");
   });
 });

@@ -132,11 +132,13 @@ describe("runSetup 写入与并发安全", () => {
 });
 
 describe("key 强度与限流", () => {
-  it("isValidSetupKey：≥16 字符才通过", () => {
+  it("isValidSetupKey：≥16 字符且至少 2 种字符类别才通过", () => {
     expect(isValidSetupKey("")).toBe(false);
     expect(isValidSetupKey("short")).toBe(false);
-    expect(isValidSetupKey("1234567890123456")).toBe(true);
-    expect(isValidSetupKey("  1234567890123456  ")).toBe(true);
+    expect(isValidSetupKey("1234567890123456")).toBe(false); // 16 位纯数字：仅 1 类
+    expect(isValidSetupKey("abcdefghijklmnop")).toBe(false); // 16 位纯小写：仅 1 类
+    expect(isValidSetupKey("Abcdefghijklmnop1")).toBe(true);
+    expect(isValidSetupKey("  Abcdefghijklmnop1  ")).toBe(true);
   });
 
   it("checkSetupRateLimit：超过 10 次窗口后限流", () => {

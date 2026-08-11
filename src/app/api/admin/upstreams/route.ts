@@ -4,6 +4,10 @@ import { db, initDatabase, upstreamsTable, upstreamKeysTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";
 import { isProtocol, parseEnabledModels } from "@/lib/gateway/model-router";
+import {
+  validateUpstreamBaseUrl,
+  InvalidUpstreamUrlError,
+} from "@/lib/gateway/url-guard";
 import { GatewaySecretMissingError } from "@/lib/gateway/crypto";
 import { healthTracker } from "@/lib/gateway/proxy-deps";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
@@ -76,8 +80,13 @@ export const POST = withAuth(async (request: NextRequest) => {
     if (!isProtocol(protocol)) {
       return NextResponse.json({ success: false, error: "Invalid protocol" }, { status: 400 });
     }
-    if (!/^https?:\/\//.test(baseUrl)) {
-      return NextResponse.json({ success: false, error: "baseUrl must start with http(s)://" }, { status: 400 });
+    try {
+      await validateUpstreamBaseUrl(baseUrl);
+    } catch (err) {
+      if (err instanceof InvalidUpstreamUrlError) {
+        return NextResponse.json({ success: false, error: err.message }, { status: 400 });
+      }
+      throw err;
     }
 
     const enabledModels = Array.isArray(body.enabledModels)

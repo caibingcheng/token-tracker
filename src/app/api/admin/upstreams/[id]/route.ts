@@ -4,6 +4,10 @@ import { db, initDatabase, upstreamsTable, upstreamKeysTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";
 import { isProtocol, parseEnabledModels } from "@/lib/gateway/model-router";
+import {
+  validateUpstreamBaseUrl,
+  InvalidUpstreamUrlError,
+} from "@/lib/gateway/url-guard";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 
 interface Params {
@@ -81,8 +85,13 @@ export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
     }
     if (typeof body.baseUrl === "string") {
       const baseUrl = body.baseUrl.trim().replace(/\/+$/, "");
-      if (!/^https?:\/\//.test(baseUrl)) {
-        return NextResponse.json({ success: false, error: "baseUrl must start with http(s)://" }, { status: 400 });
+      try {
+        await validateUpstreamBaseUrl(baseUrl);
+      } catch (err) {
+        if (err instanceof InvalidUpstreamUrlError) {
+          return NextResponse.json({ success: false, error: err.message }, { status: 400 });
+        }
+        throw err;
       }
       values.baseUrl = baseUrl;
     }

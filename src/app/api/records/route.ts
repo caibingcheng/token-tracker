@@ -22,11 +22,22 @@ export const GET = withAuth(async (request: NextRequest) => {
       const limit = Math.min(200, Math.max(1, parseInt(searchParams.get("limit") || "50", 10)));
       const offset = (page - 1) * limit;
 
-      // 筛选条件
+      // 筛选条件（过滤参数限长，防缓存 key 膨胀）
       const modelParam = searchParams.get("model");
-
       const provider = searchParams.get("provider");
       const agent = searchParams.get("agent");
+      for (const [name, value] of [
+        ["model", modelParam],
+        ["provider", provider],
+        ["agent", agent],
+      ] as const) {
+        if (value !== null && value.length > 128) {
+          return NextResponse.json(
+            { success: false, error: `Parameter "${name}" is too long` },
+            { status: 400 }
+          );
+        }
+      }
       let providerFilter: string[] | null = null;
       if (provider) {
         const allProviderRows = await db

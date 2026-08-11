@@ -7,6 +7,7 @@ import {
   checkSetupRateLimit,
 } from "@/lib/auth/setup";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
+import { getRateLimitKey } from "@/lib/net/client-ip";
 
 export async function GET() {
   return NextResponse.json({ setupRequired: await canRunSetup() });
@@ -24,16 +25,15 @@ export async function POST(request: NextRequest) {
   if (!apiKey) {
     return NextResponse.json({ success: false, error: "Missing apiKey" }, { status: 400 });
   }
-  // 密钥强度校验：≥16 字符
+  // 密钥强度校验：≥16 字符且至少 2 种字符类别
   if (!isValidSetupKey(apiKey)) {
     return NextResponse.json(
-      { success: false, error: "apiKey must be at least 16 characters" },
+      { success: false, error: "apiKey must be at least 16 characters and contain at least 2 character classes (upper/lower/digit/symbol)" },
       { status: 400 }
     );
   }
 
-  const { ip } = extractClientInfo(request);
-  if (checkSetupRateLimit(`${ip}:setup`)) {
+  if (checkSetupRateLimit(getRateLimitKey(request))) {
     return NextResponse.json(
       { success: false, error: "Too many attempts, try again later" },
       { status: 429 }

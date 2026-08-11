@@ -28,7 +28,8 @@ export function deriveSessionKey(): Buffer {
 }
 
 export function keyFingerprint(key: string): string {
-  return createHash("sha256").update(`login-key:${key}`).digest("hex").slice(0, 16);
+  // 完整 256 bit 指纹（不截断）：避免 64 bit 截断被离线字典枚举验证
+  return createHash("sha256").update(`login-key:${key}`).digest("hex");
 }
 
 export function signSessionToken(epoch: number, keyId: string, ttlMs?: number): string {

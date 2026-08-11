@@ -7,6 +7,12 @@ import {
   getTotpSecret,
 } from "@/lib/auth/settings";
 import { verifyTotpCode } from "@/lib/auth/totp";
+import { isStrongLoginKey } from "@/lib/auth/setup";
+import {
+  isTotpLocked,
+  recordTotpFailure,
+  clearTotpFailures,
+} from "@/lib/auth/totp-lock";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 
 // 修改登录 key（DB 持久化；env ADMIN_API_KEY / API_KEYS 立即不再被检查）：
@@ -21,9 +27,9 @@ export const PATCH = withAuth(async (request: NextRequest) => {
   }
 
   const newKey = typeof body.newApiKey === "string" ? body.newApiKey.trim() : "";
-  if (newKey.length < 8) {
+  if (!isStrongLoginKey(newKey)) {
     return NextResponse.json(
-      { success: false, error: "newApiKey must be at least 8 characters" },
+      { success: false, error: "newApiKey must be at least 16 characters and contain at least 2 character classes (upper/lower/digit/symbol)" },
       { status: 400 }
     );
   }
@@ -32,11 +38,19 @@ export const PATCH = withAuth(async (request: NextRequest) => {
     const code = typeof body.totpCode === "string" ? body.totpCode.trim() : "";
     const secret = await getTotpSecret();
     if (!secret || !verifyTotpCode(secret, code)) {
+      if (await isTotpLocked()) {
+        return NextResponse.json(
+          { success: false, error: "Account temporarily locked, try again later" },
+          { status: 429 }
+        );
+      }
+      await recordTotpFailure();
       return NextResponse.json(
         { success: false, error: "Invalid TOTP code" },
         { status: 401 }
       );
     }
+    await clearTotpFailures();
   }
 
   await setAdminApiKey(newKey);

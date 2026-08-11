@@ -1,11 +1,13 @@
 import { db, initDatabase, adminAuditLogsTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
+import { resolveClientIp, getXForwardedForRaw } from "@/lib/net/client-ip";
 
 export type AuditAction =
   | "setup_admin_key"
   | "login_success"
   | "login_failure"
   | "api_key_changed"
+  | "sessions_revoked"
   | "totp_enabled"
   | "totp_disabled"
   | "upstream_created"
@@ -57,17 +59,16 @@ export async function recordAuditLog(input: AuditLogInput): Promise<void> {
   }
 }
 
-// 提取客户端信息：IP 取 x-forwarded-for 首项 → x-real-ip → "unknown"；
-// user-agent 空值归一 null，截断 512 字符
+// 提取客户端信息：IP 只取可信源（resolveClientIp，防 XFF 伪造）；
+// xffRaw 保留原始头全文仅供审计展示；user-agent 空值归一 null，截断 512 字符
 export function extractClientInfo(request: Request): {
   ip: string;
   userAgent: string | null;
+  xffRaw: string | null;
 } {
-  const ip =
-    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
-    request.headers.get("x-real-ip") ??
-    "unknown";
+  const ip = resolveClientIp(request) ?? "unknown";
+  const xffRaw = getXForwardedForRaw(request);
   const rawUA = request.headers.get("user-agent");
   const userAgent = rawUA && rawUA.trim() !== "" ? rawUA.slice(0, 512) : null;
-  return { ip, userAgent };
+  return { ip, userAgent, xffRaw };
 }

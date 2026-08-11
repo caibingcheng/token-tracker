@@ -36,7 +36,7 @@ docker compose up -d                                 # 本地运行
   - `upstream_keys`（id, upstream_id, api_key_encrypted, enabled, last_status, created_at）
   - `upstream_model_health`（upstream_id+model 复合主键, status, expires_at, updated_at）：model 级不可用标记（持久化）
   - `virtual_keys`（id, name, api_key_encrypted, enabled, comment, enabled_models(JSON, 默认 '["*"]'), last_used_at, created_at）
-  - `settings`（key TEXT PRIMARY KEY, value TEXT）：`admin_api_key`（AES-256-GCM 加密）、`totp_secret`、`totp_enabled`、`token_epoch`、`hidden_providers`（明文）、`session_token_ttl_hours`（明文）、`stream_idle_timeout_minutes`（明文）
+  - `settings`（key TEXT PRIMARY KEY, value TEXT）：`admin_api_key`（AES-256-GCM 加密）、`totp_secret`、`totp_enabled`、`token_epoch`、`hidden_providers`（明文）、`session_token_ttl_hours`（明文）、`stream_idle_timeout_minutes`（明文）、`totp_fail_count`（明文，TOTP 失败计数）、`totp_locked_until`（明文，TOTP 锁定截止时间戳）
 - **存量迁移**：`migrateColumns()` 泛化支持多表（token_records / virtual_keys / upstreams），通过 `PRAGMA table_info` 检测缺失列并 `ALTER TABLE` 补列（`CREATE TABLE IF NOT EXISTS` 不会补列）
 
 ## API 路由与认证
@@ -44,31 +44,32 @@ docker compose up -d                                 # 本地运行
 | 路由 | 方法 | 认证 | 说明 |
 |------|------|------|------|
 | `/v1/*`, `/v1beta/*` | 全部 | 虚拟 key（`vk-` 前缀，DB 加密比对） | 代理入口：虚拟 key 校验 → vk model allowlist → model 路由 → 上游 key 故障转移链 → 纯透传 + usage 解析写库 |
-| `POST /api/auth/login` | POST | 原始 API key（DB 优先，env 兜底）+ 可选 TOTP | 登录换会话 token（唯一换取入口，内存限流） |
+| `POST /api/auth/login` | POST | 原始 API key（DB 优先，env 兜底）+ 可选 TOTP | 登录换会话 token（唯一换取入口，可信 IP 限流；key 无效/缺 TOTP/TOTP 错误统一 401 同文案，无 oracle） |
 | `GET/POST /api/auth/setup` | GET/POST | 无（fail-open 闸门自校验） | 首次设置向导：GET 探测 `{setupRequired}`；POST 设置初始 admin key + 返回会话 token（仅当 DB 无 key AND env 无 key，限流 + 事务 re-check） |
 | `/api/dashboard` | GET | 会话 token（`X-API-Key` header） | 聚合统计（total + today + yesterday + daily + models + 365 天 heatmap + 24h 分布） |
 | `/api/providers` `/api/models` `/api/agents` `/api/cli` `/api/model-pricing` `/api/records` | GET | 会话 token | 统计/查询 API |
 | `/api/admin/upstreams*` | CRUD | 会话 token | 上游管理（含 keys、模型拉取、连接测试、余额刷新） |
 | `/api/admin/virtual-keys*` | CRUD | 会话 token | 虚拟 key 管理（创建/编辑/吊销/用量，支持 comment + enabledModels） |
-| `/api/admin/auth/totp` `/api/admin/auth/api-key` | CRUD | 会话 token + TOTP 动态码 | TOTP 绑定/解绑、修改登录 key |
+| `/api/admin/auth/totp` `/api/admin/auth/api-key` `/api/admin/auth/sessions` | CRUD | 会话 token + TOTP 动态码 | TOTP 绑定/解绑、修改登录 key、全局登出（token_epoch+1 吊销全部会话） |
 | `/api/admin/settings/display` `/api/admin/settings/session` `/api/admin/settings/stream` | GET/PUT | 会话 token | Display tab：HIDDEN_PROVIDERS 分组语法 + 会话 TTL + 流式空闲超时（分钟，settings 表，面板优先） |
 
 - **认证架构（多层防漏）**：验签 middleware（第一层，WebCrypto 验 HMAC 签名 + exp，Edge runtime）→ 路由内 `withAuth`（第二层，epoch 检查 + DB key 指纹校验）→ vitest 静态扫描测试（第三层，`src/lib/auth/guard-scan.test.ts`，login + setup 白名单）→ 本文件约定（第四层）
 - **⚠️ breaking change**：所有 `/api/*`（login、setup 除外）只接受会话 token（HMAC-SHA256 签名，GATEWAY_SECRET 派生密钥），**原始 API key 不能直接调 API**。脚本/curl 必须先 `POST /api/auth/login`（body `{apiKey, totpCode?}`）换 token，再带 `X-API-Key: <token>` 调用
 - **新增 /api 路由必须用 `withAuth` 包裹**（`src/lib/auth/guard.ts`，login/setup 除外），否则静态扫描测试失败
-- **首次设置向导（唯一 fail-open 入口）**：`src/lib/auth/setup.ts` 的 `canRunSetup()` ⟺ DB 无 `admin_api_key` AND env 无有效 key（`getEnvAdminKeys()` 统一解析）；`runSetup()` 事务内 re-check + 写 key + epoch+1 + 签发 token；middleware matcher 已排除 `auth/setup`；强度 ≥16 字符、独立限流 bucket、审计 `setup_admin_key`
+- **首次设置向导（唯一 fail-open 入口）**：`src/lib/auth/setup.ts` 的 `canRunSetup()` ⟺ DB 无 `admin_api_key` AND env 无有效 key（`getEnvAdminKeys()` 统一解析）；`runSetup()` 事务内 re-check + 写 key + epoch+1 + 签发 token；middleware matcher 已排除 `auth/setup`；强度 ≥16 字符且 ≥2 字符类别（`isStrongLoginKey`，api-key 修改共用）、独立限流 bucket、审计 `setup_admin_key`
 - **会话 token**：payload 含 `exp + epoch + keyId`；TTL 由 `resolveSessionTtlMs()` 决定（settings `session_token_ttl_hours` > env `SESSION_TOKEN_TTL_HOURS` > 默认 24h，只影响新签发 token）；认证通过且剩余不足一半时 guard 通过响应头 `X-Session-Token` 下发新 token（滑动续期），`apiFetch` 自动存回 sessionStorage
 - **key 生命周期**：修改登录 key（settings 表 `admin_api_key`）时 `token_epoch + 1` → 所有已签发 token 立即 401，env `ADMIN_API_KEY` 旧 key 立即失效（DB 有 key 时 env 不再被检查）
 - **防锁死恢复**：settings 表无 `admin_api_key` 时回退 env `ADMIN_API_KEY` 兜底；如忘记 key 导致无法登录，删除 `settings` 表中的 `admin_api_key` 行即可恢复（sqlite3 CLI 操作）
 - **settings 读写必须包 `withSkipCache()`**（`src/lib/auth/settings.ts`）：查询缓存 TTL 10s，否则改 key/epoch+1/解绑 TOTP 后旧凭证最长残留 10s
-- **页面认证**：`/`、`/admin` 由客户端 `ApiKeyGate`（sessionStorage 存会话 token + 401 拦截 + TOTP 两步登录）处理，无 middleware；全局 fetch 走 `src/lib/client/api-client.ts` 的 `apiFetch`
-- **TOTP**：RFC 6238 自实现（`src/lib/auth/totp.ts`，30s 窗口 ±1 容差）；admin + dashboard 共用一次登录
+- **限流 IP 来源**：`src/lib/net/client-ip.ts` 的 `getRateLimitKey()` 统一取值 —— `TRUSTED_PROXY=true` 时取 `x-real-ip`（回退 XFF 末位，反代追加的真实 IP）；默认 false 时忽略全部客户端可控头，退化为全局桶（不可伪造，防 XFF 绕过；代价是攻击者可阻塞登录窗口，但无法爆破）。`extractClientInfo`（审计展示用）只取可信 IP，原始 XFF 存 `xffRaw` 仅供排查
+- **页面认证**：`/`、`/admin` 由客户端 `ApiKeyGate`（sessionStorage 存会话 token + 401 拦截 + 本地两步登录：先 key 后 TOTP，第二步触网，未启用 TOTP 留空即可）处理，无 middleware；全局 fetch 走 `src/lib/client/api-client.ts` 的 `apiFetch`
+- **TOTP**：RFC 6238 自实现（`src/lib/auth/totp.ts`，30s 窗口 ±1 容差）；admin + dashboard 共用一次登录；暴力防护 `src/lib/auth/totp-lock.ts`（连续 5 次失败锁 15min，之后每 5 次翻倍封顶 24h，计数持久化 settings 表防重启清零，成功清零；锁定期间本人也无法登录，sqlite3 删除 `totp_locked_until` 行恢复；login 与 admin TOTP 绑定/解绑/改 key 共用）
 
 ## AI Gateway 代理链路（核心）
 
 - **路由**：`src/app/v1/[...path]/route.ts` + `src/app/v1beta/[...path]/route.ts`（`runtime = "nodejs"`、`dynamic = "force-dynamic"`）
 - **核心逻辑**：`src/lib/gateway/proxy.ts`（纯逻辑可单测）；依赖注入 `src/lib/gateway/proxy-deps.ts`（DB 访问；session/health 为**模块级单例**，因 `createProxyDeps()` 每请求创建）
-- **流程**：提取虚拟 key（Authorization Bearer / x-api-key / x-goog-api-key / ?key=）→ 校验（**全表解密比对**，AES-256-GCM 随机 IV 无法索引）→ 提取 model（OpenAI/Anthropic 取 body，Gemini 取 path）→ `routeModelByProtocol()` 取候选（精确 > 前缀通配，priority 小者胜，协议过滤）→ **跨 upstream 故障转移链**（session 粘性 binding 优先 → 其余 healthy 候选按 priority；每个 upstream 内遍历 key、每个 key 内 `MAX_RETRY=2`，**401/403 认证错误不重试直接换 key/upstream 并触发 failover**，其余 4xx 直接透传不重试、不触发 failover，**流式输出开始后不可重试**；某 upstream 全部 key 失败标记 unhealthy 并继续下一个）→ 透传（剥离认证头 + `accept-encoding: identity`，按协议注入真实 key）→ 响应管道边透传边增量解析 usage → `withSkipCache` 写库
+- **流程**：path `..` 段净化（`sanitizePathSegments`，逃逸出 base 前缀 → 400）→ 提取虚拟 key（Authorization Bearer / x-api-key / x-goog-api-key / ?key=）→ 校验（**全表解密比对**，AES-256-GCM 随机 IV 无法索引）→ 提取 model（OpenAI/Anthropic 取 body，Gemini 取 path；**长度上限 256**）→ `routeModelByProtocol()` 取候选（精确 > 前缀通配，priority 小者胜，协议过滤）→ **跨 upstream 故障转移链**（session 粘性 binding 优先 → 其余 healthy 候选按 priority；每个 upstream 内遍历 key、每个 key 内 `MAX_RETRY=2`，**401/403 认证错误不重试直接换 key/upstream 并触发 failover**，其余 4xx 直接透传不重试、不触发 failover，**3xx 重定向一律视为失败（`redirect: "manual"`，防上游 key 跨源泄露）**，**流式输出开始后不可重试**；某 upstream 全部 key 失败标记 unhealthy 并继续下一个）→ 透传（剥离认证头 + 客户端可控源信息头 + `accept-encoding: identity`，按协议注入真实 key）→ 响应管道边透传边增量解析 usage → `withSkipCache` 写库
 - **Session 粘性**：`src/lib/gateway/session.ts` — `sessionId = sha256(system 拼接尾部 1024 + 首条 user 文本前 1024 + model + vkId + protocol)`；内存 LRU（max 5000 / ttl 24h），仅 failover 落点 ≠ 默认 upstream 时保存 binding；binding 失效条件：upstream 被禁用/无 key/协议不匹配/不 healthy/不再匹配 model（链过滤自动覆盖）；单候选跳过 session 计算
 - **健康状态**：`src/lib/gateway/health.ts`（内存缓存 + **DB 持久化**：upstream 级存 `upstreams.health_status`，model 级存 `upstream_model_health`，重启后懒加载恢复探活调度）+ `src/lib/gateway/probe.ts`（非流式小请求探活，不记 token）；**upstream 级** healthy → unhealthy：真实请求中全部 key 失败（401 认证失败触发；403/404 为 model 级，不误伤）；unhealthy 不进入候选池，30 分钟定时探活恢复（`upstreams.health_check_model` 优先，否则 `enabled_models` 第一个非通配，无则保持 unhealthy）；**model 级**：某 upstream 对该 model 返回 404/403（全部 key）时标记该 model 不可用（TTL 30 分钟自动恢复），路由时跳过该 upstream 并 failover，UI 模型列表显示 unavailable 徽标；**手动测试（`/api/admin/upstreams/[id]/test-model|test-all-models`）成功即立即恢复健康状态（markHealthy + markModelHealthy），404/403 失败立即标记**，不依赖 30 分钟探活；**全部 unhealthy 时直接 502 不尝试**
 - **写库**：仅 2xx 响应记录；响应无 usage 时记 0 且 `status='no_usage'`；`status`/`latency_ms` 为新增列。**口径约定**：`input_tokens` 字段统一按不含 cache_read 写入（OpenAI/Gemini 在 parser 层做减法），`cache_read` 单独列示，展示层 Total Input 含 cache。
@@ -76,7 +77,9 @@ docker compose up -d                                 # 本地运行
 - **模型并集**：`GET /v1/models` 返回所有启用上游 `enabled_models` 中非通配条目
 - **注意事项**：
   - 新增写入接口必须在写入成功后调用 `invalidateQueryCache()` 或将 handler 包进 `withSkipCache()`（`src/lib/db/cache.ts`）
-  - `GATEWAY_SECRET` 缺失时代理路由与 admin API 返回 503，不静默降级
+  - `GATEWAY_SECRET` 缺失时代理路由与 admin API 返回 503，不静默降级（`proxy-deps.ts` 的 `GatewaySecretMissingError` 向上传播，不再吞错降级 401/502）
+  - 请求体上限默认 32MB（`GATEWAY_MAX_BODY_MB` 可调，超限 413）；非流式响应整包缓冲上限 50MB（超限中断，流式路径 O(1) 不受影响）
+  - 502/协议不匹配错误不回显内部细节（upstream 名、内网地址等），仅进服务端日志
   - 日志永不打印请求 body 与任何 key
 
 ### Usage 解析器（`src/lib/gateway/parsers/`）
@@ -159,10 +162,19 @@ GATEWAY_SECRET=""                   # AES-256-GCM 32 字节（hex/base64）；op
 HIDDEN_PROVIDERS="openai,google"    # 需要匿名的 provider 列表（分组语法）
 SESSION_TOKEN_TTL_HOURS=24          # 会话 token 有效期（小时），默认 24，滑动续期；只影响新签发 token
 
+# 安全：默认 false（fail-closed）。仅当前置反代已设置 X-Real-IP 并覆盖客户端 XFF 时设为 true。
+# false 时登录/设置限流用全局桶（防 XFF 伪造绕过限流），审计 IP 记为 unknown；
+# true 时恢复精确 IP 限流（取 x-real-ip，回退 XFF 末位）。反代需配：
+#   proxy_set_header X-Real-IP $remote_addr;
+#   proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+TRUSTED_PROXY=false
+
 # 可选：进阶（代码保留 env 支持，不在 .env.example 中）
 MODEL_REGISTRY_PATH=                # model 归一化/价格配置（默认 data/model-registry.json）
 API_CACHE_TTL_MS=10000              # SELECT 缓存 TTL（毫秒），默认 10000，0 关闭
 API_CACHE_MAX_SIZE=1000             # 缓存最大条目数，默认 1000
+GATEWAY_MAX_BODY_MB=32              # 代理请求体上限（MB），默认 32；超限 413
+ALLOW_PRIVATE_UPSTREAMS=false       # 设为 true 允许上游指向内网/环回/元数据地址（内网自建 LLM 逃生开关）
 # API_CACHE_DEBUG=true              # 设为 true 在日志中输出缓存命中/未命中
 ```
 
@@ -226,6 +238,10 @@ docker compose up -d
   - `src/lib/gateway/balance`：deepseek/openrouter 余额解析（mock fetch）、provider 判定
   - `src/lib/db/migrate`：存量表补列迁移（临时 SQLite 库，幂等性 + NOT NULL 默认值回填）
   - `src/lib/provider-presets`：预设合法性（protocol/baseUrl/唯一性）
+  - `src/lib/gateway/url-guard`：上游 baseUrl SSRF 防护（环回/私有/链路本地/元数据 IP 拒绝、DNS 解析后分类、ALLOW_PRIVATE_UPSTREAMS 逃生开关）
+  - `src/lib/gateway/url-utils`：`joinUrlPath` 前缀去重 + `sanitizePathSegments` `..` 段净化（逃逸返回 null）
+  - `src/lib/net/client-ip`：限流 IP 可信源（TRUSTED_PROXY 开关、XFF 伪造防护）
+  - `src/lib/auth/totp-lock`：TOTP 失败计数 + 指数锁定（settings 表持久化，防重启清零）
   - `src/lib/stats-query`：静态断言聚合口径（Total Input = `SUM(input_tokens) + SUM(cache_read)`；防止 totalInput 回退为纯 `SUM(input_tokens)` 或 totalInputUncached 再次减去 `cache_read`）+ 日期过滤必须直比较（sargable，防 strftime 套列导致索引失效）
   - `src/lib/timezone-utils`：`localDateKeyToUtcStartISO` 时区换算（含互逆 round-trip）
 - 新增纯逻辑模块（如解析器、路由匹配、加密）时应同步提交单测

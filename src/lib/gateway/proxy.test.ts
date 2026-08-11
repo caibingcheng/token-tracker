@@ -210,7 +210,9 @@ describe("handleProxyRequest - protocol mismatch", () => {
     expect(res.status).toBe(400);
     const json = await res.json();
     expect(json.error.type).toBe("protocol_mismatch");
-    expect(json.error.message).toContain("anthropic");
+    // 不回显内部 upstream 名称/协议配置（防拓扑泄露）
+    expect(json.error.message).toContain("not configured");
+    expect(json.error.message).not.toContain("anthropic");
   });
 
   it("returns 400 when request path is anthropic but upstream is openai", async () => {
@@ -370,6 +372,86 @@ describe("handleProxyRequest - failover chain", () => {
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const sentBody = JSON.parse(new TextDecoder().decode(init.body as Uint8Array));
     expect(sentBody).toEqual(body);
+  });
+
+  it("uses redirect: manual to avoid cross-origin credential leak", async () => {
+    fetchMock.mockResolvedValue(new Response("{}", { status: 200, headers: { "content-type": "application/json" } }));
+
+    await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o" },
+      }),
+      mkDeps()
+    );
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init as RequestInit & { redirect?: string }).redirect).toBe("manual");
+  });
+
+  it("does not follow redirects: 3xx fails over to next key then 502", async () => {
+    fetchMock.mockResolvedValue(
+      new Response("redirecting", {
+        status: 302,
+        headers: { location: "https://evil.example/steal" },
+      })
+    );
+
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o" },
+      }),
+      mkDeps()
+    );
+    expect(res.status).toBe(502);
+    expect(fetchMock).toHaveBeenCalledTimes(2); // 2 keys，每 key 1 次（3xx 不重试）
+  });
+});
+
+describe("handleProxyRequest - request body size limit", () => {
+  const ORIG = process.env.GATEWAY_MAX_BODY_MB;
+  const fetchMock = vi.fn();
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    fetchMock.mockReset();
+    if (ORIG === undefined) delete process.env.GATEWAY_MAX_BODY_MB;
+    else process.env.GATEWAY_MAX_BODY_MB = ORIG;
+  });
+
+  it("rejects oversized request body with 413 without calling upstream", async () => {
+    vi.stubGlobal("fetch", fetchMock);
+    process.env.GATEWAY_MAX_BODY_MB = "0.00001"; // ~10 bytes
+
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", messages: [{ role: "user", content: "x".repeat(200) }] },
+      }),
+      mkDeps()
+    );
+    expect(res.status).toBe(413);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects oversized body via content-length without buffering", async () => {
+    vi.stubGlobal("fetch", fetchMock);
+    process.env.GATEWAY_MAX_BODY_MB = "0.00001"; // ~10 bytes
+
+    const headers = new Headers({
+      "content-type": "application/json",
+      "content-length": "999999",
+      authorization: "Bearer vk-good",
+    });
+    const req = new Request("https://gw.example/v1/chat/completions", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ model: "gpt-4o" }),
+    });
+    const res = await handleProxyRequest(req, mkDeps());
+    expect(res.status).toBe(413);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 
@@ -1791,7 +1873,7 @@ describe("handleProxyRequest - responses subresource endpoints", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("does not record usage or quota on subresource endpoints", async () => {
+  it("does not record usage but checks quota on subresource endpoints", async () => {
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify({ id: "resp_123", usage: { input_tokens: 5, output_tokens: 3 } }), {
         status: 200,
@@ -1807,8 +1889,28 @@ describe("handleProxyRequest - responses subresource endpoints", () => {
     await res.text();
     expect(res.status).toBe(200);
     expect(deps.onUsage).not.toHaveBeenCalled();
-    expect(loadUsage).not.toHaveBeenCalled();
+    expect(loadUsage).toHaveBeenCalledTimes(1); // 配额检查已覆盖 subresource（防无限调用）
     expect(deps.onComplete).toHaveBeenCalledWith({ virtualKeyId: 1 });
+  });
+
+  it("returns 429 on subresource endpoints when quota exceeded", async () => {
+    const loadUsage = vi.fn(async () => ({ rpm: 100, tpm: 0, dailyTokens: 0, monthlyTokens: 0 }));
+    const { deps } = mkSubDeps({
+      resolveVirtualKey: vi.fn(async () => ({
+        id: 1,
+        name: "claude-code",
+        enabled: true,
+        enabledModels: ["*"],
+        maxRpm: 10,
+      })),
+      quota: { loadUsage },
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/responses/resp_123", { method: "GET", headers: { authorization: "Bearer vk-good" } }),
+      deps
+    );
+    expect(res.status).toBe(429);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("requires virtual key auth for subresource endpoints", async () => {

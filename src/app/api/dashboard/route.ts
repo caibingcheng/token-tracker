@@ -626,6 +626,20 @@ export const GET = withAuth(async (request: NextRequest) => {
     const agent = searchParams.get("agent") || "all";
     const tzOffsetParam = searchParams.get("tzOffset");
 
+    // 过滤参数限长，防超长参数进入缓存 key 撑爆内存
+    for (const [name, value] of [
+      ["provider", provider],
+      ["model", model],
+      ["agent", agent],
+    ] as const) {
+      if (value.length > 128) {
+        return NextResponse.json(
+          { success: false, error: `Parameter "${name}" is too long` },
+          { status: 400 }
+        );
+      }
+    }
+
     let timezoneOffsetMinutes: number | undefined;
     if (tzOffsetParam !== null) {
       timezoneOffsetMinutes = parseInt(tzOffsetParam, 10);

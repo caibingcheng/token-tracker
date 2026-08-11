@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -77,17 +77,31 @@ describe("recordAuditLog", () => {
 });
 
 describe("extractClientInfo", () => {
-  it("parses ip from x-forwarded-for first entry", async () => {
-    const { extractClientInfo } = await import("./audit");
-    const req = new Request("https://example.com", {
-      headers: { "x-forwarded-for": "203.0.113.9, 10.0.0.1", "user-agent": "curl/8.0" },
-    });
-    const info = extractClientInfo(req);
-    expect(info.ip).toBe("203.0.113.9");
-    expect(info.userAgent).toBe("curl/8.0");
+  const ORIG_TRUSTED = process.env.TRUSTED_PROXY;
+
+  afterEach(() => {
+    if (ORIG_TRUSTED === undefined) delete process.env.TRUSTED_PROXY;
+    else process.env.TRUSTED_PROXY = ORIG_TRUSTED;
   });
 
-  it("falls back to x-real-ip then unknown", async () => {
+  it("ignores client-controlled headers when TRUSTED_PROXY unset", async () => {
+    delete process.env.TRUSTED_PROXY;
+    const { extractClientInfo } = await import("./audit");
+    const req = new Request("https://example.com", {
+      headers: {
+        "x-forwarded-for": "203.0.113.9, 10.0.0.1",
+        "x-real-ip": "198.51.100.7",
+        "user-agent": "curl/8.0",
+      },
+    });
+    const info = extractClientInfo(req);
+    expect(info.ip).toBe("unknown");
+    expect(info.userAgent).toBe("curl/8.0");
+    expect(info.xffRaw).toBe("203.0.113.9, 10.0.0.1");
+  });
+
+  it("trusts x-real-ip when TRUSTED_PROXY=true", async () => {
+    process.env.TRUSTED_PROXY = "true";
     const { extractClientInfo } = await import("./audit");
     const req1 = new Request("https://example.com", { headers: { "x-real-ip": "198.51.100.7" } });
     expect(extractClientInfo(req1).ip).toBe("198.51.100.7");

@@ -19,12 +19,17 @@ export function unauthorized(message = "Invalid or missing session token") {
   return NextResponse.json({ success: false, error: message }, { status: 401 });
 }
 
-// 当前生效的登录 key：DB 优先，env ADMIN_API_KEY / API_KEYS 仅 bootstrap 兜底
-export async function resolveActiveLoginKey(): Promise<string | null> {
+// 当前生效的候选登录 key：DB key 优先（单值），env ADMIN_API_KEY / API_KEYS 仅 bootstrap 兜底（可多个）
+export async function resolveCandidateLoginKeys(): Promise<string[]> {
   const dbKey = await getAdminApiKey();
-  if (dbKey !== null) return dbKey;
-  const envKeys = getEnvAdminKeys();
-  return envKeys.length > 0 ? envKeys[0]! : null;
+  if (dbKey !== null) return [dbKey];
+  return getEnvAdminKeys();
+}
+
+// 校验 token 的 keyId 指纹是否命中任一候选 key（登录可能用任一 env key 签发）
+export async function matchesActiveLoginKey(keyId: string): Promise<boolean> {
+  const keys = await resolveCandidateLoginKeys();
+  return keys.some((k) => safeCompare(keyId, keyFingerprint(k)));
 }
 
 // 路由内认证（第二层）：会话 token 验签 + exp + epoch 检查 + 登录 key 指纹校验；
@@ -41,10 +46,8 @@ export function withAuth(handler: RouteHandler): RouteHandler {
     const epoch = await getTokenEpoch();
     if (payload.epoch !== epoch) return unauthorized();
 
-    // 登录 key 指纹校验：修改 key 后旧 token 立即失效
-    const activeKey = await resolveActiveLoginKey();
-    if (!activeKey) return unauthorized();
-    if (!safeCompare(payload.keyId, keyFingerprint(activeKey))) {
+    // 登录 key 指纹校验：修改 key 后旧 token 立即失效（遍历候选 key，覆盖多 env key 场景）
+    if (!(await matchesActiveLoginKey(payload.keyId))) {
       return unauthorized();
     }
 

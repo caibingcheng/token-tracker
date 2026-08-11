@@ -109,8 +109,8 @@ export default function SecuritySettings() {
   };
 
   const handleChangeApiKey = async () => {
-    if (newApiKey.length < 8 || busy) {
-      setError("New key must be at least 8 characters");
+    if (newApiKey.length < 16 || busy) {
+      setError("New key must be at least 16 characters with 2 character classes");
       return;
     }
     if (newApiKey !== newApiKeyConfirm) {
@@ -251,7 +251,7 @@ export default function SecuritySettings() {
             autoComplete="new-password"
             value={newApiKey}
             onChange={(e) => setNewApiKey(e.target.value)}
-            placeholder="New API key (min 8 chars)"
+            placeholder="New API key (min 16 chars, 2 classes)"
             className="w-full sm:w-56 rounded border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
           />
           <input
@@ -281,6 +281,44 @@ export default function SecuritySettings() {
             Change Key
           </button>
         </div>
+      </div>
+
+      {/* 全局登出 */}
+      <div className="mt-6 border-t pt-4">
+        <h3 className="mb-2 text-sm font-medium text-gray-700">Revoke All Sessions</h3>
+        <p className="mb-3 text-xs text-gray-400">
+          Immediately invalidates every logged-in session (including this one). You will need to
+          log in again.
+        </p>
+        <button
+          type="button"
+          onClick={async () => {
+            if (!window.confirm("Revoke ALL sessions? You will be logged out.")) return;
+            setBusy(true);
+            setError(null);
+            try {
+              const res = await apiFetch("/api/admin/auth/sessions", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({}),
+              });
+              const json = await res.json();
+              if (json.success) {
+                alert("All sessions revoked. Log in again.");
+              } else {
+                setError(json.error || "Failed to revoke sessions");
+              }
+            } catch {
+              setError("Network error");
+            } finally {
+              setBusy(false);
+            }
+          }}
+          disabled={busy}
+          className="rounded border border-red-200 px-3 py-1.5 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50"
+        >
+          Revoke All Sessions
+        </button>
       </div>
     </div>
   );

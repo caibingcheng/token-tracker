@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { safeCompare } from "@/lib/gateway/crypto";
+import { getRateLimitKey } from "@/lib/net/client-ip";
 import {
   getTokenEpoch,
   getAdminApiKey,
@@ -13,15 +14,30 @@ import {
   keyFingerprint,
 } from "@/lib/auth/session";
 import { verifyTotpCode } from "@/lib/auth/totp";
+import {
+  isTotpLocked,
+  recordTotpFailure,
+  clearTotpFailures,
+} from "@/lib/auth/totp-lock";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 
-// 内存滑动窗口限流：按 IP + key 前缀计数，防爆破登录 key 与 TOTP
+// 内存滑动窗口限流：按可信 IP 计数（默认全局桶，防 XFF 伪造绕过），防爆破登录 key 与 TOTP
 const WINDOW_MS = 15 * 60 * 1000;
 const MAX_ATTEMPTS = 10;
 const attempts = new Map<string, number[]>();
+let sweepCounter = 0;
 
 function rateLimited(key: string): boolean {
   const now = Date.now();
+  // 惰性清扫：每 64 次调用清理一次过期条目，防伪造 key 无界增长
+  sweepCounter++;
+  if (sweepCounter % 64 === 0) {
+    attempts.forEach((ts, k) => {
+      if (ts.length === 0 || now - ts[ts.length - 1]! >= WINDOW_MS) {
+        attempts.delete(k);
+      }
+    });
+  }
   const timestamps = (attempts.get(key) ?? []).filter((t) => now - t < WINDOW_MS);
   if (timestamps.length >= MAX_ATTEMPTS) {
     attempts.set(key, timestamps);
@@ -50,8 +66,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: false, error: "Missing apiKey" }, { status: 400 });
   }
 
-  const { ip } = extractClientInfo(request);
-  if (rateLimited(`${ip}:key`)) {
+  const rateKey = getRateLimitKey(request);
+  if (rateLimited(rateKey)) {
     return NextResponse.json(
       { success: false, error: "Too many attempts, try again later" },
       { status: 429 }
@@ -76,23 +92,33 @@ export async function POST(request: NextRequest) {
       userAgent,
       details: { reason: "invalid_api_key" },
     });
+    // 统一 401 文案：不区分 key 无效 / 缺 TOTP / TOTP 错误，消除 key 有效性 oracle
     return NextResponse.json(
-      { success: false, error: "Invalid API key" },
+      { success: false, error: "Invalid credentials" },
       { status: 401 }
     );
   }
 
   // TOTP：启用后必须提供正确的 6 位动态码
   if (await isTotpEnabled()) {
-    const secret = await getTotpSecret();
-    if (!secret || !totpCode) {
-      // 尚未输入动态码：引导进入第二步，不算失败
+    const lockedUntil = await isTotpLocked();
+    if (lockedUntil !== null) {
+      const { ip, userAgent } = extractClientInfo(request);
+      await recordAuditLog({
+        action: "login_failure",
+        targetType: "system",
+        ip,
+        userAgent,
+        details: { reason: "totp_locked", lockedUntil },
+      });
       return NextResponse.json(
-        { success: false, error: "Enter your TOTP code", totpRequired: true },
-        { status: 401 }
+        { success: false, error: "Account temporarily locked, try again later" },
+        { status: 429 }
       );
     }
-    if (!verifyTotpCode(secret, totpCode)) {
+    const secret = await getTotpSecret();
+    if (!secret || !verifyTotpCode(secret, totpCode)) {
+      await recordTotpFailure();
       const { ip, userAgent } = extractClientInfo(request);
       await recordAuditLog({
         action: "login_failure",
@@ -102,13 +128,14 @@ export async function POST(request: NextRequest) {
         details: { reason: "invalid_totp" },
       });
       return NextResponse.json(
-        { success: false, error: "Invalid TOTP code", totpRequired: true },
+        { success: false, error: "Invalid credentials" },
         { status: 401 }
       );
     }
+    await clearTotpFailures();
   }
 
-  resetAttempts(`${ip}:key`);
+  resetAttempts(rateKey);
 
   const { ip: auditIp, userAgent } = extractClientInfo(request);
   await recordAuditLog({

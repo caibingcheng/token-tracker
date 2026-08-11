@@ -11,6 +11,11 @@ services:
       - GATEWAY_SECRET=${GATEWAY_SECRET:-your-32-byte-hex-secret}
       - HIDDEN_PROVIDERS=${HIDDEN_PROVIDERS:-}
       - API_CACHE_DEBUG=false
+      # 安全：仅当前置反代已设置 X-Real-IP（并覆盖客户端 XFF）时设为 true。
+      # 默认 false 时登录/设置限流使用全局桶（防 XFF 伪造绕过），审计 IP 记为 unknown。
+      # 反代需配置：proxy_set_header X-Real-IP $remote_addr;
+      #              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      - TRUSTED_PROXY=false
     volumes:
       - ./data:/app/data
     # 可选：显式内存上限（与 Dockerfile 的 NODE_OPTIONS 512MB 对齐）

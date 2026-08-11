@@ -10,7 +10,7 @@ import {
   routingRulesTable,
 } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
-import { decryptSecret, safeCompare } from "./crypto";
+import { decryptSecret, safeCompare, GatewaySecretMissingError } from "./crypto";
 import type { ProxyDeps, RecordUsageMeta } from "./proxy";
 import type { UpstreamRoute, RoutingRule } from "./model-router";
 import type { QuotaUsage } from "./quota";
@@ -38,7 +38,9 @@ export async function loadPlainUpstreamKeys(upstreamId: number): Promise<string[
     if (row.enabled !== 1) continue;
     try {
       keys.push(decryptSecret(row.apiKeyEncrypted));
-    } catch {
+    } catch (err) {
+      // GATEWAY_SECRET 缺失必须向上传播（fail-closed），不能吞掉降级为"无 key"
+      if (err instanceof GatewaySecretMissingError) throw err;
       continue;
     }
   }
@@ -61,7 +63,17 @@ async function probeUpstream(upstreamId: number): Promise<boolean> {
   }
   if (!model) return false;
 
-  const keys = await loadPlainUpstreamKeys(upstreamId);
+  let keys: string[];
+  try {
+    keys = await loadPlainUpstreamKeys(upstreamId);
+  } catch (err) {
+    // GATEWAY_SECRET 缺失：探活无法解密 key，保持 unhealthy（fail-closed）
+    if (err instanceof GatewaySecretMissingError) {
+      console.log("[gateway] probe skipped: GATEWAY_SECRET is not configured");
+      return false;
+    }
+    throw err;
+  }
   if (keys.length === 0) return false;
 
   const result = await probeModel(
@@ -193,7 +205,9 @@ export function createProxyDeps(): ProxyDeps {
                 maxMonthlyTokens: row.maxMonthlyTokens ?? null,
               };
             }
-          } catch {
+          } catch (err) {
+            // GATEWAY_SECRET 缺失必须向上传播（fail-closed），不能吞掉降级为 401
+            if (err instanceof GatewaySecretMissingError) throw err;
             continue;
           }
         }
