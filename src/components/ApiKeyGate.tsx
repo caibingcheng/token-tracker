@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { usePathname } from "next/navigation";
 import {
   getApiKey,
   clearApiKey,
@@ -12,8 +13,9 @@ import {
 import MobileTabBar from "./MobileTabBar";
 
 export default function ApiKeyGate({ children }: { children: React.ReactNode }) {
-  // 初始一律未认证（SSR 无 localStorage，避免 hydration mismatch），挂载后读取
-  const [hasKey, setHasKey] = useState<boolean>(false);
+  // 初始 null = 未知（SSR/首帧不渲染登录表单，避免浏览器密码自动填充弹窗）；
+  // 挂载后读取 localStorage 再决定渲染登录表单还是内容
+  const [hasKey, setHasKey] = useState<boolean | null>(null);
   const [inputKey, setInputKey] = useState("");
   const [totpCode, setTotpCode] = useState("");
   const [showTotp, setShowTotp] = useState(false);
@@ -37,6 +39,10 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
   useEffect(() => {
     return registerUnauthorizedHandler(handleUnauthorized);
   }, [handleUnauthorized]);
+
+  // 公开状态页（/status）不经登录 gate，直接放行
+  const pathname = usePathname();
+  const isPublic = pathname?.startsWith("/status") ?? false;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -96,6 +102,14 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
       setSettingUp(false);
     }
   };
+
+  if (isPublic) {
+    return <>{children}</>;
+  }
+
+  if (hasKey === null) {
+    return <main className="min-h-screen bg-gray-50" />;
+  }
 
   if (!hasKey && setupRequired) {
     return (

@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
+import ApiKeyGate from "@/components/ApiKeyGate";
 
 export const metadata: Metadata = {
   title: "Token Tracker",
@@ -29,7 +30,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="bg-gray-50 text-gray-900">
-        {children}
+        <ApiKeyGate>{children}</ApiKeyGate>
       </body>
     </html>
   );
