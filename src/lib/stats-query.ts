@@ -37,7 +37,7 @@ export type StatsQueryResult =
   | StatItem[];
 
 // Helper to build combined WHERE clause
-function buildWhereClause(
+export function buildWhereClause(
   dateFilter: Date | string | null,
   providerFilter: string[] | null,
   modelFilter: string[] | null,

@@ -16,6 +16,12 @@ import {
   mergeAggregatedCosts,
   type AggregatedCost,
 } from "@/lib/cost-utils";
+import {
+  queryLatencyStats,
+  type LatencyDayStat,
+  type LatencyModelStat,
+} from "@/lib/latency-query";
+import { anonymizeProvider } from "@/lib/provider-utils";
 import { TOP_N_DISPLAY, TOP_N_RAW_MODELS } from "@/lib/model-utils";
 import {
   resolveDashboardFilters,
@@ -222,6 +228,10 @@ interface DashboardData {
   dailyModels: Record<string, ModelStat[]>;
   heatmap: DayData[];
   hourly: DayData[];
+  latency: {
+    byModel: Array<LatencyModelStat & { displayName: string; providerName: string }>;
+    daily: LatencyDayStat[];
+  };
   timezoneOffsetMinutes: number;
 }
 
@@ -271,6 +281,7 @@ async function queryDashboard(
       modelsRange,
       heatmap,
       hourly,
+      latency,
     ] = await Promise.all([
       executeStatsQuery({
         groupBy: "none",
@@ -367,6 +378,15 @@ async function queryDashboard(
         modelFilter,
         agentFilter,
         timezoneOffsetMinutes,
+      }),
+      queryLatencyStats({
+        range,
+        providerFilter,
+        modelFilter,
+        agentFilter,
+        timezoneOffsetMinutes: timezoneOffsetMinutes ?? 0,
+        groups,
+        aliases,
       }),
     ]);
 
@@ -548,6 +568,14 @@ async function queryDashboard(
             costPerMillionOutput: 0,
           }))
         : [],
+      latency: {
+        byModel: latency.byModel.map((item) => ({
+          ...item,
+          displayName: getDisplayName(item.model, aliases),
+          providerName: anonymizeProvider(item.provider, [], groups),
+        })),
+        daily: latency.daily,
+      },
       timezoneOffsetMinutes:
         timezoneOffsetMinutes !== undefined
           ? timezoneOffsetMinutes

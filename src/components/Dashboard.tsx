@@ -8,6 +8,10 @@ import DailyUsageChart, { DailyData } from "./DailyUsageChart";
 import TodayOverview, { TodayData } from "./TodayOverview";
 import PriceSimulatorModal from "./PriceSimulatorModal";
 import UsageHeatmap, { HeatmapData } from "./UsageHeatmap";
+import LatencyStats, {
+  LatencyModelStat,
+  LatencyDayStat,
+} from "./LatencyStats";
 import {
   NumberFormatProvider,
   useNumberFormat,
@@ -59,6 +63,7 @@ const SECTIONS: SectionNavItem[] = [
   { id: "stats-section", label: "Stats" },
   { id: "today-section", label: "Today" },
   { id: "trends-section", label: "Trends" },
+  { id: "speed-section", label: "Speed" },
   { id: "records-section", label: "Records" },
 ];
 
@@ -371,6 +376,8 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
   const [dailyData, setDailyData] = useState<DailyData[]>([]);
   const [heatmapData, setHeatmapData] = useState<HeatmapData[]>([]);
   const [hourlyData, setHourlyData] = useState<DailyData[]>([]);
+  const [latencyByModel, setLatencyByModel] = useState<LatencyModelStat[]>([]);
+  const [latencyDaily, setLatencyDaily] = useState<LatencyDayStat[]>([]);
   const [timezoneOffsetMinutes, setTimezoneOffsetMinutes] = useState<number>(0);
   const clientTimezoneOffsetMinutes = useMemo(
     () => getClientTimezoneOffsetMinutes(),
@@ -538,7 +545,7 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
           return;
         }
 
-        const { total, totalDays, totalTopModels, today, yesterday, daily, models, todayModels, dailyModels, heatmap, hourly, timezoneOffsetMinutes: responseTimezoneOffsetMinutes } = json.data;
+        const { total, totalDays, totalTopModels, today, yesterday, daily, models, todayModels, dailyModels, heatmap, hourly, latency, timezoneOffsetMinutes: responseTimezoneOffsetMinutes } = json.data;
 
         setTotalDays(Number(totalDays) || 0);
 
@@ -667,6 +674,8 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
         setDailyData(daily ?? []);
         setHeatmapData(heatmap ?? []);
         setHourlyData(hourly ?? []);
+        setLatencyByModel(latency?.byModel ?? []);
+        setLatencyDaily(latency?.daily ?? []);
         setTimezoneOffsetMinutes(
           typeof responseTimezoneOffsetMinutes === "number"
             ? responseTimezoneOffsetMinutes
@@ -989,6 +998,16 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
             topModels={topModels}
             dailyTopModels={dailyTopModels}
             hourly={hourlyData}
+            timezoneOffsetMinutes={timezoneOffsetMinutes}
+          />
+        </section>
+
+        <section id="speed-section" className="scroll-mt-28">
+          <LatencyStats
+            byModel={latencyByModel}
+            daily={latencyDaily}
+            loading={loading}
+            range={dailyRange}
             timezoneOffsetMinutes={timezoneOffsetMinutes}
           />
         </section>

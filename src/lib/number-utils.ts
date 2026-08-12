@@ -29,3 +29,9 @@ export function formatCompactNumber(num: number, decimals = 2): string {
 export function formatNumber(num: number, compact: boolean): string {
   return compact ? formatCompactNumber(num) : formatFullNumber(num);
 }
+
+export function formatLatencyMs(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined || !Number.isFinite(ms)) return "-";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}

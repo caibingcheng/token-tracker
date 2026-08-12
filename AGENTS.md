@@ -31,7 +31,7 @@ docker compose up -d                                 # 本地运行
 - **关键配置**：better-sqlite3，文本模式存储时间戳（ISO 格式）
 - **自动初始化**：`initDatabase()` 在首次 API 调用时自动建表 + 索引
 - **表结构**：
-  - `token_records`（id, model, provider, agent, input_tokens, output_tokens, cache_read, cache_write, status, latency_ms, virtual_key_id, request_model, created_at）：**`model` 列 = 发往 upstream 的真实 model 名**（手动路由场景 = targetModel）；`request_model` = 客户端原始请求名（虚拟名路由场景可追溯，仅展示不参与定价）
+  - `token_records`（id, model, provider, agent, input_tokens, output_tokens, cache_read, cache_write, status, latency_ms, ttft_ms, virtual_key_id, user_agent, request_model, created_at）：**`model` 列 = 发往 upstream 的真实 model 名**（手动路由场景 = targetModel）；`request_model` = 客户端原始请求名（虚拟名路由场景可追溯，仅展示不参与定价）；`latency_ms` = 整请求耗时（全部请求）；`ttft_ms` = 流式首 token 延迟（首 chunk 到达 - 请求开始，仅流式有值，非流式 NULL）
   - `upstreams`（id, name, protocol, base_url, enabled_models(JSON), priority, enabled, health_check_model, health_status, health_updated_at, balance, balance_updated_at, created_at）
   - `upstream_keys`（id, upstream_id, api_key_encrypted, enabled, last_status, created_at）
   - `upstream_model_health`（upstream_id+model 复合主键, status, expires_at, updated_at）：model 级不可用标记（持久化）
@@ -136,6 +136,15 @@ docker compose up -d                                 # 本地运行
 - `src/components/UsageHeatmap.tsx`：头部 GitHub 风格 365 天使用热力图，按 input + output tokens 分档着色，移动端横向滚动。
 - `src/components/DailyUsageChart.tsx`：N 日使用趋势 + “Last N Days” 汇总卡片，其中第 5 张卡片展示 24 小时平均分布直方图（纯 CSS 柱）。
 - `src/components/StatsCards.tsx` / `TodayOverview.tsx` / `TopModelsCards.tsx`：其余统计卡片。
+- `src/components/LatencyStats.tsx`（Speed section）：延迟统计消费层，`/api/dashboard` 响应的 `latency` 字段（byModel + daily）驱动。
+
+### 延迟统计（`src/lib/latency-query.ts`）
+- **数据源**：`token_records.latency_ms`（全部请求）+ `ttft_ms`（仅流式，非流式 NULL）；范围跟随 Dashboard dailyRange，日期过滤 sargable（`localDateKeyToUtcStartISO` 直比较，复用 stats-query 的 `buildWhereClause`）
+- **byModel**：按归一化 model × provider 分组，输出 count / streamCount / avgTtftMs / p50TtftMs（仅流式行）/ avgLatencyMs（全部行）/ outputTokensPerSec（仅流式且 latency > ttft 的行，防除零）；**只保留 active model**（当前启用 upstream 非通配 enabled_models 并集，`loadActiveModelSet()` 与 model_prices 的 active 判定同源，已删除 model 不显示）；按 p50 升序排（快者在前，无样本排最后）
+- **daily**：按浏览器时区日期分组（`aggregateLatencyDaily`），全量历史不过滤 active；无流式样本的日期不产出行
+- **p50 口径**：`percentile()` 线性插值；avg/p50 四舍五入为整数 ms，tok/s 保留 1 位小数
+- **展示**：Speed section 对比表（桌面 table + `md:hidden` 卡片）+ 纯 CSS 日趋势柱状图（高度 = p50 TTFT）；section 恒显示（无流式样本时表格显示空态、趋势图不渲染）；RecordsTable 单条记录显示 TTFT + Latency 独立两列（`formatLatencyMs`，<1000ms 显示 `xxxms` 否则 `x.xs`，无值显示 `-`）
+- **注意**：TTFT = 首个 SSE chunk 到达时间，个别上游先推空 chunk 会略微低估真实首 token 时间，对比用途足够
 
 ### Provider 匿名化
 - **数据源**：settings 表 `hidden_providers`（admin panel Display tab 编辑，面板优先）→ env `HIDDEN_PROVIDERS` fallback → 空。**面板保存后 env 被静默忽略**，UI 有提示
@@ -279,6 +288,7 @@ docker compose up -d
   - `src/lib/net/client-ip`：限流 IP 可信源（TRUSTED_PROXY 开关、XFF 伪造防护）
   - `src/lib/auth/totp-lock`：TOTP 失败计数 + 指数锁定（settings 表持久化，防重启清零）
   - `src/lib/stats-query`：静态断言聚合口径（Total Input = `SUM(input_tokens) + SUM(cache_read)`；防止 totalInput 回退为纯 `SUM(input_tokens)` 或 totalInputUncached 再次减去 `cache_read`）+ 日期过滤必须直比较（sargable，防 strftime 套列导致索引失效）
+  - `src/lib/latency-query`：percentile 线性插值、归一化 model × provider 分组、active 过滤（已删除 model 不显示）、tok/s 守卫（latency ≤ ttft 排除）、非流式行口径（不进 TTFT 统计但计入 avgLatency/count）、时区分组（getTimezoneOffset 语义：UTC+8 = -480）、排序（p50 升序 nulls 最后）
   - `src/lib/timezone-utils`：`localDateKeyToUtcStartISO` 时区换算（含互逆 round-trip）
   - `src/lib/auth/settings-status`：status_page_config 默认值合并（fail-closed、非法 JSON/字段回退、不污染共享默认）+ 合法性校验
   - `src/lib/status-query`：元素联动（hourly→daily）+ 按需查询断言（cost/topModels 关闭不执行 model 级查询）+ 响应裁剪（不泄露模型名）+ 响应缓存失效 + 60 req/min 限流

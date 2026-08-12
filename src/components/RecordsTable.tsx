@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { formatNumber } from "@/lib/number-utils";
+import { formatNumber, formatLatencyMs } from "@/lib/number-utils";
 import { useNumberFormat } from "./NumberFormatContext";
 import { apiFetch } from "@/lib/client/api-client";
 
@@ -15,6 +15,8 @@ export interface Record {
   cacheRead: number;
   cacheWrite: number;
   requestModel?: string | null;
+  latencyMs?: number | null;
+  ttftMs?: number | null;
   createdAt: string;
 }
 
@@ -194,6 +196,8 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
               <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Input (Uncached)</th>
               <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Input (Cached)</th>
               <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Output</th>
+              <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">TTFT</th>
+              <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Latency</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200">
@@ -228,6 +232,12 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
                   {formatNumber(record.outputTokens, compact)}</td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
+                  {formatLatencyMs(record.ttftMs)}
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
+                  {formatLatencyMs(record.latencyMs)}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -274,6 +284,14 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
               <div>
                 <p className="text-xs text-gray-500">Output</p>
                 <p className="text-sm font-semibold text-gray-900">{formatNumber(record.outputTokens, compact)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500">TTFT</p>
+                <p className="text-sm font-semibold text-gray-900">{formatLatencyMs(record.ttftMs)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500">Latency</p>
+                <p className="text-sm font-semibold text-gray-900">{formatLatencyMs(record.latencyMs)}</p>
               </div>
             </div>
           </div>
