@@ -5,6 +5,8 @@ export interface ModelPricing {
   cacheReadPrice: number;
   cacheWritePrice: number;
   outputPrice: number;
+  /** 可选：models.dev provider id（服务端推断），缺省由前端按 canonicalId 切分 */
+  provider?: string;
 }
 
 export interface CostInput {

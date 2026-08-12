@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Stats } from "./StatsCards";
 import { TodayData } from "./TodayOverview";
 import { DailyData } from "./DailyUsageChart";
@@ -41,6 +41,13 @@ interface ProviderGroup {
   provider: string;
   models: ModelOption[];
 }
+
+interface ModelsDevProvider {
+  id: string;
+  name: string;
+}
+
+const UNCATEGORIZED = "Uncategorized";
 
 function formatCost(num: number): string {
   const n = toNum(num);
@@ -156,8 +163,12 @@ const RANGE_OPTIONS = [3, 7, 14, 30];
 function groupModelsByProvider(models: ModelPricing[]): ProviderGroup[] {
   const map = new Map<string, ModelOption[]>();
   for (const model of models) {
-    const slashIndex = model.canonicalId.indexOf("/");
-    const provider = slashIndex >= 0 ? model.canonicalId.slice(0, slashIndex) : "other";
+    let provider = model.provider ?? "";
+    if (!provider) {
+      const slashIndex = model.canonicalId.indexOf("/");
+      provider = slashIndex >= 0 ? model.canonicalId.slice(0, slashIndex) : "";
+    }
+    if (!provider) provider = UNCATEGORIZED;
     const option: ModelOption = {
       canonicalId: model.canonicalId,
       displayName: model.displayName || model.canonicalId,
@@ -229,6 +240,7 @@ function AvgCostCell({
 
 const SIMULATION_PROVIDER_KEY = "token-tracker-simulation-provider";
 const SIMULATION_MODEL_KEY = "token-tracker-simulation-model";
+const SEARCH_DEBOUNCE_MS = 300;
 
 export default function PriceSimulatorModal({
   isOpen,
@@ -242,12 +254,26 @@ export default function PriceSimulatorModal({
 }: PriceSimulatorModalProps) {
   const { compact } = useNumberFormat();
   const dialogRef = useRef<HTMLDivElement>(null);
+  const searchBoxRef = useRef<HTMLDivElement>(null);
 
   const [allModels, setAllModels] = useState<ModelPricing[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [selectedProvider, setSelectedProvider] = useState<string>("");
   const [selectedModelId, setSelectedModelId] = useState<string>("");
+
+  const [modelsDevProviders, setModelsDevProviders] = useState<
+    ModelsDevProvider[]
+  >([]);
+  const loadedProvidersRef = useRef<Set<string>>(new Set());
+  const loadingProvidersRef = useRef<Set<string>>(new Set());
+  const [providerLoading, setProviderLoading] = useState(false);
+
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<ModelPricing[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [searchActive, setSearchActive] = useState(false);
 
   const updateSelection = (provider: string, modelId: string) => {
     setSelectedProvider(provider);
@@ -273,6 +299,12 @@ export default function PriceSimulatorModal({
 
     setModelsLoading(true);
     setModelsError(null);
+    setSearchQuery("");
+    setSearchResults([]);
+    setSearchError(null);
+    setSearchActive(false);
+    loadedProvidersRef.current.clear();
+    loadingProvidersRef.current.clear();
 
     let defaultProvider = "";
     let defaultModel = "";
@@ -288,6 +320,9 @@ export default function PriceSimulatorModal({
       .then((json) => {
         if (json.success && Array.isArray(json.data)) {
           setAllModels(json.data);
+          if (Array.isArray(json.providers)) {
+            setModelsDevProviders(json.providers);
+          }
 
           // Validate defaults against loaded models
           const groups = groupModelsByProvider(json.data);
@@ -332,18 +367,150 @@ export default function PriceSimulatorModal({
       }
     };
 
+    const handleSearchClickOutside = (e: MouseEvent) => {
+      if (
+        searchActive &&
+        searchBoxRef.current &&
+        !searchBoxRef.current.contains(e.target as Node)
+      ) {
+        setSearchActive(false);
+      }
+    };
+
     document.addEventListener("keydown", handleKeyDown);
     document.addEventListener("mousedown", handleClickOutside);
+    document.addEventListener("mousedown", handleSearchClickOutside);
     return () => {
       document.removeEventListener("keydown", handleKeyDown);
       document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("mousedown", handleSearchClickOutside);
     };
-  }, [isOpen, onClose]);
+  }, [isOpen, onClose, searchActive]);
+
+  // models.dev 全量搜索（防抖 + 竞态保护）
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const q = searchQuery.trim();
+    if (!q) {
+      setSearchResults([]);
+      setSearching(false);
+      setSearchError(null);
+      return;
+    }
+
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      setSearching(true);
+      setSearchError(null);
+      apiFetch(`/api/model-pricing?search=${encodeURIComponent(q)}`)
+        .then((res) => res.json())
+        .then((json) => {
+          if (cancelled) return;
+          if (json.success && Array.isArray(json.data)) {
+            setSearchResults(json.data);
+          } else {
+            setSearchError(json.error || "Failed to search models");
+            setSearchResults([]);
+          }
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          setSearchError(
+            err instanceof Error ? err.message : "Failed to search models"
+          );
+          setSearchResults([]);
+        })
+        .finally(() => {
+          if (!cancelled) setSearching(false);
+        });
+    }, SEARCH_DEBOUNCE_MS);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [isOpen, searchQuery]);
+
+  const selectSearchResult = (model: ModelPricing) => {
+    setAllModels((prev) =>
+      prev.some((m) => m.canonicalId === model.canonicalId)
+        ? prev
+        : [...prev, model]
+    );
+    const slashIndex = model.canonicalId.indexOf("/");
+    const provider =
+      slashIndex >= 0 ? model.canonicalId.slice(0, slashIndex) : "";
+    updateSelection(provider, model.canonicalId);
+    // 同步懒加载该 provider 全量模型，避免模型下拉只剩搜索选中的单个模型
+    loadProviderModels(provider);
+    setSearchQuery("");
+    setSearchResults([]);
+    setSearchError(null);
+    setSearchActive(false);
+  };
 
   const providerGroups = useMemo(
     () => groupModelsByProvider(allModels),
     [allModels]
   );
+
+  const providerOptions = useMemo(() => {
+    const loaded = new Set(providerGroups.map((g) => g.provider));
+    const options: string[] = providerGroups.map((g) => g.provider);
+    for (const p of modelsDevProviders) {
+      if (!loaded.has(p.id)) {
+        options.push(p.id);
+      }
+    }
+    return options;
+  }, [providerGroups, modelsDevProviders]);
+
+  const providerLabel = (id: string): string => {
+    if (id === UNCATEGORIZED) return id;
+    return modelsDevProviders.find((p) => p.id === id)?.name ?? id;
+  };
+
+  // 懒加载某 provider 的 models.dev 全量模型（幂等：已加载 / in-flight 时跳过）。
+  // 任何路径选中 provider（下拉或搜索）都走这里，保证模型下拉可选中该 provider 全部模型。
+  const loadProviderModels = useCallback((providerId: string) => {
+    if (!providerId) return;
+    if (loadedProvidersRef.current.has(providerId)) return;
+    if (loadingProvidersRef.current.has(providerId)) return;
+    loadingProvidersRef.current.add(providerId);
+    setProviderLoading(true);
+    apiFetch(`/api/model-pricing?provider=${encodeURIComponent(providerId)}`)
+      .then((res) => res.json())
+      .then((json) => {
+        if (json.success && Array.isArray(json.data)) {
+          setAllModels((prev) => {
+            const existing = new Set(prev.map((m) => m.canonicalId));
+            const fresh = json.data.filter(
+              (m: ModelPricing) => !existing.has(m.canonicalId)
+            );
+            return fresh.length > 0 ? [...prev, ...fresh] : prev;
+          });
+          loadedProvidersRef.current.add(providerId);
+        } else {
+          setModelsError(json.error || "Failed to load models");
+        }
+      })
+      .catch((err) => {
+        setModelsError(
+          err instanceof Error ? err.message : "Failed to load models"
+        );
+      })
+      .finally(() => {
+        loadingProvidersRef.current.delete(providerId);
+        setProviderLoading(false);
+      });
+  }, []);
+
+  // 选中未加载的 models.dev provider → 懒加载该 provider 全部模型
+  useEffect(() => {
+    if (!isOpen || !selectedProvider) return;
+    loadProviderModels(selectedProvider);
+  }, [isOpen, selectedProvider, loadProviderModels]);
 
   const selectedModel = useMemo<ModelPricing | null>(() => {
     if (!selectedModelId) return null;
@@ -480,6 +647,119 @@ export default function PriceSimulatorModal({
         </div>
 
         <div className="p-4 overflow-y-auto flex-1">
+          <div ref={searchBoxRef} className="relative mb-6">
+            <label
+              htmlFor="simulator-search"
+              className="block text-sm font-medium text-gray-700 mb-2"
+            >
+              Search models.dev
+            </label>
+            <div className="relative">
+              <input
+                id="simulator-search"
+                type="text"
+                value={searchQuery}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  setSearchActive(true);
+                }}
+                onFocus={() => setSearchActive(true)}
+                placeholder="Search any model, e.g. claude, gpt, gemini, deepseek..."
+                className="w-full rounded border border-gray-300 bg-white pl-9 pr-9 py-2 text-base md:text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+              <svg
+                className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M21 21l-4.35-4.35M17 10.5a6.5 6.5 0 11-13 0 6.5 6.5 0 0113 0z"
+                />
+              </svg>
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSearchQuery("");
+                    setSearchResults([]);
+                    setSearchError(null);
+                    setSearchActive(false);
+                  }}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center text-gray-400 hover:text-gray-600"
+                  aria-label="Clear search"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+
+            {searchActive && searchQuery.trim() && (
+              <div className="absolute left-0 right-0 z-10 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-72 overflow-y-auto">
+                {searching && (
+                  <p className="px-4 py-3 text-sm text-gray-500">
+                    Searching...
+                  </p>
+                )}
+                {!searching && searchError && (
+                  <p className="px-4 py-3 text-sm text-red-600">
+                    {searchError}
+                  </p>
+                )}
+                {!searching && !searchError && searchResults.length === 0 && (
+                  <p className="px-4 py-3 text-sm text-gray-500">
+                    No models found.
+                  </p>
+                )}
+                {!searching &&
+                  !searchError &&
+                  searchResults.map((m) => {
+                    const slashIndex = m.canonicalId.indexOf("/");
+                    const provider =
+                      slashIndex >= 0
+                        ? m.canonicalId.slice(0, slashIndex)
+                        : UNCATEGORIZED;
+                    return (
+                      <button
+                        key={m.canonicalId}
+                        type="button"
+                        onClick={() => selectSearchResult(m)}
+                        className="w-full text-left px-4 py-2.5 hover:bg-blue-50 border-b border-gray-100 last:border-b-0"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-sm text-gray-900 break-all">
+                            <span className="inline-block bg-gray-100 text-gray-600 text-xs font-medium rounded px-1.5 py-0.5 mr-2">
+                              {provider}
+                            </span>
+                            {m.displayName}
+                          </span>
+                        </div>
+                        <div className="text-xs text-gray-500 mt-1">
+                          in ${m.inputPrice} · out ${m.outputPrice}
+                          {m.cacheReadPrice !== m.inputPrice && (
+                            <>
+                              {" "}
+                              · cacheRead ${m.cacheReadPrice}
+                            </>
+                          )}
+                          {m.cacheWritePrice !== m.inputPrice && (
+                            <>
+                              {" "}
+                              · cacheWrite ${m.cacheWritePrice}
+                            </>
+                          )}
+                          /1M
+                        </div>
+                      </button>
+                    );
+                  })}
+              </div>
+            )}
+          </div>
+
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
             <div>
               <label
@@ -492,13 +772,17 @@ export default function PriceSimulatorModal({
                 id="simulator-provider"
                 value={selectedProvider}
                 onChange={(e) => updateSelection(e.target.value, "")}
-                disabled={modelsLoading || providerGroups.length === 0}
+                disabled={
+                  modelsLoading ||
+                  (providerGroups.length === 0 &&
+                    modelsDevProviders.length === 0)
+                }
                 className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-100 disabled:text-gray-500"
               >
                 <option value="">Select provider</option>
-                {providerGroups.map((g) => (
-                  <option key={g.provider} value={g.provider}>
-                    {g.provider}
+                {providerOptions.map((id) => (
+                  <option key={id} value={id}>
+                    {providerLabel(id)}
                   </option>
                 ))}
               </select>
@@ -532,15 +816,25 @@ export default function PriceSimulatorModal({
             <p className="text-sm text-gray-500 mb-4">Loading models...</p>
           )}
 
+          {!modelsLoading && providerLoading && (
+            <p className="text-sm text-gray-500 mb-4">
+              Loading provider models...
+            </p>
+          )}
+
           {modelsError && (
             <p className="text-sm text-red-600 mb-4">{modelsError}</p>
           )}
 
-          {!modelsLoading && !modelsError && providerGroups.length === 0 && (
-            <p className="text-sm text-gray-500 mb-4">
-              No priced models available.
-            </p>
-          )}
+          {!modelsLoading &&
+            !providerLoading &&
+            !modelsError &&
+            providerGroups.length === 0 &&
+            modelsDevProviders.length === 0 && (
+              <p className="text-sm text-gray-500 mb-4">
+                No providers available.
+              </p>
+            )}
 
           {loading && (
             <p className="text-sm text-gray-500 mb-4">

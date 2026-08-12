@@ -5,6 +5,8 @@ import {
   normalizeModelKey,
   stripDateVariant,
   searchModelsDevModel,
+  buildModelsDevIndex,
+  listProviderModels,
   SEARCH_RESULT_LIMIT,
 } from "./match";
 import type { ModelsDevData } from "./snapshot";
@@ -191,11 +193,107 @@ describe("searchModelsDevModel", () => {
     expect(results).toHaveLength(SEARCH_RESULT_LIMIT);
   });
 
+  it("sorts provider-name-exact match (原厂) first with all its models", () => {
+    // "deepseek" 归一化后精确命中 provider name "DeepSeek" → 原厂全部模型排最前
+    const results = searchModelsDevModel("deepseek", DATA);
+    const providers = results.map((c) => c.providerId);
+    expect(providers.filter((p) => p === "deepseek")).toEqual(["deepseek"]);
+    expect(providers[0]).toBe("deepseek");
+    expect(results[0].modelId).toBe("deepseek-chat");
+  });
+
+  it("sorts exact model id before substring matches", () => {
+    const results = searchModelsDevModel("gpt-4o", DATA);
+    // openai/xai 同名精确命中（score 1），openai 优先级更高排最前
+    expect(results[0].modelsDevId).toBe("openai/gpt-4o");
+    expect(results[1].modelsDevId).toBe("xai/gpt-4o");
+  });
+
+  it("sorts prefix matches (原厂 claude-*) before provider-name-substring noise", () => {
+    // "claude"：anthropic 的 claude-sonnet-* 前缀命中（score 3），优先于 meta 同名列
+    const results = searchModelsDevModel("claude", DATA);
+    const ids = results.map((c) => c.modelsDevId);
+    const firstAnthropic = ids.indexOf("anthropic/claude-sonnet-4-6");
+    const metaIndex = ids.indexOf("meta/claude-sonnet-4-6");
+    expect(ids[0]).toMatch(/^anthropic\//);
+    expect(firstAnthropic).toBeGreaterThanOrEqual(0);
+    expect(metaIndex).toBeGreaterThan(firstAnthropic);
+  });
+
+  it("does not boost provider whose name merely contains the query", () => {
+    // provider name "Nano-GPT" 包含 "gpt" 但不精确命中，其模型不占据原厂位次（仅作子串兜底）
+    const data: ModelsDevData = {
+      ...DATA,
+      "nano-gpt": {
+        id: "nano-gpt",
+        name: "Nano-GPT",
+        models: {
+          "qwen-max": mkModel("qwen-max", { input: 1, output: 2 }),
+        },
+      },
+    };
+    const results = searchModelsDevModel("gpt", data);
+    const nanoIndex = results.findIndex((c) => c.providerId === "nano-gpt");
+    const openaiIndex = results.findIndex((c) => c.providerId === "openai");
+    expect(openaiIndex).toBe(0);
+    expect(nanoIndex).toBeGreaterThan(openaiIndex);
+  });
+
   it("carries providerName fallback to providerId and full price info", () => {
     const results = searchModelsDevModel("gpt-4o", DATA);
     const openai = results.find((c) => c.providerId === "openai")!;
     expect(openai.providerName).toBe("OpenAI");
     expect(openai.inputPrice).toBe(2.5);
     expect(openai.cacheReadPrice).toBeNull();
+  });
+});
+
+describe("buildModelsDevIndex", () => {
+  it("resolves provider by exact normalized model id", () => {
+    const index = buildModelsDevIndex(DATA);
+    expect(index.get(normalizeModelKey("gpt-4o"))?.providerId).toBe("openai");
+    expect(
+      index.get(normalizeModelKey("claude-sonnet-4-6"))?.providerId
+    ).toBe("anthropic");
+  });
+
+  it("resolves provider via date-variant stripped key", () => {
+    const index = buildModelsDevIndex(DATA);
+    // claude-sonnet-4-5-20250929 → 剥离日期后命中 claude-sonnet-4-5
+    const hit = index.get(normalizeModelKey("claude-sonnet-4-5"));
+    expect(hit?.providerId).toBe("anthropic");
+  });
+
+  it("misses unknown models", () => {
+    const index = buildModelsDevIndex(DATA);
+    expect(index.get(normalizeModelKey("zzz-not-in-snapshot"))).toBeUndefined();
+  });
+
+  it("returns empty map for empty data", () => {
+    expect(buildModelsDevIndex({}).size).toBe(0);
+  });
+});
+
+describe("listProviderModels", () => {
+  it("returns all models of a provider, sorted by model id", () => {
+    const results = listProviderModels(DATA, "openai");
+    expect(results.map((c) => c.modelsDevId)).toEqual([
+      "openai/gpt-4.1",
+      "openai/gpt-4o",
+    ]);
+    expect(results[0].providerName).toBe("OpenAI");
+    expect(results[1].cacheReadPrice).toBeNull();
+  });
+
+  it("returns empty for unknown provider", () => {
+    expect(listProviderModels(DATA, "no-such-provider")).toEqual([]);
+  });
+
+  it("carries full price info", () => {
+    const results = listProviderModels(DATA, "anthropic");
+    const sonnet = results.find((c) => c.modelId === "claude-sonnet-4-6")!;
+    expect(sonnet.inputPrice).toBe(3);
+    expect(sonnet.cacheReadPrice).toBe(0.3);
+    expect(sonnet.cacheWritePrice).toBe(3.75);
   });
 });

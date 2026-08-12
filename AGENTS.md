@@ -48,7 +48,8 @@ docker compose up -d                                 # 本地运行
 | `POST /api/auth/login` | POST | 原始 API key（DB 优先，env 兜底）+ 可选第二因素（TOTP 动态码或 recovery code） | 登录换会话 token（唯一换取入口，可信 IP 限流；key 无效/缺 TOTP/TOTP 错误统一 401 同文案，无 oracle） |
 | `GET/POST /api/auth/setup` | GET/POST | 无（fail-open 闸门自校验） | 首次设置向导：GET 探测 `{setupRequired}`；POST 设置初始 admin key + 返回会话 token（仅当 DB 无 key AND env 无 key，限流 + 事务 re-check） |
 | `/api/dashboard` | GET | 会话 token（`X-API-Key` header） | 聚合统计（total + today + yesterday + daily + models + 365 天 heatmap + 24h 分布） |
-| `/api/providers` `/api/models` `/api/agents` `/api/cli` `/api/model-pricing` `/api/records` | GET | 会话 token | 统计/查询 API |
+| `/api/providers` `/api/models` `/api/agents` `/api/cli` `/api/records` | GET | 会话 token | 统计/查询 API |
+| `/api/model-pricing` | GET | 会话 token | 已定价模型行集（PriceSimulatorModal 下拉数据源，附带 models.dev 归一化索引推断的 `provider` 分组字段 + `providers` 全量列表）；`?provider=<id>` 返回该 provider 的 models.dev 全部模型（懒加载数据源）；`?search=<q>` 切换为快照全量搜索模式（`searchModelsDevModel` 全量收集 + 相关性排序再截断 50：provider 名精确命中 > modelId 精确 > 归一化精确 > 前缀 > 子串，同级按原厂优先级表，保证原厂不被聚合平台挤出）；models.dev 来源 canonicalId = `providerId/modelId`，cache 价缺失回退 input，快照缺失返回空数组；仿真只读不落库 |
 | `/api/admin/upstreams*` | CRUD | 会话 token | 上游管理（含 keys、模型拉取、连接测试、余额刷新） |
 | `/api/admin/virtual-keys*` | CRUD | 会话 token | 虚拟 key 管理（创建/编辑/吊销/用量，支持 comment + enabledModels） |
 | `/api/admin/auth/totp` `/api/admin/auth/api-key` `/api/admin/auth/sessions` `/api/admin/auth/recovery-codes` `/api/admin/auth/recovery-codes/reminder` | CRUD | 会话 token + TOTP 动态码 | TOTP 绑定/换绑/解绑、修改登录 key、全局登出（token_epoch+1 吊销全部会话）、recovery codes 查询/重新生成/清除提醒标记 |
@@ -270,6 +271,7 @@ docker compose up -d
   - `src/lib/pricing`：loadPriceMap cache 价 NULL 回退 input + 内存缓存/失效、computeModelCost
   - `src/lib/model-registry`：注入 aliases 的归一化各优先级规则、缓存失效、getDisplayName、isValidModelAliases/parseModelAliases
   - `src/app/api/admin/model-prices/route.test`：Admin API 集成测试（临时 SQLite + 真实 handler + 签名 token）——GET 行集与徽标状态（active/inactive/待确认/未匹配/有更新/已下架）、PUT 手动编辑（source='manual' 清空 modelsDevId、model 名含 `/`）、DELETE、select 落库、auto-fill 只填空不覆盖 manual 行、未带 withAuth 401
+  - `src/app/api/model-pricing/route.test`：模拟器数据源集成测试（临时 SQLite + 临时快照文件 + 签名 token）——已定价行 + providers 列表、provider 推断（含日期变体剥离）、`?provider=` 懒加载/未知 provider 空数组、`?search=` 命中（canonicalId 格式 + cache 回退）/无结果、未带 token 401
   - `src/lib/provider-presets`：预设合法性（protocol/baseUrl/唯一性）
   - `src/lib/gateway/url-guard`：上游 baseUrl SSRF 防护（环回/私有/链路本地/元数据 IP 拒绝、DNS 解析后分类、ALLOW_PRIVATE_UPSTREAMS 逃生开关）
   - `src/lib/gateway/url-utils`：`joinUrlPath` 前缀去重 + `sanitizePathSegments` `..` 段净化（逃逸返回 null）

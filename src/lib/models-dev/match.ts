@@ -141,7 +141,28 @@ function pickMatched(candidates: PriceCandidate[]): PriceCandidate | null {
 
 // 搜索模式：全量扫描快照，model id 或 provider 名归一化后包含 query 即命中。
 // 与 matchModelsDevModel 不同：不要求名字匹配，供 Price Picker 手动搜索任意条目。
+// 命中后按相关性排序再截断（全量收集，避免扫描顺序占满名额导致原厂被聚合平台挤出）：
+//   0 = provider 名归一化后精确等于 query（原厂及其全部模型优先）
+//   1 = modelId 精确等于 query
+//   2 = 归一化后精确等于 query
+//   3 = 归一化后以 query 开头（前缀）
+//   4 = 归一化后包含 query（子串，兜底）
+// 同级按原厂优先级表 + provider id + model id 排序。
 export const SEARCH_RESULT_LIMIT = 50;
+
+function searchScore(
+  raw: string,
+  norm: string,
+  providerNorm: string,
+  modelId: string
+): number {
+  if (providerNorm === norm) return 0;
+  if (modelId === raw) return 1;
+  const mNorm = normalizeModelKey(modelId);
+  if (mNorm === norm) return 2;
+  if (mNorm.startsWith(norm)) return 3;
+  return 4;
+}
 
 export function searchModelsDevModel(
   query: string,
@@ -150,7 +171,7 @@ export function searchModelsDevModel(
   const raw = query.trim();
   if (!raw) return [];
   const norm = normalizeModelKey(raw);
-  const results: PriceCandidate[] = [];
+  const results: Array<{ score: number; candidate: PriceCandidate }> = [];
   for (const providerId of Object.keys(data)) {
     const provider = data[providerId];
     if (!provider || typeof provider.models !== "object") continue;
@@ -164,9 +185,60 @@ export function searchModelsDevModel(
       ) {
         continue;
       }
-      results.push(toCandidate(providerId, provider.name, model));
-      if (results.length >= SEARCH_RESULT_LIMIT) return results;
+      results.push({
+        score: searchScore(raw, norm, providerNorm, modelId),
+        candidate: toCandidate(providerId, provider.name, model),
+      });
     }
   }
+  results.sort(
+    (a, b) =>
+      a.score - b.score ||
+      providerPriority(a.candidate.providerId) -
+        providerPriority(b.candidate.providerId) ||
+      a.candidate.providerId.localeCompare(b.candidate.providerId) ||
+      a.candidate.modelId.localeCompare(b.candidate.modelId)
+  );
+  return results.slice(0, SEARCH_RESULT_LIMIT).map((r) => r.candidate);
+}
+
+// 构建一次扫描的归一化索引：key = 归一化 model id（含日期变体剥离后的 key），
+// 供已定价模型的 provider 推断（比逐模型全表扫描快得多）。
+// 同一 key 多个 provider 冲突时保留首个（任意，仅用于分组归属）。
+export function buildModelsDevIndex(
+  data: ModelsDevData
+): Map<string, PriceCandidate> {
+  const index = new Map<string, PriceCandidate>();
+  for (const providerId of Object.keys(data)) {
+    const provider = data[providerId];
+    if (!provider || typeof provider.models !== "object") continue;
+    for (const modelId of Object.keys(provider.models)) {
+      const model = provider.models[modelId];
+      if (!model || typeof model !== "object") continue;
+      const candidate = toCandidate(providerId, provider.name, model);
+      const norm = normalizeModelKey(modelId);
+      if (!index.has(norm)) index.set(norm, candidate);
+      const stripped = normalizeModelKey(stripDateVariant(modelId));
+      if (!index.has(stripped)) index.set(stripped, candidate);
+    }
+  }
+  return index;
+}
+
+// 列出单个 provider 的全部模型（PriceSimulatorModal 按 provider 懒加载数据源），
+// 按 model id 排序。provider 不存在时返回空数组。
+export function listProviderModels(
+  data: ModelsDevData,
+  providerId: string
+): PriceCandidate[] {
+  const provider = data[providerId];
+  if (!provider || typeof provider.models !== "object") return [];
+  const results: PriceCandidate[] = [];
+  for (const modelId of Object.keys(provider.models)) {
+    const model = provider.models[modelId];
+    if (!model || typeof model !== "object") continue;
+    results.push(toCandidate(providerId, provider.name, model));
+  }
+  results.sort((a, b) => a.modelId.localeCompare(b.modelId));
   return results;
 }
