@@ -166,7 +166,13 @@ describe("probeModel", () => {
       "gpt-4o",
       "sk-test"
     );
-    expect(result).toEqual({ ok: false, status: 401, error: "unauthorized", style: "chat" });
+    expect(result).toEqual({
+      ok: false,
+      status: 401,
+      error: "unauthorized",
+      style: "chat",
+      contentType: "text/plain;charset=UTF-8",
+    });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -292,5 +298,37 @@ describe("probeModelWithKeys", () => {
     expect(result.error).toContain("ECONNREFUSED");
     expect(result.sawModelError).toBe(false);
     expect(result.sawAuthError).toBe(false);
+  });
+
+  it("does not treat 403 HTML (edge/bot block) as model error", async () => {
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(
+        new Response("<!doctype html><title>Attention Required</title>", {
+          status: 403,
+          headers: { "content-type": "text/html" },
+        })
+      )
+    );
+    const result = await probeModelWithKeys(target, "gpt-4o", ["k1", "k2"]);
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe(403);
+    expect(result.sawModelError).toBe(false);
+    expect(result.sawAuthError).toBe(false);
+    expect(result.keyResults.length).toBe(2);
+  });
+
+  it("treats 403 JSON as model error", async () => {
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ error: { message: "model not allowed" } }), {
+          status: 403,
+          headers: { "content-type": "application/json" },
+        })
+      )
+    );
+    const result = await probeModelWithKeys(target, "gpt-4o", ["k1"]);
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe(403);
+    expect(result.sawModelError).toBe(true);
   });
 });

@@ -1280,6 +1280,68 @@ describe("handleProxyRequest - cross-upstream failover & session stickiness", ()
     expect(body).toContain("forbidden");
   });
 
+  it("does not mark model/upstream health when all keys return 403 HTML (edge/bot block)", async () => {
+    fetchMock.mockImplementation((url: string) =>
+      url.startsWith("https://alt.example")
+        ? Promise.resolve(
+            new Response(JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            })
+          )
+        : Promise.resolve(
+            new Response("<!doctype html><title>Attention Required</title>", {
+              status: 403,
+              headers: { "content-type": "text/html" },
+            })
+          )
+    );
+    const markModelUnhealthy = vi.fn();
+    const { deps, markUnhealthy } = mkFailoverDeps({
+      health: {
+        isHealthy: vi.fn(() => true),
+        markUnhealthy: vi.fn(),
+        isModelHealthy: vi.fn(() => true),
+        markModelUnhealthy,
+      },
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(markModelUnhealthy).not.toHaveBeenCalled(); // 边缘拦截不标记 model
+    expect(markUnhealthy).not.toHaveBeenCalled(); // 也不标记 upstream
+    expect(deps.onUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "openai-alt" })
+    );
+  });
+
+  it("passes through 403 HTML when all candidates are edge-blocked", async () => {
+    fetchMock.mockResolvedValue(
+      new Response("<!doctype html>blocked by edge", {
+        status: 403,
+        headers: { "content-type": "text/html" },
+      })
+    );
+    const { deps } = mkFailoverDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    const body = await res.text();
+    expect(res.status).toBe(403);
+    expect(body).toContain("blocked by edge");
+  });
+
   it("dedupes upstream matched by both exact and wildcard patterns", async () => {
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } }), {

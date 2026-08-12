@@ -37,6 +37,9 @@ def build_request(
         headers = {
             "Authorization": f"Bearer {vk}",
             "Content-Type": "application/json",
+            # 默认 UA 为 Python-urllib/x.y，会被部分上游（如 opencode.ai 的 Cloudflare）
+            # 按浏览器签名封禁返回 403，显式声明通用 UA 规避
+            "User-Agent": "Mozilla/5.0 (compatible; opencode-test/1.0)",
         }
         body = {
             "model": model,

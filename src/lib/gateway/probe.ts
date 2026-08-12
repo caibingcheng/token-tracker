@@ -1,7 +1,7 @@
 // 通用 model 探活函数：非流式小 LLM 请求，不记录 token 用量。
 // 用于 unhealthy upstream 的自动恢复探活与 Admin 面板的模型可用性测试。
 import type { Protocol } from "./model-router";
-import { buildAuthHeaders } from "./upstream-client";
+import { buildAuthHeaders, isEdgeBlockStatus } from "./upstream-client";
 import { joinUrlPath } from "./url-utils";
 
 export interface ProbeTarget {
@@ -16,6 +16,7 @@ export interface ProbeResult {
   status: number;
   error?: string;
   style?: ProbeStyle; // 成功/失败时使用的探测风格（openai 双风格探测后标注）
+  contentType?: string; // 失败响应的 content-type（用于边缘拦截判读）
 }
 
 export const PROBE_TIMEOUT_MS = 15_000;
@@ -82,7 +83,13 @@ async function probeOnce(
     });
     if (res.ok) return { ok: true, status: res.status, style: apiStyle };
     const text = await res.text();
-    return { ok: false, status: res.status, error: text.slice(0, 300), style: apiStyle };
+    return {
+      ok: false,
+      status: res.status,
+      error: text.slice(0, 300),
+      style: apiStyle,
+      contentType: res.headers.get("content-type") ?? undefined,
+    };
   } catch (err) {
     return {
       ok: false,
@@ -160,7 +167,14 @@ export async function probeModelWithKeys(
     }
     lastStatus = result.status;
     lastError = result.error;
-    if (result.status === 403 || result.status === 404) sawModelError = true;
+    if (result.status === 404) sawModelError = true;
+    // 403 + text/html：边缘/反 bot 拦截（Cloudflare 1010 等），非 model 级问题
+    if (
+      result.status === 403 &&
+      !isEdgeBlockStatus(result.status, result.contentType)
+    ) {
+      sawModelError = true;
+    }
     if (result.status === 401) sawAuthError = true;
   }
 

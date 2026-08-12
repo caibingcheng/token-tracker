@@ -7,6 +7,18 @@ export interface UpstreamInfo {
   baseUrl: string;
 }
 
+// 边缘/反 bot 拦截判读：403 + text/html 是 Cloudflare 等边缘 WAF 的拦截页特征
+// （error 1010 / challenge），而 LLM API 的业务错误几乎总是 JSON（或错标
+// content-type 的 JSON/纯文本）。此类错误表示"请求客户端特征被上游边缘拒绝"
+// （如 Python-urllib UA 封禁），不是 key/model 问题，不应污染上游或 model 健康状态。
+export function isEdgeBlockStatus(
+  status: number,
+  contentType: string | null | undefined
+): boolean {
+  if (status !== 403) return false;
+  return (contentType ?? "").toLowerCase().includes("text/html");
+}
+
 function buildListModelsUrl(protocol: Protocol, baseUrl: string): string {
   switch (protocol) {
     case "anthropic":

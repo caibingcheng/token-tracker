@@ -10,7 +10,7 @@ import {
   findRoutingRule,
 } from "./model-router";
 import type { UpstreamRoute, ModelCandidate, RoutingRule } from "./model-router";
-import { buildAuthHeaders } from "./upstream-client";
+import { buildAuthHeaders, isEdgeBlockStatus } from "./upstream-client";
 import { joinUrlPath, sanitizePathSegments } from "./url-utils";
 import { buildSessionId } from "./session";
 import type { SessionBinding } from "./session";
@@ -478,6 +478,7 @@ export async function handleProxyRequest(
     let upstreamFailed = true;
     let modelNotFound = false;
     let saw403 = false; // 出现过 403（可能为 key 对该 model 无权限 → model 级处理）
+    let sawEdgeBlock = false; // 出现过 403 + text/html（边缘/反 bot 拦截 → 不标记任何健康）
     for (const apiKey of keys) {
       for (let attempt = 0; attempt < MAX_RETRY; attempt++) {
         let upstreamResponse: Response | null = null;
@@ -514,7 +515,17 @@ export async function handleProxyRequest(
               // 403 可能是"key 对该 model 无权限"：保留响应（全部候选失败时透传），
               // 换下一个 key；全部 key 均 403 时按 model 级标记，不误伤其他 model
               fallbackBusinessResponse = upstreamResponse;
-              saw403 = true;
+              if (isEdgeBlockStatus(
+                upstreamResponse.status,
+                upstreamResponse.headers.get("content-type")
+              )) {
+                // 403 + text/html：边缘/反 bot 拦截页（Cloudflare 1010/challenge 等），
+                // 表示客户端特征（如 UA）被上游边缘拒绝，非 key/model 问题，
+                // 不标记任何健康状态（否则 UA 封禁会污染 model 健康）
+                sawEdgeBlock = true;
+              } else {
+                saw403 = true;
+              }
             } else {
               await upstreamResponse.body?.cancel();
             }
@@ -568,6 +579,12 @@ export async function handleProxyRequest(
         deps.health?.markModelUnhealthy?.(upstream.id, effectiveModel);
         deps.log?.(
           `[gateway] model "${effectiveModel}" marked unavailable on upstream "${upstream.name}" (403 on all keys)`
+        );
+      } else if (sawEdgeBlock && !saw403) {
+        // 全部 key 均 403 + text/html：客户端特征被上游边缘（WAF/反 bot）拒绝，
+        // 非 key/model 问题，不标记任何健康状态（failover 已由链完成）
+        deps.log?.(
+          `[gateway] upstream "${upstream.name}" rejected request at edge (403 HTML, likely bot/UA block); skipping health marking`
         );
       } else if (!saw403) {
         deps.health?.markUnhealthy(upstream.id);
