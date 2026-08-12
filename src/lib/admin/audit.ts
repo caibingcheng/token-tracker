@@ -22,7 +22,13 @@ export type AuditAction =
   | "upstream_key_updated"
   | "upstream_key_deleted"
   | "routing_rule_created"
-  | "routing_rule_deleted";
+  | "routing_rule_deleted"
+  | "model_price_updated"
+  | "model_price_deleted"
+  | "model_price_selected"
+  | "model_price_auto_fill"
+  | "models_dev_refresh"
+  | "model_aliases_updated";
 
 export type AuditTargetType =
   | "upstream"

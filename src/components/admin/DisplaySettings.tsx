@@ -34,6 +34,11 @@ interface StatusPageConfigData {
   elements: StatusPageElementsData;
 }
 
+interface AliasRuleDraft {
+  name: string;
+  aliases: string;
+}
+
 const STATUS_ELEMENT_LABELS: Array<{ key: keyof StatusPageElementsData; label: string; hint?: string }> = [
   { key: "total", label: "Total summary", hint: "All-time totals" },
   { key: "today", label: "Today overview", hint: "Today vs yesterday" },
@@ -64,18 +69,24 @@ export default function DisplaySettings() {
   const [statusBusy, setStatusBusy] = useState(false);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [statusSaved, setStatusSaved] = useState(false);
+  const [aliasesDraft, setAliasesDraft] = useState<AliasRuleDraft[]>([]);
+  const [aliasesBusy, setAliasesBusy] = useState(false);
+  const [aliasesError, setAliasesError] = useState<string | null>(null);
+  const [aliasesSaved, setAliasesSaved] = useState(false);
 
   const load = useCallback(async () => {
-    const [res, ttlRes, streamRes, statusRes] = await Promise.all([
+    const [res, ttlRes, streamRes, statusRes, aliasesRes] = await Promise.all([
       apiFetch("/api/admin/settings/display"),
       apiFetch("/api/admin/settings/session"),
       apiFetch("/api/admin/settings/stream"),
       apiFetch("/api/admin/settings/status"),
+      apiFetch("/api/admin/settings/aliases"),
     ]);
     const json = await res.json();
     const ttlJson = await ttlRes.json();
     const streamJson = await streamRes.json();
     const statusJson = await statusRes.json();
+    const aliasesJson = await aliasesRes.json();
     if (json.success) {
       setData(json.data as DisplayData);
       setDraft((json.data as DisplayData).value);
@@ -93,6 +104,10 @@ export default function DisplaySettings() {
     if (statusJson.success) {
       const d = statusJson.data as { config: StatusPageConfigData };
       setStatusConfig(d.config);
+    }
+    if (aliasesJson.success) {
+      const rules = aliasesJson.data as Array<{ name: string; aliases: string[] }>;
+      setAliasesDraft(rules.map((r) => ({ name: r.name, aliases: r.aliases.join(", ") })));
     }
   }, []);
 
@@ -213,6 +228,56 @@ export default function DisplaySettings() {
         elements: { ...prev.elements, [key]: !prev.elements[key] },
       };
     });
+  };
+
+  const updateAlias = (idx: number, patch: Partial<AliasRuleDraft>) => {
+    setAliasesSaved(false);
+    setAliasesDraft((prev) =>
+      prev.map((r, i) => (i === idx ? { ...r, ...patch } : r))
+    );
+  };
+
+  const addAliasRule = () => {
+    setAliasesSaved(false);
+    setAliasesDraft((prev) => [...prev, { name: "", aliases: "" }]);
+  };
+
+  const removeAliasRule = (idx: number) => {
+    setAliasesSaved(false);
+    setAliasesDraft((prev) => prev.filter((_, i) => i !== idx));
+  };
+
+  const handleSaveAliases = async () => {
+    const rules = aliasesDraft
+      .map((r) => ({
+        name: r.name.trim(),
+        aliases: r.aliases
+          .split(",")
+          .map((a) => a.trim())
+          .filter(Boolean),
+      }))
+      .filter((r) => r.name !== "");
+    setAliasesBusy(true);
+    setAliasesError(null);
+    setAliasesSaved(false);
+    try {
+      const res = await apiFetch("/api/admin/settings/aliases", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ rules }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        setAliasesSaved(true);
+        load();
+      } else {
+        setAliasesError(json.error || "Failed to save");
+      }
+    } catch {
+      setAliasesError("Network error");
+    } finally {
+      setAliasesBusy(false);
+    }
   };
 
   return (
@@ -485,6 +550,75 @@ export default function DisplaySettings() {
             </button>
           </div>
         )}
+      </div>
+
+      <div className="mt-8 border-t border-gray-100 pt-6">
+        <h3 className="mb-1 text-base font-semibold text-gray-900">
+          Model Aliases
+        </h3>
+        <p className="mb-4 text-sm text-gray-500">
+          Normalize model names across providers into a display group. Each row:
+          a group name and comma-separated aliases. Models not matching any row
+          keep their original name. Pricing is always computed on the real model
+          name; aliases only affect display roll-up.
+        </p>
+
+        <div className="space-y-2">
+          {aliasesDraft.map((rule, idx) => (
+            <div key={idx} className="grid grid-cols-1 md:grid-cols-[1fr_2fr_auto] gap-2">
+              <input
+                value={rule.name}
+                onChange={(e) => updateAlias(idx, { name: e.target.value })}
+                placeholder="Group name (e.g. Claude Sonnet 4.6)"
+                className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+              <input
+                value={rule.aliases}
+                onChange={(e) => updateAlias(idx, { aliases: e.target.value })}
+                placeholder="aliases, comma separated (e.g. claude-sonnet-4-6, anthropic/claude-sonnet-4-6)"
+                spellCheck={false}
+                className="w-full rounded border border-gray-300 bg-white px-3 py-2 font-mono text-base md:text-xs shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+              <button
+                type="button"
+                onClick={() => removeAliasRule(idx)}
+                className="rounded border border-red-200 px-3 py-2 text-sm text-red-500 hover:bg-red-50 min-h-[40px] md:min-h-0"
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+          {aliasesDraft.length === 0 && (
+            <p className="text-sm text-gray-400">No alias groups configured.</p>
+          )}
+          <button
+            type="button"
+            onClick={addAliasRule}
+            className="rounded border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50"
+          >
+            + Add row
+          </button>
+        </div>
+
+        {aliasesError && (
+          <div className="mt-3 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-600">
+            {aliasesError}
+          </div>
+        )}
+        {aliasesSaved && (
+          <div className="mt-3 rounded border border-green-200 bg-green-50 p-3 text-sm text-green-700">
+            Saved. Normalized names update immediately.
+          </div>
+        )}
+
+        <button
+          type="button"
+          onClick={handleSaveAliases}
+          disabled={aliasesBusy}
+          className="mt-4 rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-50"
+        >
+          {aliasesBusy ? "Saving..." : "Save Aliases"}
+        </button>
       </div>
     </div>
   );

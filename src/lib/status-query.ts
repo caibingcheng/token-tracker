@@ -10,22 +10,18 @@ import type {
   StatusPageElementsConfig,
 } from "@/lib/auth/settings";
 import { aggregateByNormalizedModel, TOP_N_DISPLAY, TOP_N_RAW_MODELS, type StatItem } from "@/lib/model-utils";
-import { normalizeModel, getDisplayName, getPricing } from "@/lib/model-registry";
+import { getDisplayName, type ModelAliasRule } from "@/lib/model-registry";
 import { toNum } from "@/lib/number-utils";
 import {
-  aggregateCost,
-  addToAggregate,
-  checkPricingConsistency,
-  emptyAggregatedCost,
-  finalizeAggregate,
+  mergeAggregatedCosts,
   type AggregatedCost,
-  type CostInput,
 } from "@/lib/cost-utils";
 import { localDateKeyFromUtcDate } from "@/lib/timezone-utils";
 import {
   loadHiddenProviderGroups,
   type HiddenProviderGroup,
 } from "@/lib/provider-utils";
+import { loadModelAliases } from "@/lib/auth/settings";
 
 // /status/data 公开端点的查询与响应裁剪逻辑（不依赖 Next.js 运行时，可单测）。
 // 数据面最小化原则：仅执行启用元素所需的查询，响应不含未启用元素的数据。
@@ -177,14 +173,8 @@ function isStatItemsWithModel(
   return Array.isArray(data) && data.length > 0 && "model" in data[0];
 }
 
-function toCostInput(item: StatItem): CostInput {
-  return {
-    inputTokens: toNum(item.totalInputUncached),
-    cacheRead: toNum(item.totalInputCached),
-    cacheWrite: toNum(item.totalCacheWrite),
-    outputTokens: toNum(item.totalOutput),
-    pricing: getPricing(item.group),
-  };
+function toCost(item: StatItem): AggregatedCost | null {
+  return item.cost ?? null;
 }
 
 function formatDateKey(date: Date, timezoneOffsetMinutes: number): string {
@@ -208,41 +198,51 @@ function getTotalDays(
 }
 
 function aggregateCostByDate(
-  rows: StatItemWithGroupAndModel[],
-  groups: HiddenProviderGroup[]
-): Map<string, { aggregate: AggregatedCost; inputs: CostInput[] }> {
-  const map = new Map<string, { aggregate: AggregatedCost; inputs: CostInput[] }>();
+  rows: StatItemWithGroupAndModel[]
+): Map<string, AggregatedCost> {
+  const map = new Map<string, AggregatedCost[]>();
 
   for (const row of rows) {
     const date = String(row.group);
-    const canonicalId = normalizeModel(String(row.model), row.provider, groups);
-    const input: CostInput = {
-      inputTokens: toNum(row.totalInputUncached),
-      cacheRead: toNum(row.totalInputCached),
-      cacheWrite: toNum(row.totalCacheWrite),
-      outputTokens: toNum(row.totalOutput),
-      pricing: getPricing(canonicalId),
-    };
-
     const existing = map.get(date);
     if (existing) {
-      addToAggregate(existing.aggregate, input);
-      existing.inputs.push(input);
+      existing.push(row.cost ?? emptyCost());
     } else {
-      const agg = emptyAggregatedCost();
-      addToAggregate(agg, input);
-      map.set(date, { aggregate: agg, inputs: [input] });
+      map.set(date, [row.cost ?? emptyCost()]);
     }
   }
 
-  map.forEach(({ aggregate }) => finalizeAggregate(aggregate));
+  const result = new Map<string, AggregatedCost>();
+  map.forEach((costs, date) => {
+    result.set(date, mergeAggregatedCosts(costs));
+  });
 
-  return map;
+  return result;
+}
+
+function emptyCost(): AggregatedCost {
+  return {
+    totalCost: 0,
+    effectiveTokens: 0,
+    costPerMillionTokens: 0,
+    inputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    outputTokens: 0,
+    inputCost: 0,
+    cacheReadCost: 0,
+    cacheWriteCost: 0,
+    outputCost: 0,
+    costPerMillionInput: 0,
+    costPerMillionCacheRead: 0,
+    costPerMillionCacheWrite: 0,
+    costPerMillionOutput: 0,
+  };
 }
 
 function buildDayData(
   key: string,
-  costMap: Map<string, { aggregate: AggregatedCost; inputs: CostInput[] }> | null,
+  costMap: Map<string, AggregatedCost> | null,
   countMap: Map<string, number>
 ): DayData | null {
   if (!costMap) {
@@ -263,15 +263,8 @@ function buildDayData(
     };
   }
 
-  const entry = costMap.get(key);
-  if (!entry) return null;
-  const { aggregate, inputs } = entry;
-  if (inputs.length > 0) {
-    const consistency = checkPricingConsistency(inputs, aggregate);
-    if (!consistency.ok) {
-      console.warn(`Status daily pricing mismatch for ${key}:`, consistency.mismatches);
-    }
-  }
+  const aggregate = costMap.get(key);
+  if (!aggregate) return null;
 
   return {
     group: key,
@@ -290,30 +283,25 @@ function buildDayData(
   };
 }
 
-function buildModelStat(item: StatItem): ModelStat {
-  const inputs = [toCostInput(item)];
-  const aggregate = aggregateCost(inputs);
-  const consistency = checkPricingConsistency(inputs, aggregate);
-  if (!consistency.ok) {
-    console.warn(`Status model pricing mismatch for ${item.group}:`, consistency.mismatches);
-  }
+function buildModelStat(item: StatItem, aliases: ModelAliasRule[] = []): ModelStat {
   return {
     ...item,
     canonicalId: item.group,
-    displayName: getDisplayName(item.group),
-    totalCost: aggregate.totalCost,
-    costPerMillionTokens: aggregate.costPerMillionTokens,
-    costPerMillionInput: aggregate.costPerMillionInput,
-    costPerMillionCacheRead: aggregate.costPerMillionCacheRead,
-    costPerMillionCacheWrite: aggregate.costPerMillionCacheWrite,
-    costPerMillionOutput: aggregate.costPerMillionOutput,
+    displayName: getDisplayName(item.group, aliases),
+    totalCost: item.cost?.totalCost ?? 0,
+    costPerMillionTokens: item.cost?.costPerMillionTokens ?? 0,
+    costPerMillionInput: item.cost?.costPerMillionInput ?? 0,
+    costPerMillionCacheRead: item.cost?.costPerMillionCacheRead ?? 0,
+    costPerMillionCacheWrite: item.cost?.costPerMillionCacheWrite ?? 0,
+    costPerMillionOutput: item.cost?.costPerMillionOutput ?? 0,
   };
 }
 
 // 按日期 → 该日 Top 模型（30d date-model 行归一化聚合）
 function aggregateTopModelsByDate(
   rows: StatItemWithGroupAndModel[],
-  groups: HiddenProviderGroup[]
+  groups: HiddenProviderGroup[],
+  aliases: ModelAliasRule[] = []
 ): Map<string, ModelStat[]> {
   const byDate = new Map<string, StatItem[]>();
 
@@ -331,6 +319,7 @@ function aggregateTopModelsByDate(
       totalInputUncached: toNum(row.totalInputUncached),
       totalCacheWrite: toNum(row.totalCacheWrite),
       count: toNum(row.count),
+      cost: row.cost,
     });
   }
 
@@ -338,9 +327,9 @@ function aggregateTopModelsByDate(
   byDate.forEach((items, date) => {
     result.set(
       date,
-      aggregateByNormalizedModel(items, groups)
+      aggregateByNormalizedModel(items, groups, aliases)
         .slice(0, TOP_N_RAW_MODELS)
-        .map(buildModelStat)
+        .map((item) => buildModelStat(item, aliases))
     );
   });
 
@@ -353,6 +342,7 @@ export async function queryStatusData(
 ): Promise<StatusData> {
   const elements = resolveStatusElements(config.elements);
   const groups = await loadHiddenProviderGroups();
+  const aliases = await loadModelAliases();
 
   // 成本/模型数据需要 model 级查询（cost 或 topModels 开启时）
   const needsModelData = elements.cost || elements.topModels;
@@ -426,12 +416,7 @@ export async function queryStatusData(
     if (needsModelData) {
       const totalModelRaw = totalModelResult ?? [];
       const totalModelsArr = isStatItemsWithGroup(totalModelRaw) ? totalModelRaw : [];
-      const totalInputs = totalModelsArr.map(toCostInput);
-      const aggregate = aggregateCost(totalInputs);
-      const consistency = checkPricingConsistency(totalInputs, aggregate);
-      if (!consistency.ok) {
-        console.warn("Status total pricing mismatch:", consistency.mismatches);
-      }
+      const aggregate = mergeAggregatedCosts(totalModelsArr.map(toCost));
       totalCost = aggregate.totalCost;
       costPerMillionTokens = aggregate.costPerMillionTokens;
       costPerMillionInput = aggregate.costPerMillionInput;
@@ -466,7 +451,7 @@ export async function queryStatusData(
 
   const dateModel2dRaw = dateModel2dResult ?? [];
   const costMap2d = needsModelData
-    ? aggregateCostByDate(isStatItemsWithModel(dateModel2dRaw) ? dateModel2dRaw : [], groups)
+    ? aggregateCostByDate(isStatItemsWithModel(dateModel2dRaw) ? dateModel2dRaw : [])
     : null;
 
   let today: DayData | null = null;
@@ -483,12 +468,12 @@ export async function queryStatusData(
   if (elements.daily) {
     const date30dArr = isStatItemsWithGroup(date30dRaw) ? date30dRaw : [];
     const costMap30d = needsModelData
-      ? aggregateCostByDate(isStatItemsWithModel(dateModel30dRaw) ? dateModel30dRaw : [], groups)
+      ? aggregateCostByDate(isStatItemsWithModel(dateModel30dRaw) ? dateModel30dRaw : [])
       : null;
 
     daily = date30dArr.map((item) => {
-      const entry = costMap30d?.get(String(item.group));
-      if (!entry) {
+      const aggregate = costMap30d?.get(String(item.group));
+      if (!aggregate) {
         return {
           group: String(item.group),
           totalInput: toNum(item.totalInput),
@@ -504,16 +489,6 @@ export async function queryStatusData(
           costPerMillionCacheWrite: 0,
           costPerMillionOutput: 0,
         };
-      }
-      const { aggregate, inputs } = entry;
-      if (inputs.length > 0) {
-        const consistency = checkPricingConsistency(inputs, aggregate);
-        if (!consistency.ok) {
-          console.warn(
-            `Status daily pricing mismatch for ${item.group}:`,
-            consistency.mismatches
-          );
-        }
       }
       return {
         group: String(item.group),
@@ -591,11 +566,13 @@ export async function queryStatusData(
         totalInputUncached: toNum(row.totalInputUncached),
         totalCacheWrite: toNum(row.totalCacheWrite),
         count: toNum(row.count),
+        cost: row.cost,
       })),
-      groups
+      groups,
+      aliases
     )
       .slice(0, TOP_N_DISPLAY)
-      .map(buildModelStat);
+      .map((item) => buildModelStat(item, aliases));
 
     const totalModelRaw = totalModelResult ?? [];
     const totalModelsArr = isStatItemsWithGroup(totalModelRaw) ? totalModelRaw : [];
@@ -609,11 +586,13 @@ export async function queryStatusData(
         totalInputUncached: toNum(row.totalInputUncached),
         totalCacheWrite: toNum(row.totalCacheWrite),
         count: toNum(row.count),
+        cost: row.cost,
       })),
-      groups
+      groups,
+      aliases
     )
       .slice(0, TOP_N_DISPLAY)
-      .map(buildModelStat);
+      .map((item) => buildModelStat(item, aliases));
   }
 
   // Today Top Models（复用 2d date-model 行，过滤今日键）
@@ -632,11 +611,13 @@ export async function queryStatusData(
           totalInputUncached: toNum(row.totalInputUncached),
           totalCacheWrite: toNum(row.totalCacheWrite),
           count: toNum(row.count),
+          cost: row.cost,
         })),
-      groups
+      groups,
+      aliases
     )
       .slice(0, TOP_N_DISPLAY)
-      .map(buildModelStat);
+      .map((item) => buildModelStat(item, aliases));
   }
 
   // 每日 Top 模型（30d，点击图表某天时展示该日模型；依赖 daily + topModels）
@@ -645,7 +626,8 @@ export async function queryStatusData(
     dailyModels = Object.fromEntries(
       aggregateTopModelsByDate(
         isStatItemsWithModel(dateModel30dRaw) ? dateModel30dRaw : [],
-        groups
+        groups,
+        aliases
       )
     );
   }

@@ -271,3 +271,61 @@ export function isValidStatusPageConfig(config: unknown): config is StatusPageCo
   }
   return true;
 }
+
+// ---- Model Aliases（归一化配置）：settings 表 model_aliases（JSON 明文）----
+
+export interface ModelAliasRule {
+  name: string;
+  aliases: string[];
+}
+
+// 解析 settings 原始字符串；非法/缺失 → 空数组
+export function parseModelAliases(raw: string | null): ModelAliasRule[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const rules: ModelAliasRule[] = [];
+    for (const item of parsed) {
+      if (!item || typeof item !== "object") continue;
+      const r = item as Record<string, unknown>;
+      if (typeof r.name !== "string" || r.name.trim() === "") continue;
+      if (!Array.isArray(r.aliases)) continue;
+      if (!r.aliases.every((a) => typeof a === "string")) continue;
+      rules.push({ name: r.name, aliases: r.aliases as string[] });
+    }
+    return rules;
+  } catch {
+    return [];
+  }
+}
+
+export function isValidModelAliases(config: unknown): config is ModelAliasRule[] {
+  if (!Array.isArray(config)) return false;
+  for (const rule of config) {
+    if (!rule || typeof rule !== "object") return false;
+    const r = rule as Record<string, unknown>;
+    for (const key of Object.keys(r)) {
+      if (key !== "name" && key !== "aliases") return false;
+    }
+    if (typeof r.name !== "string" || r.name.trim() === "") return false;
+    if (!Array.isArray(r.aliases)) return false;
+    for (const a of r.aliases) {
+      if (typeof a !== "string") return false;
+    }
+  }
+  return true;
+}
+
+export async function loadModelAliases(): Promise<ModelAliasRule[]> {
+  return parseModelAliases(await getSetting("model_aliases"));
+}
+
+export async function setModelAliasesSetting(rules: ModelAliasRule[]): Promise<void> {
+  await setSetting("model_aliases", JSON.stringify(rules));
+  // 清空 normalizeModel 缓存 + 查询缓存：改归一化配置后立即生效
+  const { invalidateModelCache } = await import("@/lib/model-registry");
+  invalidateModelCache();
+  const { invalidateQueryCache } = await import("@/lib/db/cache");
+  invalidateQueryCache();
+}

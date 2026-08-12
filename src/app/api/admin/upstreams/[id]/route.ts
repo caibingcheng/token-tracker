@@ -149,6 +149,13 @@ export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
         userAgent,
         details: { changed: Object.keys(values) },
       });
+      // best-effort：enabled_models 变更后对新 model 自动填充官方价
+      if (Array.isArray(body.enabledModels)) {
+        const { autoFillForModels } = await import("@/lib/model-prices-service");
+        autoFillForModels(
+          body.enabledModels.filter((m) => typeof m === "string")
+        ).catch(() => {});
+      }
       return NextResponse.json({ success: true, data: await withKeys(result[0]) });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

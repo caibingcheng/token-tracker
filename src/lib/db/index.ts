@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm";
 import { wrapDatabaseClient } from "./cache";
 import { offsetMinutesToSqlModifiers } from "@/lib/timezone-utils";
-import { migrateColumns } from "./migrate";
+import { migrateColumns, migrateTokenRecordsModelColumns } from "./migrate";
 
 let db: any;
 let tokenRecords: any;
@@ -12,6 +12,7 @@ let settingsTable: any;
 let adminAuditLogsTable: any;
 let upstreamModelHealthTable: any;
 let routingRulesTable: any;
+let modelPricesTable: any;
 let initialized = false;
 
 export async function initDatabase() {
@@ -47,6 +48,7 @@ async function ensureClient() {
   adminAuditLogsTable = sqliteModule.adminAuditLogs;
   upstreamModelHealthTable = sqliteModule.upstreamModelHealth;
   routingRulesTable = sqliteModule.routingRules;
+  modelPricesTable = sqliteModule.modelPrices;
 
   client.exec(`
     CREATE TABLE IF NOT EXISTS token_records (
@@ -134,6 +136,16 @@ async function ensureClient() {
       UNIQUE(name, protocol)
     );
     CREATE INDEX IF NOT EXISTS idx_routing_rules_protocol_name ON routing_rules(protocol, name);
+    CREATE TABLE IF NOT EXISTS model_prices (
+      model TEXT PRIMARY KEY,
+      input_price REAL NOT NULL,
+      output_price REAL NOT NULL,
+      cache_read_price REAL,
+      cache_write_price REAL,
+      source TEXT NOT NULL,
+      models_dev_id TEXT,
+      updated_at TEXT NOT NULL
+    );
   `);
 
   // 存量补列必须在所有 CREATE TABLE 之后执行：全新库先建表再补列，旧库表已存在、幂等补列
@@ -145,7 +157,6 @@ async function ensureClient() {
         { name: "latency_ms", definition: "latency_ms INTEGER" },
         { name: "virtual_key_id", definition: "virtual_key_id INTEGER" },
         { name: "user_agent", definition: "user_agent TEXT" },
-        { name: "target_model", definition: "target_model TEXT" },
       ],
     },
     {
@@ -170,6 +181,9 @@ async function ensureClient() {
       ],
     },
   ]);
+
+  // token_records 专用迁移：model 列改为真实名 + request_model 回填 + target_model 删除
+  migrateTokenRecordsModelColumns(client);
 
   client.exec(`
     CREATE INDEX IF NOT EXISTS idx_token_records_virtual_key_id ON token_records(virtual_key_id);
@@ -230,5 +244,5 @@ export function getDateGroupExpr(
   return sql<string>`strftime('%Y-%m-%d', ${tokenRecords.createdAt}, ${modifiers[0]}, ${modifiers[1]})`;
 }
 
-export { db, tokenRecords, upstreamsTable, upstreamKeysTable, virtualKeysTable, settingsTable, adminAuditLogsTable, upstreamModelHealthTable, routingRulesTable };
+export { db, tokenRecords, upstreamsTable, upstreamKeysTable, virtualKeysTable, settingsTable, adminAuditLogsTable, upstreamModelHealthTable, routingRulesTable, modelPricesTable };
 export type { TokenRecord, NewTokenRecord } from "./schema-sqlite";

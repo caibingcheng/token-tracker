@@ -9,6 +9,7 @@ import {
   type UpstreamRoute,
 } from "@/lib/gateway/model-router";
 import { CopyableCode } from "./CopyableCode";
+import PricePickerModal from "./PricePickerModal";
 
 interface UpstreamSummary {
   id: number;
@@ -59,6 +60,32 @@ interface ModelsData {
   resolvedRoutes: ResolvedRoute[];
   wildcardPatternsByProtocol: Record<Protocol, WildcardInfo[]>;
   manualRoutes: ManualRouteInfo[];
+}
+
+interface PriceRow {
+  model: string;
+  upstreams: string[];
+  inputPrice: number | null;
+  outputPrice: number | null;
+  cacheReadPrice: number | null;
+  cacheWritePrice: number | null;
+  source: "models.dev" | "manual" | null;
+  modelsDevId: string | null;
+  updatedAt: string | null;
+  status: {
+    active: boolean;
+    inactive: boolean;
+    pending: boolean;
+    unmatched: boolean;
+    hasUpdate: boolean;
+    removed: boolean;
+    diff: {
+      inputPrice: number;
+      outputPrice: number;
+      cacheReadPrice: number | null;
+      cacheWritePrice: number | null;
+    } | null;
+  };
 }
 
 function toUpstreamRoute(u: UpstreamSummary): UpstreamRoute {
@@ -119,6 +146,14 @@ export default function ModelsPanel() {
   const [selectedProtocol, setSelectedProtocol] = useState<Protocol>("openai");
   const [expandedModels, setExpandedModels] = useState<Set<string>>(new Set());
 
+  // Models List Table（官方价参考）
+  const [priceRows, setPriceRows] = useState<PriceRow[]>([]);
+  const [showInactive, setShowInactive] = useState(false);
+  const [pricePickerModel, setPricePickerModel] = useState<string | null>(null);
+  const [pricesBusy, setPricesBusy] = useState(false);
+  const [pricesError, setPricesError] = useState<string | null>(null);
+  const [refreshingSnapshot, setRefreshingSnapshot] = useState(false);
+
   // Manual Routing 表单
   const [ruleName, setRuleName] = useState("");
   const [ruleProtocol, setRuleProtocol] = useState<Protocol>("openai");
@@ -147,7 +182,99 @@ export default function ModelsPanel() {
 
   useEffect(() => {
     load();
+    loadPrices();
   }, []);
+
+  const loadPrices = async () => {
+    setPricesError(null);
+    try {
+      const res = await apiFetch("/api/admin/model-prices");
+      const json = await res.json();
+      if (json.success) {
+        setPriceRows(json.data);
+      } else {
+        setPricesError(json.error || "Failed to load model prices");
+      }
+    } catch {
+      setPricesError("Network error");
+    }
+  };
+
+  const autoFillPrices = async () => {
+    setPricesBusy(true);
+    setPricesError(null);
+    try {
+      const res = await apiFetch("/api/admin/model-prices/auto-fill", { method: "POST" });
+      const json = await res.json();
+      if (json.success) {
+        await loadPrices();
+      } else {
+        setPricesError(json.error || "Auto-fill failed");
+      }
+    } catch {
+      setPricesError("Network error");
+    } finally {
+      setPricesBusy(false);
+    }
+  };
+
+  const refreshModelsDev = async () => {
+    setRefreshingSnapshot(true);
+    setPricesError(null);
+    try {
+      const res = await apiFetch("/api/admin/models-dev/refresh", { method: "POST" });
+      const json = await res.json();
+      if (json.success) {
+        await loadPrices();
+      } else {
+        setPricesError(json.error || "Refresh failed");
+      }
+    } catch {
+      setPricesError("Network error");
+    } finally {
+      setRefreshingSnapshot(false);
+    }
+  };
+
+  const adoptUpdate = async (row: PriceRow) => {
+    if (!row.modelsDevId) return;
+    if (!window.confirm(`Adopt updated official price for "${row.model}"?`)) return;
+    setPricesBusy(true);
+    try {
+      const res = await apiFetch("/api/admin/model-prices/select", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: row.model, modelsDevId: row.modelsDevId }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        await loadPrices();
+      } else {
+        setPricesError(json.error || "Failed to adopt price");
+      }
+    } catch {
+      setPricesError("Network error");
+    } finally {
+      setPricesBusy(false);
+    }
+  };
+
+  const deletePrice = async (row: PriceRow) => {
+    if (!window.confirm(`Delete price for "${row.model}"? Historical costs will drop to $0.`)) return;
+    try {
+      const res = await apiFetch(`/api/admin/model-prices?model=${encodeURIComponent(row.model)}`, {
+        method: "DELETE",
+      });
+      const json = await res.json();
+      if (json.success) {
+        await loadPrices();
+      } else {
+        setPricesError(json.error || "Failed to delete price");
+      }
+    } catch {
+      setPricesError("Network error");
+    }
+  };
 
   const upstreamRoutes = useMemo(
     () => (data ? data.upstreams.filter((u) => u.enabled).map(toUpstreamRoute) : []),
@@ -810,6 +937,240 @@ export default function ModelsPanel() {
           </>
         )}
       </div>
+
+      {/* 官方价参考：Models List Table */}
+      <div className="rounded-lg bg-white p-4 shadow">
+        <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-base font-semibold">Model Pricing</h2>
+            <p className="mt-0.5 text-xs text-gray-400">
+              Official price reference (USD / 1M tokens). Calculated on query; historical costs recompute on price change.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="flex items-center gap-1.5 text-xs text-gray-600">
+              <input
+                type="checkbox"
+                checked={showInactive}
+                onChange={(e) => setShowInactive(e.target.checked)}
+                className="h-4 w-4 rounded border-gray-300"
+              />
+              Show removed
+            </label>
+            <button
+              type="button"
+              disabled={pricesBusy}
+              onClick={autoFillPrices}
+              className="rounded border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50 min-h-[36px] md:min-h-0"
+            >
+              Auto-fill unmatched
+            </button>
+            <button
+              type="button"
+              disabled={refreshingSnapshot}
+              onClick={refreshModelsDev}
+              className="rounded border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 min-h-[36px] md:min-h-0"
+            >
+              {refreshingSnapshot ? "Refreshing…" : "Refresh models.dev"}
+            </button>
+          </div>
+        </div>
+
+        {pricesError && (
+          <div className="mb-3 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-600">
+            {pricesError}
+          </div>
+        )}
+
+        {(() => {
+          const visibleRows = showInactive
+            ? priceRows
+            : priceRows.filter((r) => r.status.active);
+          if (visibleRows.length === 0) {
+            return (
+              <div className="py-8 text-center text-sm text-gray-400">
+                No models with pricing info. Save an upstream with concrete models to get started.
+              </div>
+            );
+          }
+          return (
+            <>
+              <div className="hidden md:block overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-xs text-gray-400">
+                      <th className="px-2 py-2">Model</th>
+                      <th className="px-2 py-2">Upstreams</th>
+                      <th className="px-2 py-2 text-right">Input</th>
+                      <th className="px-2 py-2 text-right">Output</th>
+                      <th className="px-2 py-2 text-right">Cache Rd</th>
+                      <th className="px-2 py-2 text-right">Cache Wr</th>
+                      <th className="px-2 py-2">Status</th>
+                      <th className="px-2 py-2 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {visibleRows.map((row) => (
+                      <tr key={row.model} className={row.status.inactive ? "opacity-50" : ""}>
+                        <td className="px-2 py-2">
+                          <CopyableCode className="text-xs">{row.model}</CopyableCode>
+                        </td>
+                        <td className="px-2 py-2 text-xs text-gray-500">
+                          {row.upstreams.length > 0 ? row.upstreams.join(", ") : "—"}
+                        </td>
+                        <td className="px-2 py-2 text-right font-mono text-xs">
+                          {row.inputPrice === null ? "—" : `$${row.inputPrice.toFixed(4)}`}
+                        </td>
+                        <td className="px-2 py-2 text-right font-mono text-xs">
+                          {row.outputPrice === null ? "—" : `$${row.outputPrice.toFixed(4)}`}
+                        </td>
+                        <td className="px-2 py-2 text-right font-mono text-xs">
+                          {row.cacheReadPrice === null ? "—" : `$${row.cacheReadPrice.toFixed(4)}`}
+                        </td>
+                        <td className="px-2 py-2 text-right font-mono text-xs">
+                          {row.cacheWritePrice === null ? "—" : `$${row.cacheWritePrice.toFixed(4)}`}
+                        </td>
+                        <td className="px-2 py-2">
+                          <PriceBadges row={row} onAdopt={() => adoptUpdate(row)} onPick={() => setPricePickerModel(row.model)} />
+                        </td>
+                        <td className="px-2 py-2 text-right whitespace-nowrap">
+                          <button
+                            type="button"
+                            onClick={() => setPricePickerModel(row.model)}
+                            className="text-xs text-blue-600 hover:text-blue-800"
+                          >
+                            {row.inputPrice === null ? "Select price" : "Edit"}
+                          </button>
+                          {row.inputPrice !== null && (
+                            <>
+                              {" · "}
+                              <button
+                                type="button"
+                                onClick={() => deletePrice(row)}
+                                className="text-xs text-red-500 hover:text-red-700"
+                              >
+                                Delete
+                              </button>
+                            </>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* 移动端卡片 */}
+              <div className="md:hidden space-y-3">
+                {visibleRows.map((row) => (
+                  <div key={row.model} className={`border border-gray-200 rounded-lg p-3 ${row.status.inactive ? "opacity-50" : ""}`}>
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <CopyableCode className="text-xs">{row.model}</CopyableCode>
+                        <p className="mt-0.5 text-[11px] text-gray-400">
+                          {row.upstreams.length > 0 ? row.upstreams.join(", ") : "No upstream"}
+                        </p>
+                      </div>
+                      <PriceBadges row={row} onAdopt={() => adoptUpdate(row)} onPick={() => setPricePickerModel(row.model)} />
+                    </div>
+                    <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-gray-600">
+                      <span>Input <span className="float-right font-mono">{row.inputPrice === null ? "—" : `$${row.inputPrice.toFixed(4)}`}</span></span>
+                      <span>Output <span className="float-right font-mono">{row.outputPrice === null ? "—" : `$${row.outputPrice.toFixed(4)}`}</span></span>
+                      <span>Cache Rd <span className="float-right font-mono">{row.cacheReadPrice === null ? "—" : `$${row.cacheReadPrice.toFixed(4)}`}</span></span>
+                      <span>Cache Wr <span className="float-right font-mono">{row.cacheWritePrice === null ? "—" : `$${row.cacheWritePrice.toFixed(4)}`}</span></span>
+                    </div>
+                    <div className="mt-3 flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => setPricePickerModel(row.model)}
+                        className="rounded bg-blue-600 px-3 py-2 text-xs font-medium text-white hover:bg-blue-700"
+                      >
+                        {row.inputPrice === null ? "Select price" : "Edit"}
+                      </button>
+                      {row.inputPrice !== null && (
+                        <button
+                          type="button"
+                          onClick={() => deletePrice(row)}
+                          className="text-xs text-red-500 hover:text-red-700"
+                        >
+                          Delete
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          );
+        })()}
+      </div>
+
+      <PricePickerModal
+        isOpen={pricePickerModel !== null}
+        onClose={() => setPricePickerModel(null)}
+        model={pricePickerModel ?? ""}
+        onSaved={loadPrices}
+      />
     </div>
+  );
+}
+
+// 价格状态徽标组（桌面/移动端共用）
+function PriceBadges({
+  row,
+  onAdopt,
+  onPick,
+}: {
+  row: PriceRow;
+  onAdopt: () => void;
+  onPick: () => void;
+}) {
+  const badges: Array<{ key: string; cls: string; label: string; action?: () => void; title?: string }> = [];
+
+  if (row.source === "models.dev") {
+    badges.push({ key: "src", cls: "bg-green-50 text-green-700 border-green-200", label: "models.dev" });
+  } else if (row.source === "manual") {
+    badges.push({ key: "src", cls: "bg-gray-50 text-gray-700 border-gray-200", label: "manual" });
+  }
+  if (row.status.inactive) {
+    badges.push({ key: "inactive", cls: "bg-gray-50 text-gray-500 border-gray-200", label: "removed" });
+  }
+  if (row.status.unmatched) {
+    badges.push({ key: "unmatched", cls: "bg-red-50 text-red-700 border-red-200", label: "unmatched", action: onPick });
+  } else if (row.status.pending) {
+    badges.push({ key: "pending", cls: "bg-amber-50 text-amber-700 border-amber-200", label: "confirm", action: onPick });
+  }
+  if (row.status.hasUpdate) {
+    badges.push({
+      key: "update",
+      cls: "bg-blue-50 text-blue-700 border-blue-200",
+      label: "update",
+      action: onAdopt,
+      title: row.status.diff
+        ? `New: input $${row.status.diff.inputPrice} / output $${row.status.diff.outputPrice}`
+        : "Official price changed",
+    });
+  }
+  if (row.status.removed) {
+    badges.push({ key: "removed", cls: "bg-red-50 text-red-700 border-red-200", label: "removed", action: onPick });
+  }
+
+  if (badges.length === 0) return null;
+
+  return (
+    <span className="inline-flex flex-wrap gap-1">
+      {badges.map((b) => (
+        <button
+          key={b.key}
+          type="button"
+          onClick={b.action}
+          disabled={!b.action}
+          title={b.title}
+          className={`rounded border px-1.5 py-0.5 text-[10px] font-medium ${b.cls} ${b.action ? "hover:opacity-70" : "cursor-default"}`}
+        >
+          {b.label}
+        </button>
+      ))}
+    </span>
   );
 }

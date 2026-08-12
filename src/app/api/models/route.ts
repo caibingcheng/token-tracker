@@ -3,6 +3,7 @@ import { db, initDatabase } from "@/lib/db";
 import { tokenRecords } from "@/lib/db";
 import { normalizeModel } from "@/lib/model-utils";
 import { loadHiddenProviderGroups } from "@/lib/provider-utils";
+import { loadModelAliases } from "@/lib/auth/settings";
 import { withAuth } from "@/lib/auth/guard";
 
 export const dynamic = "force-dynamic";
@@ -27,6 +28,7 @@ export const GET = withAuth(async (request: NextRequest) => {
   await initDatabase();
   try {
     const groups = await loadHiddenProviderGroups();
+    const aliases = await loadModelAliases();
 
     // Query all unique (model, provider) pairs
     const rows = await db
@@ -42,7 +44,7 @@ export const GET = withAuth(async (request: NextRequest) => {
       const raw = row.model;
       const provider = row.provider ?? undefined;
       if (raw) {
-        normalizedSet.add(normalizeModel(raw, provider, groups));
+        normalizedSet.add(normalizeModel(raw, provider, groups, aliases));
       }
     }
 
@@ -50,7 +52,7 @@ export const GET = withAuth(async (request: NextRequest) => {
 
     const data = normalizedList.map((id) => ({
       id,
-      name: getDisplayName(id),
+      name: getDisplayName(id, aliases),
     }));
 
     return NextResponse.json({

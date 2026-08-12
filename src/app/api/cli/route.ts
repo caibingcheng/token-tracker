@@ -4,9 +4,9 @@ import { tokenRecords } from "@/lib/db";
 import { withAuth } from "@/lib/auth/guard";
 import { executeStatsQuery, type StatsQueryResult } from "@/lib/stats-query";
 import { resolveProviderFilter, loadHiddenProviderGroups } from "@/lib/provider-utils";
-import { getDisplayName, getPricing, normalizeModel } from "@/lib/model-registry";
+import { getDisplayName } from "@/lib/model-registry";
+import { loadModelAliases } from "@/lib/auth/settings";
 import {
-  calculateCost,
   calculateCostPerMillion,
 } from "@/lib/cost-utils";
 import { type StatItem } from "@/lib/model-utils";
@@ -69,21 +69,13 @@ function computeChange(current: number, previous: number): string {
 }
 
 function computeCostFromStatItem(item: StatItem): { cost: number; effectiveTokens: number } {
-  const pricing = getPricing(item.group);
   const inputTokens = toNum(item.totalInputUncached);
   const cacheRead = toNum(item.totalInputCached);
   const cacheWrite = toNum(item.totalCacheWrite);
   const outputTokens = toNum(item.totalOutput);
 
-  const cost = calculateCost({
-    inputTokens,
-    cacheRead,
-    cacheWrite,
-    outputTokens,
-    pricing,
-  });
-
-  const effectiveTokens = inputTokens + cacheRead + cacheWrite + outputTokens;
+  const cost = item.cost?.totalCost ?? 0;
+  const effectiveTokens = item.cost?.effectiveTokens ?? inputTokens + cacheRead + cacheWrite + outputTokens;
 
   return { cost, effectiveTokens };
 }
@@ -144,6 +136,7 @@ async function queryCliData(range: string, provider: string, providerFilter: str
 export const GET = withAuth(async (request: NextRequest) => {
   await initDatabase();
   const groups = await loadHiddenProviderGroups();
+  const aliases = await loadModelAliases();
 
   try {
     const { searchParams } = new URL(request.url);
@@ -333,7 +326,7 @@ export const GET = withAuth(async (request: NextRequest) => {
       const { cost, effectiveTokens } = computeCostFromStatItem(item);
       return {
         ...item,
-        displayName: getDisplayName(item.group),
+        displayName: getDisplayName(item.group, aliases),
         cost,
         costPerMillion: calculateCostPerMillion(cost, effectiveTokens),
       };

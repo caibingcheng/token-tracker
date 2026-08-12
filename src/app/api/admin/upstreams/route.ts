@@ -121,6 +121,9 @@ export const POST = withAuth(async (request: NextRequest) => {
         userAgent,
         details: { name, protocol },
       });
+      // best-effort：对新增 model 自动填充官方价（失败静默，不阻塞保存）
+      const { autoFillForModels } = await import("@/lib/model-prices-service");
+      autoFillForModels(enabledModels).catch(() => {});
       return NextResponse.json({ success: true, data: result[0] }, { status: 201 });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

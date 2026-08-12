@@ -31,13 +31,14 @@ docker compose up -d                                 # 本地运行
 - **关键配置**：better-sqlite3，文本模式存储时间戳（ISO 格式）
 - **自动初始化**：`initDatabase()` 在首次 API 调用时自动建表 + 索引
 - **表结构**：
-  - `token_records`（id, model, provider, agent, input_tokens, output_tokens, cache_read, cache_write, status, latency_ms, virtual_key_id, created_at）
+  - `token_records`（id, model, provider, agent, input_tokens, output_tokens, cache_read, cache_write, status, latency_ms, virtual_key_id, request_model, created_at）：**`model` 列 = 发往 upstream 的真实 model 名**（手动路由场景 = targetModel）；`request_model` = 客户端原始请求名（虚拟名路由场景可追溯，仅展示不参与定价）
   - `upstreams`（id, name, protocol, base_url, enabled_models(JSON), priority, enabled, health_check_model, health_status, health_updated_at, balance, balance_updated_at, created_at）
   - `upstream_keys`（id, upstream_id, api_key_encrypted, enabled, last_status, created_at）
   - `upstream_model_health`（upstream_id+model 复合主键, status, expires_at, updated_at）：model 级不可用标记（持久化）
   - `virtual_keys`（id, name, api_key_encrypted, enabled, comment, enabled_models(JSON, 默认 '["*"]'), last_used_at, created_at）
-  - `settings`（key TEXT PRIMARY KEY, value TEXT）：`admin_api_key`（AES-256-GCM 加密）、`totp_secret`、`totp_enabled`、`token_epoch`、`hidden_providers`（明文）、`session_token_ttl_hours`（明文）、`stream_idle_timeout_minutes`（明文）、`status_page_config`（明文 JSON：`{enabled, elements:{total,today,daily,heatmap,hourly,topModels,cost}}`，**默认 enabled=false**）、`totp_fail_count`（明文，TOTP 失败计数）、`totp_locked_until`（明文，TOTP 锁定截止时间戳）、`recovery_codes`（明文 JSON：`{hashes:[sha256...], used:[bool...]}`，只存哈希不存明文）、`recovery_code_login_reminder`（明文，recovery code 登录提醒标记）
-- **存量迁移**：`migrateColumns()` 泛化支持多表（token_records / virtual_keys / upstreams），通过 `PRAGMA table_info` 检测缺失列并 `ALTER TABLE` 补列（`CREATE TABLE IF NOT EXISTS` 不会补列）
+  - `model_prices`（model PRIMARY KEY, input_price, output_price, cache_read_price(NULL→回退 input), cache_write_price(NULL→回退 input), source('models.dev'|'manual'), models_dev_id, updated_at）：官方价参考（USD/1M），**查询时计算**，record 不存价格；`model` = 发往 upstream 的真实名
+  - `settings`（key TEXT PRIMARY KEY, value TEXT）：`admin_api_key`（AES-256-GCM 加密）、`totp_secret`、`totp_enabled`、`token_epoch`、`hidden_providers`（明文）、`session_token_ttl_hours`（明文）、`stream_idle_timeout_minutes`（明文）、`status_page_config`（明文 JSON：`{enabled, elements:{total,today,daily,heatmap,hourly,topModels,cost}}`，**默认 enabled=false**）、`model_aliases`（明文 JSON：`[{name, aliases[]}]` 归一化配置，Display pane 编辑）、`totp_fail_count`（明文，TOTP 失败计数）、`totp_locked_until`（明文，TOTP 锁定截止时间戳）、`recovery_codes`（明文 JSON：`{hashes:[sha256...], used:[bool...]}`，只存哈希不存明文）、`recovery_code_login_reminder`（明文，recovery code 登录提醒标记）
+- **存量迁移**：`migrateColumns()` 泛化支持多表（token_records / virtual_keys / upstreams），通过 `PRAGMA table_info` 检测缺失列并 `ALTER TABLE` 补列（`CREATE TABLE IF NOT EXISTS` 不会补列）；`migrateTokenRecordsModelColumns()` 专用一次性迁移：`request_model` 回填 = model、`model` 覆盖 = `target_model`（旧 schema）、DROP `target_model`（幂等）
 
 ## API 路由与认证
 
@@ -53,6 +54,10 @@ docker compose up -d                                 # 本地运行
 | `/api/admin/auth/totp` `/api/admin/auth/api-key` `/api/admin/auth/sessions` `/api/admin/auth/recovery-codes` `/api/admin/auth/recovery-codes/reminder` | CRUD | 会话 token + TOTP 动态码 | TOTP 绑定/换绑/解绑、修改登录 key、全局登出（token_epoch+1 吊销全部会话）、recovery codes 查询/重新生成/清除提醒标记 |
 | `/api/admin/settings/display` `/api/admin/settings/session` `/api/admin/settings/stream` | GET/PUT | 会话 token | Display tab：HIDDEN_PROVIDERS 分组语法 + 会话 TTL + 流式空闲超时（分钟，settings 表，面板优先） |
 | `/api/admin/settings/status` | GET/PUT | 会话 token | Display tab：公开 Status 页配置（status_page_config，`isValidStatusPageConfig` 校验） |
+| `/api/admin/settings/aliases` | GET/PUT | 会话 token | Display tab：Model Aliases 归一化配置（model_aliases，`isValidModelAliases` 校验） |
+| `/api/admin/model-prices` | GET/PUT/DELETE | 会话 token | 官方价参考管理：GET 行集 = 全部启用 upstream 非通配 enabled_models ∪ 已定价 model（附徽标：active/inactive、待确认/未匹配、有更新+diff、已下架）；PUT 手动编辑（`source='manual'`，清空 models_dev_id）；DELETE 删价（model 走 query，**不用 `[model]` 动态段**，model 名可能含 `/`） |
+| `/api/admin/model-prices/candidates?model=X` `/api/admin/model-prices/select` `/api/admin/model-prices/auto-fill` | GET/POST/POST | 会话 token | Price Picker Modal 候选列表（provider、4 价格、预选标记）；从候选选定落库（`source='models.dev'`，价格以快照为准防篡改）；批量填充所有未定价行（只填空不覆盖，manual 行不动） |
+| `/api/admin/models-dev/refresh` | POST | 会话 token | 强制刷新 models.dev 快照（失败回退旧快照） |
 | `/status` `/status/data` | GET | **无（有意公开）** | 公开用量状态页 + 数据端点：详见下方「公开 Status 页」小节 |
 
 - **认证架构（多层防漏）**：验签 middleware（第一层，WebCrypto 验 HMAC 签名 + exp，Edge runtime）→ 路由内 `withAuth`（第二层，epoch 检查 + DB key 指纹校验）→ vitest 静态扫描测试（第三层，`src/lib/auth/guard-scan.test.ts`，login + setup 白名单）→ 本文件约定（第四层）
@@ -87,7 +92,7 @@ docker compose up -d                                 # 本地运行
 - **流程**：path `..` 段净化（`sanitizePathSegments`，逃逸出 base 前缀 → 400）→ 提取虚拟 key（Authorization Bearer / x-api-key / x-goog-api-key / ?key=）→ 校验（**全表解密比对**，AES-256-GCM 随机 IV 无法索引）→ 提取 model（OpenAI/Anthropic 取 body，Gemini 取 path；**长度上限 256**）→ `routeModelByProtocol()` 取候选（精确 > 前缀通配，priority 小者胜，协议过滤）→ **跨 upstream 故障转移链**（session 粘性 binding 优先 → 其余 healthy 候选按 priority；每个 upstream 内遍历 key、每个 key 内 `MAX_RETRY=2`，**401/403 认证错误不重试直接换 key/upstream 并触发 failover**，其余 4xx 直接透传不重试、不触发 failover，**3xx 重定向一律视为失败（`redirect: "manual"`，防上游 key 跨源泄露）**，**流式输出开始后不可重试**；某 upstream 全部 key 失败标记 unhealthy 并继续下一个）→ 透传（剥离认证头 + 客户端可控源信息头 + `accept-encoding: identity`，按协议注入真实 key）→ 响应管道边透传边增量解析 usage → `withSkipCache` 写库
 - **Session 粘性**：`src/lib/gateway/session.ts` — `sessionId = sha256(system 拼接尾部 1024 + 首条 user 文本前 1024 + model + vkId + protocol)`；内存 LRU（max 5000 / ttl 24h），仅 failover 落点 ≠ 默认 upstream 时保存 binding；binding 失效条件：upstream 被禁用/无 key/协议不匹配/不 healthy/不再匹配 model（链过滤自动覆盖）；单候选跳过 session 计算
 - **健康状态**：`src/lib/gateway/health.ts`（内存缓存 + **DB 持久化**：upstream 级存 `upstreams.health_status`，model 级存 `upstream_model_health`，重启后懒加载恢复探活调度）+ `src/lib/gateway/probe.ts`（非流式小请求探活，不记 token）；**upstream 级** healthy → unhealthy：真实请求中全部 key 失败（401 认证失败触发；403/404 为 model 级，不误伤）；unhealthy 不进入候选池，30 分钟定时探活恢复（`upstreams.health_check_model` 优先，否则 `enabled_models` 第一个非通配，无则保持 unhealthy）；**model 级**：某 upstream 对该 model 返回 404/403（全部 key）时标记该 model 不可用（TTL 30 分钟自动恢复），路由时跳过该 upstream 并 failover，UI 模型列表显示 unavailable 徽标；**手动测试（`/api/admin/upstreams/[id]/test-model|test-all-models`）成功即立即恢复健康状态（markHealthy + markModelHealthy），404/403 失败立即标记**，不依赖 30 分钟探活；**全部 unhealthy 时直接 502 不尝试**
-- **写库**：仅 2xx 响应记录；响应无 usage 时记 0 且 `status='no_usage'`；`status`/`latency_ms` 为新增列。**口径约定**：`input_tokens` 字段统一按不含 cache_read 写入（OpenAI/Gemini 在 parser 层做减法），`cache_read` 单独列示，展示层 Total Input 含 cache。
+- **写库**：仅 2xx 响应记录；响应无 usage 时记 0 且 `status='no_usage'`；`status`/`latency_ms` 为新增列。**口径约定**：`input_tokens` 字段统一按不含 cache_read 写入（OpenAI/Gemini 在 parser 层做减法），`cache_read` 单独列示，展示层 Total Input 含 cache。**model 列写真实名**（路由重写时用 targetModel，否则用请求名），原始请求名写 `request_model`（虚拟名路由可追溯）。
 - **流式 usage 增量解析**：`proxy.ts` 透传时用 `StreamUsageExtractor`（`parsers/stream-usage.ts`）边读边解析，只保留首尾 usage 小对象，**不持有完整响应体**（内存 O(1)）；流式空闲超时默认 30min，由 settings 表 `stream_idle_timeout_minutes` 配置（Display tab，无 env），超时中断流并释放连接。非流式仍整包缓冲（JSON.parse 需要完整 body）。
 - **模型并集**：`GET /v1/models` 返回所有启用上游 `enabled_models` 中非通配条目
 - **注意事项**：
@@ -137,16 +142,23 @@ docker compose up -d                                 # 本地运行
 - **缓存失效**：`setHiddenProvidersSetting` 写入时调用 `invalidateModelCache()` 清空 `normalizeModel` 的 `rawToCanonical`，面板改分组后立即生效
 - **相关文件**：`src/lib/provider-utils.ts`、`src/lib/model-registry.ts`（`isProviderHidden`）
 
+### 官方价参考（`model_prices` + models.dev）
+
+- **语义**：价格 = 官方价参考（非真实账单），**查询时计算**（record 不存价格/cost），`src/lib/pricing.ts` 的 `loadPriceMap()` 读全表（cache 价 NULL 回退 input_price，内存缓存）
+- **定价键**：一律按真实 model 名（`model_prices.model` = 发往 upstream 的真实名）；归一化 alias 仅作展示层 roll up 分组键；虚拟名（`request_model`）仅追溯，不参与定价
+- **成本链路**：`stats-query.ts` 在 model/date-model 分组输出行上按真实名附加 `cost`（`computeModelCost`，未定价 → 全 0）→ 归一化聚合时随行合并（`mergeAggregatedCosts`）；未定价 model 成本为 0，补价后历史立即重算
+- **写接口**：`/api/admin/model-prices` PUT/DELETE、select、auto-fill、aliases 均须 `withSkipCache()` + `invalidatePriceCache()`（pricing.ts 内存缓存）；价格变更后 Dashboard/Status 立即反映
+- **models.dev 集成**（`src/lib/models-dev/`，纯逻辑可单测）：数据源 `https://models.dev/api.json`（USD/1M）；本地快照 `data/models-dev-cache.json`（`{fetchedAt, data}`），**懒刷新 7 天 TTL**（访问时超期则本次用旧快照、后台异步拉新）+ `POST /api/admin/models-dev/refresh` 强制刷新，拉取失败静默回退旧快照
+- **匹配管线**（`match.ts`）：精确 → 归一化（小写去 `-_.`）→ 日期变体剥离（`-\d{8}$`）；多 provider 冲突按内置原厂优先级表自动预选（anthropic > openai > google > deepseek > ...），价格相同不视为冲突，全部候选供 Price Picker Modal 切换
+- **自动填充**（`auto-fill.ts`）：只填空行、永不覆盖已有价格，`source='manual'` 的行永不被自动流程触碰；触发点：upstream 保存 enabled_models 后（best-effort）+ auto-fill API 批量填充
+- **徽标判定**（`src/lib/model-prices-service.ts`）：`active`（在任一 enabled_models）/`inactive`（已定价但已移除，价格保留供历史）；`待确认`（未定价且多候选价格不一致）/`未匹配`（未定价无候选）；`有更新`（models.dev 来源且快照同 id 价格不同，带 diff）/`已下架`（models.dev 来源且快照无该 id）
+
 ### Model 归一化
-- **文件**：`src/lib/model-registry.ts`（`src/lib/model-utils.ts` 仅做薄封装）
-- **数据源**：`public/data/model-registry.json`（自维护 canonical ID、显示名、价格、别名）
-- **规则**：按优先级依次匹配
-  1. 精确匹配 canonical ID
-  2. 精确匹配 `aliases` 中的 `provider/model` 别名
-  3. 若 provider 被 `HIDDEN_PROVIDERS` 隐藏，则只按 `model` 部分匹配 `aliases` 中的别名
-  4. 精确匹配 `aliases` 中的 `model` 别名
-  5. 未命中时保持原始名称
-- **用途**：Dashboard Top 5 按归一化后的 model 名称聚合
+- **文件**：`src/lib/model-registry.ts`（纯归一化模块，不加载任何文件；`src/lib/model-utils.ts` 仅做薄封装）
+- **数据源**：settings 表 `model_aliases`（Display pane 编辑）→ `loadModelAliases()`（与 `loadHiddenProviderGroups()` 同模式，调用方先 await 再注入）；**MODEL_REGISTRY_PATH / model-registry.json 已废弃删除**
+- **规则**（按优先级依次匹配）：1. 精确匹配规则 `name` → 2. 精确匹配 `aliases` 中的 `provider/model` 别名 → 3. 若 provider 被 `HIDDEN_PROVIDERS` 隐藏，只按 `model` 部分匹配 → 4. 精确匹配 `model` 别名 → 5. 未命中保持原始名称
+- **缓存失效**：`setModelAliasesSetting` / `setHiddenProvidersSetting` 写入时调 `invalidateModelCache()` 清空 `rawToCanonical` + `invalidateQueryCache()`
+- **用途**：Dashboard Top 5 按归一化后的 model 名称聚合；Status 页只显示归一化名（alias）
 
 ## 查询缓存
 
@@ -185,7 +197,6 @@ SESSION_TOKEN_TTL_HOURS=24          # 会话 token 有效期（小时），默�
 TRUSTED_PROXY=false
 
 # 可选：进阶（代码保留 env 支持，不在 .env.example 中）
-MODEL_REGISTRY_PATH=                # model 归一化/价格配置（默认 data/model-registry.json）
 API_CACHE_TTL_MS=10000              # SELECT 缓存 TTL（毫秒），默认 10000，0 关闭
 API_CACHE_MAX_SIZE=1000             # 缓存最大条目数，默认 1000
 GATEWAY_MAX_BODY_MB=32              # 代理请求体上限（MB），默认 32；超限 413
@@ -253,7 +264,12 @@ docker compose up -d
   - `src/lib/auth/edge-verify`：WebCrypto 验签（与 node 侧签名互认）
   - `src/lib/auth/guard-scan`：静态扫描所有 /api 路由必须用 withAuth（login 除外）
   - `src/lib/gateway/balance`：deepseek/openrouter 余额解析（mock fetch）、provider 判定
-  - `src/lib/db/migrate`：存量表补列迁移（临时 SQLite 库，幂等性 + NOT NULL 默认值回填）
+  - `src/lib/db/migrate`：存量表补列迁移（临时 SQLite 库，幂等性 + NOT NULL 默认值回填）+ `migrateTokenRecordsModelColumns`（request_model 回填、model 覆盖 target_model、DROP、幂等）
+  - `src/lib/models-dev/match`：三级匹配管线（精确/归一化/日期变体剥离）、多候选冲突按优先级预选、价格相同不视为冲突
+  - `src/lib/models-dev/auto-fill`：只填空不覆盖、manual 行不动、未匹配跳过
+  - `src/lib/pricing`：loadPriceMap cache 价 NULL 回退 input + 内存缓存/失效、computeModelCost
+  - `src/lib/model-registry`：注入 aliases 的归一化各优先级规则、缓存失效、getDisplayName、isValidModelAliases/parseModelAliases
+  - `src/app/api/admin/model-prices/route.test`：Admin API 集成测试（临时 SQLite + 真实 handler + 签名 token）——GET 行集与徽标状态（active/inactive/待确认/未匹配/有更新/已下架）、PUT 手动编辑（source='manual' 清空 modelsDevId、model 名含 `/`）、DELETE、select 落库、auto-fill 只填空不覆盖 manual 行、未带 withAuth 401
   - `src/lib/provider-presets`：预设合法性（protocol/baseUrl/唯一性）
   - `src/lib/gateway/url-guard`：上游 baseUrl SSRF 防护（环回/私有/链路本地/元数据 IP 拒绝、DNS 解析后分类、ALLOW_PRIVATE_UPSTREAMS 逃生开关）
   - `src/lib/gateway/url-utils`：`joinUrlPath` 前缀去重 + `sanitizePathSegments` `..` 段净化（逃逸返回 null）

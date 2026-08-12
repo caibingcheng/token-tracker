@@ -1,4 +1,4 @@
-import { sqliteTable, integer, text, index, primaryKey } from "drizzle-orm/sqlite-core";
+import { sqliteTable, integer, text, index, primaryKey, real } from "drizzle-orm/sqlite-core";
 
 export const tokenRecords = sqliteTable("token_records", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -13,7 +13,7 @@ export const tokenRecords = sqliteTable("token_records", {
   latencyMs: integer("latency_ms"),
   virtualKeyId: integer("virtual_key_id"),
   userAgent: text("user_agent"),
-  targetModel: text("target_model"), // 手动路由映射后的上游真实模型名（虚拟名存 model）
+  requestModel: text("request_model"), // 客户端原始请求名（虚拟名路由场景可追溯）
   createdAt: text("created_at").$defaultFn(() => new Date().toISOString()),
 }, (table) => [
   index("idx_token_records_created_at").on(table.createdAt),
@@ -140,3 +140,18 @@ export const settings = sqliteTable("settings", {
 
 export type Setting = typeof settings.$inferSelect;
 export type NewSetting = typeof settings.$inferInsert;
+
+// 官方价参考表：model 级单价（USD / 1M tokens），查询时计算
+export const modelPrices = sqliteTable("model_prices", {
+  model: text("model").primaryKey(), // 发往 upstream 的真实 model 名
+  inputPrice: real("input_price").notNull(), // USD / 1M tokens
+  outputPrice: real("output_price").notNull(),
+  cacheReadPrice: real("cache_read_price"), // NULL → 计算时回退 input_price
+  cacheWritePrice: real("cache_write_price"), // NULL → 回退 input_price
+  source: text("source").notNull(), // 'models.dev' | 'manual'
+  modelsDevId: text("models_dev_id"), // 'provider/model'，models.dev 来源时记录
+  updatedAt: text("updated_at").notNull(),
+});
+
+export type ModelPrice = typeof modelPrices.$inferSelect;
+export type NewModelPrice = typeof modelPrices.$inferInsert;

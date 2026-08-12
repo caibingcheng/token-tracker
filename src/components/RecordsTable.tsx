@@ -14,7 +14,7 @@ export interface Record {
   outputTokens: number;
   cacheRead: number;
   cacheWrite: number;
-  targetModel?: string | null;
+  requestModel?: string | null;
   createdAt: string;
 }
 
@@ -204,12 +204,16 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
                 </td>
                 <td
                   className="px-6 py-4 whitespace-nowrap text-sm text-gray-900"
-                  title={`Original Model: ${record.model}${record.targetModel ? ` → ${record.targetModel}` : ""}`}
+                  title={
+                    record.requestModel && record.requestModel !== record.model
+                      ? `Requested: ${record.requestModel} → Upstream: ${record.model}`
+                      : `Model: ${record.model}`
+                  }
                 >
                   {record.normalizedModel}
-                  {record.targetModel && (
-                    <span className="ml-1.5 text-[10px] text-gray-400" title={`Routed to ${record.targetModel}`}>
-                      → {record.targetModel}
+                  {record.requestModel && record.requestModel !== record.model && (
+                    <span className="ml-1.5 text-[10px] text-gray-400" title={`Original request model: ${record.requestModel}`}>
+                      ← {record.requestModel}
                     </span>
                   )}
                 </td>
@@ -240,12 +244,19 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
               </div>
               <div className="text-right">
                 <p className="text-xs text-gray-500">Model</p>
-                <p className="text-sm font-medium text-gray-900" title={`Original: ${record.model}`}>
+                <p
+                  className="text-sm font-medium text-gray-900"
+                  title={
+                    record.requestModel && record.requestModel !== record.model
+                      ? `Requested: ${record.requestModel} → Upstream: ${record.model}`
+                      : `Model: ${record.model}`
+                  }
+                >
                   {record.normalizedModel}
                 </p>
-                {record.targetModel && (
-                  <p className="text-xs text-gray-400 mt-0.5" title="Routed to upstream model">
-                    → {record.targetModel}
+                {record.requestModel && record.requestModel !== record.model && (
+                  <p className="text-xs text-gray-400 mt-0.5" title="Original request model">
+                    ← {record.requestModel}
                   </p>
                 )}
                 <p className="text-xs text-gray-400 mt-1">{record.agent}</p>

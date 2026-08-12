@@ -5,6 +5,7 @@ import { sql, desc, eq, and, gte, lte, inArray, SQL } from "drizzle-orm";
 import { resolveProviderFilter, loadHiddenProviderGroups } from "@/lib/provider-utils";
 import { normalizeModel, resolveNormalizedModelFilter } from "@/lib/model-utils";
 import { getDisplayName } from "@/lib/model-registry";
+import { loadModelAliases } from "@/lib/auth/settings";
 import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";
 
@@ -15,6 +16,7 @@ export const GET = withAuth(async (request: NextRequest) => {
     await initDatabase();
     try {
       const groups = await loadHiddenProviderGroups();
+      const aliases = await loadModelAliases();
       const { searchParams } = new URL(request.url);
 
       // 分页参数
@@ -72,7 +74,7 @@ export const GET = withAuth(async (request: NextRequest) => {
           }
         }
 
-        modelFilter = resolveNormalizedModelFilter(modelParam, allRawModels, providerByModel, groups);
+        modelFilter = resolveNormalizedModelFilter(modelParam, allRawModels, providerByModel, groups, aliases);
 
         if (!modelFilter || modelFilter.length === 0) {
           return NextResponse.json(
@@ -126,7 +128,7 @@ export const GET = withAuth(async (request: NextRequest) => {
           outputTokens: tokenRecords.outputTokens,
           cacheRead: tokenRecords.cacheRead,
           cacheWrite: tokenRecords.cacheWrite,
-          targetModel: tokenRecords.targetModel,
+          requestModel: tokenRecords.requestModel,
           createdAt: tokenRecords.createdAt,
         })
         .from(tokenRecords)
@@ -136,7 +138,7 @@ export const GET = withAuth(async (request: NextRequest) => {
       const rawData = whereClause ? await query.where(whereClause) : await query;
       const data = rawData.map((record: any) => ({
         ...record,
-        normalizedModel: getDisplayName(normalizeModel(record.model, record.provider ?? undefined, groups)),
+        normalizedModel: getDisplayName(normalizeModel(record.model, record.provider ?? undefined, groups, aliases), aliases),
       }));
 
       const countQuery = db

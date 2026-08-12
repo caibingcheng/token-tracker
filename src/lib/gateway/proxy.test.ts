@@ -1486,7 +1486,7 @@ describe("handleProxyRequest - manual routing", () => {
     );
     await res.text();
     expect(res.status).toBe(200);
-    expect(deps.onUsage).toHaveBeenCalledWith(expect.objectContaining({ model: "gpt-4o", targetModel: null }));
+    expect(deps.onUsage).toHaveBeenCalledWith(expect.objectContaining({ model: "gpt-4o", requestModel: "gpt-4o" }));
   });
 
   it("returns 502 manual_route_unavailable when target upstream is disabled/missing", async () => {
@@ -1694,7 +1694,7 @@ describe("handleProxyRequest - manual routing", () => {
     );
   });
 
-  it("records usage with virtual model name and real target model", async () => {
+  it("records usage with real target model as model and original request model as requestModel", async () => {
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify({ model: "gpt-4o-real", usage: { prompt_tokens: 5, completion_tokens: 3 } }), {
         status: 200,
@@ -1711,7 +1711,7 @@ describe("handleProxyRequest - manual routing", () => {
     );
     await res.text();
     expect(deps.onUsage).toHaveBeenCalledWith(
-      expect.objectContaining({ model: "my-alias", targetModel: "gpt-4o-real", provider: "target-up" })
+      expect.objectContaining({ model: "gpt-4o-real", requestModel: "my-alias", provider: "target-up" })
     );
   });
 });

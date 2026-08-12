@@ -264,7 +264,7 @@ export function createProxyDeps(): ProxyDeps {
           latencyMs: usage.latencyMs ?? null,
           virtualKeyId: usage.virtualKeyId ?? null,
           userAgent: usage.userAgent ?? null,
-          targetModel: usage.targetModel ?? null,
+          requestModel: usage.requestModel ?? null,
         });
       });
     },

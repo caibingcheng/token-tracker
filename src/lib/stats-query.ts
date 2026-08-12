@@ -12,7 +12,9 @@ import {
   type StatItem,
 } from "@/lib/model-utils";
 import { resolveProviderFilter, loadHiddenProviderGroups } from "@/lib/provider-utils";
+import { loadModelAliases } from "@/lib/auth/settings";
 import { toNum } from "@/lib/number-utils";
+import { loadPriceMap, computeModelCost } from "@/lib/pricing";
 
 export interface StatItemWithGroup extends StatItem {
   group: string;
@@ -92,6 +94,7 @@ export async function executeStatsQuery(params: {
   timezoneOffsetMinutes?: number;
 }): Promise<StatsQueryResult> {
   const groups = await loadHiddenProviderGroups();
+  const aliases = await loadModelAliases();
   const {
     groupBy,
     range,
@@ -163,7 +166,7 @@ export async function executeStatsQuery(params: {
     const matchedRawModels: string[] = [];
     for (const raw of allRawModels) {
       const provider = providerByModel.get(raw);
-      if (normalizeModel(raw, provider, groups) === model) {
+      if (normalizeModel(raw, provider, groups, aliases) === model) {
         matchedRawModels.push(raw);
       }
     }
@@ -241,6 +244,8 @@ export async function executeStatsQuery(params: {
       timezoneOffsetMinutes
     );
 
+    const priceMap = await loadPriceMap();
+
     query = db
       .select({
         group: groupExpr,
@@ -268,6 +273,12 @@ export async function executeStatsQuery(params: {
     if (whereClause) {
       query = query.where(whereClause);
     }
+
+    const rows = await query;
+    // 成本按真实 model 名定价（模型级行附加 cost，供上层 roll up）
+    return rows.map((row: any) =>
+      attachCost(row, priceMap, String(row.model))
+    );
   } else if (groupBy === "model") {
     // 先按 (provider, 原始 model) 分组取 Top N，再应用层归一化合并
     // 当 modelFilter 生效时（按特定归一化 model 筛选），不限制原始 model 数量
@@ -325,18 +336,13 @@ export async function executeStatsQuery(params: {
       rawData = whereClause ? await query.where(whereClause) : await query;
     }
 
+    const priceMap = await loadPriceMap();
     const data = aggregateByNormalizedModel(
-      rawData.map((row: any) => ({
-        group: String(row.group),
-        provider: row.provider ?? undefined,
-        totalInput: toNum(row.totalInput),
-        totalOutput: toNum(row.totalOutput),
-        totalInputCached: toNum(row.totalInputCached),
-        totalInputUncached: toNum(row.totalInputUncached),
-        totalCacheWrite: toNum(row.totalCacheWrite),
-        count: toNum(row.count),
-      })),
-      groups
+      rawData.map((row: any) =>
+        attachCost(row, priceMap, String(row.group))
+      ),
+      groups,
+      aliases
     );
 
     if (!modelFilter && effectiveLimit !== null) {
@@ -376,4 +382,33 @@ export async function executeStatsQuery(params: {
 
   const data = await query;
   return data as StatsQueryResult;
+}
+
+// 给模型级分组行附加成本聚合（按真实 model 名定价；未定价 → 全 0）
+function attachCost(
+  row: any,
+  priceMap: Map<string, any>,
+  modelName: string
+): StatItemWithGroupAndModel {
+  return {
+    group: String(row.group),
+    model: modelName,
+    provider: row.provider ?? undefined,
+    totalInput: toNum(row.totalInput),
+    totalOutput: toNum(row.totalOutput),
+    totalInputCached: toNum(row.totalInputCached),
+    totalInputUncached: toNum(row.totalInputUncached),
+    totalCacheWrite: toNum(row.totalCacheWrite),
+    count: toNum(row.count),
+    cost: computeModelCost(
+      modelName,
+      {
+        inputTokens: toNum(row.totalInputUncached),
+        cacheRead: toNum(row.totalInputCached),
+        cacheWrite: toNum(row.totalCacheWrite),
+        outputTokens: toNum(row.totalOutput),
+      },
+      priceMap
+    ),
+  };
 }

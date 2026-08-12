@@ -8,17 +8,13 @@ import {
   type StatItemWithGroupAndModel,
 } from "@/lib/stats-query";
 import { aggregateByNormalizedModel, type StatItem } from "@/lib/model-utils";
-import { normalizeModel, getDisplayName, getPricing } from "@/lib/model-registry";
+import { getDisplayName, type ModelAliasRule } from "@/lib/model-registry";
 import { loadHiddenProviderGroups, type HiddenProviderGroup } from "@/lib/provider-utils";
+import { loadModelAliases } from "@/lib/auth/settings";
 import { toNum } from "@/lib/number-utils";
 import {
-  aggregateCost,
-  addToAggregate,
-  checkPricingConsistency,
-  emptyAggregatedCost,
-  finalizeAggregate,
+  mergeAggregatedCosts,
   type AggregatedCost,
-  type CostInput,
 } from "@/lib/cost-utils";
 import { TOP_N_DISPLAY, TOP_N_RAW_MODELS } from "@/lib/model-utils";
 import {
@@ -47,19 +43,14 @@ function isStatItemsWithModel(
   return Array.isArray(data) && data.length > 0 && "model" in data[0];
 }
 
-function toCostInput(item: StatItem): CostInput {
-  return {
-    inputTokens: toNum(item.totalInputUncached),
-    cacheRead: toNum(item.totalInputCached),
-    cacheWrite: toNum(item.totalCacheWrite),
-    outputTokens: toNum(item.totalOutput),
-    pricing: getPricing(item.group),
-  };
+function toCost(item: StatItem): AggregatedCost | null {
+  return item.cost ?? null;
 }
 
 function aggregateTopModelsByDate(
   rows: Array<StatItem & { group: string; model: string; provider?: string }>,
-  groups: HiddenProviderGroup[]
+  groups: HiddenProviderGroup[],
+  aliases: ModelAliasRule[]
 ): Map<string, ModelStat[]> {
   const byDate = new Map<string, StatItem[]>();
 
@@ -77,32 +68,24 @@ function aggregateTopModelsByDate(
       totalInputUncached: toNum(row.totalInputUncached),
       totalCacheWrite: toNum(row.totalCacheWrite),
       count: toNum(row.count),
+      cost: row.cost,
     });
   }
 
   const result = new Map<string, ModelStat[]>();
   byDate.forEach((items, date) => {
-    const aggregated = aggregateByNormalizedModel(items, groups).slice(0, TOP_N_RAW_MODELS);
+    const aggregated = aggregateByNormalizedModel(items, groups, aliases).slice(0, TOP_N_RAW_MODELS);
     const models = aggregated.map((item) => {
-      const inputs = [toCostInput(item)];
-      const aggregate = aggregateCost(inputs);
-      const consistency = checkPricingConsistency(inputs, aggregate);
-      if (!consistency.ok) {
-        console.warn(
-          `Daily model pricing mismatch for ${date}/${item.group}:`,
-          consistency.mismatches
-        );
-      }
       return {
         ...item,
         canonicalId: item.group,
-        displayName: getDisplayName(item.group),
-        totalCost: aggregate.totalCost,
-        costPerMillionTokens: aggregate.costPerMillionTokens,
-        costPerMillionInput: aggregate.costPerMillionInput,
-        costPerMillionCacheRead: aggregate.costPerMillionCacheRead,
-        costPerMillionCacheWrite: aggregate.costPerMillionCacheWrite,
-        costPerMillionOutput: aggregate.costPerMillionOutput,
+        displayName: getDisplayName(item.group, aliases),
+        totalCost: item.cost?.totalCost ?? 0,
+        costPerMillionTokens: item.cost?.costPerMillionTokens ?? 0,
+        costPerMillionInput: item.cost?.costPerMillionInput ?? 0,
+        costPerMillionCacheRead: item.cost?.costPerMillionCacheRead ?? 0,
+        costPerMillionCacheWrite: item.cost?.costPerMillionCacheWrite ?? 0,
+        costPerMillionOutput: item.cost?.costPerMillionOutput ?? 0,
       };
     });
     result.set(date, models);
@@ -112,39 +95,46 @@ function aggregateTopModelsByDate(
 }
 
 function aggregateCostByDate(
-  rows: Array<StatItem & { group: string; model: string; provider?: string }>,
-  groups: HiddenProviderGroup[]
-): Map<string, { aggregate: AggregatedCost; inputs: CostInput[] }> {
-  const map = new Map<
-    string,
-    { aggregate: AggregatedCost; inputs: CostInput[] }
-  >();
+  rows: Array<StatItem & { group: string; model: string; provider?: string }>
+): Map<string, AggregatedCost> {
+  const map = new Map<string, AggregatedCost[]>();
 
   for (const row of rows) {
     const date = String(row.group);
-    const canonicalId = normalizeModel(String(row.model), row.provider, groups);
-    const input: CostInput = {
-      inputTokens: toNum(row.totalInputUncached),
-      cacheRead: toNum(row.totalInputCached),
-      cacheWrite: toNum(row.totalCacheWrite),
-      outputTokens: toNum(row.totalOutput),
-      pricing: getPricing(canonicalId),
-    };
-
     const existing = map.get(date);
     if (existing) {
-      addToAggregate(existing.aggregate, input);
-      existing.inputs.push(input);
+      existing.push(row.cost ?? emptyCost());
     } else {
-      const agg = emptyAggregatedCost();
-      addToAggregate(agg, input);
-      map.set(date, { aggregate: agg, inputs: [input] });
+      map.set(date, [row.cost ?? emptyCost()]);
     }
   }
 
-  map.forEach(({ aggregate }) => finalizeAggregate(aggregate));
+  const result = new Map<string, AggregatedCost>();
+  map.forEach((costs, date) => {
+    result.set(date, mergeAggregatedCosts(costs));
+  });
 
-  return map;
+  return result;
+}
+
+function emptyCost(): AggregatedCost {
+  return {
+    totalCost: 0,
+    effectiveTokens: 0,
+    costPerMillionTokens: 0,
+    inputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    outputTokens: 0,
+    inputCost: 0,
+    cacheReadCost: 0,
+    cacheWriteCost: 0,
+    outputCost: 0,
+    costPerMillionInput: 0,
+    costPerMillionCacheRead: 0,
+    costPerMillionCacheWrite: 0,
+    costPerMillionOutput: 0,
+  };
 }
 
 function formatDateKey(date: Date, timezoneOffsetMinutes?: number): string {
@@ -237,18 +227,11 @@ interface DashboardData {
 
 function buildDayData(
   key: string,
-  costMap: Map<string, { aggregate: AggregatedCost; inputs: CostInput[] }>,
+  costMap: Map<string, AggregatedCost>,
   countMap: Map<string, number>
 ): DayData | null {
-  const entry = costMap.get(key);
-  if (!entry) return null;
-  const { aggregate, inputs } = entry;
-  if (inputs.length > 0) {
-    const consistency = checkPricingConsistency(inputs, aggregate);
-    if (!consistency.ok) {
-      console.warn(`Daily pricing mismatch for ${key}:`, consistency.mismatches);
-    }
-  }
+  const aggregate = costMap.get(key);
+  if (!aggregate) return null;
 
   return {
     group: key,
@@ -275,7 +258,8 @@ async function queryDashboard(
     modelFilter: string[] | null,
     agentFilter: string | null,
     timezoneOffsetMinutes?: number,
-    groups: HiddenProviderGroup[] = []
+    groups: HiddenProviderGroup[] = [],
+    aliases: ModelAliasRule[] = []
   ): Promise<DashboardData> {
     const [
       total,
@@ -390,12 +374,7 @@ async function queryDashboard(
     const totalArr = isTotalStatItems(total) ? total : [];
     const totalModelsArr = isStatItemsWithGroup(totalModels) ? totalModels : [];
 
-    const totalInputs = totalModelsArr.map(toCostInput);
-    const totalAggregate = aggregateCost(totalInputs);
-    const totalConsistency = checkPricingConsistency(totalInputs, totalAggregate);
-    if (!totalConsistency.ok) {
-      console.warn("Total pricing mismatch:", totalConsistency.mismatches);
-    }
+    const totalAggregate = mergeAggregatedCosts(totalModelsArr.map(toCost));
 
     const totalResult = totalArr.map((item) => ({
       ...item,
@@ -423,37 +402,28 @@ async function queryDashboard(
         totalInputUncached: toNum(row.totalInputUncached),
         totalCacheWrite: toNum(row.totalCacheWrite),
         count: toNum(row.count),
+        cost: row.cost,
       })),
-      groups
+      groups,
+      aliases
     ).slice(0, TOP_N_DISPLAY);
-    const totalTopModelsResult = totalTopModelsAggregated.map((item) => {
-      const inputs = [toCostInput(item)];
-      const aggregate = aggregateCost(inputs);
-      const consistency = checkPricingConsistency(inputs, aggregate);
-      if (!consistency.ok) {
-        console.warn(
-          `Total top model pricing mismatch for ${item.group}:`,
-          consistency.mismatches
-        );
-      }
-      return {
-        ...item,
-        canonicalId: item.group,
-        displayName: getDisplayName(item.group),
-        totalCost: aggregate.totalCost,
-        costPerMillionTokens: aggregate.costPerMillionTokens,
-        costPerMillionInput: aggregate.costPerMillionInput,
-        costPerMillionCacheRead: aggregate.costPerMillionCacheRead,
-        costPerMillionCacheWrite: aggregate.costPerMillionCacheWrite,
-        costPerMillionOutput: aggregate.costPerMillionOutput,
-      };
-    });
+    const totalTopModelsResult = totalTopModelsAggregated.map((item) => ({
+      ...item,
+      canonicalId: item.group,
+      displayName: getDisplayName(item.group, aliases),
+      totalCost: item.cost?.totalCost ?? 0,
+      costPerMillionTokens: item.cost?.costPerMillionTokens ?? 0,
+      costPerMillionInput: item.cost?.costPerMillionInput ?? 0,
+      costPerMillionCacheRead: item.cost?.costPerMillionCacheRead ?? 0,
+      costPerMillionCacheWrite: item.cost?.costPerMillionCacheWrite ?? 0,
+      costPerMillionOutput: item.cost?.costPerMillionOutput ?? 0,
+    }));
 
     // Today / Yesterday cost aggregation
     const dailyModelAllArr = isStatItemsWithModel(dailyModelAll)
       ? dailyModelAll
       : [];
-    const dailyCostMapAll = aggregateCostByDate(dailyModelAllArr, groups);
+    const dailyCostMapAll = aggregateCostByDate(dailyModelAllArr);
 
     // Today / Yesterday keys (local timezone)
     const todayKey = formatDateKey(new Date(), timezoneOffsetMinutes);
@@ -483,49 +453,30 @@ async function queryDashboard(
         totalInputUncached: toNum(row.totalInputUncached),
         totalCacheWrite: toNum(row.totalCacheWrite),
         count: toNum(row.count),
+        cost: row.cost,
       }));
-    const todayModelsAggregated = aggregateByNormalizedModel(todayModelRows, groups).slice(0, 5);
-    const todayModelsResult = todayModelsAggregated.map((item) => {
-      const inputs = [toCostInput(item)];
-      const aggregate = aggregateCost(inputs);
-      const consistency = checkPricingConsistency(inputs, aggregate);
-      if (!consistency.ok) {
-        console.warn(`Today model pricing mismatch for ${item.group}:`, consistency.mismatches);
-      }
-      return {
-        ...item,
-        canonicalId: item.group,
-        displayName: getDisplayName(item.group),
-        totalCost: aggregate.totalCost,
-        costPerMillionTokens: aggregate.costPerMillionTokens,
-        costPerMillionInput: aggregate.costPerMillionInput,
-        costPerMillionCacheRead: aggregate.costPerMillionCacheRead,
-        costPerMillionCacheWrite: aggregate.costPerMillionCacheWrite,
-        costPerMillionOutput: aggregate.costPerMillionOutput,
-      };
-    });
+    const todayModelsAggregated = aggregateByNormalizedModel(todayModelRows, groups, aliases).slice(0, 5);
+    const todayModelsResult = todayModelsAggregated.map((item) => ({
+      ...item,
+      canonicalId: item.group,
+      displayName: getDisplayName(item.group, aliases),
+      totalCost: item.cost?.totalCost ?? 0,
+      costPerMillionTokens: item.cost?.costPerMillionTokens ?? 0,
+      costPerMillionInput: item.cost?.costPerMillionInput ?? 0,
+      costPerMillionCacheRead: item.cost?.costPerMillionCacheRead ?? 0,
+      costPerMillionCacheWrite: item.cost?.costPerMillionCacheWrite ?? 0,
+      costPerMillionOutput: item.cost?.costPerMillionOutput ?? 0,
+    }));
 
     // Daily cost aggregation for selected range
     const dailyArr = isStatItemsWithGroup(dailyRange) ? dailyRange : [];
     const dailyModelRangeArr = isStatItemsWithModel(dailyModelRange)
       ? dailyModelRange
       : [];
-    const dailyCostMapRange = aggregateCostByDate(dailyModelRangeArr, groups);
+    const dailyCostMapRange = aggregateCostByDate(dailyModelRangeArr);
 
     const dailyResult = dailyArr.map((item) => {
-      const { aggregate, inputs } = dailyCostMapRange.get(item.group) ?? {
-        aggregate: null,
-        inputs: [],
-      };
-      if (aggregate && inputs.length > 0) {
-        const consistency = checkPricingConsistency(inputs, aggregate);
-        if (!consistency.ok) {
-          console.warn(
-            `Daily pricing mismatch for ${item.group}:`,
-            consistency.mismatches
-          );
-        }
-      }
+      const aggregate = dailyCostMapRange.get(item.group) ?? null;
       return {
         ...item,
         totalCost: aggregate?.totalCost ?? 0,
@@ -539,27 +490,19 @@ async function queryDashboard(
 
     // Top models with cost
     const modelsArr = isStatItemsWithGroup(modelsRange) ? modelsRange : [];
-    const modelsResult = modelsArr.map((item) => {
-      const inputs = [toCostInput(item)];
-      const aggregate = aggregateCost(inputs);
-      const consistency = checkPricingConsistency(inputs, aggregate);
-      if (!consistency.ok) {
-        console.warn(`Model pricing mismatch for ${item.group}:`, consistency.mismatches);
-      }
-      return {
-        ...item,
-        canonicalId: item.group,
-        displayName: getDisplayName(item.group),
-        totalCost: aggregate.totalCost,
-        costPerMillionTokens: aggregate.costPerMillionTokens,
-        costPerMillionInput: aggregate.costPerMillionInput,
-        costPerMillionCacheRead: aggregate.costPerMillionCacheRead,
-        costPerMillionCacheWrite: aggregate.costPerMillionCacheWrite,
-        costPerMillionOutput: aggregate.costPerMillionOutput,
-      };
-    });
+    const modelsResult = modelsArr.map((item) => ({
+      ...item,
+      canonicalId: item.group,
+      displayName: getDisplayName(item.group, aliases),
+      totalCost: item.cost?.totalCost ?? 0,
+      costPerMillionTokens: item.cost?.costPerMillionTokens ?? 0,
+      costPerMillionInput: item.cost?.costPerMillionInput ?? 0,
+      costPerMillionCacheRead: item.cost?.costPerMillionCacheRead ?? 0,
+      costPerMillionCacheWrite: item.cost?.costPerMillionCacheWrite ?? 0,
+      costPerMillionOutput: item.cost?.costPerMillionOutput ?? 0,
+    }));
 
-    const dailyTopModelsMap = aggregateTopModelsByDate(dailyModelRangeArr, groups);
+    const dailyTopModelsMap = aggregateTopModelsByDate(dailyModelRangeArr, groups, aliases);
 
     return {
       total: totalResult,
@@ -684,7 +627,8 @@ export const GET = withAuth(async (request: NextRequest) => {
       modelFilter?.slice().sort() ?? null,
       agentFilter,
       timezoneOffsetMinutes,
-      groups
+      groups,
+      await loadModelAliases()
     );
     return NextResponse.json({ success: true, data });
   } catch (error) {

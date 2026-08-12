@@ -86,7 +86,7 @@ export interface VirtualKeyInfo {
 }
 
 export interface RecordUsageMeta {
-  model: string;
+  model: string; // 发往 upstream 的真实 model 名（路由重写时用 targetModel）
   provider: string;
   agent: string;
   inputTokens: number;
@@ -97,7 +97,7 @@ export interface RecordUsageMeta {
   latencyMs?: number;
   virtualKeyId?: number;
   userAgent?: string | null;
-  targetModel?: string | null; // 手动路由映射后的上游真实模型名
+  requestModel?: string | null; // 客户端原始请求名（虚拟名路由场景可追溯）
 }
 
 export interface ProxyDeps {
@@ -583,7 +583,7 @@ export async function handleProxyRequest(
     deps.onComplete?.({ virtualKeyId: virtualKey.id }).catch(() => {});
     if (fallbackBusinessResponse) {
       const meta: RecordUsageMeta = {
-        model,
+        model: manualRoute ? manualRoute.targetModel : model,
         provider: defaultUpstream.name,
         agent: virtualKey.name,
         inputTokens: 0,
@@ -592,7 +592,7 @@ export async function handleProxyRequest(
         cacheWrite: 0,
         virtualKeyId: virtualKey.id,
         userAgent,
-        targetModel: manualRoute ? manualRoute.targetModel : null,
+        requestModel: model,
       };
       return passthroughResponse(fallbackBusinessResponse, {
         meta,
@@ -643,7 +643,7 @@ export async function handleProxyRequest(
 
   const latencyMs = Date.now() - startTime;
   const meta: RecordUsageMeta = {
-    model,
+    model: manualRoute ? manualRoute.targetModel : model,
     provider: (successUpstream ?? defaultUpstream).name,
     agent: virtualKey.name,
     inputTokens: 0,
@@ -653,7 +653,7 @@ export async function handleProxyRequest(
     latencyMs,
     virtualKeyId: virtualKey.id,
     userAgent,
-    targetModel: manualRoute ? manualRoute.targetModel : null,
+    requestModel: model,
   };
 
   return passthroughResponse(lastResponse, {
