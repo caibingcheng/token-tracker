@@ -9,6 +9,7 @@ export interface Record {
   id: number;
   model: string;
   normalizedModel: string;
+  providerName?: string | null;
   agent: string;
   inputTokens: number;
   outputTokens: number;
@@ -192,6 +193,7 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
             <tr>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Model</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Provider</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Agent</th>
               <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Input (Uncached)</th>
               <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Input (Cached)</th>
@@ -220,6 +222,9 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
                       ← {record.requestModel}
                     </span>
                   )}
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                  {record.providerName || "-"}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                   {record.agent}
@@ -269,6 +274,7 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
                     ← {record.requestModel}
                   </p>
                 )}
+                <p className="text-xs text-gray-400 mt-0.5">{record.providerName || "-"}</p>
                 <p className="text-xs text-gray-400 mt-1">{record.agent}</p>
               </div>
             </div>

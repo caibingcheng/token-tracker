@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db, initDatabase } from "@/lib/db";
 import { tokenRecords } from "@/lib/db";
 import { sql, desc, eq, and, gte, lte, inArray, SQL } from "drizzle-orm";
-import { resolveProviderFilter, loadHiddenProviderGroups } from "@/lib/provider-utils";
+import { resolveProviderFilter, loadHiddenProviderGroups, anonymizeProvider } from "@/lib/provider-utils";
 import { normalizeModel, resolveNormalizedModelFilter } from "@/lib/model-utils";
 import { getDisplayName } from "@/lib/model-registry";
 import { loadModelAliases } from "@/lib/auth/settings";
@@ -139,7 +139,20 @@ export const GET = withAuth(async (request: NextRequest) => {
         .offset(offset);
       const rawData = whereClause ? await query.where(whereClause) : await query;
       const data = rawData.map((record: any) => ({
-        ...record,
+        id: record.id,
+        model: record.model,
+        agent: record.agent,
+        inputTokens: record.inputTokens,
+        outputTokens: record.outputTokens,
+        cacheRead: record.cacheRead,
+        cacheWrite: record.cacheWrite,
+        latencyMs: record.latencyMs,
+        ttftMs: record.ttftMs,
+        requestModel: record.requestModel,
+        createdAt: record.createdAt,
+        providerName: record.provider
+          ? anonymizeProvider(record.provider, [], groups)
+          : null,
         normalizedModel: getDisplayName(normalizeModel(record.model, record.provider ?? undefined, groups, aliases), aliases),
       }));
 
