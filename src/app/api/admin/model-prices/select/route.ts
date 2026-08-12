@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { withAuth } from "@/lib/auth/guard";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 import { selectModelsDevPrice } from "@/lib/model-prices-service";
-import { getSnapshot } from "@/lib/models-dev/snapshot";
+import { getSnapshot, isFiniteNonNegative } from "@/lib/models-dev/snapshot";
 
 // 从候选选定价格落库（source='models.dev'，记录 models_dev_id）。
 // 校验：modelsDevId 必须存在于快照（防篡改，价格以快照为准，不接受客户端传入价格）。
@@ -50,10 +50,14 @@ export const POST = withAuth(async (request: NextRequest) => {
   await selectModelsDevPrice({
     model,
     modelsDevId,
-    inputPrice: typeof cost.input === "number" ? cost.input : 0,
-    outputPrice: typeof cost.output === "number" ? cost.output : 0,
-    cacheReadPrice: typeof cost.cache_read === "number" ? cost.cache_read : null,
-    cacheWritePrice: typeof cost.cache_write === "number" ? cost.cache_write : null,
+    inputPrice: isFiniteNonNegative(cost.input) ? cost.input : 0,
+    outputPrice: isFiniteNonNegative(cost.output) ? cost.output : 0,
+    cacheReadPrice: isFiniteNonNegative(cost.cache_read)
+      ? cost.cache_read
+      : null,
+    cacheWritePrice: isFiniteNonNegative(cost.cache_write)
+      ? cost.cache_write
+      : null,
   });
   const { ip, userAgent } = extractClientInfo(request);
   await recordAuditLog({

@@ -43,6 +43,11 @@ export function resolveSnapshotPath(dbPath?: string): string {
   return path.join(dir, SNAPSHOT_FILE_NAME);
 }
 
+// 有限非负数值守卫：价格类字段统一兜底（防负数/NaN/Infinity 污染成本计算）
+export function isFiniteNonNegative(n: unknown): n is number {
+  return typeof n === "number" && Number.isFinite(n) && n >= 0;
+}
+
 export function isValidModelsDevData(data: unknown): data is ModelsDevData {
   if (data === null || typeof data !== "object") return false;
   const providers = data as Record<string, unknown>;
@@ -91,6 +96,62 @@ export function writeSnapshotFile(
   } catch (err) {
     console.warn(`[models.dev] Failed to write snapshot to ${p}:`, err);
   }
+}
+
+// 上传数据清洗（仅上传路径使用）：
+// - 结构非法（model/cost 非对象）→ 丢弃
+// - 数值非法（负数/NaN/Infinity/字符串价格）→ 丢弃
+// - cost 缺失或为 null = 官方合法的"无价格"条目 → 保留（消费端 toCandidate/select
+//   有 isFiniteNonNegative 兜底回退 0/null，成本计算不受影响）
+// 返回全新对象，不改动入参；空 provider 移除。
+export function sanitizeModelsDevData(
+  data: ModelsDevData
+): { data: ModelsDevData; dropped: number } {
+  const out: ModelsDevData = {};
+  let dropped = 0;
+  for (const [providerId, provider] of Object.entries(data)) {
+    const models: Record<string, ModelsDevModel> = {};
+    for (const [modelId, model] of Object.entries(provider?.models ?? {})) {
+      if (model === null || typeof model !== "object" || Array.isArray(model)) {
+        dropped++;
+        continue;
+      }
+      const cost = model.cost;
+      if (
+        cost != null &&
+        (typeof cost !== "object" ||
+          (cost.input != null && !isFiniteNonNegative(cost.input)) ||
+          (cost.output != null && !isFiniteNonNegative(cost.output)) ||
+          (cost.cache_read != null && !isFiniteNonNegative(cost.cache_read)) ||
+          (cost.cache_write != null && !isFiniteNonNegative(cost.cache_write)))
+      ) {
+        dropped++;
+        continue;
+      }
+      models[modelId] = model;
+    }
+    if (Object.keys(models).length > 0) {
+      out[providerId] = { ...provider, models };
+    }
+  }
+  return { data: out, dropped };
+}
+
+// 手动上传快照（admin API）：构造 {fetchedAt: now, data} 写入内存缓存 + 落盘，
+// 立即生效无需重启；同时清空 in-flight 刷新（进行中的 fetch 不可取消，
+// 其完成后可能覆盖上传结果 —— 极小概率竞态，接受）。
+export function uploadSnapshot(
+  data: ModelsDevData,
+  opts: { filePath?: string; now?: Date } = {}
+): ModelsDevSnapshot {
+  const snapshot: ModelsDevSnapshot = {
+    fetchedAt: (opts.now ?? new Date()).toISOString(),
+    data,
+  };
+  parsedCache = snapshot;
+  inflightRefresh = null;
+  writeSnapshotFile(snapshot, opts.filePath);
+  return snapshot;
 }
 
 export async function fetchModelsDevData(

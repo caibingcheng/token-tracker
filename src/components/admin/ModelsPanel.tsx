@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { apiFetch } from "@/lib/client/api-client";
 import {
   detectRequestProtocol,
@@ -154,6 +154,8 @@ export default function ModelsPanel() {
   const [pricesBusy, setPricesBusy] = useState(false);
   const [pricesError, setPricesError] = useState<string | null>(null);
   const [refreshingSnapshot, setRefreshingSnapshot] = useState(false);
+  const [uploadingSnapshot, setUploadingSnapshot] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Manual Routing 表单
   const [ruleName, setRuleName] = useState("");
@@ -234,6 +236,38 @@ export default function ModelsPanel() {
       setPricesError("Network error");
     } finally {
       setRefreshingSnapshot(false);
+    }
+  };
+
+  const uploadSnapshotFile = async (file: File) => {
+    setUploadingSnapshot(true);
+    setPricesError(null);
+    try {
+      const text = await file.text();
+      try {
+        JSON.parse(text);
+      } catch {
+        setPricesError("Invalid JSON file — expected models.dev api.json");
+        return;
+      }
+      const res = await apiFetch("/api/admin/models-dev/upload", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: text,
+      });
+      const json = await res.json();
+      if (json.success) {
+        await loadPrices();
+        if (typeof json.dropped === "number" && json.dropped > 0) {
+          setPricesError(`Uploaded models.dev snapshot, ${json.dropped} invalid entries skipped`);
+        }
+      } else {
+        setPricesError(json.error || "Upload failed");
+      }
+    } catch {
+      setPricesError("Network error");
+    } finally {
+      setUploadingSnapshot(false);
     }
   };
 
@@ -965,6 +999,25 @@ export default function ModelsPanel() {
               className="rounded border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50 min-h-[36px] md:min-h-0"
             >
               Auto-fill unmatched
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".json,application/json"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) uploadSnapshotFile(file);
+                e.target.value = "";
+              }}
+            />
+            <button
+              type="button"
+              disabled={uploadingSnapshot}
+              onClick={() => fileInputRef.current?.click()}
+              className="rounded border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 min-h-[36px] md:min-h-0"
+            >
+              {uploadingSnapshot ? "Uploading…" : "Upload…"}
             </button>
             <button
               type="button"

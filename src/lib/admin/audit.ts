@@ -28,6 +28,7 @@ export type AuditAction =
   | "model_price_selected"
   | "model_price_auto_fill"
   | "models_dev_refresh"
+  | "models_dev_upload"
   | "model_aliases_updated";
 
 export type AuditTargetType =

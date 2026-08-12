@@ -1,4 +1,4 @@
-import type { ModelsDevData, ModelsDevModel } from "./snapshot";
+import { isFiniteNonNegative, type ModelsDevData, type ModelsDevModel } from "./snapshot";
 
 // models.dev 匹配管线：精确 → 归一化 → 日期变体归并。
 // 多 provider 同名冲突按原厂优先级表自动预选，全部候选返回供 UI 切换。
@@ -59,12 +59,14 @@ function toCandidate(
     providerId,
     providerName: providerName ?? providerId,
     modelId: model.id,
-    inputPrice: typeof cost.input === "number" ? cost.input : 0,
-    outputPrice: typeof cost.output === "number" ? cost.output : 0,
-    cacheReadPrice:
-      typeof cost.cache_read === "number" ? cost.cache_read : null,
-    cacheWritePrice:
-      typeof cost.cache_write === "number" ? cost.cache_write : null,
+    inputPrice: isFiniteNonNegative(cost.input) ? cost.input : 0,
+    outputPrice: isFiniteNonNegative(cost.output) ? cost.output : 0,
+    cacheReadPrice: isFiniteNonNegative(cost.cache_read)
+      ? cost.cache_read
+      : null,
+    cacheWritePrice: isFiniteNonNegative(cost.cache_write)
+      ? cost.cache_write
+      : null,
     lastUpdated:
       typeof model.last_updated === "string" ? model.last_updated : undefined,
     modelsDevId: `${providerId}/${model.id}`,
