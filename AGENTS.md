@@ -56,7 +56,7 @@ docker compose up -d                                 # 本地运行
 | `/api/admin/settings/status` | GET/PUT | 会话 token | Display tab：公开 Status 页配置（status_page_config，`isValidStatusPageConfig` 校验） |
 | `/api/admin/settings/aliases` | GET/PUT | 会话 token | Display tab：Model Aliases 归一化配置（model_aliases，`isValidModelAliases` 校验） |
 | `/api/admin/model-prices` | GET/PUT/DELETE | 会话 token | 官方价参考管理：GET 行集 = 全部启用 upstream 非通配 enabled_models ∪ 已定价 model（附徽标：active/inactive、待确认/未匹配、有更新+diff、已下架）；PUT 手动编辑（`source='manual'`，清空 models_dev_id）；DELETE 删价（model 走 query，**不用 `[model]` 动态段**，model 名可能含 `/`） |
-| `/api/admin/model-prices/candidates?model=X` `/api/admin/model-prices/select` `/api/admin/model-prices/auto-fill` | GET/POST/POST | 会话 token | Price Picker Modal 候选列表（provider、4 价格、预选标记）；从候选选定落库（`source='models.dev'`，价格以快照为准防篡改）；批量填充所有未定价行（只填空不覆盖，manual 行不动） |
+| `/api/admin/model-prices/candidates?model=X` `/api/admin/model-prices/candidates?q=...` `/api/admin/model-prices/select` `/api/admin/model-prices/auto-fill` | GET/POST/POST | 会话 token | Price Picker Modal 候选列表（provider、4 价格、预选标记；`q` = 搜索模式，全量扫描快照不限匹配管线）；从候选选定落库（`source='models.dev'`，校验 modelsDevId 存在于快照即可，价格以快照为准防篡改——搜索选中的条目与自动匹配等价）；批量填充所有未定价行（只填空不覆盖，manual 行不动） |
 | `/api/admin/models-dev/refresh` | POST | 会话 token | 强制刷新 models.dev 快照（失败回退旧快照） |
 | `/status` `/status/data` | GET | **无（有意公开）** | 公开用量状态页 + 数据端点：详见下方「公开 Status 页」小节 |
 
@@ -149,9 +149,9 @@ docker compose up -d                                 # 本地运行
 - **成本链路**：`stats-query.ts` 在 model/date-model 分组输出行上按真实名附加 `cost`（`computeModelCost`，未定价 → 全 0）→ 归一化聚合时随行合并（`mergeAggregatedCosts`）；未定价 model 成本为 0，补价后历史立即重算
 - **写接口**：`/api/admin/model-prices` PUT/DELETE、select、auto-fill、aliases 均须 `withSkipCache()` + `invalidatePriceCache()`（pricing.ts 内存缓存）；价格变更后 Dashboard/Status 立即反映
 - **models.dev 集成**（`src/lib/models-dev/`，纯逻辑可单测）：数据源 `https://models.dev/api.json`（USD/1M）；本地快照 `data/models-dev-cache.json`（`{fetchedAt, data}`），**懒刷新 7 天 TTL**（访问时超期则本次用旧快照、后台异步拉新）+ `POST /api/admin/models-dev/refresh` 强制刷新，拉取失败静默回退旧快照
-- **匹配管线**（`match.ts`）：精确 → 归一化（小写去 `-_.`）→ 日期变体剥离（`-\d{8}$`）；多 provider 冲突按内置原厂优先级表自动预选（anthropic > openai > google > deepseek > ...），价格相同不视为冲突，全部候选供 Price Picker Modal 切换
+- **匹配管线**（`match.ts`）：精确 → 归一化（小写去 `-_.`）→ 日期变体剥离（`-\d{8}$`）；多 provider 冲突按内置原厂优先级表自动预选（anthropic > openai > google > deepseek > ...），价格相同不视为冲突，全部候选供 Price Picker Modal 切换。候选集 = 名字命中的条目，**不含同系列不同名**；需要非匹配条目时用 Price Picker 搜索（`searchModelsDevModel`：model id / provider 名归一化子串匹配，上限 50）——搜索选中落库后与自动匹配完全等价（`source='models.dev'` + modelsDevId，hasUpdate/removed 检测照常）
 - **自动填充**（`auto-fill.ts`）：只填空行、永不覆盖已有价格，`source='manual'` 的行永不被自动流程触碰；触发点：upstream 保存 enabled_models 后（best-effort）+ auto-fill API 批量填充
-- **徽标判定**（`src/lib/model-prices-service.ts`）：`active`（在任一 enabled_models）/`inactive`（已定价但已移除，价格保留供历史）；`待确认`（未定价且多候选价格不一致）/`未匹配`（未定价无候选）；`有更新`（models.dev 来源且快照同 id 价格不同，带 diff）/`已下架`（models.dev 来源且快照无该 id）
+- **徽标判定**（`src/lib/model-prices-service.ts`）：`active`（在任一 enabled_models）/`inactive`（已定价但已移除，价格保留供历史）；`待确认`（未定价且多候选价格不一致）/`未匹配`（未定价无候选）；`有更新`（models.dev 来源且快照同 id 价格不同，带 diff）/`已下架`（models.dev 来源且快照无该 id）；行含 `sourceProvider`（models.dev 来源的 provider 显示名，快照缺失回退 providerId；manual 为 null），表格徽标显示 `models.dev · {providerName}`
 
 ### Model 归一化
 - **文件**：`src/lib/model-registry.ts`（纯归一化模块，不加载任何文件；`src/lib/model-utils.ts` 仅做薄封装）
@@ -265,7 +265,7 @@ docker compose up -d
   - `src/lib/auth/guard-scan`：静态扫描所有 /api 路由必须用 withAuth（login 除外）
   - `src/lib/gateway/balance`：deepseek/openrouter 余额解析（mock fetch）、provider 判定
   - `src/lib/db/migrate`：存量表补列迁移（临时 SQLite 库，幂等性 + NOT NULL 默认值回填）+ `migrateTokenRecordsModelColumns`（request_model 回填、model 覆盖 target_model、DROP、幂等）
-  - `src/lib/models-dev/match`：三级匹配管线（精确/归一化/日期变体剥离）、多候选冲突按优先级预选、价格相同不视为冲突
+  - `src/lib/models-dev/match`：三级匹配管线（精确/归一化/日期变体剥离）、多候选冲突按优先级预选、价格相同不视为冲突、`searchModelsDevModel` 搜索（子串/大小写/provider 名命中、上限截断）
   - `src/lib/models-dev/auto-fill`：只填空不覆盖、manual 行不动、未匹配跳过
   - `src/lib/pricing`：loadPriceMap cache 价 NULL 回退 input + 内存缓存/失效、computeModelCost
   - `src/lib/model-registry`：注入 aliases 的归一化各优先级规则、缓存失效、getDisplayName、isValidModelAliases/parseModelAliases

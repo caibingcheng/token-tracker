@@ -71,6 +71,7 @@ interface PriceRow {
   cacheWritePrice: number | null;
   source: "models.dev" | "manual" | null;
   modelsDevId: string | null;
+  sourceProvider: string | null;
   updatedAt: string | null;
   status: {
     active: boolean;
@@ -1128,7 +1129,12 @@ function PriceBadges({
   const badges: Array<{ key: string; cls: string; label: string; action?: () => void; title?: string }> = [];
 
   if (row.source === "models.dev") {
-    badges.push({ key: "src", cls: "bg-green-50 text-green-700 border-green-200", label: "models.dev" });
+    badges.push({
+      key: "src",
+      cls: "bg-green-50 text-green-700 border-green-200",
+      label: row.sourceProvider ? `models.dev · ${row.sourceProvider}` : "models.dev",
+      title: row.modelsDevId ?? undefined,
+    });
   } else if (row.source === "manual") {
     badges.push({ key: "src", cls: "bg-gray-50 text-gray-700 border-gray-200", label: "manual" });
   }

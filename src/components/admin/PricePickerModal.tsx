@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/client/api-client";
 import { CopyableCode } from "./CopyableCode";
 
@@ -42,6 +42,10 @@ export default function PricePickerModal({
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
 
+  // models.dev 搜索（可选）：有输入时展示搜索结果，清空恢复默认匹配候选
+  const [search, setSearch] = useState("");
+  const [searching, setSearching] = useState(false);
+
   // 手动输入区
   const [showManual, setShowManual] = useState(false);
   const [manualInput, setManualInput] = useState("");
@@ -50,27 +54,57 @@ export default function PricePickerModal({
   const [manualCacheWrite, setManualCacheWrite] = useState("");
   const [manualSaving, setManualSaving] = useState(false);
 
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // 打开时重置搜索状态（每次打开默认展示匹配候选）
   useEffect(() => {
     if (!isOpen) return;
-    setLoading(true);
+    setSearch("");
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
     setError(null);
     setShowManual(false);
     setManualInput("");
     setManualOutput("");
     setManualCacheRead("");
     setManualCacheWrite("");
-    apiFetch(`/api/admin/model-prices/candidates?model=${encodeURIComponent(model)}`)
-      .then(async (res) => {
-        const json = await res.json();
-        if (json.success) {
-          setCandidates(json.data);
-        } else {
-          setError(json.error || "Failed to load candidates");
-        }
-      })
-      .catch(() => setError("Network error"))
-      .finally(() => setLoading(false));
-  }, [isOpen, model]);
+    const query = search.trim();
+    const load = (url: string) =>
+      apiFetch(url)
+        .then(async (res) => {
+          const json = await res.json();
+          if (json.success) {
+            setCandidates(json.data);
+          } else {
+            setError(json.error || "Failed to load candidates");
+          }
+        })
+        .catch(() => setError("Network error"));
+    if (query) {
+      // 搜索模式：防抖 300ms 后请求
+      setSearching(true);
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => {
+        load(`/api/admin/model-prices/candidates?q=${encodeURIComponent(query)}`).finally(() => {
+          setSearching(false);
+          setLoading(false);
+        });
+      }, 300);
+    } else {
+      // 默认匹配模式：立即加载
+      setLoading(true);
+      if (timerRef.current) clearTimeout(timerRef.current);
+      load(`/api/admin/model-prices/candidates?model=${encodeURIComponent(model)}`).finally(() => {
+        setLoading(false);
+        setSearching(false);
+      });
+    }
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+  }, [isOpen, model, search]);
 
   if (!isOpen) return null;
 
@@ -168,17 +202,36 @@ export default function PricePickerModal({
         </div>
 
         <div className="flex-1 overflow-y-auto p-4">
+          <div className="mb-3">
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search models.dev… (e.g. kimi-k3)"
+              className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            <p className="mt-1 text-[11px] text-gray-400">
+              {search.trim()
+                ? "Search results from models.dev snapshot — pick any provider."
+                : `Matched candidates for ${model}. Type to search all of models.dev.`}
+            </p>
+          </div>
+
           {error && (
             <div className="mb-3 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-600">
               {error}
             </div>
           )}
 
-          {loading ? (
-            <div className="py-8 text-center text-sm text-gray-400">Loading candidates…</div>
+          {loading || searching ? (
+            <div className="py-8 text-center text-sm text-gray-400">
+              {searching ? "Searching…" : "Loading candidates…"}
+            </div>
           ) : candidates.length === 0 ? (
             <div className="py-8 text-center text-sm text-gray-400">
-              No models.dev candidates found for this model.
+              {search.trim()
+                ? "No models.dev entries match your search."
+                : "No models.dev candidates found for this model."}
             </div>
           ) : (
             <div className="hidden md:block overflow-x-auto">
@@ -232,7 +285,7 @@ export default function PricePickerModal({
           )}
 
           {/* 移动端候选卡片 */}
-          {!loading && candidates.length > 0 && (
+          {!loading && !searching && candidates.length > 0 && (
             <div className="md:hidden space-y-3">
               {candidates.map((c) => (
                 <div

@@ -138,3 +138,35 @@ function pickMatched(candidates: PriceCandidate[]): PriceCandidate | null {
     (a, b) => providerPriority(a.providerId) - providerPriority(b.providerId)
   )[0];
 }
+
+// 搜索模式：全量扫描快照，model id 或 provider 名归一化后包含 query 即命中。
+// 与 matchModelsDevModel 不同：不要求名字匹配，供 Price Picker 手动搜索任意条目。
+export const SEARCH_RESULT_LIMIT = 50;
+
+export function searchModelsDevModel(
+  query: string,
+  data: ModelsDevData
+): PriceCandidate[] {
+  const raw = query.trim();
+  if (!raw) return [];
+  const norm = normalizeModelKey(raw);
+  const results: PriceCandidate[] = [];
+  for (const providerId of Object.keys(data)) {
+    const provider = data[providerId];
+    if (!provider || typeof provider.models !== "object") continue;
+    const providerNorm = normalizeModelKey(provider.name ?? providerId);
+    for (const modelId of Object.keys(provider.models)) {
+      const model = provider.models[modelId];
+      if (!model || typeof model !== "object") continue;
+      if (
+        !normalizeModelKey(modelId).includes(norm) &&
+        !providerNorm.includes(norm)
+      ) {
+        continue;
+      }
+      results.push(toCandidate(providerId, provider.name, model));
+      if (results.length >= SEARCH_RESULT_LIMIT) return results;
+    }
+  }
+  return results;
+}

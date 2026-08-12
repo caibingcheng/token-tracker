@@ -19,6 +19,7 @@ export interface ModelPriceRow {
   cacheWritePrice: number | null;
   source: "models.dev" | "manual" | null;
   modelsDevId: string | null;
+  sourceProvider: string | null; // models.dev 来源的 provider 显示名（manual 为 null）
   updatedAt: string | null;
   status: {
     active: boolean;
@@ -139,6 +140,16 @@ export async function getModelPricesList(): Promise<ModelPriceRow[]> {
     const upstreams = upstreamByModel.get(model) ?? [];
     const active = upstreams.length > 0;
 
+    // models.dev 来源：解析 modelsDevId 的 provider 段，显示名优先取快照 name，缺失回退 providerId
+    let sourceProvider: string | null = null;
+    if (price?.source === "models.dev" && price.modelsDevId) {
+      const slash = price.modelsDevId.indexOf("/");
+      if (slash > 0) {
+        const providerId = price.modelsDevId.slice(0, slash);
+        sourceProvider = snapshot?.data[providerId]?.name ?? providerId;
+      }
+    }
+
     let status: ModelPriceRow["status"] = {
       active,
       inactive: !!price && !active,
@@ -201,6 +212,7 @@ export async function getModelPricesList(): Promise<ModelPriceRow[]> {
       cacheWritePrice: price?.cacheWritePrice ?? null,
       source: (price?.source as "models.dev" | "manual") ?? null,
       modelsDevId: price?.modelsDevId ?? null,
+      sourceProvider,
       updatedAt: price?.updatedAt ?? null,
       status,
     });

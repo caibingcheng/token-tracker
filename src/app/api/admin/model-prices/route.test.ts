@@ -185,6 +185,7 @@ describe("model-prices admin routes", () => {
     const byModel = new Map(rows.map((r) => [r.model, r]));
     expect(byModel.get("gpt-4o").source).toBe("manual");
     expect(byModel.get("gpt-4o").modelsDevId).toBeNull();
+    expect(byModel.get("gpt-4o").sourceProvider).toBeNull();
     expect(byModel.get("gpt-4o").inputPrice).toBe(2.25);
     expect(byModel.get("siliconflow-cn/Qwen/Qwen3.5-4B").source).toBe("manual");
     expect(byModel.get("siliconflow-cn/Qwen/Qwen3.5-4B").inputPrice).toBe(0.5);
@@ -246,6 +247,8 @@ describe("model-prices admin routes", () => {
     const row = rows.find((r) => r.model === "claude-sonnet-4-6");
     expect(row.status.removed).toBe(true);
     expect(row.status.hasUpdate).toBe(false);
+    // 快照无该 provider → sourceProvider 回退 providerId
+    expect(row.sourceProvider).toBe("vanished");
   });
 
   it("GET: pending (multi-candidate with differing prices) and unmatched badges", async () => {
@@ -319,8 +322,27 @@ describe("model-prices admin routes", () => {
     const gpt = rows.find((r) => r.model === "gpt-4o");
     expect(gpt.source).toBe("models.dev");
     expect(gpt.modelsDevId).toBe("openai/gpt-4o");
+    expect(gpt.sourceProvider).toBe("OpenAI");
     expect(gpt.inputPrice).toBe(2.5);
     expect(gpt.outputPrice).toBe(10);
+  });
+
+  it("select: allows snapshot entry whose name does not match the model (search pick)", async () => {
+    const token = await makeToken();
+    // zzz-not-matching 在匹配管线中无候选，但 openai/gpt-4o 存在于快照 → 允许
+    const res = await json(await selectPOST(req("/api/admin/model-prices/select", "POST", {
+      model: "zzz-not-matching",
+      modelsDevId: "openai/gpt-4o",
+    }, token)));
+    expect(res.success).toBe(true);
+
+    const rows = await getRows();
+    const row = rows.find((r) => r.model === "zzz-not-matching");
+    expect(row.source).toBe("models.dev");
+    expect(row.modelsDevId).toBe("openai/gpt-4o");
+    expect(row.sourceProvider).toBe("OpenAI");
+    expect(row.inputPrice).toBe(2.5);
+    expect(row.outputPrice).toBe(10);
   });
 
   it("select: rejects candidate not in snapshot (tamper protection)", async () => {

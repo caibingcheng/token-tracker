@@ -4,6 +4,8 @@ import {
   providerPriority,
   normalizeModelKey,
   stripDateVariant,
+  searchModelsDevModel,
+  SEARCH_RESULT_LIMIT,
 } from "./match";
 import type { ModelsDevData } from "./snapshot";
 
@@ -137,5 +139,63 @@ describe("matchModelsDevModel", () => {
     expect(c.outputPrice).toBe(15);
     expect(c.cacheReadPrice).toBe(0.3);
     expect(c.cacheWritePrice).toBe(3.75);
+  });
+});
+
+describe("searchModelsDevModel", () => {
+  it("matches model id by normalized substring", () => {
+    const results = searchModelsDevModel("claude-sonnet", DATA);
+    const ids = results.map((c) => c.modelsDevId);
+    expect(ids).toContain("anthropic/claude-sonnet-4-6");
+    expect(ids).toContain("anthropic/claude-sonnet-4-5-20250929");
+    expect(ids).toContain("meta/claude-sonnet-4-6");
+  });
+
+  it("matches across separator/case differences", () => {
+    const results = searchModelsDevModel("CLAUDE-SONNET-4.6", DATA);
+    expect(results.map((c) => c.modelsDevId)).toContain(
+      "anthropic/claude-sonnet-4-6"
+    );
+  });
+
+  it("matches provider name (not only model id)", () => {
+    const results = searchModelsDevModel("deep", DATA);
+    expect(results.map((c) => c.modelsDevId)).toContain("deepseek/deepseek-chat");
+    // provider name "xAI" → 归一化 "xai" 命中
+    const xai = searchModelsDevModel("xai", DATA);
+    expect(xai.map((c) => c.modelsDevId)).toContain("xai/gpt-4o");
+  });
+
+  it("returns empty for empty or whitespace query", () => {
+    expect(searchModelsDevModel("", DATA)).toEqual([]);
+    expect(searchModelsDevModel("   ", DATA)).toEqual([]);
+  });
+
+  it("returns empty when nothing matches", () => {
+    expect(searchModelsDevModel("zzz-not-in-snapshot", DATA)).toEqual([]);
+  });
+
+  it("caps results at SEARCH_RESULT_LIMIT", () => {
+    // 构造超过上限的 provider（每个 provider 一个 model，均命中 "hit"）
+    const big: ModelsDevData = {};
+    for (let i = 0; i < SEARCH_RESULT_LIMIT + 10; i++) {
+      big[`p${i}`] = {
+        id: `p${i}`,
+        name: `Provider ${i}`,
+        models: {
+          [`hit-${i}`]: mkModel(`hit-${i}`, { input: 1, output: 2 }),
+        },
+      };
+    }
+    const results = searchModelsDevModel("hit", big);
+    expect(results).toHaveLength(SEARCH_RESULT_LIMIT);
+  });
+
+  it("carries providerName fallback to providerId and full price info", () => {
+    const results = searchModelsDevModel("gpt-4o", DATA);
+    const openai = results.find((c) => c.providerId === "openai")!;
+    expect(openai.providerName).toBe("OpenAI");
+    expect(openai.inputPrice).toBe(2.5);
+    expect(openai.cacheReadPrice).toBeNull();
   });
 });

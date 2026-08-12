@@ -3,9 +3,10 @@ import { withAuth } from "@/lib/auth/guard";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 import { selectModelsDevPrice } from "@/lib/model-prices-service";
 import { getSnapshot } from "@/lib/models-dev/snapshot";
-import { matchModelsDevModel } from "@/lib/models-dev/match";
 
-// 从候选选定价格落库（source='models.dev'，记录 models_dev_id）
+// 从候选选定价格落库（source='models.dev'，记录 models_dev_id）。
+// 校验：modelsDevId 必须存在于快照（防篡改，价格以快照为准，不接受客户端传入价格）。
+// 不限定匹配管线候选 —— 允许 Price Picker 搜索选中任意快照条目。
 
 export const dynamic = "force-dynamic";
 
@@ -26,24 +27,33 @@ export const POST = withAuth(async (request: NextRequest) => {
     );
   }
 
-  // 候选必须存在于快照中（防篡改：价格以快照为准，不接受客户端传入价格）
+  // 快照直查：解析 providerId/modelId，校验条目存在，价格以快照为准
+  const slash = modelsDevId.indexOf("/");
+  if (slash <= 0) {
+    return NextResponse.json(
+      { success: false, error: "Candidate not found in models.dev snapshot" },
+      { status: 404 }
+    );
+  }
+  const providerId = modelsDevId.slice(0, slash);
+  const modelId = modelsDevId.slice(slash + 1);
   const snapshot = await getSnapshot();
-  const { candidates } = snapshot ? matchModelsDevModel(model, snapshot.data) : { candidates: [] };
-  const candidate = candidates.find((c) => c.modelsDevId === modelsDevId);
-  if (!candidate) {
+  const target = snapshot?.data[providerId]?.models[modelId];
+  if (!target?.cost) {
     return NextResponse.json(
       { success: false, error: "Candidate not found in models.dev snapshot" },
       { status: 404 }
     );
   }
 
+  const cost = target.cost;
   await selectModelsDevPrice({
     model,
-    modelsDevId: candidate.modelsDevId,
-    inputPrice: candidate.inputPrice,
-    outputPrice: candidate.outputPrice,
-    cacheReadPrice: candidate.cacheReadPrice,
-    cacheWritePrice: candidate.cacheWritePrice,
+    modelsDevId,
+    inputPrice: typeof cost.input === "number" ? cost.input : 0,
+    outputPrice: typeof cost.output === "number" ? cost.output : 0,
+    cacheReadPrice: typeof cost.cache_read === "number" ? cost.cache_read : null,
+    cacheWritePrice: typeof cost.cache_write === "number" ? cost.cache_write : null,
   });
   const { ip, userAgent } = extractClientInfo(request);
   await recordAuditLog({
