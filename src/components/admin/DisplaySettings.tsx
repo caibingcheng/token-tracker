@@ -581,10 +581,11 @@ export default function DisplaySettings() {
           Public Status Page
         </h3>
         <p className="mb-4 text-sm text-gray-500">
-          Exposes a public usage page at{" "}
-          <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">/status</code>{" "}
-          with no authentication. Disabled by default; enable explicitly to
-          open the endpoint. Data is cached for 60s and rate-limited.
+          Exposes a public usage panel on the home page{" "}
+          <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">/</code>{" "}
+          for unauthenticated visitors, with no authentication. Disabled by
+          default; enable explicitly to open the endpoint. Data is cached for
+          60s and rate-limited.
         </p>
 
         {statusConfig && (

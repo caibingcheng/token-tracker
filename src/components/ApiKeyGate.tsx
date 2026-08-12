@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { usePathname } from "next/navigation";
 import {
   getApiKey,
   clearApiKey,
@@ -11,6 +10,7 @@ import {
   apiSetupSubmit,
 } from "@/lib/client/api-client";
 import MobileTabBar from "./MobileTabBar";
+import PublicStatusView from "./PublicStatusView";
 
 export default function ApiKeyGate({ children }: { children: React.ReactNode }) {
   // 初始 null = 未知（SSR/首帧不渲染登录表单，避免浏览器密码自动填充弹窗）；
@@ -25,10 +25,14 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
   const [setupKey, setSetupKey] = useState("");
   const [setupConfirm, setSetupConfirm] = useState("");
   const [settingUp, setSettingUp] = useState(false);
+  // 未登录视图：public = 公开面板（status_page_config 启用时），login = 登录表单
+  const [gateView, setGateView] = useState<"public" | "login">("public");
+  const [statusEnabled, setStatusEnabled] = useState(true);
 
   const handleUnauthorized = useCallback(() => {
     setError("Invalid or missing session");
     setHasKey(false);
+    setGateView("public");
   }, []);
 
   useEffect(() => {
@@ -39,10 +43,6 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
   useEffect(() => {
     return registerUnauthorizedHandler(handleUnauthorized);
   }, [handleUnauthorized]);
-
-  // 公开状态页（/status）不经登录 gate，直接放行
-  const pathname = usePathname();
-  const isPublic = pathname?.startsWith("/status") ?? false;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -82,6 +82,7 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
     setShowTotp(false);
     setError(null);
     setHasKey(false);
+    setGateView("public");
   };
 
   const handleSetup = async (e: React.FormEvent) => {
@@ -107,10 +108,6 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
       setSettingUp(false);
     }
   };
-
-  if (isPublic) {
-    return <>{children}</>;
-  }
 
   if (hasKey === null) {
     return <main className="min-h-screen bg-gray-50" />;
@@ -159,6 +156,18 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
           </form>
         </div>
       </main>
+    );
+  }
+
+  if (!hasKey && gateView === "public") {
+    return (
+      <PublicStatusView
+        onDisabled={() => {
+          setStatusEnabled(false);
+          setGateView("login");
+        }}
+        onLoginRequest={() => setGateView("login")}
+      />
     );
   }
 
@@ -221,6 +230,15 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
               </button>
             )}
           </form>
+          {statusEnabled && (
+            <button
+              type="button"
+              onClick={() => setGateView("public")}
+              className="mt-4 w-full text-center text-xs text-gray-400 hover:text-gray-600 min-h-[40px]"
+            >
+              ← Back to status
+            </button>
+          )}
         </div>
       </main>
     );

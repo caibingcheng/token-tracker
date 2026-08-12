@@ -188,7 +188,7 @@ export async function setStreamIdleTimeoutMinutesSetting(minutes: number): Promi
 }
 
 // ---- Status 公开页配置：settings 表 status_page_config（JSON 明文）----
-// fail-closed：未配置时 enabled=false，/status 与 /status/data 返回 404
+// fail-closed：未配置时 enabled=false，/status/data 返回 404
 
 export interface StatusPageElementsConfig {
   total: boolean;

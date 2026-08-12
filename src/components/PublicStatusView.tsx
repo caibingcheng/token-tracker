@@ -8,8 +8,13 @@ import UsageHeatmap, { HeatmapData } from "./UsageHeatmap";
 import { NumberFormatProvider } from "./NumberFormatContext";
 import { getClientTimezoneOffsetMinutes } from "@/lib/timezone-utils";
 
-// /status 公开页（无需登录）。数据来自 /status/data 公开端点；
-// 渲染的元素由服务端配置决定（elements），本组件按元素开关条件渲染。
+// 未登录公开面板。数据来自 /status/data 公开端点（服务端按 elements 裁剪）；
+// 本组件按元素开关条件渲染。数据端点 404（status_page_config 未启用）时回调 onDisabled。
+
+interface PublicStatusViewProps {
+  onDisabled: () => void;
+  onLoginRequest: () => void;
+}
 
 interface StatusElements {
   total: boolean;
@@ -104,7 +109,10 @@ function mapModel(value: unknown): ModelStat {
   };
 }
 
-export default function StatusPage() {
+export default function PublicStatusView({
+  onDisabled,
+  onLoginRequest,
+}: PublicStatusViewProps) {
   const clientTimezoneOffsetMinutes = useMemo(
     () => getClientTimezoneOffsetMinutes(),
     []
@@ -113,6 +121,8 @@ export default function StatusPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const onDisabledRef = useRef(onDisabled);
+  onDisabledRef.current = onDisabled;
 
   const fetchData = useCallback(
     async (options?: { signal?: AbortSignal }) => {
@@ -122,7 +132,7 @@ export default function StatusPage() {
         url.searchParams.set("tzOffset", String(clientTimezoneOffsetMinutes));
         const res = await fetch(url.toString(), { signal: options?.signal });
         if (res.status === 404) {
-          setError("Status page is disabled");
+          onDisabledRef.current();
           return;
         }
         if (!res.ok) {
@@ -206,12 +216,19 @@ export default function StatusPage() {
           <div className="mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
             <div>
               <h1 className="text-xl md:text-3xl font-bold truncate">
-                Token Tracker Status
+                Token Tracker
               </h1>
               <p className="text-xs text-gray-400 mt-1">
                 Public usage overview · updated periodically
               </p>
             </div>
+            <button
+              type="button"
+              onClick={onLoginRequest}
+              className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 active:scale-[0.98] transition-all min-h-[40px]"
+            >
+              Login
+            </button>
           </div>
 
           {error && (

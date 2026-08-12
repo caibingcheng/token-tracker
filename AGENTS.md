@@ -54,12 +54,12 @@ docker compose up -d                                 # 本地运行
 | `/api/admin/virtual-keys*` | CRUD | 会话 token | 虚拟 key 管理（创建/编辑/吊销/用量，支持 comment + enabledModels） |
 | `/api/admin/auth/totp` `/api/admin/auth/api-key` `/api/admin/auth/sessions` `/api/admin/auth/recovery-codes` `/api/admin/auth/recovery-codes/reminder` | CRUD | 会话 token + TOTP 动态码 | TOTP 绑定/换绑/解绑、修改登录 key、全局登出（token_epoch+1 吊销全部会话）、recovery codes 查询/重新生成/清除提醒标记 |
 | `/api/admin/settings/display` `/api/admin/settings/session` `/api/admin/settings/stream` | GET/PUT | 会话 token | Display tab：HIDDEN_PROVIDERS 分组语法 + 会话 TTL + 流式空闲超时（分钟，settings 表，面板优先） |
-| `/api/admin/settings/status` | GET/PUT | 会话 token | Display tab：公开 Status 页配置（status_page_config，`isValidStatusPageConfig` 校验） |
+| `/api/admin/settings/status` | GET/PUT | 会话 token | Display tab：公开 Status 面板配置（status_page_config，`isValidStatusPageConfig` 校验） |
 | `/api/admin/settings/aliases` | GET/PUT | 会话 token | Display tab：Model Aliases 归一化配置（model_aliases，`isValidModelAliases` 校验） |
 | `/api/admin/model-prices` | GET/PUT/DELETE | 会话 token | 官方价参考管理：GET 行集 = 全部启用 upstream 非通配 enabled_models ∪ 已定价 model（附徽标：active/inactive、待确认/未匹配、有更新+diff、已下架）；PUT 手动编辑（`source='manual'`，清空 models_dev_id）；DELETE 删价（model 走 query，**不用 `[model]` 动态段**，model 名可能含 `/`） |
 | `/api/admin/model-prices/candidates?model=X` `/api/admin/model-prices/candidates?q=...` `/api/admin/model-prices/select` `/api/admin/model-prices/auto-fill` | GET/POST/POST | 会话 token | Price Picker Modal 候选列表（provider、4 价格、预选标记；`q` = 搜索模式，全量扫描快照不限匹配管线）；从候选选定落库（`source='models.dev'`，校验 modelsDevId 存在于快照即可，价格以快照为准防篡改——搜索选中的条目与自动匹配等价）；批量填充所有未定价行（只填空不覆盖，manual 行不动） |
 | `/api/admin/models-dev/refresh` | POST | 会话 token | 强制刷新 models.dev 快照（失败回退旧快照） |
-| `/status` `/status/data` | GET | **无（有意公开）** | 公开用量状态页 + 数据端点：详见下方「公开 Status 页」小节 |
+| `/status/data` | GET | **无（有意公开）** | 公开用量数据端点：详见下方「公开 Status 面板」小节 |
 
 - **认证架构（多层防漏）**：验签 middleware（第一层，WebCrypto 验 HMAC 签名 + exp，Edge runtime）→ 路由内 `withAuth`（第二层，epoch 检查 + DB key 指纹校验）→ vitest 静态扫描测试（第三层，`src/lib/auth/guard-scan.test.ts`，login + setup 白名单）→ 本文件约定（第四层）
 - **⚠️ breaking change**：所有 `/api/*`（login、setup 除外）只接受会话 token（HMAC-SHA256 签名，GATEWAY_SECRET 派生密钥），**原始 API key 不能直接调 API**。脚本/curl 必须先 `POST /api/auth/login`（body `{apiKey, totpCode?}`）换 token，再带 `X-API-Key: <token>` 调用
@@ -70,20 +70,21 @@ docker compose up -d                                 # 本地运行
 - **防锁死恢复**：settings 表无 `admin_api_key` 时回退 env `ADMIN_API_KEY` 兜底；如忘记 key 导致无法登录，删除 `settings` 表中的 `admin_api_key` 行即可恢复（sqlite3 CLI 操作）
 - **settings 读写必须包 `withSkipCache()`**（`src/lib/auth/settings.ts`）：查询缓存 TTL 10s，否则改 key/epoch+1/解绑 TOTP 后旧凭证最长残留 10s
 - **限流 IP 来源**：`src/lib/net/client-ip.ts` 的 `getRateLimitKey()` 统一取值 —— `TRUSTED_PROXY=true` 时取 `x-real-ip`（回退 XFF 末位，反代追加的真实 IP）；默认 false 时忽略全部客户端可控头，退化为全局桶（不可伪造，防 XFF 绕过；代价是攻击者可阻塞登录窗口，但无法爆破）。`extractClientInfo`（审计展示用）只取可信 IP，原始 XFF 存 `xffRaw` 仅供排查
-- **页面认证**：`/`、`/admin` 由客户端 `ApiKeyGate`（sessionStorage 存会话 token + 401 拦截 + 本地两步登录：先 key 后 TOTP，第二步触网，未启用 TOTP 留空即可）处理，无 middleware；全局 fetch 走 `src/lib/client/api-client.ts` 的 `apiFetch`
+- **页面认证**：`/`、`/admin` 由客户端 `ApiKeyGate`（sessionStorage 存会话 token + 401 拦截 + 本地两步登录：先 key 后 TOTP，第二步触网，未启用 TOTP 留空即可）处理，无 middleware；未登录时先渲染公开面板（`/status/data` 404 则纯登录门，详见「公开 Status 面板」）；全局 fetch 走 `src/lib/client/api-client.ts` 的 `apiFetch`
 - **TOTP**：RFC 6238 自实现（`src/lib/auth/totp.ts`，30s 窗口 ±1 容差）；admin + dashboard 共用一次登录；暴力防护 `src/lib/auth/totp-lock.ts`（连续 5 次失败锁 15min，之后每 5 次翻倍封顶 24h，计数持久化 settings 表防重启清零，成功清零；锁定期间本人也无法登录，sqlite3 删除 `totp_locked_until` 行恢复；login 与 admin TOTP 绑定/解绑/改 key 共用）
 - **换绑**：已启用 TOTP 时生成新 pending 必须带 `currentCode`（旧 secret 验证，失败 `recordTotpFailure()` 计入锁定计数）；换绑成功 `bumpTokenEpoch()` 吊销全部会话（首次启用**不**吊销，保持登录立即展示恢复码）；解绑成功同步 `clearRecoveryCodes()`。⚠️ **前端时序**：换绑成功后 SecuritySettings **不得**再发任何 API 请求（token 已失效会 401 提前踢人，recovery codes 弹窗来不及展示），应仅展示弹窗，关闭弹窗时提示会话已吊销并调 `notifyUnauthorized()` 跳登录
 - **Recovery codes**（`src/lib/auth/recovery-codes.ts`）：格式 `XXXX-XXXX-XXXX-XXXX`，字符集排除 `0/O/I/1`；每次生成 4 个一次性码，存储**只存 SHA-256 哈希 + used 标记**（JSON），明文仅在生成成功响应返回一次；登录分流 `classifySecondFactorInput`（6 位纯数字 → TOTP；归一化 16 位 → recovery；其余 → TOTP 分支必然失败）；recovery 验证**绕过 TOTP 锁定**、失败**不计入** `totp_fail_count`（走 login 全局限流桶）、成功清除锁定计数 + 写 `recovery_code_login_reminder='1'`；login 响应带 `viaRecoveryCode: true`，ApiKeyGate 弹 alert，Security 面板显示黄色横幅（「我已检查」DELETE reminder 路由清除）；重新生成（POST recovery-codes）需当前 TOTP 验证，**不**吊销会话；GET 返回 `{remaining, reminder, exists}`（exists 区分「从未生成」黄横幅与「全部用完」红横幅）
 
-### 公开 Status 页（`/status` + `/status/data`）
+### 公开 Status 面板（`/` 未登录态 + `/status/data`）
 
-- **唯一有意公开的用量端点**：位于 `/status` 下（**不是 `/api` 下**），middleware matcher（`/api/*`）天然不匹配，auth 四层防漏零改动；guard-scan 扫描范围外
-- **fail-closed**：`status_page_config.enabled` 默认 false（未保存 = 关闭），`/status`（server component `notFound()`）与 `/status/data` 均返回 404；必须 admin panel Display tab 显式开启
+- **页面并入 Dashboard**：公开面板渲染在 `/` 未登录分支（`ApiKeyGate` 三态：`hasKey=null` 空白 → `gateView='public'` 渲染 `PublicStatusView` → 404 后 `gateView='login'` 纯登录门）；`/status` 页面路由已删除；`/status/data` 数据端点保留
+- **唯一有意公开的用量端点**：`/status/data` 位于 `/status` 下（**不是 `/api` 下**），middleware matcher（`/api/*`）天然不匹配，auth 四层防漏零改动；guard-scan 扫描范围外
+- **fail-closed**：`status_page_config.enabled` 默认 false（未保存 = 关闭），`/status/data` 返回 404，前端探测到 404 渲染纯登录门；必须 admin panel Display tab 显式开启
 - **数据面最小化**（`src/lib/status-query.ts`）：只接受 `tzOffset`（-720..720），无任何过滤参数；按启用元素**按需查询**（`executeStatsQuery` 固定参数），cost/topModels 关闭时**跳过全部 model 级查询**，响应不含模型名/provider 名/成本数据；topModels 开启时复用 hidden_providers 匿名化
 - **元素联动**：hourly 依赖 daily，hourly 开启时 `resolveStatusElements` 强制 daily=true；topModels 开启时隐式返回成本字段（TopModelsCards 组件固定显示 cost）
 - **60s 响应级 LRU 缓存**（key=tzOffset，max 50）：整包缓存不感知写库，故 60s 滞后可接受；`setStatusPageConfig()` 主动调 `invalidateStatusCache()` 立即失效
 - **限流**：`checkStatusRateLimit()`（status-query.ts 导出，60 req/min 固定窗口，`getRateLimitKey()` 取 key），与 setup/login 同款内存 bucket 模式
-- **⚠️ 两处 route 必须 `dynamic = "force-dynamic"`**（`/status/page.tsx` + `/status/data/route.ts`）：否则构建期预渲染会把 enabled/disabled 决策烘焙进产物
+- **⚠️ `/status/data/route.ts` 必须 `dynamic = "force-dynamic"`**：否则构建期预渲染会把 enabled/disabled 决策烘焙进产物
 - **配置**：`parseStatusPageConfig` 逐 key 与默认值合并（非法 JSON/字段回退默认，返回全新对象不污染共享默认）；PUT 校验 `isValidStatusPageConfig`（enabled + 全部 7 元素 boolean，未知 key 拒绝）
 
 ## AI Gateway 代理链路（核心）
