@@ -14,6 +14,7 @@ const TABLES = [
     columns: [
       { name: "status", definition: "status TEXT" },
       { name: "latency_ms", definition: "latency_ms INTEGER" },
+      { name: "ttft_ms", definition: "ttft_ms INTEGER" },
       { name: "virtual_key_id", definition: "virtual_key_id INTEGER" },
       { name: "user_agent", definition: "user_agent TEXT" },
     ],
@@ -92,7 +93,7 @@ describe("migrateColumns", () => {
     migrateColumns(db, TABLES);
 
     expect(tableColumns("token_records")).toEqual(
-      expect.arrayContaining(["status", "latency_ms", "virtual_key_id", "user_agent"])
+      expect.arrayContaining(["status", "latency_ms", "ttft_ms", "virtual_key_id", "user_agent"])
     );
     expect(tableColumns("virtual_keys")).toEqual(
       expect.arrayContaining([
@@ -123,6 +124,17 @@ describe("migrateColumns", () => {
       .prepare(`SELECT enabled_models FROM virtual_keys WHERE name = 'legacy'`)
       .get();
     expect(row.enabled_models).toBe('["*"]');
+  });
+
+  it("leaves ttft_ms NULL for pre-existing rows (not backfilled)", () => {
+    // 模拟旧库：latency_ms 已有值但无 ttft_ms 概念
+    db.exec(`INSERT INTO token_records (model, provider, status, latency_ms) VALUES ('gpt-4o', 'openai', 'ok', 1234)`);
+    migrateColumns(db, TABLES);
+    const row: any = db
+      .prepare(`SELECT latency_ms, ttft_ms FROM token_records WHERE model = 'gpt-4o'`)
+      .get();
+    expect(row.latency_ms).toBe(1234);
+    expect(row.ttft_ms).toBeNull();
   });
 
   it("leaves untouched tables alone", () => {

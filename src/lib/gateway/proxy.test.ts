@@ -486,7 +486,7 @@ describe("handleProxyRequest - usage capture & write-back", () => {
     await res.text();
 
     expect(deps.onUsage).toHaveBeenCalledWith(
-      expect.objectContaining({ inputTokens: 7, outputTokens: 5, cacheRead: 3, cacheWrite: 0, agent: "claude-code", provider: "openai", model: "gpt-4o", virtualKeyId: 1 })
+      expect.objectContaining({ inputTokens: 7, outputTokens: 5, cacheRead: 3, cacheWrite: 0, agent: "claude-code", provider: "openai", model: "gpt-4o", virtualKeyId: 1, ttftMs: undefined })
     );
   });
 
@@ -537,8 +537,15 @@ describe("handleProxyRequest - usage capture & write-back", () => {
 
     expect(received).toBe(sse); // 原样透传
     expect(deps.onUsage).toHaveBeenCalledWith(
-      expect.objectContaining({ inputTokens: 50, outputTokens: 20 })
+      expect.objectContaining({ inputTokens: 50, outputTokens: 20, ttftMs: expect.any(Number) })
     );
+    // TTFT 与 latencyMs 同起点；mock 场景毫秒量化下可能同值，仅断言非负
+    const usageCall = vi.mocked(deps.onUsage!).mock.calls[0]![0] as {
+      ttftMs?: number;
+      latencyMs?: number;
+    };
+    expect(usageCall.ttftMs!).toBeGreaterThanOrEqual(0);
+    expect(usageCall.latencyMs!).toBeGreaterThanOrEqual(0);
   });
 
   it("does not record usage for 4xx business errors", async () => {

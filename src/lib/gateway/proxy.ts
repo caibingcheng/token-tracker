@@ -95,6 +95,7 @@ export interface RecordUsageMeta {
   cacheWrite: number;
   status?: string;
   latencyMs?: number;
+  ttftMs?: number; // 流式首 token 延迟（首 chunk 到达 - 请求开始），非流式无此概念不写
   virtualKeyId?: number;
   userAgent?: string | null;
   requestModel?: string | null; // 客户端原始请求名（虚拟名路由场景可追溯）
@@ -676,14 +677,15 @@ export async function handleProxyRequest(
     requestModel: model,
   };
 
-  return passthroughResponse(lastResponse, {
-    meta,
-    deps,
-    bodyJson,
-    protocol,
-    virtualKeyId: virtualKey.id,
-    virtualModelName: manualRoute?.virtualName,
-  });
+      return passthroughResponse(lastResponse, {
+        meta,
+        deps,
+        bodyJson,
+        protocol,
+        virtualKeyId: virtualKey.id,
+        virtualModelName: manualRoute?.virtualName,
+        startTime,
+      });
 }
 
 // responses 辅助端点（/v1/responses/{id} 及子路径）纯透传：
@@ -902,9 +904,10 @@ async function passthroughResponse(
     virtualKeyId: number;
     virtualModelName?: string;
     recordUsage?: boolean; // 辅助端点等场景跳过 usage 解析与写库（默认 true）
+    startTime?: number; // 请求开始时刻（与 latencyMs 同源），用于流式 TTFT 计算
   }
 ): Promise<Response> {
-  const { meta, deps, bodyJson, protocol, virtualKeyId, virtualModelName, recordUsage = true } = opts;
+  const { meta, deps, bodyJson, protocol, virtualKeyId, virtualModelName, recordUsage = true, startTime } = opts;
   const headers = new Headers(PROXY_RESPONSE_HEADERS);
   copyHeader(upstreamResponse.headers, headers, "content-type");
   copyHeader(upstreamResponse.headers, headers, "x-ratelimit-remaining-requests");
@@ -921,6 +924,8 @@ async function passthroughResponse(
   const chunks: Uint8Array[] = [];
   // 流式响应：增量解析 usage，不持有完整响应体（内存 O(1)）
   const extractor = isStreaming ? new StreamUsageExtractor(protocol) : null;
+  // 流式首 chunk 到达时刻（TTFT，相对请求开始）；非流式保持 null 不写入
+  let ttftMs: number | null = null;
   let onDone: () => void = () => {};
 
   const rewriter = virtualModelName
@@ -976,6 +981,10 @@ async function passthroughResponse(
                 : reader.read());
               if (done) break;
               if (isStreaming) {
+                // 首 chunk 到达时刻 = TTFT（仅流式；与 latencyMs 同起点）
+                if (ttftMs === null && startTime !== undefined) {
+                  ttftMs = Date.now() - startTime;
+                }
                 // feed 原始 chunk（rewriter 改写不影响 usage 提取）
                 extractor!.feed(value);
               } else {
@@ -1018,7 +1027,7 @@ async function passthroughResponse(
                 protocol
               );
         const usage = toRecordUsage(parsed, meta);
-        await deps.onUsage?.(usage);
+        await deps.onUsage?.({ ...usage, ttftMs: ttftMs ?? undefined });
       }
     } catch (err) {
       deps.log?.(`[gateway] usage capture failed: ${(err as Error).message}`);

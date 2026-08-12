@@ -11,6 +11,7 @@ export const tokenRecords = sqliteTable("token_records", {
   cacheWrite: integer("cache_write").notNull().default(0),
   status: text("status"),
   latencyMs: integer("latency_ms"),
+  ttftMs: integer("ttft_ms"), // 流式首 token 延迟（首 chunk 到达 - 请求开始），非流式为 NULL
   virtualKeyId: integer("virtual_key_id"),
   userAgent: text("user_agent"),
   requestModel: text("request_model"), // 客户端原始请求名（虚拟名路由场景可追溯）

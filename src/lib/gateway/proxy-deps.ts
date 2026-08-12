@@ -257,6 +257,7 @@ export function createProxyDeps(): ProxyDeps {
           cacheWrite: usage.cacheWrite,
           status: usage.status ?? null,
           latencyMs: usage.latencyMs ?? null,
+          ttftMs: usage.ttftMs ?? null,
           virtualKeyId: usage.virtualKeyId ?? null,
           userAgent: usage.userAgent ?? null,
           requestModel: usage.requestModel ?? null,

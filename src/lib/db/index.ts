@@ -155,6 +155,7 @@ async function ensureClient() {
       columns: [
         { name: "status", definition: "status TEXT" },
         { name: "latency_ms", definition: "latency_ms INTEGER" },
+        { name: "ttft_ms", definition: "ttft_ms INTEGER" },
         { name: "virtual_key_id", definition: "virtual_key_id INTEGER" },
         { name: "user_agent", definition: "user_agent TEXT" },
       ],

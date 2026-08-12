@@ -128,6 +128,8 @@ export const GET = withAuth(async (request: NextRequest) => {
           outputTokens: tokenRecords.outputTokens,
           cacheRead: tokenRecords.cacheRead,
           cacheWrite: tokenRecords.cacheWrite,
+          latencyMs: tokenRecords.latencyMs,
+          ttftMs: tokenRecords.ttftMs,
           requestModel: tokenRecords.requestModel,
           createdAt: tokenRecords.createdAt,
         })
