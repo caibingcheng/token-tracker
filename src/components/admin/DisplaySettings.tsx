@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { apiFetch } from "@/lib/client/api-client";
 
 interface DisplayData {
-  value: string;
+  groups: Array<{ name: string; patterns: string[] }>;
   envValue: string;
   envOverridden: boolean;
 }
@@ -39,6 +39,11 @@ interface AliasRuleDraft {
   aliases: string;
 }
 
+interface HiddenGroupDraft {
+  name: string;
+  patterns: string;
+}
+
 const STATUS_ELEMENT_LABELS: Array<{ key: keyof StatusPageElementsData; label: string; hint?: string }> = [
   { key: "total", label: "Total summary", hint: "All-time totals" },
   { key: "today", label: "Today overview", hint: "Today vs yesterday" },
@@ -51,10 +56,10 @@ const STATUS_ELEMENT_LABELS: Array<{ key: keyof StatusPageElementsData; label: s
 
 export default function DisplaySettings() {
   const [data, setData] = useState<DisplayData | null>(null);
-  const [draft, setDraft] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [hiddenDraft, setHiddenDraft] = useState<HiddenGroupDraft[]>([]);
+  const [hiddenBusy, setHiddenBusy] = useState(false);
+  const [hiddenError, setHiddenError] = useState<string | null>(null);
+  const [hiddenSaved, setHiddenSaved] = useState(false);
   const [ttlData, setTtlData] = useState<SessionTtlData | null>(null);
   const [ttlDraft, setTtlDraft] = useState("");
   const [ttlBusy, setTtlBusy] = useState(false);
@@ -88,8 +93,11 @@ export default function DisplaySettings() {
     const statusJson = await statusRes.json();
     const aliasesJson = await aliasesRes.json();
     if (json.success) {
-      setData(json.data as DisplayData);
-      setDraft((json.data as DisplayData).value);
+      const d = json.data as DisplayData;
+      setData(d);
+      setHiddenDraft(
+        d.groups.map((g) => ({ name: g.name, patterns: g.patterns.join(", ") }))
+      );
     }
     if (ttlJson.success) {
       const t = ttlJson.data as SessionTtlData;
@@ -115,35 +123,55 @@ export default function DisplaySettings() {
     load();
   }, [load]);
 
-  const handleSave = async () => {
-    setBusy(true);
-    setError(null);
-    setSaved(false);
+  const updateHidden = (idx: number, patch: Partial<HiddenGroupDraft>) => {
+    setHiddenSaved(false);
+    setHiddenDraft((prev) =>
+      prev.map((r, i) => (i === idx ? { ...r, ...patch } : r))
+    );
+  };
+
+  const addHiddenRow = () => {
+    setHiddenSaved(false);
+    setHiddenDraft((prev) => [...prev, { name: "", patterns: "" }]);
+  };
+
+  const removeHiddenRow = (idx: number) => {
+    setHiddenSaved(false);
+    setHiddenDraft((prev) => prev.filter((_, i) => i !== idx));
+  };
+
+  const handleSaveHidden = async () => {
+    const groups = hiddenDraft
+      .map((r) => ({
+        name: r.name.trim(),
+        patterns: r.patterns
+          .split(",")
+          .map((p) => p.trim())
+          .filter(Boolean),
+      }))
+      .filter((r) => r.patterns.length > 0);
+    setHiddenBusy(true);
+    setHiddenError(null);
+    setHiddenSaved(false);
     try {
       const res = await apiFetch("/api/admin/settings/display", {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ value: draft }),
+        body: JSON.stringify({ groups }),
       });
       const json = await res.json();
       if (json.success) {
-        setSaved(true);
+        setHiddenSaved(true);
         load();
       } else {
-        setError(json.error || "Failed to save");
+        setHiddenError(json.error || "Failed to save");
       }
     } catch {
-      setError("Network error");
+      setHiddenError("Network error");
     } finally {
-      setBusy(false);
+      setHiddenBusy(false);
     }
   };
-
-  // 简单语法校验预览：按分号拆组，展示分组数量
-  const groups = draft
-    .split(";")
-    .map((g) => g.trim())
-    .filter((g) => g.length > 0);
 
   const handleSaveTtl = async () => {
     setTtlBusy(true);
@@ -304,37 +332,54 @@ export default function DisplaySettings() {
       <label className="mb-1 block text-sm font-medium text-gray-700">
         Hidden provider groups
       </label>
-      <textarea
-        value={draft}
-        onChange={(e) => {
-          setDraft(e.target.value);
-          setSaved(false);
-        }}
-        rows={6}
-        spellCheck={false}
-        placeholder={'ProviderA:prefix1*,prefix2*;ProviderB:exact-name'}
-        className="w-full rounded border border-gray-300 bg-white px-3 py-2 font-mono text-xs shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-      />
+      <div className="space-y-2">
+        {hiddenDraft.map((rule, idx) => (
+          <div key={idx} className="grid grid-cols-1 md:grid-cols-[1fr_2fr_auto] gap-2">
+            <input
+              value={rule.name}
+              onChange={(e) => updateHidden(idx, { name: e.target.value })}
+              placeholder="Display name (empty = Provider A, B, C...)"
+              className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            <input
+              value={rule.patterns}
+              onChange={(e) => updateHidden(idx, { patterns: e.target.value })}
+              placeholder="patterns, comma separated (e.g. vendor*, vendor-partner)"
+              spellCheck={false}
+              className="w-full rounded border border-gray-300 bg-white px-3 py-2 font-mono text-base md:text-xs shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            <button
+              type="button"
+              onClick={() => removeHiddenRow(idx)}
+              className="rounded border border-red-200 px-3 py-2 text-sm text-red-500 hover:bg-red-50 min-h-[40px] md:min-h-0"
+            >
+              Remove
+            </button>
+          </div>
+        ))}
+        {hiddenDraft.length === 0 && (
+          <p className="text-sm text-gray-400">No hidden provider groups configured.</p>
+        )}
+        <button
+          type="button"
+          onClick={addHiddenRow}
+          className="rounded border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50"
+        >
+          + Add row
+        </button>
+      </div>
       <p className="mt-1 text-xs text-gray-400">
-        Semicolons separate groups; comma separates patterns within a group;
-        <code className="rounded bg-gray-100 px-1">*</code> suffix = prefix match;
-        <code className="rounded bg-gray-100 px-1">Name:</code> prefix = custom display name.
-        Groups render as Provider A, B, C... by default.
+        Each row is one group; comma separates patterns within a group;
+        <code className="rounded bg-gray-100 px-1">*</code> suffix = prefix match.
+        Empty display name renders as Provider A, B, C...
       </p>
 
-      {draft.trim() !== "" && (
-        <p className="mt-2 text-xs text-gray-500">
-          Parsed: {groups.length} group{groups.length === 1 ? "" : "s"} —{" "}
-          {groups.join(" | ")}
-        </p>
-      )}
-
-      {error && (
+      {hiddenError && (
         <div className="mt-3 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-600">
-          {error}
+          {hiddenError}
         </div>
       )}
-      {saved && (
+      {hiddenSaved && (
         <div className="mt-3 rounded border border-green-200 bg-green-50 p-3 text-sm text-green-700">
           Saved. Changes take effect immediately.
         </div>
@@ -342,12 +387,81 @@ export default function DisplaySettings() {
 
       <button
         type="button"
-        onClick={handleSave}
-        disabled={busy}
+        onClick={handleSaveHidden}
+        disabled={hiddenBusy}
         className="mt-4 rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-50"
       >
-        {busy ? "Saving..." : "Save"}
+        {hiddenBusy ? "Saving..." : "Save"}
       </button>
+
+      <div className="mt-8 border-t border-gray-100 pt-6">
+        <h3 className="mb-1 text-base font-semibold text-gray-900">
+          Model Aliases
+        </h3>
+        <p className="mb-4 text-sm text-gray-500">
+          Normalize model names across providers into a display group. Each row:
+          a group name and comma-separated aliases. Models not matching any row
+          keep their original name. Pricing is always computed on the real model
+          name; aliases only affect display roll-up.
+        </p>
+
+        <div className="space-y-2">
+          {aliasesDraft.map((rule, idx) => (
+            <div key={idx} className="grid grid-cols-1 md:grid-cols-[1fr_2fr_auto] gap-2">
+              <input
+                value={rule.name}
+                onChange={(e) => updateAlias(idx, { name: e.target.value })}
+                placeholder="Group name (e.g. Claude Sonnet 4.6)"
+                className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+              <input
+                value={rule.aliases}
+                onChange={(e) => updateAlias(idx, { aliases: e.target.value })}
+                placeholder="aliases, comma separated (e.g. claude-sonnet-4-6, anthropic/claude-sonnet-4-6)"
+                spellCheck={false}
+                className="w-full rounded border border-gray-300 bg-white px-3 py-2 font-mono text-base md:text-xs shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+              <button
+                type="button"
+                onClick={() => removeAliasRule(idx)}
+                className="rounded border border-red-200 px-3 py-2 text-sm text-red-500 hover:bg-red-50 min-h-[40px] md:min-h-0"
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+          {aliasesDraft.length === 0 && (
+            <p className="text-sm text-gray-400">No alias groups configured.</p>
+          )}
+          <button
+            type="button"
+            onClick={addAliasRule}
+            className="rounded border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50"
+          >
+            + Add row
+          </button>
+        </div>
+
+        {aliasesError && (
+          <div className="mt-3 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-600">
+            {aliasesError}
+          </div>
+        )}
+        {aliasesSaved && (
+          <div className="mt-3 rounded border border-green-200 bg-green-50 p-3 text-sm text-green-700">
+            Saved. Normalized names update immediately.
+          </div>
+        )}
+
+        <button
+          type="button"
+          onClick={handleSaveAliases}
+          disabled={aliasesBusy}
+          className="mt-4 rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-50"
+        >
+          {aliasesBusy ? "Saving..." : "Save Aliases"}
+        </button>
+      </div>
 
       <div className="mt-8 border-t border-gray-100 pt-6">
         <h3 className="mb-1 text-base font-semibold text-gray-900">
@@ -550,75 +664,6 @@ export default function DisplaySettings() {
             </button>
           </div>
         )}
-      </div>
-
-      <div className="mt-8 border-t border-gray-100 pt-6">
-        <h3 className="mb-1 text-base font-semibold text-gray-900">
-          Model Aliases
-        </h3>
-        <p className="mb-4 text-sm text-gray-500">
-          Normalize model names across providers into a display group. Each row:
-          a group name and comma-separated aliases. Models not matching any row
-          keep their original name. Pricing is always computed on the real model
-          name; aliases only affect display roll-up.
-        </p>
-
-        <div className="space-y-2">
-          {aliasesDraft.map((rule, idx) => (
-            <div key={idx} className="grid grid-cols-1 md:grid-cols-[1fr_2fr_auto] gap-2">
-              <input
-                value={rule.name}
-                onChange={(e) => updateAlias(idx, { name: e.target.value })}
-                placeholder="Group name (e.g. Claude Sonnet 4.6)"
-                className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-              />
-              <input
-                value={rule.aliases}
-                onChange={(e) => updateAlias(idx, { aliases: e.target.value })}
-                placeholder="aliases, comma separated (e.g. claude-sonnet-4-6, anthropic/claude-sonnet-4-6)"
-                spellCheck={false}
-                className="w-full rounded border border-gray-300 bg-white px-3 py-2 font-mono text-base md:text-xs shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-              />
-              <button
-                type="button"
-                onClick={() => removeAliasRule(idx)}
-                className="rounded border border-red-200 px-3 py-2 text-sm text-red-500 hover:bg-red-50 min-h-[40px] md:min-h-0"
-              >
-                Remove
-              </button>
-            </div>
-          ))}
-          {aliasesDraft.length === 0 && (
-            <p className="text-sm text-gray-400">No alias groups configured.</p>
-          )}
-          <button
-            type="button"
-            onClick={addAliasRule}
-            className="rounded border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50"
-          >
-            + Add row
-          </button>
-        </div>
-
-        {aliasesError && (
-          <div className="mt-3 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-600">
-            {aliasesError}
-          </div>
-        )}
-        {aliasesSaved && (
-          <div className="mt-3 rounded border border-green-200 bg-green-50 p-3 text-sm text-green-700">
-            Saved. Normalized names update immediately.
-          </div>
-        )}
-
-        <button
-          type="button"
-          onClick={handleSaveAliases}
-          disabled={aliasesBusy}
-          className="mt-4 rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-50"
-        >
-          {aliasesBusy ? "Saving..." : "Save Aliases"}
-        </button>
       </div>
     </div>
   );

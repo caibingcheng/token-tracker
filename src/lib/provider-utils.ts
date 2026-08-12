@@ -92,6 +92,80 @@ export function parseHiddenProviderGroups(raw: string): HiddenProviderGroup[] {
 }
 
 /**
+ * 解析 settings 表存储值（JSON 数组优先，旧字符串语法懒迁移回退）。
+ *
+ * - null / 空 → []
+ * - JSON 数组（每项含 name/patterns，patterns 非空）→ 采用；name 空串补
+ *   "Provider A/B/..."，letter 按行序生成
+ * - 非法 JSON / 形状不符 → 回退 parseHiddenProviderGroups 旧字符串语法
+ */
+export function parseStoredHiddenProviderGroups(
+  stored: string | null
+): HiddenProviderGroup[] {
+  if (!stored || stored.trim() === "") {
+    return [];
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stored);
+  } catch {
+    return parseHiddenProviderGroups(stored);
+  }
+
+  if (!Array.isArray(parsed)) {
+    return parseHiddenProviderGroups(stored);
+  }
+
+  const groups: HiddenProviderGroup[] = [];
+  for (const item of parsed) {
+    if (typeof item !== "object" || item === null) {
+      return parseHiddenProviderGroups(stored);
+    }
+    const { name, patterns } = item as Record<string, unknown>;
+    if (typeof name !== "string" || !Array.isArray(patterns)) {
+      return parseHiddenProviderGroups(stored);
+    }
+    const cleaned = patterns
+      .filter((p): p is string => typeof p === "string" && p.trim() !== "")
+      .map((p) => p.trim());
+    if (cleaned.length === 0) {
+      return parseHiddenProviderGroups(stored);
+    }
+    const letter = String.fromCharCode(65 + groups.length);
+    groups.push({
+      name: name.trim() !== "" ? name : `Provider ${letter}`,
+      letter,
+      patterns: cleaned,
+    });
+  }
+  return groups;
+}
+
+/**
+ * 合法性校验（PUT 落库前）：数组，每项恰含 name/patterns 两键；
+ * patterns 非空数组且元素为非空字符串；name 可为空串（自动命名）。
+ */
+export function isValidHiddenProviderGroups(
+  config: unknown
+): config is HiddenProviderGroup[] {
+  if (!Array.isArray(config)) return false;
+  for (const item of config) {
+    if (!item || typeof item !== "object") return false;
+    const r = item as Record<string, unknown>;
+    for (const key of Object.keys(r)) {
+      if (key !== "name" && key !== "patterns") return false;
+    }
+    if (typeof r.name !== "string") return false;
+    if (!Array.isArray(r.patterns) || r.patterns.length === 0) return false;
+    for (const p of r.patterns) {
+      if (typeof p !== "string" || p.trim() === "") return false;
+    }
+  }
+  return true;
+}
+
+/**
  * 唯一 async 入口：settings 表 hidden_providers 优先 → env HIDDEN_PROVIDERS
  * 回退 → 空数组。纯函数一律接收解析后的 groups 参数，不直接读 env。
  */
@@ -99,7 +173,7 @@ export async function loadHiddenProviderGroups(): Promise<HiddenProviderGroup[]>
   const { getHiddenProvidersSetting } = await import("@/lib/auth/settings");
   const stored = await getHiddenProvidersSetting();
   if (stored !== null) {
-    return parseHiddenProviderGroups(stored);
+    return parseStoredHiddenProviderGroups(stored);
   }
   return parseHiddenProviderGroups(process.env.HIDDEN_PROVIDERS ?? "");
 }

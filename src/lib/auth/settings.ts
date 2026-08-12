@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { db, initDatabase, settingsTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { encryptSecret, decryptSecret } from "@/lib/gateway/crypto";
+import type { HiddenProviderGroup } from "@/lib/provider-utils";
 
 // settings 读取必须走 withSkipCache：查询缓存 TTL 10s，
 // 否则改 key / epoch+1 / 解绑 TOTP 后旧凭证最长残留 10s
@@ -120,8 +121,10 @@ export async function getHiddenProvidersSetting(): Promise<string | null> {
   return getSetting("hidden_providers");
 }
 
-export async function setHiddenProvidersSetting(raw: string): Promise<void> {
-  await setSetting("hidden_providers", raw);
+export async function setHiddenProvidersSetting(
+  groups: HiddenProviderGroup[]
+): Promise<void> {
+  await setSetting("hidden_providers", JSON.stringify(groups));
   // 清空 normalizeModel 的 rawToCanonical 缓存：
   // 面板改分组后立即生效，避免与 10s 查询缓存叠加导致旧匿名名残留
   const { invalidateModelCache } = await import("@/lib/model-registry");

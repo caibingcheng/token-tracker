@@ -40,15 +40,17 @@ beforeEach(async () => {
 });
 
 describe("hidden_providers settings 读写", () => {
-  it("未保存时返回 null，保存后返回原值", async () => {
+  it("未保存时返回 null，保存后返回 JSON 原值", async () => {
     expect(await getHiddenProvidersSetting()).toBeNull();
-    await setHiddenProvidersSetting("CustomA:vendor*");
-    expect(await getHiddenProvidersSetting()).toBe("CustomA:vendor*");
+    const groups = [{ name: "CustomA", patterns: ["vendor*"] }];
+    await setHiddenProvidersSetting(groups);
+    expect(await getHiddenProvidersSetting()).toBe(JSON.stringify(groups));
   });
 
   it("写入后立即可读（withSkipCache 无 10s 延迟）", async () => {
-    await setHiddenProvidersSetting("g1:a*");
-    expect(await getHiddenProvidersSetting()).toBe("g1:a*");
+    const groups = [{ name: "g1", patterns: ["a*"] }];
+    await setHiddenProvidersSetting(groups);
+    expect(await getHiddenProvidersSetting()).toBe(JSON.stringify(groups));
   });
 });
 
