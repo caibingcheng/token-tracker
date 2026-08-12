@@ -13,13 +13,13 @@ import { withSkipCache } from "@/lib/db/cache";
 import { decryptSecret, safeCompare, GatewaySecretMissingError } from "./crypto";
 import type { ProxyDeps, RecordUsageMeta } from "./proxy";
 import type { UpstreamRoute, RoutingRule } from "./model-router";
-import type { QuotaUsage } from "./quota";
 import { parseEnabledModels } from "./model-router";
 import type { Protocol } from "./model-router";
 import { SessionStore } from "./session";
 import { HealthTracker } from "./health";
 import type { HealthPersistence } from "./health";
 import { probeModel } from "./probe";
+import { loadQuotaUsageFromDb } from "./quota-db";
 
 // 模块级单例：session binding 与健康状态必须在请求间共享
 // （createProxyDeps() 是每请求创建的，不能把状态放进 deps 实例）
@@ -176,11 +176,6 @@ export async function loadRoutingRules(): Promise<RoutingRule[]> {
   }));
 }
 
-// 惰性构建：tokenRecords 在模块加载时为 undefined，必须在首次使用（函数体内）时引用
-function tokenSumSql() {
-  return sql`COALESCE(SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.outputTokens}) + SUM(${tokenRecords.cacheRead}) + SUM(${tokenRecords.cacheWrite}), 0)`;
-}
-
 // 代理路由的依赖实现（Next.js 服务端使用）
 export function createProxyDeps(): ProxyDeps {
   return {
@@ -279,58 +274,11 @@ export function createProxyDeps(): ProxyDeps {
       });
     },
 
-    // 配额用量加载：4 条聚合 SELECT（RPM/TPM 共用 60s 窗口合并为 1 条），
-    // 均包 withSkipCache 直查保证实时；token 口径 = input + output + cache_read + cache_write
-    quota: {
-      async loadUsage(virtualKeyId, now) {
-        await initDatabase();
-        return withSkipCache(async () => {
-        const sixtySecondsAgo = new Date(now.getTime() - 60_000).toISOString();
-        const dayStart = `${now.toISOString().slice(0, 10)}T00:00:00.000Z`;
-        const monthStart = new Date(
-          Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)
-        ).toISOString();
-
-        const windowRow = (
-          await db
-            .select({
-              rpm: sql`COUNT(*)`,
-              tpm: tokenSumSql(),
-            })
-            .from(tokenRecords)
-            .where(
-              sql`${tokenRecords.virtualKeyId} = ${virtualKeyId} AND ${tokenRecords.createdAt} >= ${sixtySecondsAgo}`
-            )
-        )[0];
-
-        const dayRow = (
-          await db
-            .select({ tokens: tokenSumSql() })
-            .from(tokenRecords)
-            .where(
-              sql`${tokenRecords.virtualKeyId} = ${virtualKeyId} AND ${tokenRecords.createdAt} >= ${dayStart}`
-            )
-        )[0];
-
-        const monthRow = (
-          await db
-            .select({ tokens: tokenSumSql() })
-            .from(tokenRecords)
-            .where(
-              sql`${tokenRecords.virtualKeyId} = ${virtualKeyId} AND ${tokenRecords.createdAt} >= ${monthStart}`
-            )
-        )[0];
-
-        const usage: QuotaUsage = {
-          rpm: Number(windowRow?.rpm ?? 0),
-          tpm: Number(windowRow?.tpm ?? 0),
-          dailyTokens: Number(dayRow?.tokens ?? 0),
-          monthlyTokens: Number(monthRow?.tokens ?? 0),
-        };
-        return usage;
-      });
-      },
-    },
+// 配额用量加载：共享实现见 quota-db.ts（3 条聚合 SELECT，RPM/TPM 共用 60s 窗口，
+// withSkipCache 直查保证实时；token 口径 = input + output + cache_read + cache_write）
+quota: {
+  loadUsage: (virtualKeyId, now) => loadQuotaUsageFromDb(virtualKeyId, now),
+},
 
     session: {
       getBinding: (sessionId) => sessionStore.get(sessionId),

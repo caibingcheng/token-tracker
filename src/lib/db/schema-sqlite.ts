@@ -23,6 +23,7 @@ export const tokenRecords = sqliteTable("token_records", {
   index("idx_token_records_agent").on(table.agent),
   index("idx_token_records_agent_created_at").on(table.agent, table.createdAt),
   index("idx_token_records_virtual_key_id").on(table.virtualKeyId),
+  index("idx_token_records_vk_created_at").on(table.virtualKeyId, table.createdAt),
 ]);
 
 export type TokenRecord = typeof tokenRecords.$inferSelect;

@@ -1935,7 +1935,7 @@ describe("handleProxyRequest - responses subresource endpoints", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("does not record usage but checks quota on subresource endpoints", async () => {
+  it("does not record usage and skips quota check on subresource endpoints when unlimited", async () => {
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify({ id: "resp_123", usage: { input_tokens: 5, output_tokens: 3 } }), {
         status: 200,
@@ -1951,7 +1951,7 @@ describe("handleProxyRequest - responses subresource endpoints", () => {
     await res.text();
     expect(res.status).toBe(200);
     expect(deps.onUsage).not.toHaveBeenCalled();
-    expect(loadUsage).toHaveBeenCalledTimes(1); // 配额检查已覆盖 subresource（防无限调用）
+    expect(loadUsage).not.toHaveBeenCalled(); // 无限额 vk 跳过配额查询
     expect(deps.onComplete).toHaveBeenCalledWith({ virtualKeyId: 1 });
   });
 

@@ -187,6 +187,7 @@ async function ensureClient() {
 
   client.exec(`
     CREATE INDEX IF NOT EXISTS idx_token_records_virtual_key_id ON token_records(virtual_key_id);
+    CREATE INDEX IF NOT EXISTS idx_token_records_vk_created_at ON token_records(virtual_key_id, created_at);
   `);
 
   console.log("[DB] SQLite initialized at:", dbPath);

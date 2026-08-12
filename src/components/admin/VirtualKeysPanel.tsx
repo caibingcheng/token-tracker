@@ -8,6 +8,7 @@ import { modelMatchesPattern, type Protocol } from "@/lib/gateway/model-router";
 import { CopyableCode } from "./CopyableCode";
 import ActionMenu from "./ActionMenu";
 import { copyText } from "@/lib/clipboard";
+import { QuotaBar, MiniQuotaBar, type QuotaUsageData } from "./QuotaProgress";
 
 export interface VirtualKeyItem {
   id: number;
@@ -22,6 +23,7 @@ export interface VirtualKeyItem {
   maxDailyTokens: number | null;
   maxMonthlyTokens: number | null;
   createdAt: string;
+  quotaUsage: QuotaUsageData | null;
   usage: {
     requestCount: number;
     totalInput: number;
@@ -39,6 +41,7 @@ interface UsageDetail {
   maxTpm: number | null;
   maxDailyTokens: number | null;
   maxMonthlyTokens: number | null;
+  quotaUsage: QuotaUsageData | null;
   usage: {
     requestCount: number;
     totalInput: number;
@@ -120,6 +123,15 @@ function quotaText(key: VirtualKeyItem): string {
   if (key.maxDailyTokens != null) parts.push(`${formatQuota(key.maxDailyTokens)} daily`);
   if (key.maxMonthlyTokens != null) parts.push(`${formatQuota(key.maxMonthlyTokens)} monthly`);
   return parts.length > 0 ? parts.join(" / ") : "—";
+}
+
+function hasAnyQuotaLimit(key: VirtualKeyItem): boolean {
+  return (
+    key.maxRpm != null ||
+    key.maxTpm != null ||
+    key.maxDailyTokens != null ||
+    key.maxMonthlyTokens != null
+  );
 }
 
 function computeResolvedModels(vkEnabledModels: string, modelsData: ModelsData | null): string[] {
@@ -544,23 +556,59 @@ export default function VirtualKeysPanel() {
               />
             </div>
 
-            {/* 配置信息默认展开 */}
-            <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
-              <div className="md:col-span-2 rounded border border-gray-100 bg-gray-50/60 p-2">
+            {/* 限额进度条：仅显示配置了限额的维度 */}
+            {hasAnyQuotaLimit(key) && key.quotaUsage && (
+              <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
+                {key.maxRpm != null && (
+                  <MiniQuotaBar label="RPM" current={key.quotaUsage.rpm} limit={key.maxRpm} />
+                )}
+                {key.maxTpm != null && (
+                  <MiniQuotaBar label="TPM" current={key.quotaUsage.tpm} limit={key.maxTpm} />
+                )}
+                {key.maxDailyTokens != null && (
+                  <MiniQuotaBar
+                    label="Daily"
+                    current={key.quotaUsage.dailyTokens}
+                    limit={key.maxDailyTokens}
+                  />
+                )}
+                {key.maxMonthlyTokens != null && (
+                  <MiniQuotaBar
+                    label="Monthly"
+                    current={key.quotaUsage.monthlyTokens}
+                    limit={key.maxMonthlyTokens}
+                  />
+                )}
+              </div>
+            )}
+
+            {/* 配置信息默认展开：Comment / Created / Last Used 一行（桌面三列，移动端竖排） */}
+            <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-3">
+              <div className="min-w-0 rounded border border-gray-100 bg-gray-50/60 p-2">
                 <span className="text-xs font-medium text-gray-500">Comment</span>
-                <div className="mt-0.5 text-xs text-gray-700">{key.comment || "—"}</div>
+                <div className="mt-0.5 truncate text-xs text-gray-700" title={key.comment ?? undefined}>
+                  {key.comment || "—"}
+                </div>
               </div>
-              <div className="rounded border border-gray-100 bg-gray-50/60 p-2">
+              <div className="min-w-0 rounded border border-gray-100 bg-gray-50/60 p-2">
                 <span className="text-xs font-medium text-gray-500">Created</span>
-                <div className="mt-0.5 text-xs text-gray-700">{new Date(key.createdAt).toLocaleString()}</div>
+                <div
+                  className="mt-0.5 truncate text-xs text-gray-700"
+                  title={new Date(key.createdAt).toLocaleString()}
+                >
+                  {new Date(key.createdAt).toLocaleString()}
+                </div>
               </div>
-              <div className="rounded border border-gray-100 bg-gray-50/60 p-2">
+              <div className="min-w-0 rounded border border-gray-100 bg-gray-50/60 p-2">
                 <span className="text-xs font-medium text-gray-500">Last Used</span>
-                <div className="mt-0.5 text-xs text-gray-700">
+                <div
+                  className="mt-0.5 truncate text-xs text-gray-700"
+                  title={key.lastUsedAt ? new Date(key.lastUsedAt).toLocaleString() : undefined}
+                >
                   {key.lastUsedAt ? new Date(key.lastUsedAt).toLocaleString() : "—"}
                 </div>
               </div>
-              <div className="md:col-span-2 rounded border border-gray-100 bg-gray-50/60 p-2">
+              <div className="rounded border border-gray-100 bg-gray-50/60 p-2 md:col-span-3">
                 <span className="text-xs font-medium text-gray-500">Enabled Models</span>
                 <div className="mt-1.5 flex flex-wrap gap-1">
                   {parseEnabledModelsValue(key.enabledModels).length === 0 && (
@@ -577,7 +625,7 @@ export default function VirtualKeysPanel() {
                 </div>
               </div>
 
-              <div className="md:col-span-2 rounded border border-gray-100 bg-blue-50/40 p-2">
+              <div className="rounded border border-gray-100 bg-blue-50/40 p-2 md:col-span-3">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-xs font-medium text-gray-500">Resolved Allowed Models</span>
                   <span className="text-[10px] text-gray-400">
@@ -652,18 +700,19 @@ export default function VirtualKeysPanel() {
                   </div>
                 </div>
 
-                <div className="mb-2 rounded border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-600">
-                  <span className="text-gray-400">Quota: </span>
-                  <span>
-                    {usageDetail.maxRpm != null ? `${usageDetail.maxRpm} rpm` : "∞ rpm"}
-                    {usageDetail.maxTpm != null ? ` / ${formatQuota(usageDetail.maxTpm)} tpm` : " / ∞ tpm"}
-                    {usageDetail.maxDailyTokens != null
-                      ? ` / ${formatQuota(usageDetail.maxDailyTokens)} daily`
-                      : " / ∞ daily"}
-                    {usageDetail.maxMonthlyTokens != null
-                      ? ` / ${formatQuota(usageDetail.maxMonthlyTokens)} monthly`
-                      : " / ∞ monthly"}
-                  </span>
+                <div className="mb-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <QuotaBar label="RPM" current={usageDetail.quotaUsage?.rpm ?? 0} limit={usageDetail.maxRpm} />
+                  <QuotaBar label="TPM" current={usageDetail.quotaUsage?.tpm ?? 0} limit={usageDetail.maxTpm} />
+                  <QuotaBar
+                    label="Daily Tokens"
+                    current={usageDetail.quotaUsage?.dailyTokens ?? 0}
+                    limit={usageDetail.maxDailyTokens}
+                  />
+                  <QuotaBar
+                    label="Monthly Tokens"
+                    current={usageDetail.quotaUsage?.monthlyTokens ?? 0}
+                    limit={usageDetail.maxMonthlyTokens}
+                  />
                 </div>
 
                 <div className="hidden md:block overflow-x-auto">

@@ -7,6 +7,21 @@ export interface QuotaCheckInput {
   now: Date;
 }
 
+// 是否配置了任何限额（null/undefined 均视为无限额，可跳过配额查询）
+export function hasQuotaLimits(limits: {
+  maxRpm?: number | null;
+  maxTpm?: number | null;
+  maxDailyTokens?: number | null;
+  maxMonthlyTokens?: number | null;
+}): boolean {
+  return (
+    limits.maxRpm != null ||
+    limits.maxTpm != null ||
+    limits.maxDailyTokens != null ||
+    limits.maxMonthlyTokens != null
+  );
+}
+
 export interface QuotaUsage {
   rpm: number; // 最近 60 秒请求数
   tpm: number; // 最近 60 秒 token 数

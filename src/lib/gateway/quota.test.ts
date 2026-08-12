@@ -1,9 +1,24 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { checkQuota } from "./quota";
+import { checkQuota, hasQuotaLimits } from "./quota";
 import type { QuotaCheckInput, QuotaUsage } from "./quota";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+
+describe("hasQuotaLimits", () => {
+  it("returns false when all limits are null", () => {
+    expect(
+      hasQuotaLimits({ maxRpm: null, maxTpm: null, maxDailyTokens: null, maxMonthlyTokens: null })
+    ).toBe(false);
+  });
+
+  it("returns true when any limit is set", () => {
+    expect(hasQuotaLimits({ maxRpm: 10, maxTpm: null, maxDailyTokens: null, maxMonthlyTokens: null })).toBe(true);
+    expect(hasQuotaLimits({ maxRpm: null, maxTpm: 1000, maxDailyTokens: null, maxMonthlyTokens: null })).toBe(true);
+    expect(hasQuotaLimits({ maxRpm: null, maxTpm: null, maxDailyTokens: 10000, maxMonthlyTokens: null })).toBe(true);
+    expect(hasQuotaLimits({ maxRpm: null, maxTpm: null, maxDailyTokens: null, maxMonthlyTokens: 100000 })).toBe(true);
+  });
+});
 
 describe("checkQuota", () => {
   const now = new Date("2026-08-06T12:00:00Z");

@@ -21,7 +21,7 @@ import {
 } from "./parsers";
 import { StreamUsageExtractor } from "./parsers/stream-usage";
 import type { ParsedUsage } from "./parsers/types";
-import { checkQuota } from "./quota";
+import { checkQuota, hasQuotaLimits } from "./quota";
 import type { QuotaUsage } from "./quota";
 import { rewriteModelNonStreaming, createSseModelRewriter } from "./response-rewriter";
 
@@ -417,26 +417,29 @@ export async function handleProxyRequest(
     }
   }
 
-  // 配额检查：选上游之后、转发之前；超限直接 429 不转发上游
-  const now = new Date();
-  const quotaUsage = await deps.quota.loadUsage(virtualKey.id, now);
-  const violation = checkQuota(
-    {
-      virtualKeyId: virtualKey.id,
-      maxRpm: virtualKey.maxRpm ?? null,
-      maxTpm: virtualKey.maxTpm ?? null,
-      maxDailyTokens: virtualKey.maxDailyTokens ?? null,
-      maxMonthlyTokens: virtualKey.maxMonthlyTokens ?? null,
-      now,
-    },
-    quotaUsage
-  );
-  if (violation) {
-    return proxyError(
-      429,
-      `Quota exceeded (${violation.dimension}: ${violation.current} / ${violation.limit})`,
-      "quota_exceeded"
+  // 配额检查：选上游之后、转发之前；超限直接 429 不转发上游。
+  // 无限额 vk 直接跳过（避免每次请求 3 条聚合 SQL）
+  if (hasQuotaLimits(virtualKey)) {
+    const now = new Date();
+    const quotaUsage = await deps.quota.loadUsage(virtualKey.id, now);
+    const violation = checkQuota(
+      {
+        virtualKeyId: virtualKey.id,
+        maxRpm: virtualKey.maxRpm ?? null,
+        maxTpm: virtualKey.maxTpm ?? null,
+        maxDailyTokens: virtualKey.maxDailyTokens ?? null,
+        maxMonthlyTokens: virtualKey.maxMonthlyTokens ?? null,
+        now,
+      },
+      quotaUsage
     );
+    if (violation) {
+      return proxyError(
+        429,
+        `Quota exceeded (${violation.dimension}: ${violation.current} / ${violation.limit})`,
+        "quota_exceeded"
+      );
+    }
   }
 
   const startTime = Date.now();
@@ -715,8 +718,9 @@ async function handleSubresourcePassthrough(
     return proxyError(502, "No healthy upstream available", "upstream_error");
   }
 
-  // 配额检查：subresource 无 model 维度，按 vk 聚合限额（RPM/TPM/Daily/Monthly）检查
-  if (deps.quota) {
+  // 配额检查：subresource 无 model 维度，按 vk 聚合限额（RPM/TPM/Daily/Monthly）检查；
+  // 无限额 vk 直接跳过
+  if (deps.quota && hasQuotaLimits(virtualKey)) {
     const now = new Date();
     const quotaUsage = await deps.quota.loadUsage(virtualKey.id, now);
     const violation = checkQuota(

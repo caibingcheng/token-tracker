@@ -10,6 +10,8 @@ import {
   GatewaySecretMissingError,
 } from "@/lib/gateway/crypto";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
+import { hasQuotaLimits } from "@/lib/gateway/quota";
+import { loadQuotaUsageBatch } from "@/lib/gateway/quota-db";
 
 function gatewaySecretError() {
   return NextResponse.json(
@@ -65,9 +67,15 @@ export const GET = withAuth(async (request: NextRequest) => {
       usageMap.set(Number(row.virtualKeyId), row);
     }
 
+    // 窗口配额用量：仅对配置了限额的 vk 批量查询（3 条 GROUP BY，一次完成）
+    const quotaVkIds = rows.filter((r: any) => hasQuotaLimits(r)).map((r: any) => r.id);
+    const quotaUsageMap =
+      quotaVkIds.length > 0 ? await loadQuotaUsageBatch(quotaVkIds, new Date()) : new Map<number, never>();
+
     const data = rows.map((row: any) => {
       const plain = decryptSecret(row.apiKeyEncrypted);
       const usage = usageMap.get(row.id);
+      const q = quotaUsageMap.get(row.id);
       return {
         id: row.id,
         name: row.name,
@@ -81,6 +89,14 @@ export const GET = withAuth(async (request: NextRequest) => {
         maxDailyTokens: row.maxDailyTokens ?? null,
         maxMonthlyTokens: row.maxMonthlyTokens ?? null,
         createdAt: row.createdAt,
+        quotaUsage: q
+          ? {
+              rpm: q.rpm,
+              tpm: q.tpm,
+              dailyTokens: q.dailyTokens,
+              monthlyTokens: q.monthlyTokens,
+            }
+          : null,
         usage: usage
           ? {
               requestCount: Number(usage.requestCount),

@@ -3,6 +3,8 @@ import { eq, desc, sql } from "drizzle-orm";
 import { db, initDatabase, virtualKeysTable, tokenRecords } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";
+import { hasQuotaLimits } from "@/lib/gateway/quota";
+import { loadQuotaUsageFromDb } from "@/lib/gateway/quota-db";
 
 interface Params {
   params: { id: string };
@@ -51,6 +53,9 @@ export const GET = withAuth(async (request: NextRequest, ctx: any) => {
       .orderBy(desc(tokenRecords.createdAt))
       .limit(20);
 
+    // 窗口配额用量：仅配置了限额时查询
+    const quotaUsage = hasQuotaLimits(row) ? await loadQuotaUsageFromDb(id, new Date()) : null;
+
     return NextResponse.json({
       success: true,
       data: {
@@ -64,6 +69,7 @@ export const GET = withAuth(async (request: NextRequest, ctx: any) => {
         maxTpm: row.maxTpm ?? null,
         maxDailyTokens: row.maxDailyTokens ?? null,
         maxMonthlyTokens: row.maxMonthlyTokens ?? null,
+        quotaUsage,
         usage: usage[0],
         recent,
       },
