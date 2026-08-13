@@ -273,15 +273,16 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
 
   return (
     <PublicPreviewContext.Provider value={previewContextValue}>
-      {previewPublic ? (
+      {/* children 用 display:none 隐藏而非卸载：切换预览时 Dashboard/AdminPanel
+          不重新挂载，数据、当前 admin tab、表单状态全部保留，点击即切换 */}
+      <div className={previewPublic ? "hidden" : undefined}>{children}</div>
+      {previewPublic && (
         <PublicStatusView
           preview
           onExit={() => setPreviewPublic(false)}
           onDisabled={() => setGateView("login")}
           onLoginRequest={() => setGateView("login")}
         />
-      ) : (
-        children
       )}
       <MobileTabBar
         onLogout={handleLogout}

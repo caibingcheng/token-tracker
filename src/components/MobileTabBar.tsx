@@ -34,7 +34,7 @@ export default function MobileTabBar({
     {
       href: "/admin",
       label: "Admin",
-      active: isAdmin,
+      active: isAdmin && !previewActive,
       icon: (
         <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" />
@@ -55,29 +55,19 @@ export default function MobileTabBar({
       aria-label="Mobile navigation"
     >
       <div className="flex">
-        {previewActive ? (
-          <button type="button" onClick={onPreviewToggle} className={tabClass(false)}>
-            <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="3" y="3" width="7" height="9" rx="1" />
-              <rect x="14" y="3" width="7" height="5" rx="1" />
-              <rect x="14" y="12" width="7" height="9" rx="1" />
-              <rect x="3" y="16" width="7" height="5" rx="1" />
-            </svg>
-            Dashboard
-          </button>
-        ) : (
-          <Link
-            href={tabs[0]!.href}
-            className={tabClass(tabs[0]!.active)}
-          >
-            {tabs[0]!.icon}
-            {tabs[0]!.label}
-          </Link>
-        )}
+        <Link
+          href={tabs[0]!.href}
+          onClick={previewActive ? onPreviewToggle : undefined}
+          className={tabClass(tabs[0]!.active)}
+        >
+          {tabs[0]!.icon}
+          {tabs[0]!.label}
+        </Link>
         <button
           type="button"
-          onClick={onPreviewToggle}
+          onClick={previewActive ? undefined : onPreviewToggle}
           className={tabClass(previewActive)}
+          aria-current={previewActive ? "location" : undefined}
         >
           <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" />
@@ -87,6 +77,7 @@ export default function MobileTabBar({
         </button>
         <Link
           href={tabs[1]!.href}
+          onClick={previewActive ? onPreviewToggle : undefined}
           className={tabClass(tabs[1]!.active)}
         >
           {tabs[1]!.icon}
