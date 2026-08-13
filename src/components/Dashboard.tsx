@@ -4,14 +4,14 @@ import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import Link from "next/link";
 import StatsCards, { Stats } from "./StatsCards";
 import RecordsTable from "./RecordsTable";
-import DailyUsageChart, { DailyData } from "./DailyUsageChart";
+import DailyUsageChart, {
+  DailyData,
+  LatencyModelStat,
+  LatencyDayStat,
+} from "./DailyUsageChart";
 import TodayOverview, { TodayData } from "./TodayOverview";
 import PriceSimulatorModal from "./PriceSimulatorModal";
 import UsageHeatmap, { HeatmapData } from "./UsageHeatmap";
-import LatencyStats, {
-  LatencyModelStat,
-  LatencyDayStat,
-} from "./LatencyStats";
 import {
   NumberFormatProvider,
   useNumberFormat,
@@ -63,7 +63,6 @@ const SECTIONS: SectionNavItem[] = [
   { id: "stats-section", label: "Stats" },
   { id: "today-section", label: "Today" },
   { id: "trends-section", label: "Trends" },
-  { id: "speed-section", label: "Speed" },
   { id: "records-section", label: "Records" },
 ];
 
@@ -998,16 +997,8 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
             topModels={topModels}
             dailyTopModels={dailyTopModels}
             hourly={hourlyData}
-            timezoneOffsetMinutes={timezoneOffsetMinutes}
-          />
-        </section>
-
-        <section id="speed-section" className="scroll-mt-28">
-          <LatencyStats
-            byModel={latencyByModel}
-            daily={latencyDaily}
-            loading={loading}
-            range={dailyRange}
+            latencyDaily={latencyDaily}
+            latencyByModel={latencyByModel}
             timezoneOffsetMinutes={timezoneOffsetMinutes}
           />
         </section>

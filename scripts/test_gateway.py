@@ -6,12 +6,13 @@ Supports OpenAI, Anthropic and Gemini protocols through the gateway's
 /v1 and /v1beta catch-all routes. Only uses Python standard library.
 
 Usage:
-    python3 scripts/test_gateway.py <url> <vk> <model> [protocol]
+    python3 scripts/test_gateway.py <url> <vk> <model> [protocol] [stream]
 
 Examples:
     python3 scripts/test_gateway.py http://localhost:3000 vk-xxx gpt-4o-mini
     python3 scripts/test_gateway.py http://localhost:3000 vk-xxx claude-3-5-sonnet anthropic
     python3 scripts/test_gateway.py http://localhost:3000 vk-xxx gemini-1.5-flash gemini
+    python3 scripts/test_gateway.py http://localhost:3000 vk-xxx gpt-4o-mini openai stream
 """
 
 import json
@@ -30,7 +31,7 @@ def print_usage() -> None:
 
 
 def build_request(
-    url: str, vk: str, model: str, protocol: str
+    url: str, vk: str, model: str, protocol: str, stream: bool
 ) -> Tuple[str, Dict[str, str], bytes]:
     if protocol == "openai":
         endpoint = f"{url.rstrip('/')}/v1/chat/completions"
@@ -49,6 +50,9 @@ def build_request(
             ],
             "max_tokens": 100,
         }
+        if stream:
+            body["stream"] = True
+            body["stream_options"] = {"include_usage": True}
     elif protocol == "anthropic":
         endpoint = f"{url.rstrip('/')}/v1/messages"
         headers = {
@@ -64,8 +68,13 @@ def build_request(
             ],
             "max_tokens": 100,
         }
+        if stream:
+            body["stream"] = True
     elif protocol == "gemini":
-        endpoint = f"{url.rstrip('/')}/v1beta/models/{model}:generateContent"
+        if stream:
+            endpoint = f"{url.rstrip('/')}/v1beta/models/{model}:streamGenerateContent?alt=sse"
+        else:
+            endpoint = f"{url.rstrip('/')}/v1beta/models/{model}:generateContent"
         headers = {
             "x-goog-api-key": vk,
             "Content-Type": "application/json",
@@ -138,6 +147,76 @@ def extract(protocol: str, data: Dict[str, Any]) -> Tuple[str, Dict[str, int]]:
     raise ValueError(f"unsupported protocol: {protocol}")
 
 
+def apply_usage(protocol: str, usage: Dict[str, int], data: Dict[str, Any]) -> None:
+    """Merge usage from a stream chunk into `usage` (last non-empty wins)."""
+    if protocol == "openai":
+        u = data.get("usage") or {}
+        if u.get("prompt_tokens") is not None:
+            usage["input_tokens"] = u.get("prompt_tokens", 0)
+            usage["output_tokens"] = u.get("completion_tokens", 0)
+            usage["total_tokens"] = u.get("total_tokens", 0)
+    elif protocol == "anthropic":
+        u = data.get("usage") or {}
+        if u.get("input_tokens") is not None:
+            usage["input_tokens"] = u.get("input_tokens", 0)
+            usage["output_tokens"] = u.get("output_tokens", 0)
+            usage["total_tokens"] = usage["input_tokens"] + usage["output_tokens"]
+    elif protocol == "gemini":
+        u = data.get("usageMetadata") or {}
+        if u.get("promptTokenCount") is not None:
+            usage["input_tokens"] = u.get("promptTokenCount", 0)
+            usage["output_tokens"] = u.get("candidatesTokenCount", 0)
+            usage["total_tokens"] = u.get("totalTokenCount", 0)
+
+
+def chunk_text_delta(protocol: str, data: Dict[str, Any]) -> str:
+    """Return the incremental text carried by one stream chunk."""
+    if protocol == "openai":
+        choices = data.get("choices") or []
+        if choices and isinstance(choices[0], dict):
+            delta = choices[0].get("delta") or {}
+            if isinstance(delta, dict):
+                return delta.get("content") or ""
+    elif protocol == "anthropic":
+        if data.get("type") == "content_block_delta":
+            delta = data.get("delta") or {}
+            if isinstance(delta, dict) and delta.get("type") == "text_delta":
+                return delta.get("text") or ""
+    elif protocol == "gemini":
+        candidates = data.get("candidates") or []
+        if candidates and isinstance(candidates[0], dict):
+            content = candidates[0].get("content") or {}
+            if isinstance(content, dict):
+                parts = content.get("parts") or []
+                if parts and isinstance(parts[0], dict):
+                    return parts[0].get("text") or ""
+    return ""
+
+
+def consume_stream(resp: Any, protocol: str) -> Tuple[str, Dict[str, int]]:
+    """Read an SSE stream line by line, collecting text and usage."""
+    text = ""
+    usage: Dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    for line in resp:
+        line = line.decode("utf-8", errors="replace").strip()
+        if not line or not line.startswith("data:"):
+            continue
+        payload = line[len("data:"):].strip()
+        if payload == "[DONE]":
+            break
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(data, dict):
+            continue
+        text += chunk_text_delta(protocol, data)
+        apply_usage(protocol, usage, data)
+        if protocol == "anthropic" and data.get("type") == "message_stop":
+            break
+    return text.strip(), usage
+
+
 def main() -> int:
     if len(sys.argv) < 4:
         print_usage()
@@ -147,14 +226,19 @@ def main() -> int:
     vk = sys.argv[2]
     model = sys.argv[3]
     protocol = (sys.argv[4] if len(sys.argv) > 4 else "openai").lower()
+    stream = (
+        len(sys.argv) > 5
+        and sys.argv[5].lower() in ("stream", "--stream", "true", "1")
+    )
 
     if protocol not in ("openai", "anthropic", "gemini"):
         eprint(f"error: unknown protocol '{protocol}'. use openai|anthropic|gemini")
         return 1
 
-    endpoint, headers, payload = build_request(url, vk, model, protocol)
+    endpoint, headers, payload = build_request(url, vk, model, protocol, stream)
 
     print(f"protocol: {protocol}")
+    print(f"streaming: {'yes' if stream else 'no'}")
     print(f"endpoint: {endpoint}")
 
     req = urllib.request.Request(
@@ -164,10 +248,17 @@ def main() -> int:
         method="POST",
     )
 
+    status = 0
+    streamed_text = ""
+    streamed_usage: Dict[str, int] = {}
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=120) as resp:
             status = resp.status
-            body = resp.read()
+            if stream:
+                streamed_text, streamed_usage = consume_stream(resp, protocol)
+                body = b""
+            else:
+                body = resp.read()
     except urllib.error.HTTPError as exc:
         status = exc.code
         body = exc.read()
@@ -177,6 +268,21 @@ def main() -> int:
 
     print(f"status: {status}")
     print()
+
+    if stream:
+        if status < 200 or status >= 300:
+            eprint("error: non-2xx response")
+            try:
+                eprint(json.dumps(json.loads(body.decode("utf-8")), indent=2, ensure_ascii=False))
+            except json.JSONDecodeError:
+                eprint(body.decode("utf-8", errors="replace"))
+            return 1
+        print("reply:", streamed_text if streamed_text else "(empty)")
+        print()
+        print("usage:")
+        for key, value in streamed_usage.items():
+            print(f"  {key}: {value}")
+        return 0
 
     try:
         data = json.loads(body.decode("utf-8"))

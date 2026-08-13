@@ -20,6 +20,27 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { useNumberFormat } from "./NumberFormatContext";
+import { formatLatencyMs } from "@/lib/number-utils";
+
+export interface LatencyModelStat {
+  model: string;
+  displayName: string;
+  provider: string;
+  providerName: string;
+  count: number;
+  streamCount: number;
+  avgTtftMs: number | null;
+  p50TtftMs: number | null;
+  avgLatencyMs: number | null;
+  outputTokensPerSec: number | null;
+}
+
+export interface LatencyDayStat {
+  group: string;
+  streamCount: number;
+  avgTtftMs: number | null;
+  p50TtftMs: number | null;
+}
 
 export interface DailyData {
   group: string;
@@ -108,6 +129,8 @@ interface DailyUsageChartProps {
   topModels?: TopModel[];
   dailyTopModels?: Record<string, TopModel[]>;
   hourly?: DailyData[];
+  latencyDaily?: LatencyDayStat[];
+  latencyByModel?: LatencyModelStat[];
   timezoneOffsetMinutes?: number;
   showCost?: boolean;
   showHourly?: boolean;
@@ -120,9 +143,43 @@ const COLORS = {
   output: "#1E40AF",
   hitRate: "#F59E0B",
   price: "#10B981",
+  ttft: "#8B5CF6",
+  ttftAvg: "#F43F5E",
 };
 
 const ACTIVE_AXIS_COLOR = "#2563EB";
+
+function ChartLegend({
+  items,
+}: {
+  items: Array<{ color: string; label: string; dashed?: boolean; bar?: boolean }>;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mb-2">
+      {items.map((item) => (
+        <span key={item.label} className="inline-flex items-center gap-1.5 text-xs text-gray-500">
+          <span
+            className={
+              item.bar
+                ? "inline-block h-2.5 w-2.5 rounded-sm"
+                : "inline-block h-0.5 w-4 rounded"
+            }
+            style={
+              item.bar
+                ? { backgroundColor: item.color }
+                : item.dashed
+                  ? {
+                      background: `repeating-linear-gradient(90deg, ${item.color} 0 4px, transparent 4px 7px)`,
+                    }
+                  : { backgroundColor: item.color }
+            }
+          />
+          {item.label}
+        </span>
+      ))}
+    </div>
+  );
+}
 
 const RANGE_OPTIONS = [3, 7, 14, 30];
 
@@ -485,6 +542,146 @@ function RatioCostTooltip({ active, payload, label }: {
   );
 }
 
+function TtftTooltip({ active, payload, label }: {
+  active?: boolean;
+  payload?: Array<{
+    name?: string;
+    value: number | null;
+    payload?: { streamCount?: number };
+  }>;
+  label?: string;
+}) {
+  if (!active || !payload || payload.length === 0) return null;
+  const filtered = payload.filter((entry) => String(entry.name || "").trim() !== "");
+  if (filtered.length === 0) return null;
+  const streamCount = filtered[0].payload?.streamCount ?? 0;
+  return (
+    <div className="bg-white border border-gray-200 rounded-md shadow-sm p-2 text-xs">
+      <p className="font-medium text-gray-700 mb-1">{label}</p>
+      <div className="space-y-0.5">
+        {filtered.map((entry) => (
+          <p key={entry.name} className="text-gray-600">
+            <span className="font-medium">{entry.name}:</span>{" "}
+            {entry.value == null ? "-" : formatLatencyMs(Number(entry.value))}
+          </p>
+        ))}
+        <p className="text-gray-600">
+          <span className="font-medium">Streams:</span> {streamCount}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function formatTokensPerSec(v: number | null): string {
+  if (v === null || !Number.isFinite(v)) return "-";
+  return `${v.toFixed(1)}/s`;
+}
+
+function SpeedTable({ byModel }: { byModel: LatencyModelStat[] }) {
+  return (
+    <div className="mt-8">
+      <div className="flex items-center justify-between mb-2">
+        <h3 className="text-lg font-semibold">Speed</h3>
+        <span
+          className="text-xs text-gray-400 cursor-help"
+          title="TTFT = 流式请求首个 chunk 到达耗时（首 token 延迟）；Latency = 整请求耗时；tok/s = 流式生成速度（不含首 token 等待）。TTFT 仅流式请求有值，Streams 列展示其样本量。"
+        >
+          ?
+        </span>
+      </div>
+      <p className="text-xs text-gray-400 mb-4">
+        TTFT (p50) · Avg TTFT · Avg Total · Generation Speed
+      </p>
+
+      <div className="hidden md:block overflow-x-auto">
+        <table className="w-full">
+          <thead className="bg-gray-50">
+            <tr>
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Model</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Provider</th>
+              <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">p50 TTFT</th>
+              <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Avg TTFT</th>
+              <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Avg Total</th>
+              <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">tok/s</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-200">
+            {byModel.length === 0 && (
+              <tr>
+                <td colSpan={6} className="px-4 py-6 text-center text-sm text-gray-400">
+                  No streaming requests in this period
+                </td>
+              </tr>
+            )}
+            {byModel.map((m) => (
+              <tr key={`${m.provider}\u0000${m.model}`}>
+                <td className="px-4 py-3 text-sm font-medium text-gray-900 whitespace-nowrap">
+                  {m.displayName}
+                </td>
+                <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">
+                  {m.providerName}
+                </td>
+                <td className="px-4 py-3 text-sm text-gray-900 text-right whitespace-nowrap">
+                  {formatLatencyMs(m.p50TtftMs)}
+                </td>
+                <td className="px-4 py-3 text-sm text-gray-600 text-right whitespace-nowrap">
+                  {formatLatencyMs(m.avgTtftMs)}
+                </td>
+                <td className="px-4 py-3 text-sm text-gray-600 text-right whitespace-nowrap">
+                  {formatLatencyMs(m.avgLatencyMs)}
+                </td>
+                <td className="px-4 py-3 text-sm text-gray-600 text-right whitespace-nowrap">
+                  {formatTokensPerSec(m.outputTokensPerSec)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="md:hidden space-y-3">
+        {byModel.length === 0 && (
+          <p className="text-center text-sm text-gray-400 py-4">
+            No streaming requests in this period
+          </p>
+        )}
+        {byModel.map((m) => (
+          <div
+            key={`${m.provider}\u0000${m.model}`}
+            className="border border-gray-200 rounded-lg p-4"
+          >
+            <div className="flex justify-between items-start mb-3">
+              <div>
+                <p className="text-sm font-medium text-gray-900">{m.displayName}</p>
+                <p className="text-xs text-gray-400 mt-0.5">{m.providerName}</p>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <p className="text-xs text-gray-500">p50 TTFT</p>
+                <p className="text-sm font-semibold text-gray-900">{formatLatencyMs(m.p50TtftMs)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500">Avg TTFT</p>
+                <p className="text-sm font-semibold text-gray-900">{formatLatencyMs(m.avgTtftMs)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500">Avg Total</p>
+                <p className="text-sm font-semibold text-gray-900">{formatLatencyMs(m.avgLatencyMs)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500">tok/s</p>
+                <p className="text-sm font-semibold text-gray-900">{formatTokensPerSec(m.outputTokensPerSec)}</p>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function formatSelectedDateLabel(
   dateStr: string,
   timezoneOffsetMinutes: number
@@ -514,6 +711,8 @@ export default function DailyUsageChart({
   topModels,
   dailyTopModels,
   hourly,
+  latencyDaily,
+  latencyByModel,
   timezoneOffsetMinutes = 0,
   showCost = true,
   showHourly = true,
@@ -592,8 +791,19 @@ export default function DailyUsageChart({
       apiData.set(item.group, item);
     });
 
+    const latencyMap = new Map<string, LatencyDayStat>();
+    (latencyDaily ?? []).forEach((item) => {
+      latencyMap.set(item.group, item);
+    });
+
     const lastNDays = getLastNDays(range, timezoneOffsetMinutes);
     const mapped = lastNDays.map((date) => {
+      const lat = latencyMap.get(date);
+      const latencyFields = {
+        p50TtftMs: lat?.p50TtftMs ?? null,
+        avgTtftMs: lat?.avgTtftMs ?? null,
+        streamCount: lat?.streamCount ?? 0,
+      };
       const existing = apiData.get(date);
       if (existing) {
         const cached = Number(existing.totalInputCached) || 0;
@@ -601,6 +811,7 @@ export default function DailyUsageChart({
         const totalInput = cached + uncached;
         return {
           ...existing,
+          ...latencyFields,
           totalInputCached: cached,
           totalInputUncached: uncached,
           totalInput: Number(existing.totalInput) || 0,
@@ -633,11 +844,12 @@ export default function DailyUsageChart({
         costPerMillionOutput: 0,
         cacheHitRate: 0,
         dummy: 0,
+        ...latencyFields,
       };
     });
 
     return mapped;
-  }, [rawData, range, timezoneOffsetMinutes]);
+  }, [rawData, range, timezoneOffsetMinutes, latencyDaily]);
 
   const tokenDomain = useMemo(() => {
     const max = Math.max(
@@ -739,6 +951,13 @@ export default function DailyUsageChart({
           <div className="space-y-6 hidden md:block">
             <div>
               <h3 className="text-sm font-medium text-gray-700 mb-2">Daily Token Usage</h3>
+              <ChartLegend
+                items={[
+                  { color: COLORS.cache, label: "Cache", bar: true },
+                  { color: COLORS.input, label: "Uncache", bar: true },
+                  { color: COLORS.output, label: "Output", bar: true },
+                ]}
+              />
               <div className="h-[280px]">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart
@@ -829,6 +1048,12 @@ export default function DailyUsageChart({
             {showCost && (
               <div>
                 <h3 className="text-sm font-medium text-gray-700 mb-2">Daily Ratio & Cost</h3>
+                <ChartLegend
+                  items={[
+                    { color: COLORS.hitRate, label: "Cache Hit Ratio" },
+                    { color: COLORS.price, label: "Avg cost / 1M" },
+                  ]}
+                />
                 <div className="h-[240px]">
                 <ResponsiveContainer width="100%" height="100%">
                   <ComposedChart
@@ -904,6 +1129,94 @@ export default function DailyUsageChart({
                       dot={false}
                       activeDot={{ r: 4, fill: COLORS.price, stroke: "#fff", strokeWidth: 1 }}
                       name="Avg cost / 1M"
+                    />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </div>
+              </div>
+            )}
+
+            {data.some((d) => d.streamCount > 0) && (
+              <div>
+                <h3 className="text-sm font-medium text-gray-700 mb-2">
+                  Daily TTFT (p50 / avg)
+                </h3>
+                <ChartLegend
+                  items={[
+                    { color: COLORS.ttft, label: "p50 TTFT" },
+                    { color: COLORS.ttftAvg, label: "Avg TTFT", dashed: true },
+                  ]}
+                />
+                <div className="h-[200px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <ComposedChart
+                    data={data}
+                    margin={{ top: 10, right: 100, left: 55, bottom: 10 }}
+                    syncId="daily"
+                    barCategoryGap="20%"
+                    onClick={handleChartClick}
+                    onMouseMove={handleChartMouseMove}
+                    onMouseLeave={handleChartMouseLeave}
+                    className="cursor-pointer"
+                  >
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                    <XAxis
+                      dataKey="group"
+                      ticks={data.map((d) => d.group)}
+                      tick={(props) => {
+                        const index = props.index ?? 0;
+                        const interval = getXAxisInterval(range);
+                        const showLabel = interval === 0 || index % (interval + 1) === 0;
+                        return (
+                          <CustomXAxisTick
+                            {...props}
+                            selectedDate={selectedDate}
+                            hoveredDate={hoveredDate}
+                            index={showLabel ? index : -1}
+                          />
+                        );
+                      }}
+                      interval={0}
+                      minTickGap={15}
+                    />
+                    <YAxis
+                      yAxisId="left"
+                      tick={{ fontSize: 11, fill: COLORS.ttft }}
+                      width={45}
+                      tickFormatter={(v: number) => formatLatencyMs(v)}
+                      domain={[0, "auto"]}
+                    />
+                    <Tooltip content={<TtftTooltip />} cursor={false} />
+                    <Bar
+                      yAxisId="left"
+                      dataKey="dummy"
+                      fill="transparent"
+                      stroke="none"
+                      name=""
+                      isAnimationActive={false}
+                    />
+                    <Line
+                      yAxisId="left"
+                      type="monotone"
+                      dataKey="p50TtftMs"
+                      stroke={COLORS.ttft}
+                      strokeWidth={2}
+                      dot={{ r: 2.5, fill: COLORS.ttft, strokeWidth: 0 }}
+                      activeDot={{ r: 4, fill: COLORS.ttft, stroke: "#fff", strokeWidth: 1 }}
+                      name="p50 TTFT"
+                      connectNulls={false}
+                    />
+                    <Line
+                      yAxisId="left"
+                      type="monotone"
+                      dataKey="avgTtftMs"
+                      stroke={COLORS.ttftAvg}
+                      strokeWidth={2}
+                      strokeDasharray="5 3"
+                      dot={{ r: 2.5, fill: COLORS.ttftAvg, strokeWidth: 0 }}
+                      activeDot={{ r: 4, fill: COLORS.ttftAvg, stroke: "#fff", strokeWidth: 1 }}
+                      name="Avg TTFT"
+                      connectNulls={false}
                     />
                   </ComposedChart>
                 </ResponsiveContainer>
@@ -1085,6 +1398,10 @@ export default function DailyUsageChart({
                 {selectedDate ? "No data for selected date" : "No data available"}
               </p>
             </div>
+          )}
+
+          {latencyByModel && (
+            <SpeedTable byModel={latencyByModel} />
           )}
         </div>
       )}

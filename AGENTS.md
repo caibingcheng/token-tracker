@@ -144,7 +144,7 @@ docker compose up -d                                 # 本地运行
 - **byModel**：按归一化 model × provider 分组，输出 count / streamCount / avgTtftMs / p50TtftMs（仅流式行）/ avgLatencyMs（全部行）/ outputTokensPerSec（仅流式且 latency > ttft 的行，防除零）；**只保留 active model**（当前启用 upstream 非通配 enabled_models 并集，`loadActiveModelSet()` 与 model_prices 的 active 判定同源，已删除 model 不显示）；按 p50 升序排（快者在前，无样本排最后）
 - **daily**：按浏览器时区日期分组（`aggregateLatencyDaily`），全量历史不过滤 active；无流式样本的日期不产出行
 - **p50 口径**：`percentile()` 线性插值；avg/p50 四舍五入为整数 ms，tok/s 保留 1 位小数
-- **展示**：Speed section 对比表（桌面 table + `md:hidden` 卡片）+ 纯 CSS 日趋势柱状图（高度 = p50 TTFT）；section 恒显示（无流式样本时表格显示空态、趋势图不渲染）；RecordsTable 单条记录显示 TTFT + Latency 独立两列（`formatLatencyMs`，<1000ms 显示 `xxxms` 否则 `x.xs`，无值显示 `-`）
+- **展示**：Speed 对比表并入 Trends 区块（桌面 table + `md:hidden` 卡片）+ Daily p50 TTFT 折线图（recharts LineChart，与其余 Daily 图表共用 `syncId="daily"` 联动、点击选中日期；无流式样本日期断线，整区间无流式数据不渲染）；RecordsTable 单条记录显示 TTFT + Latency 独立两列（`formatLatencyMs` 统一 `xxxms` 格式，无值显示 `-`）
 - **注意**：TTFT = 首个 SSE chunk 到达时间，个别上游先推空 chunk 会略微低估真实首 token 时间，对比用途足够
 
 ### Provider 匿名化
