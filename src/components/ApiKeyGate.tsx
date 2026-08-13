@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import {
   getApiKey,
   clearApiKey,
@@ -11,6 +11,21 @@ import {
 } from "@/lib/client/api-client";
 import MobileTabBar from "./MobileTabBar";
 import PublicStatusView from "./PublicStatusView";
+
+// 登录后预览公开 Status 面板的切换开关（Dashboard / MobileTabBar 消费）
+interface PublicPreviewContextValue {
+  previewPublic: boolean;
+  togglePreview: () => void;
+}
+
+export const PublicPreviewContext = createContext<PublicPreviewContextValue>({
+  previewPublic: false,
+  togglePreview: () => {},
+});
+
+export function usePublicPreview() {
+  return useContext(PublicPreviewContext);
+}
 
 export default function ApiKeyGate({ children }: { children: React.ReactNode }) {
   // 初始 null = 未知（SSR/首帧不渲染登录表单，避免浏览器密码自动填充弹窗）；
@@ -28,11 +43,22 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
   // 未登录视图：public = 公开面板（status_page_config 启用时），login = 登录表单
   const [gateView, setGateView] = useState<"public" | "login">("public");
   const [statusEnabled, setStatusEnabled] = useState(true);
+  // 登录后预览公开面板（替代 children 渲染 PublicStatusView）
+  const [previewPublic, setPreviewPublic] = useState(false);
+
+  const previewContextValue = useMemo(
+    () => ({
+      previewPublic,
+      togglePreview: () => setPreviewPublic((v) => !v),
+    }),
+    [previewPublic]
+  );
 
   const handleUnauthorized = useCallback(() => {
     setError("Invalid or missing session");
     setHasKey(false);
     setGateView("public");
+    setPreviewPublic(false);
   }, []);
 
   useEffect(() => {
@@ -83,6 +109,7 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
     setError(null);
     setHasKey(false);
     setGateView("public");
+    setPreviewPublic(false);
   };
 
   const handleSetup = async (e: React.FormEvent) => {
@@ -245,9 +272,22 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
   }
 
   return (
-    <>
-      {children}
-      <MobileTabBar onLogout={handleLogout} />
+    <PublicPreviewContext.Provider value={previewContextValue}>
+      {previewPublic ? (
+        <PublicStatusView
+          preview
+          onExit={() => setPreviewPublic(false)}
+          onDisabled={() => setGateView("login")}
+          onLoginRequest={() => setGateView("login")}
+        />
+      ) : (
+        children
+      )}
+      <MobileTabBar
+        onLogout={handleLogout}
+        previewActive={previewPublic}
+        onPreviewToggle={() => setPreviewPublic((v) => !v)}
+      />
       <button
         type="button"
         onClick={handleLogout}
@@ -256,6 +296,6 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
       >
         Logout
       </button>
-    </>
+    </PublicPreviewContext.Provider>
   );
 }

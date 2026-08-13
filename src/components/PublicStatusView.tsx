@@ -10,10 +10,14 @@ import { getClientTimezoneOffsetMinutes } from "@/lib/timezone-utils";
 
 // 未登录公开面板。数据来自 /status/data 公开端点（服务端按 elements 裁剪）；
 // 本组件按元素开关条件渲染。数据端点 404（status_page_config 未启用）时回调 onDisabled。
+// preview 模式：登录后预览公开效果（ApiKeyGate 传入），404 时显示错误条而非回调 onDisabled，
+// header 的 Login 按钮替换为「← Back to Dashboard」（onExit）。
 
 interface PublicStatusViewProps {
   onDisabled: () => void;
   onLoginRequest: () => void;
+  preview?: boolean;
+  onExit?: () => void;
 }
 
 interface StatusElements {
@@ -112,6 +116,8 @@ function mapModel(value: unknown): ModelStat {
 export default function PublicStatusView({
   onDisabled,
   onLoginRequest,
+  preview = false,
+  onExit,
 }: PublicStatusViewProps) {
   const clientTimezoneOffsetMinutes = useMemo(
     () => getClientTimezoneOffsetMinutes(),
@@ -123,6 +129,8 @@ export default function PublicStatusView({
   const abortControllerRef = useRef<AbortController | null>(null);
   const onDisabledRef = useRef(onDisabled);
   onDisabledRef.current = onDisabled;
+  const previewRef = useRef(preview);
+  previewRef.current = preview;
 
   const fetchData = useCallback(
     async (options?: { signal?: AbortSignal }) => {
@@ -132,6 +140,10 @@ export default function PublicStatusView({
         url.searchParams.set("tzOffset", String(clientTimezoneOffsetMinutes));
         const res = await fetch(url.toString(), { signal: options?.signal });
         if (res.status === 404) {
+          if (previewRef.current) {
+            setError("Status page is not enabled");
+            return;
+          }
           onDisabledRef.current();
           return;
         }
@@ -219,16 +231,28 @@ export default function PublicStatusView({
                 Token Tracker
               </h1>
               <p className="text-xs text-gray-400 mt-1">
-                Public usage overview · updated periodically
+                {preview
+                  ? "Public view preview · updated periodically"
+                  : "Public usage overview · updated periodically"}
               </p>
             </div>
-            <button
-              type="button"
-              onClick={onLoginRequest}
-              className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 active:scale-[0.98] transition-all min-h-[40px]"
-            >
-              Login
-            </button>
+            {preview ? (
+              <button
+                type="button"
+                onClick={onExit}
+                className="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-600 shadow-sm hover:bg-gray-50 hover:text-gray-800 active:scale-[0.98] transition-all min-h-[40px]"
+              >
+                ← Back to Dashboard
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={onLoginRequest}
+                className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 active:scale-[0.98] transition-all min-h-[40px]"
+              >
+                Login
+              </button>
+            )}
           </div>
 
           {error && (

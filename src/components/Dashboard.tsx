@@ -18,6 +18,7 @@ import {
 } from "./NumberFormatContext";
 import { getClientTimezoneOffsetMinutes } from "@/lib/timezone-utils";
 import { apiFetch } from "@/lib/client/api-client";
+import { usePublicPreview } from "./ApiKeyGate";
 
 interface ModelStat {
   group: string;
@@ -367,6 +368,7 @@ function FiltersModal({
 }
 
 export default function Dashboard({ priceUpdateTime }: DashboardProps) {
+  const { togglePreview } = usePublicPreview();
   const [stats, setStats] = useState<Stats | null>(null);
   const [topModels, setTopModels] = useState<ModelStat[]>([]);
   const [totalTopModels, setTotalTopModels] = useState<ModelStat[]>([]);
@@ -947,6 +949,14 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
                   </option>
                 ))}
               </select>
+              <button
+                type="button"
+                onClick={togglePreview}
+                className="inline-flex items-center gap-2 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50"
+                title="Preview the public status page"
+              >
+                Public View
+              </button>
               <Link
                 href="/admin"
                 className="text-sm text-gray-400 hover:text-blue-600 transition-colors"

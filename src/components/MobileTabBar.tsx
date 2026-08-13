@@ -5,9 +5,15 @@ import { usePathname } from "next/navigation";
 
 interface MobileTabBarProps {
   onLogout: () => void;
+  previewActive: boolean;
+  onPreviewToggle: () => void;
 }
 
-export default function MobileTabBar({ onLogout }: MobileTabBarProps) {
+export default function MobileTabBar({
+  onLogout,
+  previewActive,
+  onPreviewToggle,
+}: MobileTabBarProps) {
   const pathname = usePathname();
   const isAdmin = pathname?.startsWith("/admin") ?? false;
 
@@ -15,7 +21,7 @@ export default function MobileTabBar({ onLogout }: MobileTabBarProps) {
     {
       href: "/",
       label: "Dashboard",
-      active: !isAdmin,
+      active: !isAdmin && !previewActive,
       icon: (
         <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <rect x="3" y="3" width="7" height="9" rx="1" />
@@ -38,24 +44,54 @@ export default function MobileTabBar({ onLogout }: MobileTabBarProps) {
     },
   ];
 
+  const tabClass = (active: boolean) =>
+    `flex min-h-[56px] flex-1 flex-col items-center justify-center gap-1 text-xs font-medium transition-colors ${
+      active ? "text-blue-600" : "text-gray-500 hover:text-gray-700"
+    }`;
+
   return (
     <nav
       className="fixed bottom-0 inset-x-0 z-50 md:hidden border-t border-gray-200 bg-white pb-[env(safe-area-inset-bottom)]"
       aria-label="Mobile navigation"
     >
       <div className="flex">
-        {tabs.map((tab) => (
+        {previewActive ? (
+          <button type="button" onClick={onPreviewToggle} className={tabClass(false)}>
+            <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="3" width="7" height="9" rx="1" />
+              <rect x="14" y="3" width="7" height="5" rx="1" />
+              <rect x="14" y="12" width="7" height="9" rx="1" />
+              <rect x="3" y="16" width="7" height="5" rx="1" />
+            </svg>
+            Dashboard
+          </button>
+        ) : (
           <Link
-            key={tab.href}
-            href={tab.href}
-            className={`flex min-h-[56px] flex-1 flex-col items-center justify-center gap-1 text-xs font-medium transition-colors ${
-              tab.active ? "text-blue-600" : "text-gray-500 hover:text-gray-700"
-            }`}
+            href={tabs[0]!.href}
+            className={tabClass(tabs[0]!.active)}
           >
-            {tab.icon}
-            {tab.label}
+            {tabs[0]!.icon}
+            {tabs[0]!.label}
           </Link>
-        ))}
+        )}
+        <button
+          type="button"
+          onClick={onPreviewToggle}
+          className={tabClass(previewActive)}
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" />
+            <circle cx="12" cy="12" r="3" />
+          </svg>
+          Public View
+        </button>
+        <Link
+          href={tabs[1]!.href}
+          className={tabClass(tabs[1]!.active)}
+        >
+          {tabs[1]!.icon}
+          {tabs[1]!.label}
+        </Link>
         <button
           type="button"
           onClick={onLogout}

@@ -584,14 +584,14 @@ export default function UpstreamsPanel() {
                       value={keyValue}
                       onChange={(e) => updateFormKey(index, e.target.value)}
                       placeholder={`API key ${index + 1}`}
-                      className={`flex-1 rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 ${
+                      className={`min-w-0 flex-1 rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 ${
                         formKeyShown[index] ? "" : "[-webkit-text-security:disc]"
                       }`}
                     />
                     <button
                       type="button"
                       onClick={() => toggleFormKeyShown(index)}
-                      className="rounded border border-gray-300 px-3 py-2 text-xs text-gray-600 hover:bg-gray-50"
+                      className="shrink-0 rounded border border-gray-300 px-3 py-2 text-xs text-gray-600 hover:bg-gray-50"
                     >
                       {formKeyShown[index] ? "Hide" : "Show"}
                     </button>
@@ -599,14 +599,14 @@ export default function UpstreamsPanel() {
                       type="button"
                       onClick={() => testFormKey(index)}
                       disabled={!keyValue.trim() || !form.baseUrl.trim()}
-                      className="rounded border border-gray-300 px-3 py-2 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40"
+                      className="shrink-0 rounded border border-gray-300 px-3 py-2 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40"
                     >
                       Test
                     </button>
                     <button
                       type="button"
                       onClick={() => removeFormKeyRow(index)}
-                      className="rounded border border-gray-300 px-3 py-2 text-xs text-gray-600 hover:bg-gray-50"
+                      className="shrink-0 rounded border border-gray-300 px-3 py-2 text-xs text-gray-600 hover:bg-gray-50"
                       title="Remove key"
                     >
                       −
@@ -635,15 +635,18 @@ export default function UpstreamsPanel() {
             </button>
           </div>
           <div className="md:col-span-3">
-            <div className="mb-1 flex items-center justify-between">
-              <label className="block text-xs text-gray-600">
-                Enabled Models <span className="text-gray-400">(comma separated, supports gpt-* wildcard)</span>
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <label className="min-w-0 text-xs text-gray-600">
+                Enabled Models{" "}
+                <span className="hidden md:inline text-gray-400">
+                  (comma separated, supports gpt-* wildcard)
+                </span>
               </label>
               <button
                 type="button"
                 onClick={handleFetchModels}
                 disabled={fetchingModels || !form.baseUrl.trim() || (!firstFormKey() && !hasStoredEnabledKey)}
-                className="rounded border border-gray-300 px-2.5 py-1 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40"
+                className="shrink-0 rounded border border-gray-300 px-2.5 py-1 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40"
               >
                 {fetchingModels ? "Fetching..." : "Fetch Models"}
               </button>
@@ -1023,9 +1026,11 @@ export default function UpstreamsPanel() {
                 <span className="text-xs font-medium text-gray-500">API Keys</span>
                 <div className="mt-1.5 space-y-1">
                   {(keysByUpstream[u.id] || []).map((key) => (
-                    <div key={key.id} className="flex items-center gap-2 text-xs">
+                    <div key={key.id} className="flex flex-wrap items-center gap-2 text-xs">
                       <span className={`h-1.5 w-1.5 rounded-full ${key.enabled ? "bg-green-500" : "bg-gray-300"}`} />
-                      <code className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px]">{key.maskedKey}</code>
+                      <code className="max-w-[180px] truncate rounded bg-gray-100 px-1.5 py-0.5 text-[11px]">
+                        {key.maskedKey}
+                      </code>
                       {key.lastStatus && (
                         <span className="text-[11px] text-gray-400">last: {key.lastStatus}</span>
                       )}
