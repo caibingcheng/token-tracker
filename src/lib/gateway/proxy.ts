@@ -1027,7 +1027,15 @@ async function passthroughResponse(
                 protocol
               );
         const usage = toRecordUsage(parsed, meta);
-        await deps.onUsage?.({ ...usage, ttftMs: ttftMs ?? undefined });
+        // latencyMs 必须在流完全结束后计算：proxy 主流程的初始值只覆盖到
+        // 响应头（≈TTFT 窗口），不含流式生成/body 传输阶段
+        const finalLatencyMs =
+          startTime !== undefined ? Date.now() - startTime : meta.latencyMs;
+        await deps.onUsage?.({
+          ...usage,
+          ttftMs: ttftMs ?? undefined,
+          latencyMs: finalLatencyMs,
+        });
       }
     } catch (err) {
       deps.log?.(`[gateway] usage capture failed: ${(err as Error).message}`);
