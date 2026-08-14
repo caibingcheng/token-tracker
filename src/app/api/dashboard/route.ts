@@ -22,6 +22,7 @@ import {
   type LatencyModelStat,
 } from "@/lib/latency-query";
 import { anonymizeProvider } from "@/lib/provider-utils";
+import { aggregateProviders, type ProviderStat } from "@/lib/provider-stats";
 import { TOP_N_DISPLAY, TOP_N_RAW_MODELS } from "@/lib/model-utils";
 import {
   resolveDashboardFilters,
@@ -226,11 +227,14 @@ interface DashboardData {
   models: ModelStat[];
   todayModels: ModelStat[];
   dailyModels: Record<string, ModelStat[]>;
+  topProviders: ProviderStat[];
+  dailyProviders: Record<string, ProviderStat[]>;
   heatmap: DayData[];
   hourly: DayData[];
   latency: {
     byModel: Array<LatencyModelStat & { displayName: string; providerName: string }>;
     daily: LatencyDayStat[];
+    dailyByModel: Record<string, Array<LatencyModelStat & { displayName: string; providerName: string }>>;
   };
   timezoneOffsetMinutes: number;
 }
@@ -524,6 +528,26 @@ async function queryDashboard(
 
     const dailyTopModelsMap = aggregateTopModelsByDate(dailyModelRangeArr, groups, aliases);
 
+    // Top providers（range 总计 Top 5，后端截断供图表固定堆叠层与表格联动）
+    const providerStatsRange = aggregateProviders(dailyModelRangeArr, groups);
+    const topProvidersResult = providerStatsRange.slice(0, 5);
+
+    // 按日期分桶、不截断（堆叠图 Others 层依赖每日完整 provider 数据）
+    const dailyProvidersResult: Record<string, ProviderStat[]> = {};
+    const byProviderDate = new Map<
+      string,
+      Array<StatItem & { group: string; model: string; provider?: string }>
+    >();
+    for (const row of dailyModelRangeArr) {
+      const date = String(row.group);
+      const bucket = byProviderDate.get(date);
+      if (bucket) bucket.push(row);
+      else byProviderDate.set(date, [row]);
+    }
+    byProviderDate.forEach((rows, date) => {
+      dailyProvidersResult[date] = aggregateProviders(rows, groups);
+    });
+
     return {
       total: totalResult,
       totalDays,
@@ -534,6 +558,8 @@ async function queryDashboard(
       models: modelsResult,
       todayModels: todayModelsResult,
       dailyModels: Object.fromEntries(dailyTopModelsMap),
+      topProviders: topProvidersResult,
+      dailyProviders: dailyProvidersResult,
       heatmap: isStatItemsWithGroup(heatmap)
         ? heatmap.map((row) => ({
             group: String(row.group),
@@ -575,6 +601,16 @@ async function queryDashboard(
           providerName: anonymizeProvider(item.provider, [], groups),
         })),
         daily: latency.daily,
+        dailyByModel: Object.fromEntries(
+          Object.entries(latency.dailyByModel).map(([date, items]) => [
+            date,
+            items.map((item) => ({
+              ...item,
+              displayName: getDisplayName(item.model, aliases),
+              providerName: anonymizeProvider(item.provider, [], groups),
+            })),
+          ])
+        ),
       },
       timezoneOffsetMinutes:
         timezoneOffsetMinutes !== undefined

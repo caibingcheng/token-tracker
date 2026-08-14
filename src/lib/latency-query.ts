@@ -179,6 +179,41 @@ export function aggregateLatencyDaily(
     .sort((a, b) => a.group.localeCompare(b.group));
 }
 
+// 按本地日期分桶的 byModel 聚合（Speed 表格选中某日联动；口径与 range 总计一致：
+// active 过滤 + 归一化 + p50 升序）
+export function aggregateLatencyByModelByDate(
+  rows: LatencyRow[],
+  activeModels: Set<string>,
+  timezoneOffsetMinutes: number,
+  groups: HiddenProviderGroup[] = [],
+  aliases: ModelAliasRule[] = []
+): Record<string, LatencyModelStat[]> {
+  const byDate = new Map<string, LatencyRow[]>();
+  for (const row of rows) {
+    const date = localDateKeyFromUtcDate(
+      new Date(row.createdAt),
+      timezoneOffsetMinutes
+    );
+    const bucket = byDate.get(date);
+    if (bucket) {
+      bucket.push(row);
+    } else {
+      byDate.set(date, [row]);
+    }
+  }
+
+  const result: Record<string, LatencyModelStat[]> = {};
+  byDate.forEach((dateRows, date) => {
+    result[date] = aggregateLatencyByModel(
+      dateRows,
+      activeModels,
+      groups,
+      aliases
+    );
+  });
+  return result;
+}
+
 // 当前启用 upstream 的非通配 enabled_models 并集（与 model_prices 的 active 判定同源）
 export async function loadActiveModelSet(): Promise<Set<string>> {
   const rows = await loadUpstreamModelRows();
@@ -193,7 +228,11 @@ export async function queryLatencyStats(params: {
   timezoneOffsetMinutes: number;
   groups: HiddenProviderGroup[];
   aliases: ModelAliasRule[];
-}): Promise<{ byModel: LatencyModelStat[]; daily: LatencyDayStat[] }> {
+}): Promise<{
+  byModel: LatencyModelStat[];
+  daily: LatencyDayStat[];
+  dailyByModel: Record<string, LatencyModelStat[]>;
+}> {
   const {
     range,
     providerFilter,
@@ -243,5 +282,12 @@ export async function queryLatencyStats(params: {
   return {
     byModel: aggregateLatencyByModel(rows, activeModels, groups, aliases),
     daily: aggregateLatencyDaily(rows, timezoneOffsetMinutes),
+    dailyByModel: aggregateLatencyByModelByDate(
+      rows,
+      activeModels,
+      timezoneOffsetMinutes,
+      groups,
+      aliases
+    ),
   };
 }

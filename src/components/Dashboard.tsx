@@ -8,6 +8,8 @@ import DailyUsageChart, {
   DailyData,
   LatencyModelStat,
   LatencyDayStat,
+  ProviderStat,
+  RANGE_OPTIONS,
 } from "./DailyUsageChart";
 import TodayOverview, { TodayData } from "./TodayOverview";
 import PriceSimulatorModal from "./PriceSimulatorModal";
@@ -57,18 +59,30 @@ interface DashboardProps {
 interface SectionNavItem {
   id: string;
   label: string;
+  children?: SectionNavItem[];
 }
 
 const SECTIONS: SectionNavItem[] = [
   { id: "heatmap-section", label: "Heatmap" },
   { id: "stats-section", label: "Stats" },
   { id: "today-section", label: "Today" },
-  { id: "trends-section", label: "Trends" },
+  {
+    id: "trends-section",
+    label: "Trends",
+    children: [
+      { id: "trends-token", label: "Token Usage" },
+      { id: "trends-upstreams", label: "Upstreams" },
+      { id: "trends-cost", label: "Cost" },
+      { id: "trends-speed", label: "Speed" },
+      { id: "trends-models", label: "Models" },
+    ],
+  },
   { id: "records-section", label: "Records" },
 ];
 
 function SectionNav() {
   const [activeId, setActiveId] = useState<string | null>(SECTIONS[0]?.id ?? null);
+  const [activeChildId, setActiveChildId] = useState<string | null>(null);
   const isClickScrollingRef = useRef(false);
   const clickTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rafRef = useRef<number | null>(null);
@@ -90,6 +104,23 @@ function SectionNav() {
       }
     }
     setActiveId(currentId);
+
+    // Trends 内部子锚点判定（卡片条件渲染，可能不存在）
+    let currentChildId: string | null = null;
+    if (currentId === "trends-section") {
+      const trends = SECTIONS.find((s) => s.id === currentId);
+      for (const child of trends?.children ?? []) {
+        const el = document.getElementById(child.id);
+        if (!el) continue;
+        const rect = el.getBoundingClientRect();
+        if (rect.top <= scrollOffset) {
+          currentChildId = child.id;
+        } else {
+          break;
+        }
+      }
+    }
+    setActiveChildId(currentChildId);
   }, []);
 
   useEffect(() => {
@@ -121,7 +152,13 @@ function SectionNav() {
   }, []);
 
   const scrollTo = (id: string) => {
-    setActiveId(id);
+    const isChild = SECTIONS.some((s) =>
+      (s.children ?? []).some((c) => c.id === id)
+    );
+    const parentId = isChild ? "trends-section" : id;
+
+    setActiveId(parentId);
+    setActiveChildId(isChild ? id : null);
     isClickScrollingRef.current = true;
     if (clickTimeoutRef.current) {
       clearTimeout(clickTimeoutRef.current);
@@ -131,9 +168,12 @@ function SectionNav() {
       updateActiveFromScroll();
     }, 600);
 
-    const el = document.getElementById(id);
-    if (el) {
-      el.scrollIntoView({ behavior: "smooth", block: "start" });
+    // 子锚点对应卡片可能未渲染（条件显示），回退滚动到 Trends section
+    const target =
+      document.getElementById(id) ??
+      (isChild ? document.getElementById("trends-section") : null);
+    if (target) {
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
     }
   };
 
@@ -142,37 +182,76 @@ function SectionNav() {
       className="hidden md:flex fixed left-6 top-1/2 -translate-y-1/2 z-40 flex-col gap-4"
       aria-label="Section navigation"
     >
-      {SECTIONS.map(({ id, label }) => {
+      {SECTIONS.map(({ id, label, children }) => {
         const isActive = activeId === id;
         return (
-          <button
-            key={id}
-            type="button"
-            onClick={() => scrollTo(id)}
-            className="group flex items-center gap-3 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50 rounded-md"
-            aria-current={isActive ? "location" : undefined}
-          >
-            <span
-              className={`
-                inline-flex h-2 w-2 rounded-full transition-all duration-300 ease-out
-                ${isActive
-                  ? "bg-blue-600 scale-125"
-                  : "bg-gray-300 group-hover:bg-blue-500 group-hover:scale-110"
-                }
-              `}
-            />
-            <span
-              className={`
-                text-sm transition-all duration-300 ease-out
-                ${isActive
-                  ? "translate-x-0 scale-105 font-medium text-gray-900"
-                  : "text-gray-400 group-hover:text-gray-700 group-hover:translate-x-0.5 group-hover:scale-105"
-                }
-              `}
+          <div key={id} className="flex flex-col">
+            <button
+              type="button"
+              onClick={() => scrollTo(id)}
+              className="group flex items-center gap-3 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50 rounded-md"
+              aria-current={isActive ? "location" : undefined}
             >
-              {label}
-            </span>
-          </button>
+              <span
+                className={`
+                  inline-flex h-2 w-2 rounded-full transition-all duration-300 ease-out
+                  ${isActive
+                    ? "bg-blue-600 scale-125"
+                    : "bg-gray-300 group-hover:bg-blue-500 group-hover:scale-110"
+                  }
+                `}
+              />
+              <span
+                className={`
+                  text-sm transition-all duration-300 ease-out
+                  ${isActive
+                    ? "translate-x-0 scale-105 font-medium text-gray-900"
+                    : "text-gray-400 group-hover:text-gray-700 group-hover:translate-x-0.5 group-hover:scale-105"
+                  }
+                `}
+              >
+                {label}
+              </span>
+            </button>
+            {children && (
+              <div className="ml-5 mt-1 space-y-0.5 border-l border-gray-200 pl-3">
+                {children.map((child) => {
+                  const isChildActive =
+                    isActive && activeChildId === child.id;
+                  return (
+                    <button
+                      key={child.id}
+                      type="button"
+                      onClick={() => scrollTo(child.id)}
+                      className="group flex items-center gap-2 rounded-md py-0.5 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50"
+                      aria-current={isChildActive ? "location" : undefined}
+                    >
+                      <span
+                        className={`
+                          inline-flex h-1.5 w-1.5 rounded-full transition-all duration-300 ease-out
+                          ${isChildActive
+                            ? "bg-blue-500"
+                            : "bg-gray-300 group-hover:bg-blue-400"
+                          }
+                        `}
+                      />
+                      <span
+                        className={`
+                          text-xs transition-all duration-300 ease-out
+                          ${isChildActive
+                            ? "font-medium text-blue-700"
+                            : "text-gray-400 group-hover:text-gray-600"
+                          }
+                        `}
+                      >
+                        {child.label}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         );
       })}
     </nav>
@@ -374,11 +453,14 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
   const [totalTopModels, setTotalTopModels] = useState<ModelStat[]>([]);
   const [todayTopModels, setTodayTopModels] = useState<ModelStat[]>([]);
   const [dailyTopModels, setDailyTopModels] = useState<Record<string, ModelStat[]>>({});
+  const [topProviders, setTopProviders] = useState<ProviderStat[]>([]);
+  const [dailyProviders, setDailyProviders] = useState<Record<string, ProviderStat[]>>({});
   const [dailyData, setDailyData] = useState<DailyData[]>([]);
   const [heatmapData, setHeatmapData] = useState<HeatmapData[]>([]);
   const [hourlyData, setHourlyData] = useState<DailyData[]>([]);
   const [latencyByModel, setLatencyByModel] = useState<LatencyModelStat[]>([]);
   const [latencyDaily, setLatencyDaily] = useState<LatencyDayStat[]>([]);
+  const [dailyLatencyByModel, setDailyLatencyByModel] = useState<Record<string, LatencyModelStat[]>>({});
   const [timezoneOffsetMinutes, setTimezoneOffsetMinutes] = useState<number>(0);
   const clientTimezoneOffsetMinutes = useMemo(
     () => getClientTimezoneOffsetMinutes(),
@@ -546,7 +628,7 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
           return;
         }
 
-        const { total, totalDays, totalTopModels, today, yesterday, daily, models, todayModels, dailyModels, heatmap, hourly, latency, timezoneOffsetMinutes: responseTimezoneOffsetMinutes } = json.data;
+        const { total, totalDays, totalTopModels, today, yesterday, daily, models, todayModels, dailyModels, topProviders, dailyProviders, heatmap, hourly, latency, timezoneOffsetMinutes: responseTimezoneOffsetMinutes } = json.data;
 
         setTotalDays(Number(totalDays) || 0);
 
@@ -672,11 +754,42 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
 
         setDailyTopModels(dailyModels ?? {});
 
+        setTopProviders(
+          topProviders?.map((p: ProviderStat) => ({
+            provider: p.provider,
+            providerName: p.providerName || p.provider,
+            totalInput: Number(p.totalInput || 0),
+            totalInputCached: Number(p.totalInputCached || 0),
+            totalOutput: Number(p.totalOutput || 0),
+            totalCost: Number(p.totalCost || 0),
+            count: Number(p.count || 0),
+          })) ?? []
+        );
+
+        const parsedDailyProviders: Record<string, ProviderStat[]> = {};
+        for (const [date, list] of Object.entries(
+          (dailyProviders ?? {}) as Record<string, ProviderStat[]>
+        )) {
+          parsedDailyProviders[date] = list.map((p) => ({
+            provider: p.provider,
+            providerName: p.providerName || p.provider,
+            totalInput: Number(p.totalInput || 0),
+            totalInputCached: Number(p.totalInputCached || 0),
+            totalOutput: Number(p.totalOutput || 0),
+            totalCost: Number(p.totalCost || 0),
+            count: Number(p.count || 0),
+          }));
+        }
+        setDailyProviders(parsedDailyProviders);
+
         setDailyData(daily ?? []);
         setHeatmapData(heatmap ?? []);
         setHourlyData(hourly ?? []);
         setLatencyByModel(latency?.byModel ?? []);
         setLatencyDaily(latency?.daily ?? []);
+        setDailyLatencyByModel(
+          (latency?.dailyByModel ?? {}) as Record<string, LatencyModelStat[]>
+        );
         setTimezoneOffsetMinutes(
           typeof responseTimezoneOffsetMinutes === "number"
             ? responseTimezoneOffsetMinutes
@@ -998,17 +1111,42 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
         </section>
 
         <section id="trends-section" className="scroll-mt-28">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-4 gap-2">
+            <h2 className="text-lg font-semibold">Last {dailyRange} Daily Usage</h2>
+            <div className="inline-flex rounded-md overflow-hidden flex-shrink-0">
+              {RANGE_OPTIONS.map((days, index) => (
+                <button
+                  key={days}
+                  type="button"
+                  onClick={() => handleDailyRangeChange(days)}
+                  aria-pressed={dailyRange === days}
+                  className={`
+                    px-2 md:px-3 py-1 text-xs md:text-sm font-medium transition-all active:scale-95 min-h-[40px] md:min-h-0
+                    ${dailyRange === days
+                      ? "bg-blue-600 text-white md:hover:bg-blue-700"
+                      : "bg-gray-100 text-gray-600 md:hover:bg-blue-50 md:hover:text-blue-700"
+                    }
+                    ${index !== RANGE_OPTIONS.length - 1 ? "border-r border-gray-200" : ""}
+                  `}
+                >
+                  {days}d
+                </button>
+              ))}
+            </div>
+          </div>
           <DailyUsageChart
             rawData={dailyData}
             loading={loading}
             error={error}
             range={dailyRange}
-            onRangeChange={handleDailyRangeChange}
             topModels={topModels}
             dailyTopModels={dailyTopModels}
+            topProviders={topProviders}
+            dailyProviders={dailyProviders}
             hourly={hourlyData}
             latencyDaily={latencyDaily}
             latencyByModel={latencyByModel}
+            dailyLatencyByModel={dailyLatencyByModel}
             timezoneOffsetMinutes={timezoneOffsetMinutes}
           />
         </section>

@@ -76,6 +76,16 @@ interface TopModel {
   costPerMillionOutput: number;
 }
 
+export interface ProviderStat {
+  provider: string;
+  providerName: string;
+  totalInput: number;
+  totalInputCached: number;
+  totalOutput: number;
+  totalCost: number;
+  count: number;
+}
+
 type SortField = 'totalInput' | 'totalInputCached' | 'cacheHitRate' | 'totalOutput' | 'costPerMillionTokens' | 'totalCost' | 'count';
 
 function getMetricValue(m: TopModel, field: SortField): number {
@@ -125,12 +135,14 @@ interface DailyUsageChartProps {
   loading: boolean;
   error: string | null;
   range: number;
-  onRangeChange?: (range: number) => void;
   topModels?: TopModel[];
   dailyTopModels?: Record<string, TopModel[]>;
+  topProviders?: ProviderStat[];
+  dailyProviders?: Record<string, ProviderStat[]>;
   hourly?: DailyData[];
   latencyDaily?: LatencyDayStat[];
   latencyByModel?: LatencyModelStat[];
+  dailyLatencyByModel?: Record<string, LatencyModelStat[]>;
   timezoneOffsetMinutes?: number;
   showCost?: boolean;
   showHourly?: boolean;
@@ -149,15 +161,35 @@ const COLORS = {
 
 const ACTIVE_AXIS_COLOR = "#2563EB";
 
+const PROVIDER_COLORS = [
+  "#3B82F6",
+  "#10B981",
+  "#F59E0B",
+  "#8B5CF6",
+  "#EC4899",
+  "#94A3B8",
+];
+
+function niceTokenDomain(max: number): [number, number] {
+  if (!max || max === 0) return [0, 100] as [number, number];
+  const magnitude = Math.pow(10, Math.floor(Math.log10(max)));
+  const normalized = max / magnitude;
+  let step: number;
+  if (normalized <= 2) step = magnitude / 2;
+  else if (normalized <= 5) step = magnitude;
+  else step = magnitude * 2;
+  return [0, Math.max(step, Math.ceil(max / step) * step)] as [number, number];
+}
+
 function ChartLegend({
   items,
 }: {
-  items: Array<{ color: string; label: string; dashed?: boolean; bar?: boolean }>;
+  items: Array<{ color: string; label: string; dashed?: boolean; bar?: boolean; key?: string }>;
 }) {
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mb-2">
       {items.map((item) => (
-        <span key={item.label} className="inline-flex items-center gap-1.5 text-xs text-gray-500">
+        <span key={item.key ?? item.label} className="inline-flex items-center gap-1.5 text-xs text-gray-500">
           <span
             className={
               item.bar
@@ -181,7 +213,7 @@ function ChartLegend({
   );
 }
 
-const RANGE_OPTIONS = [3, 7, 14, 30];
+export const RANGE_OPTIONS = [3, 7, 14, 30];
 
 function formatCost(num: number): string {
   if (num <= 0) return "$0.0000";
@@ -578,9 +610,110 @@ function formatTokensPerSec(v: number | null): string {
   return `${v.toFixed(1)}/s`;
 }
 
+function TopProvidersTable({
+  providers,
+  selectedDate,
+}: {
+  providers: ProviderStat[];
+  selectedDate: string | null;
+}) {
+  const { compact } = useNumberFormat();
+  const totalInputSum = providers.reduce((sum, p) => sum + p.totalInput, 0);
+
+  return (
+    <div>
+      {providers.length === 0 ? (
+        <p className="text-gray-500">
+          {selectedDate ? "No data for selected date" : "No data available"}
+        </p>
+      ) : (
+        <>
+          <div className="hidden md:block overflow-x-auto">
+            <table className="w-full" style={{ tableLayout: "fixed" }}>
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="w-[24%] px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase overflow-hidden">Provider</th>
+                  <th className="w-[19%] px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase overflow-hidden">Total Input</th>
+                  <th className="w-[17%] px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase overflow-hidden">Cache Read</th>
+                  <th className="w-[18%] px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase overflow-hidden">Total Output</th>
+                  <th className="w-[12%] px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase overflow-hidden">Total Cost</th>
+                  <th className="w-[10%] px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase overflow-hidden">Requests</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200">
+                {providers.map((p) => {
+                  const percentage =
+                    totalInputSum > 0 ? (p.totalInput / totalInputSum) * 100 : 0;
+                  return (
+                    <tr
+                      key={p.provider}
+                      style={{
+                        background: `linear-gradient(to right, rgb(239 246 255) ${percentage}%, transparent ${percentage}%)`,
+                      }}
+                    >
+                      <td className="px-4 py-3 text-sm font-medium text-gray-900 overflow-hidden">{p.providerName}</td>
+                      <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden"><AnimatedCell value={p.totalInput} /></td>
+                      <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden"><AnimatedCell value={p.totalInputCached} /></td>
+                      <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden"><AnimatedCell value={p.totalOutput} /></td>
+                      <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden">{formatCost(p.totalCost)}</td>
+                      <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden"><AnimatedCell value={p.count} /></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="md:hidden space-y-3">
+            {providers.map((p) => {
+              const percentage =
+                totalInputSum > 0 ? (p.totalInput / totalInputSum) * 100 : 0;
+              return (
+                <div
+                  key={p.provider}
+                  className="rounded-lg border border-gray-200 overflow-hidden"
+                  style={{
+                    background: `linear-gradient(to right, rgb(239 246 255) ${percentage}%, transparent ${percentage}%)`,
+                  }}
+                >
+                  <div className="px-4 py-3 font-medium text-gray-900 border-b border-gray-100">
+                    {p.providerName}
+                  </div>
+                  <div className="px-4 py-3 grid grid-cols-2 gap-3">
+                    <div>
+                      <p className="text-xs text-gray-500">Total Input</p>
+                      <p className="text-sm font-semibold text-gray-900">{formatNumber(p.totalInput, compact)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-500">Cache Read</p>
+                      <p className="text-sm font-semibold text-gray-900">{formatNumber(p.totalInputCached, compact)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-500">Total Output</p>
+                      <p className="text-sm font-semibold text-gray-900">{formatNumber(p.totalOutput, compact)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-500">Total Cost</p>
+                      <p className="text-sm font-semibold text-gray-900">{formatCost(p.totalCost)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-500">Requests</p>
+                      <p className="text-sm font-semibold text-gray-900">{formatNumber(p.count, compact)}</p>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function SpeedTable({ byModel }: { byModel: LatencyModelStat[] }) {
   return (
-    <div className="mt-8">
+    <div>
       <div className="flex items-center justify-between mb-2">
         <h3 className="text-lg font-semibold">Speed</h3>
         <span
@@ -707,12 +840,14 @@ export default function DailyUsageChart({
   loading,
   error,
   range,
-  onRangeChange,
   topModels,
   dailyTopModels,
+  topProviders,
+  dailyProviders,
   hourly,
   latencyDaily,
   latencyByModel,
+  dailyLatencyByModel,
   timezoneOffsetMinutes = 0,
   showCost = true,
   showHourly = true,
@@ -785,6 +920,60 @@ export default function DailyUsageChart({
       .slice(0, 5);
   }, [selectedDate, dailyTopModels, topModels, sortBy, sortOrder]);
 
+  const activeProviders = useMemo(() => {
+    if (selectedDate) {
+      const day = dailyProviders?.[selectedDate] ?? [];
+      return [...day]
+        .sort((a, b) => b.totalInput - a.totalInput)
+        .slice(0, 5);
+    }
+    return topProviders ?? [];
+  }, [selectedDate, dailyProviders, topProviders]);
+
+  const providerChartData = useMemo(() => {
+    const top5Providers = (topProviders ?? []).slice(0, 5);
+    const top5Keys = new Set(top5Providers.map((p) => p.provider));
+    const lastNDays = getLastNDays(range, timezoneOffsetMinutes);
+    return lastNDays.map((date) => {
+      const row: Record<string, number | string> = { group: date };
+      const dayProviders = dailyProviders?.[date] ?? [];
+      for (const p of dayProviders) {
+        if (top5Keys.has(p.provider)) {
+          row[p.provider] = (Number(row[p.provider]) || 0) + p.totalInput;
+        } else {
+          row.others = (Number(row.others) || 0) + p.totalInput;
+        }
+      }
+      return row;
+    });
+  }, [topProviders, dailyProviders, range, timezoneOffsetMinutes]);
+
+  const providerTokenDomain = useMemo(() => {
+    const max = Math.max(
+      ...providerChartData.map((d) =>
+        Object.entries(d).reduce(
+          (sum, [key, value]) =>
+            key === "group" ? sum : sum + (Number(value) || 0),
+          0
+        )
+      ),
+      0
+    );
+    return niceTokenDomain(max);
+  }, [providerChartData]);
+
+  const hasProviderOthers = useMemo(
+    () => providerChartData.some((d) => (Number(d.others) || 0) > 0),
+    [providerChartData]
+  );
+
+  const activeLatencyByModel = useMemo(() => {
+    if (selectedDate) {
+      return dailyLatencyByModel?.[selectedDate] ?? [];
+    }
+    return latencyByModel ?? [];
+  }, [selectedDate, dailyLatencyByModel, latencyByModel]);
+
   const data = useMemo(() => {
     const apiData = new Map<string, DailyData>();
     rawData.forEach((item) => {
@@ -856,14 +1045,7 @@ export default function DailyUsageChart({
       ...data.map((d) => d.totalInputCached + d.totalInputUncached + d.totalOutput),
       0
     );
-    if (!max || max === 0) return [0, 100] as [number, number];
-    const magnitude = Math.pow(10, Math.floor(Math.log10(max)));
-    const normalized = max / magnitude;
-    let step: number;
-    if (normalized <= 2) step = magnitude / 2;
-    else if (normalized <= 5) step = magnitude;
-    else step = magnitude * 2;
-    return [0, Math.max(step, Math.ceil(max / step) * step)] as [number, number];
+    return niceTokenDomain(max);
   }, [data]);
 
   const priceDomain = useMemo(() => calculatePriceDomain(data), [data]);
@@ -898,33 +1080,7 @@ export default function DailyUsageChart({
   }, [data]);
 
   return (
-    <div ref={chartRef} className="bg-white rounded-lg shadow p-3 md:p-6 mb-8">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-4 gap-2">
-        <h2 className="text-lg font-semibold">Last {range} Daily Usage</h2>
-        {onRangeChange && (
-          <div className="inline-flex rounded-md overflow-hidden flex-shrink-0">
-            {RANGE_OPTIONS.map((days, index) => (
-              <button
-                key={days}
-                type="button"
-                onClick={() => onRangeChange(days)}
-                aria-pressed={range === days}
-                className={`
-                  px-2 md:px-3 py-1 text-xs md:text-sm font-medium transition-all active:scale-95 min-h-[40px] md:min-h-0
-                  ${range === days
-                    ? "bg-blue-600 text-white md:hover:bg-blue-700"
-                    : "bg-gray-100 text-gray-600 md:hover:bg-blue-50 md:hover:text-blue-700"
-                  }
-                  ${index !== RANGE_OPTIONS.length - 1 ? "border-r border-gray-200" : ""}
-                `}
-              >
-                {days}d
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-
+    <div ref={chartRef} className="space-y-6 mb-8">
       {loading && (
         <div className="h-[540px] bg-gray-100 rounded animate-pulse" />
       )}
@@ -936,7 +1092,7 @@ export default function DailyUsageChart({
       )}
 
           {!loading && !error && data.length > 0 && (
-        <div>
+        <div className="space-y-6">
           {summary && (
             <SummarySection
               summary={summary}
@@ -949,8 +1105,8 @@ export default function DailyUsageChart({
           )}
 
           <div className="space-y-6 hidden md:block">
-            <div>
-              <h3 className="text-sm font-medium text-gray-700 mb-2">Daily Token Usage</h3>
+            <div id="trends-token" className="bg-white rounded-lg shadow p-3 md:p-6 scroll-mt-28">
+              <h3 className="text-lg font-semibold mb-2">Daily Token Usage</h3>
               <ChartLegend
                 items={[
                   { color: COLORS.cache, label: "Cache", bar: true },
@@ -1044,10 +1200,116 @@ export default function DailyUsageChart({
                 </ResponsiveContainer>
               </div>
             </div>
+          </div>
 
+          {showTopModels && topProviders && topProviders.length > 0 && (
+            <div id="trends-upstreams" className="bg-white rounded-lg shadow p-3 md:p-6 scroll-mt-28">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-1 gap-2">
+                <h3 className="text-lg font-semibold">
+                  {selectedDate
+                    ? `Top 5 Upstreams - ${formatSelectedDateLabel(selectedDate, timezoneOffsetMinutes)}`
+                    : "Top 5 Upstreams"}
+                </h3>
+              </div>
+              <p className="text-xs text-gray-500 mb-3">
+                {selectedDate
+                  ? `Showing top upstreams for ${selectedDate}`
+                  : "Daily usage stacked by upstream provider; providers outside Top 5 merged into Others"}
+              </p>
+
+              <div className="hidden md:block mb-4">
+                <ChartLegend
+                  items={[
+                    ...(topProviders ?? []).map((p, i) => ({
+                      color: PROVIDER_COLORS[i % PROVIDER_COLORS.length],
+                      label: p.providerName,
+                      bar: true,
+                      key: p.provider,
+                    })),
+                    ...(hasProviderOthers
+                      ? [
+                          {
+                            color: PROVIDER_COLORS[PROVIDER_COLORS.length - 1],
+                            label: "Others",
+                            bar: true,
+                            key: "others",
+                          },
+                        ]
+                      : []),
+                  ]}
+                />
+                <div className="h-[240px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={providerChartData}
+                      margin={{ top: 10, right: 100, left: 55, bottom: 10 }}
+                      barCategoryGap="20%"
+                      syncId="daily"
+                      onClick={handleChartClick}
+                      onMouseMove={handleChartMouseMove}
+                      onMouseLeave={handleChartMouseLeave}
+                      className="cursor-pointer"
+                    >
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                      <XAxis
+                        dataKey="group"
+                        ticks={data.map((d) => d.group)}
+                        tick={(props) => {
+                          const index = props.index ?? 0;
+                          const interval = getXAxisInterval(range);
+                          const showLabel = interval === 0 || index % (interval + 1) === 0;
+                          return (
+                            <CustomXAxisTick
+                              {...props}
+                              selectedDate={selectedDate}
+                              hoveredDate={hoveredDate}
+                              index={showLabel ? index : -1}
+                            />
+                          );
+                        }}
+                        interval={0}
+                        minTickGap={15}
+                      />
+                      <YAxis
+                        yAxisId="left"
+                        tick={{ fontSize: 11 }}
+                        width={45}
+                        tickFormatter={(v: number) => formatAxisNumber(v)}
+                        domain={providerTokenDomain}
+                      />
+                      <Tooltip content={<TokenBarTooltip />} cursor={false} />
+                      {(topProviders ?? []).map((p, i) => (
+                        <Bar
+                          key={p.provider}
+                          yAxisId="left"
+                          dataKey={p.provider}
+                          stackId="providers"
+                          fill={PROVIDER_COLORS[i % PROVIDER_COLORS.length]}
+                          name={p.providerName}
+                        />
+                      ))}
+                      {hasProviderOthers && (
+                        <Bar
+                          yAxisId="left"
+                          dataKey="others"
+                          stackId="providers"
+                          fill={PROVIDER_COLORS[PROVIDER_COLORS.length - 1]}
+                          name="Others"
+                        />
+                      )}
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              <TopProvidersTable providers={activeProviders} selectedDate={selectedDate} />
+            </div>
+          )}
+
+          <div className="space-y-6 hidden md:block">
             {showCost && (
-              <div>
-                <h3 className="text-sm font-medium text-gray-700 mb-2">Daily Ratio & Cost</h3>
+              <div id="trends-cost" className="bg-white rounded-lg shadow p-3 md:p-6 scroll-mt-28">
+                <h3 className="text-lg font-semibold mb-2">Daily Ratio & Cost</h3>
                 <ChartLegend
                   items={[
                     { color: COLORS.hitRate, label: "Cache Hit Ratio" },
@@ -1136,97 +1398,107 @@ export default function DailyUsageChart({
               </div>
             )}
 
-            {data.some((d) => d.streamCount > 0) && (
-              <div>
-                <h3 className="text-sm font-medium text-gray-700 mb-2">
-                  Daily TTFT (p50 / avg)
-                </h3>
-                <ChartLegend
-                  items={[
-                    { color: COLORS.ttft, label: "p50 TTFT" },
-                    { color: COLORS.ttftAvg, label: "Avg TTFT", dashed: true },
-                  ]}
-                />
-                <div className="h-[200px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <ComposedChart
-                    data={data}
-                    margin={{ top: 10, right: 100, left: 55, bottom: 10 }}
-                    syncId="daily"
-                    barCategoryGap="20%"
-                    onClick={handleChartClick}
-                    onMouseMove={handleChartMouseMove}
-                    onMouseLeave={handleChartMouseLeave}
-                    className="cursor-pointer"
-                  >
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                    <XAxis
-                      dataKey="group"
-                      ticks={data.map((d) => d.group)}
-                      tick={(props) => {
-                        const index = props.index ?? 0;
-                        const interval = getXAxisInterval(range);
-                        const showLabel = interval === 0 || index % (interval + 1) === 0;
-                        return (
-                          <CustomXAxisTick
-                            {...props}
-                            selectedDate={selectedDate}
-                            hoveredDate={hoveredDate}
-                            index={showLabel ? index : -1}
-                          />
-                        );
-                      }}
-                      interval={0}
-                      minTickGap={15}
-                    />
-                    <YAxis
-                      yAxisId="left"
-                      tick={{ fontSize: 11, fill: COLORS.ttft }}
-                      width={45}
-                      tickFormatter={(v: number) => formatLatencyMs(v)}
-                      domain={[0, "auto"]}
-                    />
-                    <Tooltip content={<TtftTooltip />} cursor={false} />
-                    <Bar
-                      yAxisId="left"
-                      dataKey="dummy"
-                      fill="transparent"
-                      stroke="none"
-                      name=""
-                      isAnimationActive={false}
-                    />
-                    <Line
-                      yAxisId="left"
-                      type="monotone"
-                      dataKey="p50TtftMs"
-                      stroke={COLORS.ttft}
-                      strokeWidth={2}
-                      dot={{ r: 2.5, fill: COLORS.ttft, strokeWidth: 0 }}
-                      activeDot={{ r: 4, fill: COLORS.ttft, stroke: "#fff", strokeWidth: 1 }}
-                      name="p50 TTFT"
-                      connectNulls={false}
-                    />
-                    <Line
-                      yAxisId="left"
-                      type="monotone"
-                      dataKey="avgTtftMs"
-                      stroke={COLORS.ttftAvg}
-                      strokeWidth={2}
-                      strokeDasharray="5 3"
-                      dot={{ r: 2.5, fill: COLORS.ttftAvg, strokeWidth: 0 }}
-                      activeDot={{ r: 4, fill: COLORS.ttftAvg, stroke: "#fff", strokeWidth: 1 }}
-                      name="Avg TTFT"
-                      connectNulls={false}
-                    />
-                  </ComposedChart>
-                </ResponsiveContainer>
-              </div>
-              </div>
-            )}
           </div>
 
+          {(data.some((d) => d.streamCount > 0) || latencyByModel) && (
+            <div id="trends-speed" className="bg-white rounded-lg shadow p-3 md:p-6 scroll-mt-28">
+              {data.some((d) => d.streamCount > 0) && (
+                <div className="hidden md:block">
+                  <h3 className="text-lg font-semibold mb-2">
+                    Daily TTFT (p50 / avg)
+                  </h3>
+                  <ChartLegend
+                    items={[
+                      { color: COLORS.ttft, label: "p50 TTFT" },
+                      { color: COLORS.ttftAvg, label: "Avg TTFT", dashed: true },
+                    ]}
+                  />
+                  <div className="h-[200px]">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <ComposedChart
+                        data={data}
+                        margin={{ top: 10, right: 100, left: 55, bottom: 10 }}
+                        syncId="daily"
+                        barCategoryGap="20%"
+                        onClick={handleChartClick}
+                        onMouseMove={handleChartMouseMove}
+                        onMouseLeave={handleChartMouseLeave}
+                        className="cursor-pointer"
+                      >
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                        <XAxis
+                          dataKey="group"
+                          ticks={data.map((d) => d.group)}
+                          tick={(props) => {
+                            const index = props.index ?? 0;
+                            const interval = getXAxisInterval(range);
+                            const showLabel = interval === 0 || index % (interval + 1) === 0;
+                            return (
+                              <CustomXAxisTick
+                                {...props}
+                                selectedDate={selectedDate}
+                                hoveredDate={hoveredDate}
+                                index={showLabel ? index : -1}
+                              />
+                            );
+                          }}
+                          interval={0}
+                          minTickGap={15}
+                        />
+                        <YAxis
+                          yAxisId="left"
+                          tick={{ fontSize: 11, fill: COLORS.ttft }}
+                          width={45}
+                          tickFormatter={(v: number) => formatLatencyMs(v)}
+                          domain={[0, "auto"]}
+                        />
+                        <Tooltip content={<TtftTooltip />} cursor={false} />
+                        <Bar
+                          yAxisId="left"
+                          dataKey="dummy"
+                          fill="transparent"
+                          stroke="none"
+                          name=""
+                          isAnimationActive={false}
+                        />
+                        <Line
+                          yAxisId="left"
+                          type="monotone"
+                          dataKey="p50TtftMs"
+                          stroke={COLORS.ttft}
+                          strokeWidth={2}
+                          dot={{ r: 2.5, fill: COLORS.ttft, strokeWidth: 0 }}
+                          activeDot={{ r: 4, fill: COLORS.ttft, stroke: "#fff", strokeWidth: 1 }}
+                          name="p50 TTFT"
+                          connectNulls={false}
+                        />
+                        <Line
+                          yAxisId="left"
+                          type="monotone"
+                          dataKey="avgTtftMs"
+                          stroke={COLORS.ttftAvg}
+                          strokeWidth={2}
+                          strokeDasharray="5 3"
+                          dot={{ r: 2.5, fill: COLORS.ttftAvg, strokeWidth: 0 }}
+                          activeDot={{ r: 4, fill: COLORS.ttftAvg, stroke: "#fff", strokeWidth: 1 }}
+                          name="Avg TTFT"
+                          connectNulls={false}
+                        />
+                      </ComposedChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              )}
+              {latencyByModel && (
+                <div className={data.some((d) => d.streamCount > 0) ? "mt-8" : ""}>
+                  <SpeedTable byModel={activeLatencyByModel} />
+                </div>
+              )}
+            </div>
+          )}
+
           {showTopModels && activeTopModels && activeTopModels.length > 0 && (
-            <div className="mt-8">
+            <div id="trends-models" className="bg-white rounded-lg shadow p-3 md:p-6 scroll-mt-28">
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-1 gap-2">
                 <h3 className="text-lg font-semibold">
                   {selectedDate
@@ -1374,7 +1646,7 @@ export default function DailyUsageChart({
             </div>
           )}
           {showTopModels && activeTopModels && activeTopModels.length === 0 && (
-            <div className="mt-8">
+            <div className="bg-white rounded-lg shadow p-3 md:p-6">
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-1 gap-2">
                 <h3 className="text-lg font-semibold">
                   {selectedDate
@@ -1398,10 +1670,6 @@ export default function DailyUsageChart({
                 {selectedDate ? "No data for selected date" : "No data available"}
               </p>
             </div>
-          )}
-
-          {latencyByModel && (
-            <SpeedTable byModel={latencyByModel} />
           )}
         </div>
       )}

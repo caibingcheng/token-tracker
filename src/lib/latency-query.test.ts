@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   percentile,
   aggregateLatencyByModel,
+  aggregateLatencyByModelByDate,
   aggregateLatencyDaily,
   type LatencyRow,
 } from "@/lib/latency-query";
@@ -150,5 +151,75 @@ describe("aggregateLatencyDaily", () => {
       row({ model: "gpt-4o", ttftMs: null, createdAt: "2026-08-10T10:00:00.000Z" }),
     ];
     expect(aggregateLatencyDaily(rows, 0)).toEqual([]);
+  });
+});
+
+describe("aggregateLatencyByModelByDate", () => {
+  const active = new Set(["gpt-4o"]);
+
+  it("buckets by local date and aggregates per model x provider", () => {
+    const rows: LatencyRow[] = [
+      // 2026-08-10 23:00 UTC = 2026-08-11 07:00 UTC+8（offset=-480）
+      row({
+        model: "gpt-4o",
+        provider: "openai",
+        ttftMs: 100,
+        latencyMs: 500,
+        outputTokens: 50,
+        createdAt: "2026-08-10T23:00:00.000Z",
+      }),
+      // 2026-08-11 01:00 UTC = 2026-08-11 09:00 UTC+8
+      row({
+        model: "gpt-4o",
+        provider: "openai",
+        ttftMs: 300,
+        latencyMs: 900,
+        outputTokens: 150,
+        createdAt: "2026-08-11T01:00:00.000Z",
+      }),
+      // 2026-08-12 10:00 UTC = 2026-08-12 18:00 UTC+8（无流式，仅延迟）
+      row({
+        model: "gpt-4o",
+        provider: "azure",
+        ttftMs: null,
+        latencyMs: 200,
+        outputTokens: 0,
+        createdAt: "2026-08-12T10:00:00.000Z",
+      }),
+    ];
+    const result = aggregateLatencyByModelByDate(rows, active, -480);
+
+    const day1 = result["2026-08-11"];
+    expect(day1).toHaveLength(1);
+    expect(day1[0].provider).toBe("openai");
+    expect(day1[0].count).toBe(2);
+    expect(day1[0].streamCount).toBe(2);
+    expect(day1[0].p50TtftMs).toBe(200);
+    expect(day1[0].avgTtftMs).toBe(200);
+    expect(day1[0].avgLatencyMs).toBe(700);
+
+    const day2 = result["2026-08-12"];
+    expect(day2).toHaveLength(1);
+    expect(day2[0].provider).toBe("azure");
+    expect(day2[0].count).toBe(1);
+    expect(day2[0].streamCount).toBe(0);
+    expect(day2[0].p50TtftMs).toBeNull();
+    expect(day2[0].avgLatencyMs).toBe(200);
+
+    expect(Object.keys(result).sort()).toEqual(["2026-08-11", "2026-08-12"]);
+  });
+
+  it("applies active model filtering per date bucket", () => {
+    const rows: LatencyRow[] = [
+      row({ model: "gpt-4o", ttftMs: 100, createdAt: "2026-08-10T10:00:00.000Z" }),
+      row({ model: "retired-model", ttftMs: 100, createdAt: "2026-08-10T11:00:00.000Z" }),
+    ];
+    const result = aggregateLatencyByModelByDate(rows, active, 0);
+    expect(result["2026-08-10"]).toHaveLength(1);
+    expect(result["2026-08-10"][0].model).toBe("gpt-4o");
+  });
+
+  it("returns empty object for empty input", () => {
+    expect(aggregateLatencyByModelByDate([], active, 0)).toEqual({});
   });
 });
