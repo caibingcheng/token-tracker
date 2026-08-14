@@ -1,5 +1,5 @@
 import { db, tokenRecords, getDateGroupExpr } from "@/lib/db";
-import { sql, and, eq, inArray } from "drizzle-orm";
+import { sql, and, eq, inArray, notInArray } from "drizzle-orm";
 import {
   localDateKeyToUtcStartISO,
   localDateKeyFromUtcDate,
@@ -12,7 +12,7 @@ import {
   type StatItem,
 } from "@/lib/model-utils";
 import { resolveProviderFilter, loadHiddenProviderGroups } from "@/lib/provider-utils";
-import { loadModelAliases } from "@/lib/auth/settings";
+import { loadModelAliases, loadHiddenSources } from "@/lib/auth/settings";
 import { toNum } from "@/lib/number-utils";
 import { loadPriceMap, computeModelCost } from "@/lib/pricing";
 
@@ -42,7 +42,8 @@ export function buildWhereClause(
   providerFilter: string[] | null,
   modelFilter: string[] | null,
   agentFilter: string | null,
-  timezoneOffsetMinutes?: number
+  timezoneOffsetMinutes?: number,
+  exclude?: { providers: string[]; agents: string[] }
 ) {
   const conditions = [];
 
@@ -78,6 +79,17 @@ export function buildWhereClause(
     conditions.push(eq(tokenRecords.agent, agentFilter));
   }
 
+  // 独立排除的隐藏数据源（excluded 列表，与隐藏状态无关）：provider/agent 列均 notNull，
+  // 直接 NOT IN 排除；'unknown' 等遗留值不在排除列表中时自然保留
+  if (exclude) {
+    if (exclude.providers.length > 0) {
+      conditions.push(notInArray(tokenRecords.provider, exclude.providers));
+    }
+    if (exclude.agents.length > 0) {
+      conditions.push(notInArray(tokenRecords.agent, exclude.agents));
+    }
+  }
+
   return conditions.length > 0 ? and(...conditions) : null;
 }
 
@@ -95,6 +107,12 @@ export async function executeStatsQuery(params: {
 }): Promise<StatsQueryResult> {
   const groups = await loadHiddenProviderGroups();
   const aliases = await loadModelAliases();
+  const hiddenSources = await loadHiddenSources();
+  // 独立排除列表（不依赖隐藏状态；空数组由 buildWhereClause 跳过）
+  const exclude = {
+    providers: hiddenSources.excludedUpstreams,
+    agents: hiddenSources.excludedVirtualKeys,
+  };
   const {
     groupBy,
     range,
@@ -200,7 +218,8 @@ export async function executeStatsQuery(params: {
       providerFilter,
       modelFilter,
       agentFilter,
-      timezoneOffsetMinutes
+      timezoneOffsetMinutes,
+      exclude
     );
     if (whereClause) {
       query = query.where(whereClause);
@@ -232,7 +251,8 @@ export async function executeStatsQuery(params: {
       providerFilter,
       modelFilter,
       agentFilter,
-      timezoneOffsetMinutes
+      timezoneOffsetMinutes,
+      exclude
     );
     if (whereClause) {
       query = query.where(whereClause);
@@ -268,7 +288,8 @@ export async function executeStatsQuery(params: {
       providerFilter,
       modelFilter,
       agentFilter,
-      timezoneOffsetMinutes
+      timezoneOffsetMinutes,
+      exclude
     );
     if (whereClause) {
       query = query.where(whereClause);
@@ -287,7 +308,8 @@ export async function executeStatsQuery(params: {
       providerFilter,
       modelFilter,
       agentFilter,
-      timezoneOffsetMinutes
+      timezoneOffsetMinutes,
+      exclude
     );
 
     const effectiveLimit = limit === null ? null : TOP_N_RAW_MODELS;
@@ -373,7 +395,8 @@ export async function executeStatsQuery(params: {
       providerFilter,
       modelFilter,
       agentFilter,
-      timezoneOffsetMinutes
+      timezoneOffsetMinutes,
+      exclude
     );
     if (whereClause) {
       query = query.where(whereClause);

@@ -3,7 +3,8 @@ import { db, initDatabase } from "@/lib/db";
 import { tokenRecords } from "@/lib/db";
 import { normalizeModel } from "@/lib/model-utils";
 import { loadHiddenProviderGroups } from "@/lib/provider-utils";
-import { loadModelAliases } from "@/lib/auth/settings";
+import { loadModelAliases, loadHiddenSources } from "@/lib/auth/settings";
+import { and, notInArray } from "drizzle-orm";
 import { withAuth } from "@/lib/auth/guard";
 
 export const dynamic = "force-dynamic";
@@ -14,6 +15,8 @@ import { getDisplayName } from "@/lib/model-registry";
  *
  * Returns a list of all unique normalized model names in the database,
  * deduplicated and sorted alphabetically.
+ * Rows belonging to hidden sources (hidden_sources upstreams / virtual keys)
+ * are filtered out; pass ?includeHidden=1 to skip the filter.
  *
  * Response format:
  * {
@@ -27,16 +30,36 @@ import { getDisplayName } from "@/lib/model-registry";
 export const GET = withAuth(async (request: NextRequest) => {
   await initDatabase();
   try {
+    const { searchParams } = new URL(request.url);
+    const includeHidden = searchParams.get("includeHidden") === "1";
+
     const groups = await loadHiddenProviderGroups();
     const aliases = await loadModelAliases();
+    const hiddenSources = includeHidden ? null : await loadHiddenSources();
+    const hiddenUpstreams = hiddenSources?.upstreams ?? [];
+    const hiddenVirtualKeys = hiddenSources?.virtualKeys ?? [];
 
     // Query all unique (model, provider) pairs
-    const rows = await db
+    let query = db
       .selectDistinct({
         model: tokenRecords.model,
         provider: tokenRecords.provider,
       })
       .from(tokenRecords);
+
+    // 行级过滤：隐藏 upstream 的独有 model 一并消失（与「隐藏项不出现在筛选器」语义一致）
+    if (hiddenSources && (hiddenUpstreams.length > 0 || hiddenVirtualKeys.length > 0)) {
+      const conditions = [];
+      if (hiddenUpstreams.length > 0) {
+        conditions.push(notInArray(tokenRecords.provider, hiddenUpstreams));
+      }
+      if (hiddenVirtualKeys.length > 0) {
+        conditions.push(notInArray(tokenRecords.agent, hiddenVirtualKeys));
+      }
+      query = query.where(and(...conditions));
+    }
+
+    const rows = await query;
 
     // Normalize with provider and deduplicate
     const normalizedSet = new Set<string>();

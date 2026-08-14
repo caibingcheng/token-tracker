@@ -94,6 +94,8 @@ export default function UpstreamsPanel() {
   const [modelTests, setModelTests] = useState<Record<number, Record<string, ModelTestResult | null>>>({});
   const [testingModels, setTestingModels] = useState<Record<number, Record<string, boolean>>>({});
   const [testingAll, setTestingAll] = useState<Record<number, boolean>>({});
+  const [pendingDelete, setPendingDelete] = useState<UpstreamItem | null>(null);
+  const [hideHistory, setHideHistory] = useState(false);
 
   const filteredPresets = useMemo(() => {
     const query = form.name.trim().toLowerCase();
@@ -208,9 +210,18 @@ export default function UpstreamsPanel() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
-  const handleDelete = async (id: number) => {
-    if (!confirm("Delete this upstream?")) return;
-    await apiFetch(`/api/admin/upstreams/${id}`, { method: "DELETE" });
+  const handleDelete = async (u: UpstreamItem) => {
+    setPendingDelete(u);
+    setHideHistory(false);
+  };
+
+  const confirmDelete = async () => {
+    if (!pendingDelete) return;
+    setPendingDelete(null);
+    const query = hideHistory ? "?hideHistory=1" : "";
+    await apiFetch(`/api/admin/upstreams/${pendingDelete.id}${query}`, {
+      method: "DELETE",
+    });
     loadUpstreams();
   };
 
@@ -832,7 +843,7 @@ export default function UpstreamsPanel() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => handleDelete(u.id)}
+                  onClick={() => handleDelete(u)}
                   className="rounded border border-red-200 px-2.5 py-1 text-xs text-red-600 hover:bg-red-50"
                 >
                   Delete
@@ -843,7 +854,7 @@ export default function UpstreamsPanel() {
                   { label: "Test", onClick: () => handleTest(u) },
                   { label: u.enabled ? "Disable" : "Enable", onClick: () => handleToggleEnabled(u) },
                   { label: "Edit", onClick: () => handleEdit(u) },
-                  { label: "Delete", onClick: () => handleDelete(u.id), variant: "danger" },
+                  { label: "Delete", onClick: () => handleDelete(u), variant: "danger" },
                 ]}
               />
             </div>
@@ -1045,6 +1056,63 @@ export default function UpstreamsPanel() {
           </div>
         ))}
       </div>
+
+      {pendingDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="flex h-full w-full flex-col rounded-none bg-white shadow-xl md:h-auto md:max-w-md md:rounded-lg">
+            <div className="flex items-center justify-between border-b px-5 py-3">
+              <h3 className="font-semibold">Delete upstream</h3>
+              <button
+                type="button"
+                onClick={() => setPendingDelete(null)}
+                className="text-2xl leading-none text-gray-400 hover:text-gray-600"
+              >
+                ×
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-5">
+              <p className="text-sm text-gray-700">
+                Delete upstream{" "}
+                <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">
+                  {pendingDelete.name}
+                </code>
+                ? Its usage records are kept in history.
+              </p>
+              <label className="mt-4 flex items-center gap-3 min-h-[40px] cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={hideHistory}
+                  onChange={(e) => setHideHistory(e.target.checked)}
+                  className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                />
+                <span className="text-sm text-gray-700">
+                  Also hide its historical data
+                </span>
+              </label>
+              <p className="mt-1 text-xs text-gray-400">
+                Adds it to Hidden Sources (Display tab) so its records disappear
+                from filters and totals. Uncheck later to restore.
+              </p>
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t px-5 py-3">
+              <button
+                type="button"
+                onClick={() => setPendingDelete(null)}
+                className="rounded border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmDelete}
+                className="rounded bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

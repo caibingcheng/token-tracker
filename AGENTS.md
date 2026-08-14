@@ -37,7 +37,7 @@ docker compose up -d                                 # 本地运行
   - `upstream_model_health`（upstream_id+model 复合主键, status, expires_at, updated_at）：model 级不可用标记（持久化）
   - `virtual_keys`（id, name, api_key_encrypted, enabled, comment, enabled_models(JSON, 默认 '["*"]'), last_used_at, created_at）
   - `model_prices`（model PRIMARY KEY, input_price, output_price, cache_read_price(NULL→回退 input), cache_write_price(NULL→回退 input), source('models.dev'|'manual'), models_dev_id, updated_at）：官方价参考（USD/1M），**查询时计算**，record 不存价格；`model` = 发往 upstream 的真实名
-  - `settings`（key TEXT PRIMARY KEY, value TEXT）：`admin_api_key`（AES-256-GCM 加密）、`totp_secret`、`totp_enabled`、`token_epoch`、`hidden_providers`（明文）、`session_token_ttl_hours`（明文）、`stream_idle_timeout_minutes`（明文，Security tab 编辑）、`status_page_config`（明文 JSON：`{enabled, elements:{total,today,daily,heatmap,hourly,topModels,cost}}`，**默认 enabled=false**）、`model_aliases`（明文 JSON：`[{name, aliases[]}]` 归一化配置，Display pane 编辑）、`totp_fail_count`（明文，TOTP 失败计数）、`totp_locked_until`（明文，TOTP 锁定截止时间戳）、`recovery_codes`（明文 JSON：`{hashes:[sha256...], used:[bool...]}`，只存哈希不存明文）、`recovery_code_login_reminder`（明文，recovery code 登录提醒标记）
+  - `settings`（key TEXT PRIMARY KEY, value TEXT）：`admin_api_key`（AES-256-GCM 加密）、`totp_secret`、`totp_enabled`、`token_epoch`、`hidden_providers`（明文）、`session_token_ttl_hours`（明文）、`stream_idle_timeout_minutes`（明文，Security tab 编辑）、`status_page_config`（明文 JSON：`{enabled, elements:{total,today,daily,heatmap,hourly,topModels,cost}}`，**默认 enabled=false**）、`model_aliases`（明文 JSON：`[{name, aliases[]}]` 归一化配置，Display pane 编辑）、`hidden_sources`（明文 JSON：`{upstreams: string[], virtualKeys: string[], excludedUpstreams: string[], excludedVirtualKeys: string[]}`，Display pane 编辑；hidden = 隐藏源、excluded = 从总计剔除，两维度独立，查询层过滤零删除）、`totp_fail_count`（明文，TOTP 失败计数）、`totp_locked_until`（明文，TOTP 锁定截止时间戳）、`recovery_codes`（明文 JSON：`{hashes:[sha256...], used:[bool...]}`，只存哈希不存明文）、`recovery_code_login_reminder`（明文，recovery code 登录提醒标记）
 - **存量迁移**：`migrateColumns()` 泛化支持多表（token_records / virtual_keys / upstreams），通过 `PRAGMA table_info` 检测缺失列并 `ALTER TABLE` 补列（`CREATE TABLE IF NOT EXISTS` 不会补列）；`migrateTokenRecordsModelColumns()` 专用一次性迁移：`request_model` 回填 = model、`model` 覆盖 = `target_model`（旧 schema）、DROP `target_model`（幂等）
 
 ## API 路由与认证
@@ -54,6 +54,7 @@ docker compose up -d                                 # 本地运行
 | `/api/admin/virtual-keys*` | CRUD | 会话 token | 虚拟 key 管理（创建/编辑/吊销/用量，支持 comment + enabledModels） |
 | `/api/admin/auth/totp` `/api/admin/auth/api-key` `/api/admin/auth/sessions` `/api/admin/auth/recovery-codes` `/api/admin/auth/recovery-codes/reminder` | CRUD | 会话 token + TOTP 动态码 | TOTP 绑定/换绑/解绑、修改登录 key、全局登出（token_epoch+1 吊销全部会话）、recovery codes 查询/重新生成/清除提醒标记 |
 | `/api/admin/settings/display` | GET/PUT | 会话 token | Display tab：HIDDEN_PROVIDERS 分组语法（面板优先） |
+| `/api/admin/settings/hidden-sources` | GET/PUT | 会话 token | Display tab：Hidden Sources 配置（`hidden_sources`，`isValidHiddenSources` 校验；GET/PUT 均包 `withSkipCache`） |
 | `/api/admin/settings/session` `/api/admin/settings/stream` | GET/PUT | 会话 token | Security tab：会话 TTL + 流式空闲超时（分钟，settings 表，面板优先） |
 | `/api/admin/settings/status` | GET/PUT | 会话 token | Display tab：公开 Status 面板配置（status_page_config，`isValidStatusPageConfig` 校验） |
 | `/api/admin/settings/aliases` | GET/PUT | 会话 token | Display tab：Model Aliases 归一化配置（model_aliases，`isValidModelAliases` 校验） |
@@ -154,6 +155,15 @@ docker compose up -d                                 # 本地运行
 - **分组语法**：分号分组的通配匹配，如 `CustomA:vendor*`；被隐藏的 provider 在 UI 显示为 "Provider A", "Provider B"... 或自定义名称
 - **缓存失效**：`setHiddenProvidersSetting` 写入时调用 `invalidateModelCache()` 清空 `normalizeModel` 的 `rawToCanonical`，面板改分组后立即生效
 - **相关文件**：`src/lib/provider-utils.ts`、`src/lib/model-registry.ts`（`isProviderHidden`）
+
+### Hidden Sources（隐藏 vk / upstream 数据源，`hidden_sources`）
+
+- **语义**：每个名字两个**独立维度**——`upstreams`/`virtualKeys` = 隐藏（从筛选器下拉、分组榜单消失但总计仍计入）；`excludedUpstreams`/`excludedVirtualKeys` = 从聚合统计（总卡片、daily、heatmap、hourly、latency、status 面板）中剔除。四态均可表达（含「剔除但没隐藏」）。数据零删除，仅查询层过滤，取消勾选立即完整恢复
+- **匹配口径**：upstream → `token_records.provider`；vk → `token_records.agent`（均为写入时名字快照）；`'unknown'` 遗留记录永远计入总计、不列入可隐藏列表（UI 占位名 `(unknown)`）
+- **查询层**：`buildWhereClause` 第 6 参数 `exclude?: {providers, agents}`（`notInArray`，空数组跳过）；`executeStatsQuery`（stats-query.ts）与 `queryLatencyStats`（latency-query.ts，⚠️ 直接调 buildWhereClause 需自行 `loadHiddenSources()`）恒以 excluded 列表传入（与隐藏状态无关）；`/api/records` 明细不受影响
+- **distinct 路由**：`/api/agents` 始终过滤隐藏 vk（不受排除状态影响，`'unknown'` 映射 `(unknown)` 显示）；`/api/providers` 在**匿名化之前**按真实名排除（`?includeHidden=1` 跳过过滤且跳过匿名化返回真实名，供管理面板建议列表）；`/api/models` 行级过滤（provider NOT IN ∪ agent NOT IN），隐藏源独有 model 一并消失；三路由均支持 `?includeHidden=1`
+- **缓存**：settings 写入经 `withSkipCache` + 主动 `invalidateStatusCache()`（status 响应级缓存 key 只有 tzOffset）
+- **删除联动**：upstream/vk DELETE 接受 `?hideHistory=1`（删除确认框复选框，默认不勾），服务端追加名字进 hidden 列表（幂等去重）
 
 ### 官方价参考（`model_prices` + models.dev）
 

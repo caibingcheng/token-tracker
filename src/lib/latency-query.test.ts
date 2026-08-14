@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "fs";
+import { join } from "path";
 import {
   percentile,
   aggregateLatencyByModel,
@@ -221,5 +223,24 @@ describe("aggregateLatencyByModelByDate", () => {
 
   it("returns empty object for empty input", () => {
     expect(aggregateLatencyByModelByDate([], active, 0)).toEqual({});
+  });
+});
+
+describe("queryLatencyStats hidden sources exclusion (静态断言防回归)", () => {
+  const SOURCE = readFileSync(
+    join(process.cwd(), "src/lib/latency-query.ts"),
+    "utf8"
+  );
+
+  it("入口必须自行加载 loadHiddenSources（不依赖 executeStatsQuery）", () => {
+    expect(SOURCE).toMatch(/await loadHiddenSources\(\)/);
+    expect(SOURCE).toMatch(/hiddenSources\.excludedUpstreams/);
+    expect(SOURCE).toMatch(/hiddenSources\.excludedVirtualKeys/);
+  });
+
+  it("buildWhereClause 调用必须传 exclude 参数", () => {
+    expect(SOURCE).toMatch(
+      /timezoneOffsetMinutes,\n\s+exclude\n\s*\);/
+    );
   });
 });

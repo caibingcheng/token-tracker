@@ -178,6 +178,19 @@ export const DELETE = withAuth(async (request: NextRequest, ctx: any) => {
       return NextResponse.json({ success: false, error: "Upstream not found" }, { status: 404 });
     }
     await db.delete(upstreamsTable).where(eq(upstreamsTable.id, id));
+    // 可选联动：同时隐藏其历史数据（追加进 hidden_sources，不自动隐藏）
+    if (request.nextUrl.searchParams.get("hideHistory") === "1") {
+      const { loadHiddenSources, setHiddenSourcesSetting } = await import(
+        "@/lib/auth/settings"
+      );
+      const cfg = await loadHiddenSources();
+      if (!cfg.upstreams.includes(upstream.name)) {
+        await setHiddenSourcesSetting({
+          ...cfg,
+          upstreams: [...cfg.upstreams, upstream.name],
+        });
+      }
+    }
     const { ip, userAgent } = extractClientInfo(request);
     await recordAuditLog({
       action: "upstream_deleted",

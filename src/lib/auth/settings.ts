@@ -332,3 +332,100 @@ export async function setModelAliasesSetting(rules: ModelAliasRule[]): Promise<v
   const { invalidateQueryCache } = await import("@/lib/db/cache");
   invalidateQueryCache();
 }
+
+// ---- Hidden Sources（隐藏 vk / upstream 数据源）：settings 表 hidden_sources（JSON 明文）----
+// 语义：每个名字两个独立维度——
+//   upstreams / virtualKeys：按名字隐藏（从筛选器/榜单消失，但总计仍计入）
+//   excludedUpstreams / excludedVirtualKeys：从聚合统计（总计、daily、heatmap、hourly、latency、status）中剔除
+// 四态均可表达：未隐藏+计入 / 隐藏+计入 / 隐藏+剔除 / 不隐藏+剔除。
+// 数据零删除，仅查询层过滤；取消勾选立即完整恢复。
+
+export interface HiddenSourcesConfig {
+  upstreams: string[];
+  virtualKeys: string[];
+  excludedUpstreams: string[];
+  excludedVirtualKeys: string[];
+}
+
+export const DEFAULT_HIDDEN_SOURCES: HiddenSourcesConfig = {
+  upstreams: [],
+  virtualKeys: [],
+  excludedUpstreams: [],
+  excludedVirtualKeys: [],
+};
+
+// 解析 settings 原始字符串，与默认值逐 key 合并（未知/非法字段回退，返回全新对象）
+export function parseHiddenSources(raw: string | null): HiddenSourcesConfig {
+  const result: HiddenSourcesConfig = {
+    upstreams: [...DEFAULT_HIDDEN_SOURCES.upstreams],
+    virtualKeys: [...DEFAULT_HIDDEN_SOURCES.virtualKeys],
+    excludedUpstreams: [...DEFAULT_HIDDEN_SOURCES.excludedUpstreams],
+    excludedVirtualKeys: [...DEFAULT_HIDDEN_SOURCES.excludedVirtualKeys],
+  };
+  if (!raw) return result;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (parsed && typeof parsed === "object") {
+      for (const field of [
+        "upstreams",
+        "virtualKeys",
+        "excludedUpstreams",
+        "excludedVirtualKeys",
+      ] as const) {
+        if (Array.isArray(parsed[field])) {
+          result[field] = (parsed[field] as unknown[]).filter(
+            (n): n is string => typeof n === "string"
+          );
+        }
+      }
+    }
+    return result;
+  } catch {
+    return result;
+  }
+}
+
+export function isValidHiddenSources(
+  config: unknown
+): config is HiddenSourcesConfig {
+  if (!config || typeof config !== "object") return false;
+  const c = config as Record<string, unknown>;
+  for (const key of Object.keys(c)) {
+    if (
+      key !== "upstreams" &&
+      key !== "virtualKeys" &&
+      key !== "excludedUpstreams" &&
+      key !== "excludedVirtualKeys"
+    ) {
+      return false;
+    }
+  }
+  for (const field of [
+    "upstreams",
+    "virtualKeys",
+    "excludedUpstreams",
+    "excludedVirtualKeys",
+  ] as const) {
+    if (
+      !Array.isArray(c[field]) ||
+      !(c[field] as unknown[]).every((n) => typeof n === "string")
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// 唯一 async 入口：读取 + 解析（withSkipCache 无 10s 延迟）
+export async function loadHiddenSources(): Promise<HiddenSourcesConfig> {
+  return parseHiddenSources(await getSetting("hidden_sources"));
+}
+
+export async function setHiddenSourcesSetting(
+  config: HiddenSourcesConfig
+): Promise<void> {
+  await setSetting("hidden_sources", JSON.stringify(config));
+  // 清空 status 公开端点响应缓存（其缓存 key 只有 tzOffset，配置变更必须主动失效）
+  const { invalidateStatusCache } = await import("@/lib/status-query");
+  invalidateStatusCache();
+}

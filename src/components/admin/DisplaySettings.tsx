@@ -34,6 +34,16 @@ interface HiddenGroupDraft {
   patterns: string;
 }
 
+interface HiddenSourcesData {
+  upstreams: string[];
+  virtualKeys: string[];
+  excludedUpstreams: string[];
+  excludedVirtualKeys: string[];
+}
+
+const UNKNOWN_AGENT = "unknown";
+const UNKNOWN_DISPLAY = "(unknown)";
+
 const STATUS_ELEMENT_LABELS: Array<{ key: keyof StatusPageElementsData; label: string; hint?: string }> = [
   { key: "total", label: "Total summary", hint: "All-time totals" },
   { key: "today", label: "Today overview", hint: "Today vs yesterday" },
@@ -58,16 +68,28 @@ export default function DisplaySettings() {
   const [aliasesBusy, setAliasesBusy] = useState(false);
   const [aliasesError, setAliasesError] = useState<string | null>(null);
   const [aliasesSaved, setAliasesSaved] = useState(false);
+  const [hiddenSources, setHiddenSources] = useState<HiddenSourcesData | null>(null);
+  const [providerOptions, setProviderOptions] = useState<string[]>([]);
+  const [agentOptionsRaw, setAgentOptionsRaw] = useState<string[]>([]);
+  const [hiddenSourcesBusy, setHiddenSourcesBusy] = useState(false);
+  const [hiddenSourcesError, setHiddenSourcesError] = useState<string | null>(null);
+  const [hiddenSourcesSaved, setHiddenSourcesSaved] = useState(false);
 
   const load = useCallback(async () => {
-    const [res, statusRes, aliasesRes] = await Promise.all([
+    const [res, statusRes, aliasesRes, hsRes, providersRes, agentsRes] = await Promise.all([
       apiFetch("/api/admin/settings/display"),
       apiFetch("/api/admin/settings/status"),
       apiFetch("/api/admin/settings/aliases"),
+      apiFetch("/api/admin/settings/hidden-sources"),
+      apiFetch("/api/providers?includeHidden=1"),
+      apiFetch("/api/agents?includeHidden=1"),
     ]);
     const json = await res.json();
     const statusJson = await statusRes.json();
     const aliasesJson = await aliasesRes.json();
+    const hsJson = await hsRes.json();
+    const providersJson = await providersRes.json();
+    const agentsJson = await agentsRes.json();
     if (json.success) {
       const d = json.data as DisplayData;
       setData(d);
@@ -82,6 +104,18 @@ export default function DisplaySettings() {
     if (aliasesJson.success) {
       const rules = aliasesJson.data as Array<{ name: string; aliases: string[] }>;
       setAliasesDraft(rules.map((r) => ({ name: r.name, aliases: r.aliases.join(", ") })));
+    }
+    if (hsJson.success) {
+      const d = hsJson.data as { config: HiddenSourcesData };
+      setHiddenSources(d.config);
+    }
+    if (providersJson.success) {
+      const list = providersJson.data as Array<{ id: string; name: string }>;
+      setProviderOptions(list.map((p) => p.id));
+    }
+    if (agentsJson.success) {
+      const list = agentsJson.data as Array<{ id: string; name: string }>;
+      setAgentOptionsRaw(list.map((a) => a.id));
     }
   }, []);
 
@@ -176,6 +210,58 @@ export default function DisplaySettings() {
     });
   };
 
+  const toggleHiddenSource = (field: "upstreams" | "virtualKeys", name: string) => {
+    setHiddenSourcesSaved(false);
+    setHiddenSources((prev) => {
+      if (!prev) return prev;
+      const list = prev[field];
+      const next = list.includes(name)
+        ? list.filter((n) => n !== name)
+        : [...list, name];
+      return { ...prev, [field]: next };
+    });
+  };
+
+  const toggleExcludedSource = (
+    field: "excludedUpstreams" | "excludedVirtualKeys",
+    name: string
+  ) => {
+    setHiddenSourcesSaved(false);
+    setHiddenSources((prev) => {
+      if (!prev) return prev;
+      const list = prev[field];
+      const next = list.includes(name)
+        ? list.filter((n) => n !== name)
+        : [...list, name];
+      return { ...prev, [field]: next };
+    });
+  };
+
+  const handleSaveHiddenSources = async () => {
+    if (!hiddenSources) return;
+    setHiddenSourcesBusy(true);
+    setHiddenSourcesError(null);
+    setHiddenSourcesSaved(false);
+    try {
+      const res = await apiFetch("/api/admin/settings/hidden-sources", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ config: hiddenSources }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        setHiddenSourcesSaved(true);
+        load();
+      } else {
+        setHiddenSourcesError(json.error || "Failed to save");
+      }
+    } catch {
+      setHiddenSourcesError("Network error");
+    } finally {
+      setHiddenSourcesBusy(false);
+    }
+  };
+
   const updateAlias = (idx: number, patch: Partial<AliasRuleDraft>) => {
     setAliasesSaved(false);
     setAliasesDraft((prev) =>
@@ -225,6 +311,22 @@ export default function DisplaySettings() {
       setAliasesBusy(false);
     }
   };
+
+  // 选项 = 数据库现有名字 ∪ 已勾选隐藏/排除历史名字（记录删除后仍可取消）
+  const upstreamOptions = (hs: HiddenSourcesData): string[] =>
+    Array.from(
+      new Set([...providerOptions, ...hs.upstreams, ...hs.excludedUpstreams])
+    ).sort((a, b) => a.localeCompare(b));
+  const agentOptions = (hs: HiddenSourcesData): string[] =>
+    Array.from(
+      new Set([
+        ...agentOptionsRaw,
+        ...hs.virtualKeys,
+        ...hs.excludedVirtualKeys,
+      ])
+    )
+      .filter((name) => name !== UNKNOWN_AGENT)
+      .sort((a, b) => a.localeCompare(b));
 
   return (
     <div className="rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
@@ -467,6 +569,149 @@ export default function DisplaySettings() {
               className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-50"
             >
               {statusBusy ? "Saving..." : "Save Status Page"}
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div className="mt-8 border-t border-gray-100 pt-6">
+        <h3 className="mb-1 text-base font-semibold text-gray-900">
+          Hidden Sources
+        </h3>
+        <p className="mb-4 text-sm text-gray-500">
+          Hide deprecated virtual keys / upstreams by name, and optionally
+          exclude each one from aggregate totals. Hidden sources disappear
+          from filters and rankings; excluded sources are removed from all
+          aggregate stats (total cards, daily, heatmap, hourly, latency,
+          public status page). The two are independent per source. No data
+          is ever deleted — unchecking fully restores everything.
+        </p>
+
+        {hiddenSources && (
+          <div className="space-y-4">
+            <div>
+              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">
+                Upstreams
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {upstreamOptions(hiddenSources).map((name) => {
+                  const hidden = hiddenSources.upstreams.includes(name);
+                  const excluded = hiddenSources.excludedUpstreams.includes(name);
+                  return (
+                    <div
+                      key={name}
+                      className="flex items-center gap-3 min-h-[40px] rounded border border-gray-200 bg-gray-50 px-3 py-2"
+                    >
+                      <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-3">
+                        <input
+                          type="checkbox"
+                          checked={hidden}
+                          onChange={() => toggleHiddenSource("upstreams", name)}
+                          className="h-5 w-5 shrink-0 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span className="min-w-0">
+                          <span className="block truncate text-sm font-medium text-gray-700" title={name}>
+                            {name}
+                          </span>
+                          <span className="block text-xs text-gray-400">
+                            {excluded ? "Excluded from totals" : "Counted in totals"}
+                          </span>
+                        </span>
+                      </label>
+                      <label className="flex shrink-0 cursor-pointer items-center gap-1.5">
+                        <input
+                          type="checkbox"
+                          checked={excluded}
+                          onChange={() =>
+                            toggleExcludedSource("excludedUpstreams", name)
+                          }
+                          className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span className="text-xs text-gray-500">Exclude</span>
+                      </label>
+                    </div>
+                  );
+                })}
+                {upstreamOptions(hiddenSources).length === 0 && (
+                  <p className="text-sm text-gray-400">No providers with records yet.</p>
+                )}
+              </div>
+            </div>
+
+            <div>
+              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">
+                Virtual Keys
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {agentOptions(hiddenSources).map((name) => {
+                  const hidden = hiddenSources.virtualKeys.includes(name);
+                  const excluded = hiddenSources.excludedVirtualKeys.includes(name);
+                  return (
+                    <div
+                      key={name}
+                      className="flex items-center gap-3 min-h-[40px] rounded border border-gray-200 bg-gray-50 px-3 py-2"
+                    >
+                      <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-3">
+                        <input
+                          type="checkbox"
+                          checked={hidden}
+                          onChange={() => toggleHiddenSource("virtualKeys", name)}
+                          className="h-5 w-5 shrink-0 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span className="min-w-0">
+                          <span className="block truncate text-sm font-medium text-gray-700" title={name}>
+                            {name}
+                          </span>
+                          <span className="block text-xs text-gray-400">
+                            {excluded ? "Excluded from totals" : "Counted in totals"}
+                          </span>
+                        </span>
+                      </label>
+                      <label className="flex shrink-0 cursor-pointer items-center gap-1.5">
+                        <input
+                          type="checkbox"
+                          checked={excluded}
+                          onChange={() =>
+                            toggleExcludedSource("excludedVirtualKeys", name)
+                          }
+                          className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span className="text-xs text-gray-500">Exclude</span>
+                      </label>
+                    </div>
+                  );
+                })}
+                {agentOptions(hiddenSources).length === 0 && (
+                  <p className="text-sm text-gray-400">No virtual keys with records yet.</p>
+                )}
+              </div>
+              <p className="mt-2 text-xs text-gray-400">
+                Attributed to{" "}
+                <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">
+                  {UNKNOWN_DISPLAY}
+                </code>{" "}
+                records are always counted and never hidden.
+              </p>
+            </div>
+
+            {hiddenSourcesError && (
+              <div className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-600">
+                {hiddenSourcesError}
+              </div>
+            )}
+            {hiddenSourcesSaved && (
+              <div className="rounded border border-green-200 bg-green-50 p-3 text-sm text-green-700">
+                Saved. Filters and totals update immediately.
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={handleSaveHiddenSources}
+              disabled={hiddenSourcesBusy}
+              className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-50"
+            >
+              {hiddenSourcesBusy ? "Saving..." : "Save Hidden Sources"}
             </button>
           </div>
         )}
