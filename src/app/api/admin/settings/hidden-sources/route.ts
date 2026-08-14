@@ -9,7 +9,7 @@ import {
 import { withSkipCache } from "@/lib/db/cache";
 
 // Hidden Sources 配置（settings 表 hidden_sources）：隐藏 vk / upstream 数据源
-// 按名字隐藏（upstreams/virtualKeys）+ 全局「不计入总计」开关（excludeFromTotals）
+// 按名字隐藏（upstreams/virtualKeys）+ 按名字从聚合统计剔除（excludedUpstreams/excludedVirtualKeys），两维度独立
 
 export const GET = withAuth(async () => {
   return withSkipCache(async () => {
@@ -32,7 +32,7 @@ export const PUT = withAuth(async (request: NextRequest) => {
       return NextResponse.json(
         {
           success: false,
-          error: "Invalid config. Must include upstreams: string[], virtualKeys: string[], excludeFromTotals: boolean",
+          error: "Invalid config. Must include upstreams: string[], virtualKeys: string[], excludedUpstreams: string[], excludedVirtualKeys: string[]",
         },
         { status: 400 }
       );
