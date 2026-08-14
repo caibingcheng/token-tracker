@@ -9,16 +9,6 @@ interface DisplayData {
   envOverridden: boolean;
 }
 
-interface SessionTtlData {
-  value: number | null;
-  envValue: string | null;
-  envOverridden: boolean;
-}
-
-interface StreamTimeoutData {
-  value: number | null;
-}
-
 interface StatusPageElementsData {
   total: boolean;
   today: boolean;
@@ -60,16 +50,6 @@ export default function DisplaySettings() {
   const [hiddenBusy, setHiddenBusy] = useState(false);
   const [hiddenError, setHiddenError] = useState<string | null>(null);
   const [hiddenSaved, setHiddenSaved] = useState(false);
-  const [ttlData, setTtlData] = useState<SessionTtlData | null>(null);
-  const [ttlDraft, setTtlDraft] = useState("");
-  const [ttlBusy, setTtlBusy] = useState(false);
-  const [ttlError, setTtlError] = useState<string | null>(null);
-  const [ttlSaved, setTtlSaved] = useState(false);
-  const [streamData, setStreamData] = useState<StreamTimeoutData | null>(null);
-  const [streamDraft, setStreamDraft] = useState("");
-  const [streamBusy, setStreamBusy] = useState(false);
-  const [streamError, setStreamError] = useState<string | null>(null);
-  const [streamSaved, setStreamSaved] = useState(false);
   const [statusConfig, setStatusConfig] = useState<StatusPageConfigData | null>(null);
   const [statusBusy, setStatusBusy] = useState(false);
   const [statusError, setStatusError] = useState<string | null>(null);
@@ -80,16 +60,12 @@ export default function DisplaySettings() {
   const [aliasesSaved, setAliasesSaved] = useState(false);
 
   const load = useCallback(async () => {
-    const [res, ttlRes, streamRes, statusRes, aliasesRes] = await Promise.all([
+    const [res, statusRes, aliasesRes] = await Promise.all([
       apiFetch("/api/admin/settings/display"),
-      apiFetch("/api/admin/settings/session"),
-      apiFetch("/api/admin/settings/stream"),
       apiFetch("/api/admin/settings/status"),
       apiFetch("/api/admin/settings/aliases"),
     ]);
     const json = await res.json();
-    const ttlJson = await ttlRes.json();
-    const streamJson = await streamRes.json();
     const statusJson = await statusRes.json();
     const aliasesJson = await aliasesRes.json();
     if (json.success) {
@@ -98,16 +74,6 @@ export default function DisplaySettings() {
       setHiddenDraft(
         d.groups.map((g) => ({ name: g.name, patterns: g.patterns.join(", ") }))
       );
-    }
-    if (ttlJson.success) {
-      const t = ttlJson.data as SessionTtlData;
-      setTtlData(t);
-      setTtlDraft(t.value !== null ? String(t.value) : "");
-    }
-    if (streamJson.success) {
-      const s = streamJson.data as StreamTimeoutData;
-      setStreamData(s);
-      setStreamDraft(s.value !== null ? String(s.value) : "");
     }
     if (statusJson.success) {
       const d = statusJson.data as { config: StatusPageConfigData };
@@ -170,54 +136,6 @@ export default function DisplaySettings() {
       setHiddenError("Network error");
     } finally {
       setHiddenBusy(false);
-    }
-  };
-
-  const handleSaveTtl = async () => {
-    setTtlBusy(true);
-    setTtlError(null);
-    setTtlSaved(false);
-    try {
-      const res = await apiFetch("/api/admin/settings/session", {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ value: ttlDraft }),
-      });
-      const json = await res.json();
-      if (json.success) {
-        setTtlSaved(true);
-        load();
-      } else {
-        setTtlError(json.error || "Failed to save");
-      }
-    } catch {
-      setTtlError("Network error");
-    } finally {
-      setTtlBusy(false);
-    }
-  };
-
-  const handleSaveStream = async () => {
-    setStreamBusy(true);
-    setStreamError(null);
-    setStreamSaved(false);
-    try {
-      const res = await apiFetch("/api/admin/settings/stream", {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ value: streamDraft }),
-      });
-      const json = await res.json();
-      if (json.success) {
-        setStreamSaved(true);
-        load();
-      } else {
-        setStreamError(json.error || "Failed to save");
-      }
-    } catch {
-      setStreamError("Network error");
-    } finally {
-      setStreamBusy(false);
     }
   };
 
@@ -461,119 +379,6 @@ export default function DisplaySettings() {
         >
           {aliasesBusy ? "Saving..." : "Save Aliases"}
         </button>
-      </div>
-
-      <div className="mt-8 border-t border-gray-100 pt-6">
-        <h3 className="mb-1 text-base font-semibold text-gray-900">
-          Session token lifetime
-        </h3>
-        <p className="mb-4 text-sm text-gray-500">
-          Affects only newly issued tokens; already-issued tokens keep their
-          original expiry. Overrides{" "}
-          <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">SESSION_TOKEN_TTL_HOURS</code>{" "}
-          env (default 24h).
-        </p>
-
-        {ttlData?.envOverridden && (
-          <div className="mb-4 rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700">
-            env SESSION_TOKEN_TTL_HOURS has been overridden by the panel.
-          </div>
-        )}
-        {ttlData?.envValue && !ttlData.envOverridden && (
-          <div className="mb-4 rounded border border-gray-200 bg-gray-50 p-3 text-sm text-gray-600">
-            Currently falling back to env SESSION_TOKEN_TTL_HOURS (
-            {ttlData.envValue}h). Save a value here to take over.
-          </div>
-        )}
-
-        <div className="flex items-center gap-3">
-          <input
-            type="number"
-            min={1}
-            max={720}
-            value={ttlDraft}
-            onChange={(e) => {
-              setTtlDraft(e.target.value);
-              setTtlSaved(false);
-            }}
-            placeholder="24"
-            className="w-32 rounded border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-          />
-          <span className="text-sm text-gray-500">hours (1–720)</span>
-          <button
-            type="button"
-            onClick={handleSaveTtl}
-            disabled={ttlBusy}
-            className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-50"
-          >
-            {ttlBusy ? "Saving..." : "Save"}
-          </button>
-        </div>
-        {ttlDraft.trim() === "" && (
-          <p className="mt-2 text-xs text-gray-400">
-            Empty = fall back to env / default 24h.
-          </p>
-        )}
-        {ttlError && (
-          <div className="mt-3 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-600">
-            {ttlError}
-          </div>
-        )}
-        {ttlSaved && (
-          <div className="mt-3 rounded border border-green-200 bg-green-50 p-3 text-sm text-green-700">
-            Saved. New logins will use the updated lifetime.
-          </div>
-        )}
-      </div>
-
-      <div className="mt-8 border-t border-gray-100 pt-6">
-        <h3 className="mb-1 text-base font-semibold text-gray-900">
-          Stream idle timeout
-        </h3>
-        <p className="mb-4 text-sm text-gray-500">
-          Streaming responses are aborted after receiving no data for this
-          duration (prevents stuck upstream connections from lingering). Applies
-          to new streams; default 30 minutes.
-        </p>
-
-        <div className="flex items-center gap-3">
-          <input
-            type="number"
-            min={1}
-            max={1440}
-            value={streamDraft}
-            onChange={(e) => {
-              setStreamDraft(e.target.value);
-              setStreamSaved(false);
-            }}
-            placeholder="30"
-            className="w-32 rounded border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-          />
-          <span className="text-sm text-gray-500">minutes (1–1440)</span>
-          <button
-            type="button"
-            onClick={handleSaveStream}
-            disabled={streamBusy}
-            className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-50"
-          >
-            {streamBusy ? "Saving..." : "Save"}
-          </button>
-        </div>
-        {streamDraft.trim() === "" && (
-          <p className="mt-2 text-xs text-gray-400">
-            Empty = fall back to default 30 minutes.
-          </p>
-        )}
-        {streamError && (
-          <div className="mt-3 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-600">
-            {streamError}
-          </div>
-        )}
-        {streamSaved && (
-          <div className="mt-3 rounded border border-green-200 bg-green-50 p-3 text-sm text-green-700">
-            Saved. New streams will use the updated timeout.
-          </div>
-        )}
       </div>
 
       <div className="mt-8 border-t border-gray-100 pt-6">

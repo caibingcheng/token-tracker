@@ -37,7 +37,7 @@ docker compose up -d                                 # 本地运行
   - `upstream_model_health`（upstream_id+model 复合主键, status, expires_at, updated_at）：model 级不可用标记（持久化）
   - `virtual_keys`（id, name, api_key_encrypted, enabled, comment, enabled_models(JSON, 默认 '["*"]'), last_used_at, created_at）
   - `model_prices`（model PRIMARY KEY, input_price, output_price, cache_read_price(NULL→回退 input), cache_write_price(NULL→回退 input), source('models.dev'|'manual'), models_dev_id, updated_at）：官方价参考（USD/1M），**查询时计算**，record 不存价格；`model` = 发往 upstream 的真实名
-  - `settings`（key TEXT PRIMARY KEY, value TEXT）：`admin_api_key`（AES-256-GCM 加密）、`totp_secret`、`totp_enabled`、`token_epoch`、`hidden_providers`（明文）、`session_token_ttl_hours`（明文）、`stream_idle_timeout_minutes`（明文）、`status_page_config`（明文 JSON：`{enabled, elements:{total,today,daily,heatmap,hourly,topModels,cost}}`，**默认 enabled=false**）、`model_aliases`（明文 JSON：`[{name, aliases[]}]` 归一化配置，Display pane 编辑）、`totp_fail_count`（明文，TOTP 失败计数）、`totp_locked_until`（明文，TOTP 锁定截止时间戳）、`recovery_codes`（明文 JSON：`{hashes:[sha256...], used:[bool...]}`，只存哈希不存明文）、`recovery_code_login_reminder`（明文，recovery code 登录提醒标记）
+  - `settings`（key TEXT PRIMARY KEY, value TEXT）：`admin_api_key`（AES-256-GCM 加密）、`totp_secret`、`totp_enabled`、`token_epoch`、`hidden_providers`（明文）、`session_token_ttl_hours`（明文）、`stream_idle_timeout_minutes`（明文，Security tab 编辑）、`status_page_config`（明文 JSON：`{enabled, elements:{total,today,daily,heatmap,hourly,topModels,cost}}`，**默认 enabled=false**）、`model_aliases`（明文 JSON：`[{name, aliases[]}]` 归一化配置，Display pane 编辑）、`totp_fail_count`（明文，TOTP 失败计数）、`totp_locked_until`（明文，TOTP 锁定截止时间戳）、`recovery_codes`（明文 JSON：`{hashes:[sha256...], used:[bool...]}`，只存哈希不存明文）、`recovery_code_login_reminder`（明文，recovery code 登录提醒标记）
 - **存量迁移**：`migrateColumns()` 泛化支持多表（token_records / virtual_keys / upstreams），通过 `PRAGMA table_info` 检测缺失列并 `ALTER TABLE` 补列（`CREATE TABLE IF NOT EXISTS` 不会补列）；`migrateTokenRecordsModelColumns()` 专用一次性迁移：`request_model` 回填 = model、`model` 覆盖 = `target_model`（旧 schema）、DROP `target_model`（幂等）
 
 ## API 路由与认证
@@ -53,7 +53,8 @@ docker compose up -d                                 # 本地运行
 | `/api/admin/upstreams*` | CRUD | 会话 token | 上游管理（含 keys、模型拉取、连接测试、余额刷新） |
 | `/api/admin/virtual-keys*` | CRUD | 会话 token | 虚拟 key 管理（创建/编辑/吊销/用量，支持 comment + enabledModels） |
 | `/api/admin/auth/totp` `/api/admin/auth/api-key` `/api/admin/auth/sessions` `/api/admin/auth/recovery-codes` `/api/admin/auth/recovery-codes/reminder` | CRUD | 会话 token + TOTP 动态码 | TOTP 绑定/换绑/解绑、修改登录 key、全局登出（token_epoch+1 吊销全部会话）、recovery codes 查询/重新生成/清除提醒标记 |
-| `/api/admin/settings/display` `/api/admin/settings/session` `/api/admin/settings/stream` | GET/PUT | 会话 token | Display tab：HIDDEN_PROVIDERS 分组语法 + 会话 TTL + 流式空闲超时（分钟，settings 表，面板优先） |
+| `/api/admin/settings/display` | GET/PUT | 会话 token | Display tab：HIDDEN_PROVIDERS 分组语法（面板优先） |
+| `/api/admin/settings/session` `/api/admin/settings/stream` | GET/PUT | 会话 token | Security tab：会话 TTL + 流式空闲超时（分钟，settings 表，面板优先） |
 | `/api/admin/settings/status` | GET/PUT | 会话 token | Display tab：公开 Status 面板配置（status_page_config，`isValidStatusPageConfig` 校验） |
 | `/api/admin/settings/aliases` | GET/PUT | 会话 token | Display tab：Model Aliases 归一化配置（model_aliases，`isValidModelAliases` 校验） |
 | `/api/admin/model-prices` | GET/PUT/DELETE | 会话 token | 官方价参考管理：GET 行集 = 全部启用 upstream 非通配 enabled_models ∪ 已定价 model（附徽标：active/inactive、待确认/未匹配、有更新+diff、已下架）；PUT 手动编辑（`source='manual'`，清空 models_dev_id）；DELETE 删价（model 走 query，**不用 `[model]` 动态段**，model 名可能含 `/`） |
@@ -96,7 +97,7 @@ docker compose up -d                                 # 本地运行
 - **Session 粘性**：`src/lib/gateway/session.ts` — `sessionId = sha256(system 拼接尾部 1024 + 首条 user 文本前 1024 + model + vkId + protocol)`；内存 LRU（max 5000 / ttl 24h），仅 failover 落点 ≠ 默认 upstream 时保存 binding；binding 失效条件：upstream 被禁用/无 key/协议不匹配/不 healthy/不再匹配 model（链过滤自动覆盖）；单候选跳过 session 计算
 - **健康状态**：`src/lib/gateway/health.ts`（内存缓存 + **DB 持久化**：upstream 级存 `upstreams.health_status`，model 级存 `upstream_model_health`，重启后懒加载恢复探活调度）+ `src/lib/gateway/probe.ts`（非流式小请求探活，不记 token）；**upstream 级** healthy → unhealthy：真实请求中全部 key 失败（401 认证失败触发；403/404 为 model 级，不误伤）；unhealthy 不进入候选池，30 分钟定时探活恢复（`upstreams.health_check_model` 优先，否则 `enabled_models` 第一个非通配，无则保持 unhealthy）；**model 级**：某 upstream 对该 model 返回 404/403（全部 key）时标记该 model 不可用（TTL 30 分钟自动恢复），路由时跳过该 upstream 并 failover，UI 模型列表显示 unavailable 徽标；**手动测试（`/api/admin/upstreams/[id]/test-model|test-all-models`）成功即立即恢复健康状态（markHealthy + markModelHealthy），404/403 失败立即标记**，不依赖 30 分钟探活；**全部 unhealthy 时直接 502 不尝试**
 - **写库**：仅 2xx 响应记录；响应无 usage 时记 0 且 `status='no_usage'`；`status`/`latency_ms` 为新增列。**口径约定**：`input_tokens` 字段统一按不含 cache_read 写入（OpenAI/Gemini 在 parser 层做减法），`cache_read` 单独列示，展示层 Total Input 含 cache。**model 列写真实名**（路由重写时用 targetModel，否则用请求名），原始请求名写 `request_model`（虚拟名路由可追溯）。
-- **流式 usage 增量解析**：`proxy.ts` 透传时用 `StreamUsageExtractor`（`parsers/stream-usage.ts`）边读边解析，只保留首尾 usage 小对象，**不持有完整响应体**（内存 O(1)）；流式空闲超时默认 30min，由 settings 表 `stream_idle_timeout_minutes` 配置（Display tab，无 env），超时中断流并释放连接。非流式仍整包缓冲（JSON.parse 需要完整 body）。
+- **流式 usage 增量解析**：`proxy.ts` 透传时用 `StreamUsageExtractor`（`parsers/stream-usage.ts`）边读边解析，只保留首尾 usage 小对象，**不持有完整响应体**（内存 O(1)）；流式空闲超时默认 30min，由 settings 表 `stream_idle_timeout_minutes` 配置（Security tab，无 env），超时中断流并释放连接。非流式仍整包缓冲（JSON.parse 需要完整 body）。
 - **模型并集**：`GET /v1/models` 返回所有启用上游 `enabled_models` 中非通配条目
 - **注意事项**：
   - 新增写入接口必须在写入成功后调用 `invalidateQueryCache()` 或将 handler 包进 `withSkipCache()`（`src/lib/db/cache.ts`）
