@@ -1,7 +1,8 @@
 // upstream / model 健康状态管理 + 定时探活调度（内存缓存 + DB 持久化，重启不丢失）。
 // healthy（默认）→ unhealthy：某次真实请求中该 upstream 所有 key 均失败
-// unhealthy → healthy：定时探活成功 / 手动测试成功
-// unhealthy 的 upstream 不进入请求候选池；全部 healthy 失败时返回 502，不尝试 unhealthy
+// unhealthy → healthy：定时探活成功 / 手动测试成功 / 兜底真实请求 2xx 成功
+// unhealthy 的 upstream 不进入请求候选池（仅当存在健康候选时）；全部候选不健康时
+// 代理链路兜底尝试 unhealthy 候选（不留 502），拿到 2xx 立即 markHealthy + markModelHealthy 自愈
 
 export type UpstreamHealth = "healthy" | "unhealthy";
 

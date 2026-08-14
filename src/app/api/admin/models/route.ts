@@ -9,6 +9,7 @@ import {
   VALID_PROTOCOLS,
 } from "@/lib/gateway/model-router";
 import type { UpstreamRoute } from "@/lib/gateway/model-router";
+import { healthTracker } from "@/lib/gateway/proxy-deps";
 
 interface UpstreamSummary {
   id: number;
@@ -18,6 +19,8 @@ interface UpstreamSummary {
   priority: number;
   enabled: boolean;
   enabledModels: string[];
+  unhealthy: boolean;
+  modelUnhealthy: string[];
 }
 
 interface CandidateInfo {
@@ -26,6 +29,14 @@ interface CandidateInfo {
   priority: number;
   matchedPattern: string;
   matchType: "exact" | "wildcard";
+  upstreamUnhealthy: boolean;
+  modelUnavailable: boolean;
+}
+
+interface EffectiveRoute {
+  winner: CandidateInfo | null;
+  failover: boolean;
+  allUnhealthy: boolean;
 }
 
 interface ResolvedRoute {
@@ -34,6 +45,7 @@ interface ResolvedRoute {
   source: "manual" | "auto";
   winner: CandidateInfo | null;
   candidates: CandidateInfo[];
+  effective: EffectiveRoute;
 }
 
 interface ManualRouteInfo {
@@ -69,6 +81,23 @@ export const GET = withAuth(async () => {
   await initDatabase();
   const rows = await db.select().from(upstreamsTable).orderBy(upstreamsTable.priority);
 
+  // 健康状态：upstream 级 unhealthy 集合 + 每 upstream 的 model 级不可用集合（懒加载 + 顺带清理过期项）
+  const upstreamUnhealthy = new Set<number>();
+  const upstreamModelUnhealthy = new Map<number, Set<string>>();
+  for (const row of rows) {
+    if (!(await healthTracker.isHealthy(row.id))) {
+      upstreamUnhealthy.add(row.id);
+    }
+    const models = await healthTracker.listModelUnhealthy(row.id);
+    if (models.length > 0) {
+      upstreamModelUnhealthy.set(row.id, new Set(models));
+    }
+  }
+
+  const isCandidateHealthy = (upstreamId: number, model: string): boolean =>
+    !upstreamUnhealthy.has(upstreamId) &&
+    !(upstreamModelUnhealthy.get(upstreamId)?.has(model) ?? false);
+
   const upstreams: UpstreamSummary[] = rows.map((row: any) => ({
     id: row.id,
     name: row.name,
@@ -77,6 +106,8 @@ export const GET = withAuth(async () => {
     priority: row.priority,
     enabled: row.enabled === 1,
     enabledModels: parseEnabledModels(row.enabledModels),
+    unhealthy: upstreamUnhealthy.has(row.id),
+    modelUnhealthy: Array.from(upstreamModelUnhealthy.get(row.id) ?? []),
   }));
 
   const upstreamRoutes = rows.map(toUpstreamRoute);
@@ -100,6 +131,32 @@ export const GET = withAuth(async () => {
   for (const m of manualRoutes) {
     manualByKey.set(`${m.protocol}:${m.name}`, m);
   }
+
+  // 实际路由 = 健康过滤后链首；全部不健康时兜底 = 静态 priority 链首（与 proxy 兜底行为一致）
+  const computeEffective = (candidates: CandidateInfo[], model: string): EffectiveRoute => {
+    const healthyFirst = candidates.filter((c) => isCandidateHealthy(c.upstreamId, model));
+    if (healthyFirst.length > 0) {
+      return {
+        winner: healthyFirst[0],
+        failover: healthyFirst[0].upstreamId !== candidates[0]?.upstreamId,
+        allUnhealthy: false,
+      };
+    }
+    return {
+      winner: candidates[0] ?? null,
+      failover: false,
+      allUnhealthy: candidates.length > 0,
+    };
+  };
+
+  const toCandidate = (
+    c: { upstreamId: number; name: string; priority: number; matchedPattern: string; matchType: "exact" | "wildcard" },
+    model: string
+  ): CandidateInfo => ({
+    ...c,
+    upstreamUnhealthy: upstreamUnhealthy.has(c.upstreamId),
+    modelUnavailable: upstreamModelUnhealthy.get(c.upstreamId)?.has(model) ?? false,
+  });
 
   // 按 protocol 收集具体模型（非通配）和通配模式
   const concreteModelsByProtocol = new Map<Protocol, Set<string>>();
@@ -135,49 +192,60 @@ export const GET = withAuth(async () => {
       const manual = manualByKey.get(`${protocol}:${model}`);
       if (manual) {
         // 手动路由行排在自动行之前（winner = 配置的目标 upstream，candidates 单元素）
+        const manualCandidate: CandidateInfo = {
+          upstreamId: manual.upstreamId,
+          name: manual.upstreamName,
+          priority: 0,
+          matchedPattern: manual.targetModel,
+          matchType: "exact",
+          upstreamUnhealthy: upstreamUnhealthy.has(manual.upstreamId),
+          modelUnavailable: upstreamModelUnhealthy.get(manual.upstreamId)?.has(manual.targetModel) ?? false,
+        };
         resolvedRoutes.push({
           protocol,
           model,
           source: "manual",
-          winner: {
-            upstreamId: manual.upstreamId,
-            name: manual.upstreamName,
-            priority: 0,
-            matchedPattern: manual.targetModel,
-            matchType: "exact",
+          winner: manualCandidate,
+          candidates: [manualCandidate],
+          effective: {
+            winner: manualCandidate,
+            failover: false,
+            allUnhealthy:
+              manualCandidate.upstreamUnhealthy || manualCandidate.modelUnavailable,
           },
-          candidates: [
-            {
-              upstreamId: manual.upstreamId,
-              name: manual.upstreamName,
-              priority: 0,
-              matchedPattern: manual.targetModel,
-              matchType: "exact",
-            },
-          ],
         });
       }
       const { winner, candidates } = routeModelByProtocol(model, protocol, upstreamRoutes);
+      const candidateInfos = candidates.map((c) =>
+        toCandidate(
+          {
+            upstreamId: c.upstream.id,
+            name: c.upstream.name,
+            priority: c.upstream.priority,
+            matchedPattern: c.matchedPattern,
+            matchType: c.matchType,
+          },
+          model
+        )
+      );
       resolvedRoutes.push({
         protocol,
         model,
         source: "auto",
         winner: winner
-          ? {
-              upstreamId: winner.upstream.id,
-              name: winner.upstream.name,
-              priority: winner.upstream.priority,
-              matchedPattern: winner.matchedPattern,
-              matchType: winner.matchType,
-            }
+          ? toCandidate(
+              {
+                upstreamId: winner.upstream.id,
+                name: winner.upstream.name,
+                priority: winner.upstream.priority,
+                matchedPattern: winner.matchedPattern,
+                matchType: winner.matchType,
+              },
+              model
+            )
           : null,
-        candidates: candidates.map((c) => ({
-          upstreamId: c.upstream.id,
-          name: c.upstream.name,
-          priority: c.upstream.priority,
-          matchedPattern: c.matchedPattern,
-          matchType: c.matchType,
-        })),
+        candidates: candidateInfos,
+        effective: computeEffective(candidateInfos, model),
       });
     }
     // 未配置在任何 upstream 的纯手动路由名（如仅用于手动转发的虚拟名）
@@ -185,26 +253,27 @@ export const GET = withAuth(async () => {
       .filter((m) => m.protocol === protocol && !models.has(m.name))
       .sort((a, b) => a.name.localeCompare(b.name));
     for (const manual of manualOnly) {
+      const manualCandidate: CandidateInfo = {
+        upstreamId: manual.upstreamId,
+        name: manual.upstreamName,
+        priority: 0,
+        matchedPattern: manual.targetModel,
+        matchType: "exact",
+        upstreamUnhealthy: upstreamUnhealthy.has(manual.upstreamId),
+        modelUnavailable: upstreamModelUnhealthy.get(manual.upstreamId)?.has(manual.targetModel) ?? false,
+      };
       resolvedRoutes.push({
         protocol,
         model: manual.name,
         source: "manual",
-        winner: {
-          upstreamId: manual.upstreamId,
-          name: manual.upstreamName,
-          priority: 0,
-          matchedPattern: manual.targetModel,
-          matchType: "exact",
+        winner: manualCandidate,
+        candidates: [manualCandidate],
+        effective: {
+          winner: manualCandidate,
+          failover: false,
+          allUnhealthy:
+            manualCandidate.upstreamUnhealthy || manualCandidate.modelUnavailable,
         },
-        candidates: [
-          {
-            upstreamId: manual.upstreamId,
-            name: manual.upstreamName,
-            priority: 0,
-            matchedPattern: manual.targetModel,
-            matchType: "exact",
-          },
-        ],
       });
     }
   }

@@ -129,8 +129,10 @@ export interface ProxyDeps {
   health?: {
     isHealthy: (upstreamId: number) => Promise<boolean>;
     markUnhealthy: (upstreamId: number) => Promise<void> | void;
+    markHealthy?: (upstreamId: number) => Promise<void> | void;
     isModelHealthy?: (upstreamId: number, model: string) => Promise<boolean>;
     markModelUnhealthy?: (upstreamId: number, model: string) => Promise<void> | void;
+    markModelHealthy?: (upstreamId: number, model: string) => Promise<void> | void;
   };
   log?: (message: string) => void;
 }
@@ -335,9 +337,14 @@ export async function handleProxyRequest(
   const protocol = detectRequestProtocol(path);
 
   // 手动路由短路：命中即走目标 upstream 单元素 chain，先于自动路由；
-  // 目标 upstream 禁用/不存在/unhealthy 或 target_model 被 model 级标记 → 502 manual_route_unavailable
+  // 目标 upstream 禁用/不存在 → 502 manual_route_unavailable；
+  // 目标 unhealthy / model 级不可用 → 同样尝试（无健康候选时兜底），不 502
   let manualRoute: { virtualName: string; targetModel: string } | null = null;
   let chain: UpstreamRoute[] = [];
+  // 手动路由目标不健康但兜底尝试成功时，自愈清除健康标记
+  let manualDegraded = false;
+  // 自动路由：健康过滤时被跳过的不健康候选（兜底成功后自愈用）
+  const degradedUpstreams = new Set<number>();
   if (deps.loadRoutingRules) {
     const rules = await deps.loadRoutingRules();
     const rule = findRoutingRule(model, protocol, rules);
@@ -351,21 +358,19 @@ export async function handleProxyRequest(
         );
       }
       if (deps.health && !(await deps.health.isHealthy(target.id))) {
-        return proxyError(
-          502,
-          `Manual route target upstream "${target.name}" is unhealthy`,
-          "manual_route_unavailable"
+        deps.log?.(
+          `[gateway] manual route target upstream "${target.name}" is unhealthy; attempting anyway`
         );
+        manualDegraded = true;
       }
       if (
         deps.health?.isModelHealthy &&
         !(await deps.health.isModelHealthy(target.id, rule.targetModel))
       ) {
-        return proxyError(
-          502,
-          `Manual route target model "${rule.targetModel}" is unavailable on upstream "${target.name}"`,
-          "manual_route_unavailable"
+        deps.log?.(
+          `[gateway] manual route target model "${rule.targetModel}" marked unavailable on upstream "${target.name}"; attempting anyway`
         );
+        manualDegraded = true;
       }
       chain = [target];
       manualRoute = { virtualName: model, targetModel: rule.targetModel };
@@ -389,16 +394,23 @@ export async function handleProxyRequest(
       return proxyError(404, `No upstream configured for model: ${model}`, "model_not_found");
     }
 
-    // 候选去重（同一 upstream 可因 exact + wildcard 命中多次）+ 过滤 unhealthy（upstream 级 + model 级）
-    for (const candidate of dedupeByUpstreamId(candidates)) {
-      if (deps.health && !(await deps.health.isHealthy(candidate.id))) continue;
-      if (deps.health?.isModelHealthy && !(await deps.health.isModelHealthy(candidate.id, model))) {
-        continue;
-      }
+    // 候选去重（同一 upstream 可因 exact + wildcard 命中多次）+ 过滤 unhealthy（upstream 级 + model 级）；
+    // 无健康候选时兜底：回退全部候选（unhealthy 也尝试），不留 502
+    const allCandidates = dedupeByUpstreamId(candidates);
+    for (const candidate of allCandidates) {
+      const upDown = deps.health && !(await deps.health.isHealthy(candidate.id));
+      const modelDown =
+        deps.health?.isModelHealthy &&
+        !(await deps.health.isModelHealthy(candidate.id, model));
+      if (upDown || modelDown) degradedUpstreams.add(candidate.id);
+      if (upDown || modelDown) continue;
       chain.push(candidate);
     }
     if (chain.length === 0) {
-      return proxyError(502, `All upstreams are unhealthy for model: ${model}`, "upstream_error");
+      deps.log?.(
+        `[gateway] no healthy candidates for model: ${model}; falling back to unhealthy upstreams`
+      );
+      chain = allCandidates;
     }
   }
 
@@ -569,6 +581,19 @@ export async function handleProxyRequest(
     }
 
     if (lastResponse) {
+      // 兜底成功（链包含不健康候选且落点为 2xx）：真实请求成功是比定时探活更强的恢复信号，
+      // 立即清除健康标记，避免后续请求继续走兜底路径
+      if (
+        lastResponse.status >= 200 &&
+        lastResponse.status < 300 &&
+        (degradedUpstreams.has(upstream.id) || (manualRoute && manualDegraded))
+      ) {
+        deps.health?.markHealthy?.(upstream.id);
+        deps.health?.markModelHealthy?.(upstream.id, effectiveModel);
+        deps.log?.(
+          `[gateway] upstream "${upstream.name}" recovered via real request; health marks cleared`
+        );
+      }
       // 后续候选成功：释放未透传的业务错误 body，避免连接泄漏
       await fallbackBusinessResponse?.body?.cancel().catch(() => {});
       fallbackBusinessResponse = null;
@@ -710,14 +735,20 @@ async function handleSubresourcePassthrough(
     .filter((u) => u.enabled !== false && u.protocol === "openai")
     .sort((a, b) => a.priority - b.priority);
 
-  // 健康过滤（仅 upstream 级；不过 model 级——response 记忆与 model 健康无关）
+  // 健康过滤（仅 upstream 级；不过 model 级——response 记忆与 model 健康无关）；
+  // 无健康候选时兜底：回退全量链（unhealthy 也尝试），不留 502
+  const degradedUpstreams = new Set<number>();
   const healthy: UpstreamRoute[] = [];
   for (const upstream of chain) {
-    if (deps.health && !(await deps.health.isHealthy(upstream.id))) continue;
+    if (deps.health && !(await deps.health.isHealthy(upstream.id))) {
+      degradedUpstreams.add(upstream.id);
+      continue;
+    }
     healthy.push(upstream);
   }
   if (healthy.length === 0) {
-    return proxyError(502, "No healthy upstream available", "upstream_error");
+    deps.log?.("[gateway] no healthy upstream available; falling back to unhealthy upstreams");
+    healthy.push(...chain);
   }
 
   // 配额检查：subresource 无 model 维度，按 vk 聚合限额（RPM/TPM/Daily/Monthly）检查；
@@ -823,6 +854,13 @@ async function handleSubresourcePassthrough(
     }
 
     if (lastResponse) {
+      // 兜底成功：真实请求成功是强恢复信号，立即清除 upstream 级健康标记
+      if (lastResponse.status >= 200 && lastResponse.status < 300 && degradedUpstreams.has(upstream.id)) {
+        deps.health?.markHealthy?.(upstream.id);
+        deps.log?.(
+          `[gateway] upstream "${upstream.name}" recovered via real request; health marks cleared`
+        );
+      }
       // 成功：释放未透传的业务错误 body，避免连接泄漏
       await fallbackBusinessResponse?.body?.cancel().catch(() => {});
       fallbackBusinessResponse = null;

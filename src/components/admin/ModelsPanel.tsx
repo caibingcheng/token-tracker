@@ -5,6 +5,7 @@ import { apiFetch } from "@/lib/client/api-client";
 import {
   detectRequestProtocol,
   routeModelByProtocol,
+  type ModelCandidate,
   type Protocol,
   type UpstreamRoute,
 } from "@/lib/gateway/model-router";
@@ -19,6 +20,8 @@ interface UpstreamSummary {
   priority: number;
   enabled: boolean;
   enabledModels: string[];
+  unhealthy: boolean;
+  modelUnhealthy: string[];
 }
 
 interface CandidateInfo {
@@ -27,6 +30,14 @@ interface CandidateInfo {
   priority: number;
   matchedPattern: string;
   matchType: "exact" | "wildcard";
+  upstreamUnhealthy: boolean;
+  modelUnavailable: boolean;
+}
+
+interface EffectiveRoute {
+  winner: CandidateInfo | null;
+  failover: boolean;
+  allUnhealthy: boolean;
 }
 
 interface ResolvedRoute {
@@ -35,6 +46,7 @@ interface ResolvedRoute {
   source: "manual" | "auto";
   winner: CandidateInfo | null;
   candidates: CandidateInfo[];
+  effective: EffectiveRoute;
 }
 
 interface ManualRouteInfo {
@@ -130,6 +142,50 @@ function MatchTypeBadge({ type }: { type: "exact" | "wildcard" | "manual" }) {
   );
 }
 
+// 候选健康徽标：upstream 级 unhealthy / model 级不可用
+function HealthBadges({ candidate }: { candidate: CandidateInfo }) {
+  if (!candidate.upstreamUnhealthy && !candidate.modelUnavailable) return null;
+  return (
+    <>
+      {candidate.upstreamUnhealthy && (
+        <span className="rounded bg-red-50 px-1.5 py-0.5 text-[10px] font-medium text-red-700">
+          unhealthy
+        </span>
+      )}
+      {candidate.modelUnavailable && (
+        <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
+          model unavailable
+        </span>
+      )}
+    </>
+  );
+}
+
+// 实际路由徽标：failover（退避路由）/ last resort（全不健康兜底）
+function EffectiveBadge({ effective }: { effective: EffectiveRoute }) {
+  if (effective.allUnhealthy) {
+    return (
+      <span
+        className="rounded bg-red-50 px-1.5 py-0.5 text-[10px] font-medium text-red-700"
+        title="All candidates are unhealthy; requests fall back to trying them anyway"
+      >
+        last resort
+      </span>
+    );
+  }
+  if (effective.failover) {
+    return (
+      <span
+        className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700"
+        title="Top-priority upstream is unhealthy; requests are routed to this fallback"
+      >
+        failover
+      </span>
+    );
+  }
+  return null;
+}
+
 export default function ModelsPanel() {
   const [data, setData] = useState<ModelsData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -142,6 +198,7 @@ export default function ModelsPanel() {
     model: string;
     winner: CandidateInfo | null;
     candidates: CandidateInfo[];
+    effective: EffectiveRoute;
   } | null>(null);
 
   const [selectedProtocol, setSelectedProtocol] = useState<Protocol>("openai");
@@ -382,25 +439,39 @@ export default function ModelsPanel() {
     if (!model || !data) return;
     const protocol = detectRequestProtocol(path);
     const { winner, candidates } = routeModelByProtocol(model, protocol, upstreamRoutes);
-    setSimulatorResult({
-      protocol,
-      model,
-      winner: winner
-        ? {
-            upstreamId: winner.upstream.id,
-            name: winner.upstream.name,
-            priority: winner.upstream.priority,
-            matchedPattern: winner.matchedPattern,
-            matchType: winner.matchType,
-          }
-        : null,
-      candidates: candidates.map((c) => ({
+    // 附加健康标记（与 /api/admin/models 同口径：upstream 级 unhealthy + model 级不可用）
+    const toCandidateInfo = (c: ModelCandidate): CandidateInfo => {
+      const upstream = data.upstreams.find((u) => u.id === c.upstream.id);
+      return {
         upstreamId: c.upstream.id,
         name: c.upstream.name,
         priority: c.upstream.priority,
         matchedPattern: c.matchedPattern,
         matchType: c.matchType,
-      })),
+        upstreamUnhealthy: upstream?.unhealthy ?? false,
+        modelUnavailable: upstream?.modelUnhealthy?.includes(model) ?? false,
+      };
+    };
+    const candidateInfos = candidates.map(toCandidateInfo);
+    const healthyFirst = candidateInfos.filter((c) => !c.upstreamUnhealthy && !c.modelUnavailable);
+    const effective: EffectiveRoute =
+      healthyFirst.length > 0
+        ? {
+            winner: healthyFirst[0],
+            failover: healthyFirst[0].upstreamId !== candidateInfos[0]?.upstreamId,
+            allUnhealthy: false,
+          }
+        : {
+            winner: candidateInfos[0] ?? null,
+            failover: false,
+            allUnhealthy: candidateInfos.length > 0,
+          };
+    setSimulatorResult({
+      protocol,
+      model,
+      winner: winner ? toCandidateInfo(winner) : null,
+      candidates: candidateInfos,
+      effective,
     });
   };
 
@@ -495,13 +566,24 @@ export default function ModelsPanel() {
             {simulatorResult.winner ? (
               <div className="space-y-3">
                 <div className="rounded border border-green-200 bg-green-50 p-2">
-                  <div className="mb-1 text-xs font-medium text-green-700">Winning Upstream</div>
-                  <div className="flex flex-wrap items-center gap-2 text-sm">
-                    <span className="font-semibold">{simulatorResult.winner.name}</span>
-                    <span className="text-xs text-gray-500">priority {simulatorResult.winner.priority}</span>
-                    <CopyableCode className="rounded bg-white px-1.5 py-0.5 text-xs">{simulatorResult.winner.matchedPattern}</CopyableCode>
-                    <MatchTypeBadge type={simulatorResult.winner.matchType} />
+                  <div className="mb-1 flex flex-wrap items-center gap-2 text-xs font-medium text-green-700">
+                    Winning Upstream
+                    <EffectiveBadge effective={simulatorResult.effective} />
                   </div>
+                  <div className="flex flex-wrap items-center gap-2 text-sm">
+                    <span className="font-semibold">{simulatorResult.effective.winner?.name ?? simulatorResult.winner.name}</span>
+                    <span className="text-xs text-gray-500">priority {simulatorResult.effective.winner?.priority ?? simulatorResult.winner.priority}</span>
+                    <CopyableCode className="rounded bg-white px-1.5 py-0.5 text-xs">
+                      {simulatorResult.effective.winner?.matchedPattern ?? simulatorResult.winner.matchedPattern}
+                    </CopyableCode>
+                    <MatchTypeBadge type={(simulatorResult.effective.winner ?? simulatorResult.winner).matchType} />
+                    <HealthBadges candidate={simulatorResult.effective.winner ?? simulatorResult.winner} />
+                  </div>
+                  {simulatorResult.effective.failover && simulatorResult.winner && (
+                    <p className="mt-1 text-[11px] text-amber-700">
+                      Static winner {simulatorResult.winner.name} is unhealthy — actual route uses fallback.
+                    </p>
+                  )}
                 </div>
                 {simulatorResult.candidates.length > 1 && (
                   <div>
@@ -510,7 +592,7 @@ export default function ModelsPanel() {
                     </div>
                     <div className="space-y-1">
                       {simulatorResult.candidates.map((c) => {
-                        const isWinner = c.upstreamId === simulatorResult.winner?.upstreamId;
+                        const isWinner = c.upstreamId === simulatorResult.effective.winner?.upstreamId;
                         return (
                           <div
                             key={c.upstreamId}
@@ -524,6 +606,7 @@ export default function ModelsPanel() {
                             <span className="text-xs text-gray-500">priority {c.priority}</span>
                             <CopyableCode className="rounded bg-gray-100 px-1.5 py-0.5 text-xs">{c.matchedPattern}</CopyableCode>
                             <MatchTypeBadge type={c.matchType} />
+                            <HealthBadges candidate={c} />
                             {isWinner && <span className="ml-auto text-xs font-medium text-green-700">winner</span>}
                           </div>
                         );
@@ -811,16 +894,21 @@ export default function ModelsPanel() {
                             <CopyableCode className="text-xs">{route.model}</CopyableCode>
                           </td>
                           <td className="px-2 py-2 font-medium">
-                            {route.winner ? route.winner.name : (
+                            {route.effective.winner ? (
+                              <>
+                                <span className="mr-1.5">{route.effective.winner.name}</span>
+                                <EffectiveBadge effective={route.effective} />
+                              </>
+                            ) : (
                               <span className="text-gray-400">—</span>
                             )}
                           </td>
                           <td className="px-2 py-2 text-xs text-gray-500">
-                            {route.winner ? route.winner.priority : "—"}
+                            {route.effective.winner ? route.effective.winner.priority : "—"}
                           </td>
                           <td className="px-2 py-2">
-                            {route.winner ? (
-                              <CopyableCode className="text-xs">{route.winner.matchedPattern}</CopyableCode>
+                            {route.effective.winner ? (
+                              <CopyableCode className="text-xs">{route.effective.winner.matchedPattern}</CopyableCode>
                             ) : (
                               <span className="text-gray-400">—</span>
                             )}
@@ -828,8 +916,8 @@ export default function ModelsPanel() {
                           <td className="px-2 py-2">
                             {route.source === "manual" ? (
                               <MatchTypeBadge type="manual" />
-                            ) : route.winner ? (
-                              <MatchTypeBadge type={route.winner.matchType} />
+                            ) : route.effective.winner ? (
+                              <MatchTypeBadge type={route.effective.winner.matchType} />
                             ) : (
                               "—"
                             )}
@@ -850,7 +938,7 @@ export default function ModelsPanel() {
                                 </div>
                                 <div className="space-y-1">
                                   {route.candidates.map((c) => {
-                                    const isWinner = c.upstreamId === route.winner?.upstreamId;
+                                    const isWinner = c.upstreamId === route.effective.winner?.upstreamId;
                                     return (
                                       <div
                                         key={c.upstreamId}
@@ -866,6 +954,7 @@ export default function ModelsPanel() {
                                         <span className="text-gray-500">priority {c.priority}</span>
                                         <CopyableCode className="rounded bg-gray-100 px-1 py-0.5">{c.matchedPattern}</CopyableCode>
                                         <MatchTypeBadge type={c.matchType} />
+                                        <HealthBadges candidate={c} />
                                         {isWinner && (
                                           <span className="ml-auto font-medium text-green-700">winner</span>
                                         )}
@@ -873,7 +962,7 @@ export default function ModelsPanel() {
                                     );
                                   })}
                                 </div>
-                                {hasConflict && route.winner && (
+                                {hasConflict && route.effective.winner && (
                                   <p className="mt-2 text-[11px] text-gray-500">
                                     Winner is determined by exact match first, then lowest priority number.
                                     Ties are broken by upstream order.
@@ -905,22 +994,29 @@ export default function ModelsPanel() {
                         <div className="min-w-0">
                           <CopyableCode className="text-xs">{route.model}</CopyableCode>
                           <div className="mt-1 text-sm font-medium text-gray-900">
-                            {route.winner ? route.winner.name : <span className="text-gray-400">—</span>}
+                            {route.effective.winner ? (
+                              <>
+                                <span className="mr-1.5">{route.effective.winner.name}</span>
+                                <EffectiveBadge effective={route.effective} />
+                              </>
+                            ) : (
+                              <span className="text-gray-400">—</span>
+                            )}
                           </div>
                         </div>
                         <span className="shrink-0 text-xs text-gray-400">{expanded ? "▲" : "▼"}</span>
                       </div>
                       <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-500">
-                        {route.winner && (
+                        {route.effective.winner && (
                           <>
-                            <span>priority {route.winner.priority}</span>
-                            <CopyableCode className="rounded bg-gray-100 px-1 py-0.5">{route.winner.matchedPattern}</CopyableCode>
+                            <span>priority {route.effective.winner.priority}</span>
+                            <CopyableCode className="rounded bg-gray-100 px-1 py-0.5">{route.effective.winner.matchedPattern}</CopyableCode>
                           </>
                         )}
                         {route.source === "manual" ? (
                           <MatchTypeBadge type="manual" />
-                        ) : route.winner ? (
-                          <MatchTypeBadge type={route.winner.matchType} />
+                        ) : route.effective.winner ? (
+                          <MatchTypeBadge type={route.effective.winner.matchType} />
                         ) : (
                           "—"
                         )}
@@ -934,7 +1030,7 @@ export default function ModelsPanel() {
                         </div>
                         <div className="space-y-1">
                           {route.candidates.map((c) => {
-                            const isWinner = c.upstreamId === route.winner?.upstreamId;
+                            const isWinner = c.upstreamId === route.effective.winner?.upstreamId;
                             return (
                               <div
                                 key={c.upstreamId}
@@ -950,6 +1046,7 @@ export default function ModelsPanel() {
                                 <span className="text-gray-500">priority {c.priority}</span>
                                 <CopyableCode className="rounded bg-gray-100 px-1 py-0.5">{c.matchedPattern}</CopyableCode>
                                 <MatchTypeBadge type={c.matchType} />
+                                <HealthBadges candidate={c} />
                                 {isWinner && (
                                   <span className="ml-auto font-medium text-green-700">winner</span>
                                 )}
@@ -957,7 +1054,7 @@ export default function ModelsPanel() {
                             );
                           })}
                         </div>
-                        {hasConflict && route.winner && (
+                        {hasConflict && route.effective.winner && (
                           <p className="mt-2 text-[11px] text-gray-500">
                             Winner is determined by exact match first, then lowest priority number.
                             Ties are broken by upstream order.

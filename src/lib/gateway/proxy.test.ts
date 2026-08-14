@@ -787,19 +787,23 @@ describe("handleProxyRequest - cross-upstream failover & session stickiness", ()
     setBinding: ReturnType<typeof vi.fn>;
     isHealthy: ReturnType<typeof vi.fn>;
     markUnhealthy: ReturnType<typeof vi.fn>;
+    markHealthy: ReturnType<typeof vi.fn>;
+    markModelHealthy: ReturnType<typeof vi.fn>;
   } {
     const getBinding = vi.fn();
     const setBinding = vi.fn();
     const isHealthy = vi.fn(() => true);
     const markUnhealthy = vi.fn();
+    const markHealthy = vi.fn();
+    const markModelHealthy = vi.fn();
     const deps = mkDeps({
       loadUpstreams: vi.fn(async () => mkUpstreams()),
       resolveUpstreamKeys: vi.fn(async () => ["key-1"]),
       session: { getBinding, setBinding },
-      health: { isHealthy, markUnhealthy },
+      health: { isHealthy, markUnhealthy, markHealthy, markModelHealthy },
       ...overrides,
     });
-    return { deps, getBinding, setBinding, isHealthy, markUnhealthy };
+    return { deps, getBinding, setBinding, isHealthy, markUnhealthy, markHealthy, markModelHealthy };
   }
 
   beforeEach(() => {
@@ -972,7 +976,17 @@ describe("handleProxyRequest - cross-upstream failover & session stickiness", ()
     expect(markUnhealthy).toHaveBeenCalledWith(2);
   });
 
-  it("returns 502 without fetching when all upstreams unhealthy", async () => {
+  it("falls back to unhealthy upstreams when all candidates are unhealthy (last resort)", async () => {
+    fetchMock.mockImplementation((url: string) =>
+      url.startsWith("https://alt.example")
+        ? Promise.resolve(
+            new Response(JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            })
+          )
+        : Promise.resolve(new Response("server error", { status: 503 }))
+    );
     const { deps, isHealthy } = mkFailoverDeps();
     isHealthy.mockReturnValue(false);
     const res = await handleProxyRequest(
@@ -982,8 +996,88 @@ describe("handleProxyRequest - cross-upstream failover & session stickiness", ()
       }),
       deps
     );
-    expect(res.status).toBe(502);
-    expect(fetchMock).not.toHaveBeenCalled();
+    await res.text();
+    expect(res.status).toBe(200);
+    // 兜底仍按 priority 顺序尝试全部候选（503 在 primary 内重试 MAX_RETRY 次后换 alt）
+    expect(fetchMock.mock.calls[0][0]).toContain("primary.example");
+    expect(fetchMock.mock.calls.at(-1)?.[0]).toContain("alt.example");
+    expect(deps.onUsage).toHaveBeenCalledWith(expect.objectContaining({ provider: "openai-alt" }));
+  });
+
+  it("clears health marks when last-resort attempt succeeds (2xx)", async () => {
+    fetchMock.mockImplementation((url: string) =>
+      url.startsWith("https://alt.example")
+        ? Promise.resolve(
+            new Response(JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            })
+          )
+        : Promise.resolve(new Response("server error", { status: 503 }))
+    );
+    const { deps, isHealthy, markHealthy, markModelHealthy } = mkFailoverDeps();
+    isHealthy.mockReturnValue(false);
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    expect(markHealthy).toHaveBeenCalledWith(2);
+    expect(markModelHealthy).toHaveBeenCalledWith(2, "gpt-4o");
+  });
+
+  it("falls back to a candidate with model-level unavailable mark when it is the only candidate", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    const deps = mkDeps({
+      loadUpstreams: vi.fn(async () => [
+        mkUpstream({ id: 1, name: "solo-up", baseUrl: "https://solo.example", enabledModels: ["gpt-4o"] }),
+      ]),
+      resolveUpstreamKeys: vi.fn(async () => ["key-1"]),
+      health: {
+        isHealthy: vi.fn(async () => true),
+        markUnhealthy: vi.fn(),
+        isModelHealthy: vi.fn(async () => false),
+        markModelUnhealthy: vi.fn(),
+        markModelHealthy: vi.fn(),
+      },
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toContain("solo.example");
+  });
+
+  it("does not clear health marks when last-resort attempt returns non-2xx business error", async () => {
+    fetchMock.mockResolvedValue(new Response("bad request", { status: 400 }));
+    const { deps, isHealthy, markHealthy, markModelHealthy } = mkFailoverDeps();
+    isHealthy.mockReturnValue(false);
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(400);
+    expect(markHealthy).not.toHaveBeenCalled();
+    expect(markModelHealthy).not.toHaveBeenCalled();
   });
 
   it("skips session computation with a single candidate", async () => {
@@ -1589,13 +1683,23 @@ describe("handleProxyRequest - manual routing", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("returns 502 manual_route_unavailable when target upstream is unhealthy", async () => {
+  it("attempts manual route despite unhealthy target upstream (last resort, no 502)", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ model: "gpt-4o-real", usage: { prompt_tokens: 5, completion_tokens: 3 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    const markHealthy = vi.fn();
+    const markModelHealthy = vi.fn();
     const deps = mkManualDeps({
       health: {
         isHealthy: vi.fn(async () => false),
         markUnhealthy: vi.fn(),
+        markHealthy,
         isModelHealthy: vi.fn(async () => true),
         markModelUnhealthy: vi.fn(),
+        markModelHealthy,
       },
     });
     const res = await handleProxyRequest(
@@ -1605,13 +1709,22 @@ describe("handleProxyRequest - manual routing", () => {
       }),
       deps
     );
-    expect(res.status).toBe(502);
-    const json = await res.json();
-    expect(json.error.type).toBe("manual_route_unavailable");
-    expect(fetchMock).not.toHaveBeenCalled();
+    await res.text();
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toContain("target.example");
+    // 兜底成功：清除健康标记
+    expect(markHealthy).toHaveBeenCalledWith(1);
+    expect(markModelHealthy).toHaveBeenCalledWith(1, "gpt-4o-real");
   });
 
-  it("returns 502 manual_route_unavailable when target_model marked unavailable (checked by target model name)", async () => {
+  it("attempts manual route despite target_model marked unavailable (no 502)", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ model: "gpt-4o-real", usage: { prompt_tokens: 5, completion_tokens: 3 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
     const isModelHealthy = vi.fn(async () => false);
     const deps = mkManualDeps({
       health: {
@@ -1628,11 +1741,10 @@ describe("handleProxyRequest - manual routing", () => {
       }),
       deps
     );
-    expect(res.status).toBe(502);
-    const json = await res.json();
-    expect(json.error.type).toBe("manual_route_unavailable");
+    await res.text();
+    expect(res.status).toBe(200);
     expect(isModelHealthy).toHaveBeenCalledWith(1, "gpt-4o-real"); // 用映射后的真实名检查
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("tries next key within the same upstream on 401 (no cross-upstream fallback)", async () => {
@@ -1899,6 +2011,32 @@ describe("handleProxyRequest - responses subresource endpoints", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(markUnhealthy).not.toHaveBeenCalled();
     expect(markModelUnhealthy).not.toHaveBeenCalled();
+  });
+
+  it("attempts unhealthy upstreams when none healthy (last resort)", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ id: "resp_123" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    const markHealthy = vi.fn();
+    const { deps } = mkSubDeps({
+      health: {
+        isHealthy: vi.fn(async () => false),
+        markUnhealthy: vi.fn(),
+        markHealthy,
+      },
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/responses/resp_123", { method: "GET", headers: { authorization: "Bearer vk-good" } }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    expect(fetchMock.mock.calls[0][0]).toContain("primary.example");
+    // 兜底成功：清除 upstream 级健康标记
+    expect(markHealthy).toHaveBeenCalledWith(1);
   });
 
   it("passes through POST cancel with empty body", async () => {

@@ -289,8 +289,10 @@ quota: {
     health: {
       isHealthy: (upstreamId) => healthTracker.isHealthy(upstreamId),
       markUnhealthy: (upstreamId) => healthTracker.markUnhealthy(upstreamId),
+      markHealthy: (upstreamId) => healthTracker.markHealthy(upstreamId),
       isModelHealthy: (upstreamId, model) => healthTracker.isModelHealthy(upstreamId, model),
       markModelUnhealthy: (upstreamId, model) => healthTracker.markModelUnhealthy(upstreamId, model),
+      markModelHealthy: (upstreamId, model) => healthTracker.markModelHealthy(upstreamId, model),
     },
 
     log: (message) => console.log(message),
