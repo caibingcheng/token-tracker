@@ -80,8 +80,19 @@ async function probeOnce(
       headers,
       body: JSON.stringify(body),
       signal: controller.signal,
+      // 手动模式：3xx 视为失败，防已存储的真实 key 经跨源重定向泄露
+      redirect: "manual",
     });
     if (res.ok) return { ok: true, status: res.status, style: apiStyle };
+    if (res.status >= 300 && res.status < 400) {
+      await res.body?.cancel();
+      return {
+        ok: false,
+        status: res.status,
+        error: `Upstream returned redirect ${res.status}`,
+        style: apiStyle,
+      };
+    }
     const text = await res.text();
     return {
       ok: false,

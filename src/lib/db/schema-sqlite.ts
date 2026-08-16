@@ -1,4 +1,4 @@
-import { sqliteTable, integer, text, index, primaryKey, real } from "drizzle-orm/sqlite-core";
+import { sqliteTable, integer, text, index, uniqueIndex, primaryKey, real } from "drizzle-orm/sqlite-core";
 
 export const tokenRecords = sqliteTable("token_records", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -63,6 +63,8 @@ export const routingRules = sqliteTable(
     createdAt: text("created_at").$defaultFn(() => new Date().toISOString()),
   },
   (table) => [
+    // 与 raw SQL UNIQUE(name, protocol) 保持一致：同名同协议规则只允许一条
+    uniqueIndex("uq_routing_rules_name_protocol").on(table.name, table.protocol),
     index("idx_routing_rules_protocol_name").on(table.protocol, table.name),
   ]
 );

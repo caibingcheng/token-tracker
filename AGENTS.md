@@ -9,6 +9,14 @@
 - **部署目标**：Docker VPS（SQLite）
 - **使用规模**：个人使用，日均约 1000 条记录
 
+## Web 前端安全与 PWA
+
+- **安全响应头**（`next.config.js` 全局 header，`:path*`）：`X-Frame-Options: DENY`（点击劫持）、`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、`Permissions-Policy`（禁 camera/mic/geolocation）、CSP：`default-src 'self'` + `script-src 'self' 'unsafe-inline'`（**dev 模式额外放行 `unsafe-eval`**，生产不放松；`unsafe-inline` 因 Next bootstrap/styled-jsx 需要）+ `frame-ancestors 'none'` + `object-src 'none'`
+- **PWA 可安装性**：`src/app/manifest.ts`（manifest + 图标），无 Service Worker（离线能力未启用）；移动端底栏 `MobileTabBar.tsx`（`md:hidden`）
+- **Docker 构建**：Dockerfile `output: 'standalone'` + `ENV NODE_OPTIONS=--max-old-space-size=512`（构建期内存控制）；docker-compose.example.yml 含 `TRUSTED_PROXY` 与可选 `deploy.memory` 注释
+- **TOTP 绑定二维码**：`qrcode.react`（^4.2.0）渲染 otpauth:// URI
+- **`scripts/test_gateway.py`**：手动端到端网关测试脚本（虚拟 key → 代理请求 → 校验透传/写库），不入 vitest，仅供本地联调
+
 ## 开发者命令
 
 ```bash
@@ -35,7 +43,9 @@ docker compose up -d                                 # 本地运行
   - `upstreams`（id, name, protocol, base_url, enabled_models(JSON), priority, enabled, health_check_model, health_status, health_updated_at, balance, balance_updated_at, created_at）
   - `upstream_keys`（id, upstream_id, api_key_encrypted, enabled, last_status, created_at）
   - `upstream_model_health`（upstream_id+model 复合主键, status, expires_at, updated_at）：model 级不可用标记（持久化）
-  - `virtual_keys`（id, name, api_key_encrypted, enabled, comment, enabled_models(JSON, 默认 '["*"]'), last_used_at, created_at）
+  - `virtual_keys`（id, name, api_key_encrypted, enabled, comment, enabled_models(JSON, 默认 '["*"]'), max_rpm, max_tpm, max_daily_tokens, max_monthly_tokens, last_used_at, created_at）：后 4 列为配额上限（NULL = 不限）
+  - `routing_rules`（id, name, protocol, upstream_id, target_model, created_at）：**手动路由规则**，`name` = 客户端请求的虚拟模型名，`target_model` = 上游真实模型名；`UNIQUE(name, protocol)` 同名同协议只允许一条（drizzle 用 `uniqueIndex("uq_routing_rules_name_protocol")` 对齐 raw SQL）
+  - `admin_audit_logs`（id, action, actor, target_type, target_id, ip, user_agent, details, created_at）：管理操作审计日志（含网关 user-agent 记录）
   - `model_prices`（model PRIMARY KEY, input_price, output_price, cache_read_price(NULL→回退 input), cache_write_price(NULL→回退 input), source('models.dev'|'manual'), models_dev_id, updated_at）：官方价参考（USD/1M），**查询时计算**，record 不存价格；`model` = 发往 upstream 的真实名
   - `settings`（key TEXT PRIMARY KEY, value TEXT）：`admin_api_key`（AES-256-GCM 加密）、`totp_secret`、`totp_enabled`、`token_epoch`、`hidden_providers`（明文）、`session_token_ttl_hours`（明文）、`stream_idle_timeout_minutes`（明文，Security tab 编辑）、`status_page_config`（明文 JSON：`{enabled, elements:{total,today,daily,heatmap,hourly,topModels,cost}}`，**默认 enabled=false**）、`model_aliases`（明文 JSON：`[{name, aliases[]}]` 归一化配置，Display pane 编辑）、`hidden_sources`（明文 JSON：`{upstreams: string[], virtualKeys: string[], excludedUpstreams: string[], excludedVirtualKeys: string[]}`，Display pane 编辑；hidden = 隐藏源、excluded = 从总计剔除，两维度独立，查询层过滤零删除）、`totp_fail_count`（明文，TOTP 失败计数）、`totp_locked_until`（明文，TOTP 锁定截止时间戳）、`recovery_codes`（明文 JSON：`{hashes:[sha256...], used:[bool...]}`，只存哈希不存明文）、`recovery_code_login_reminder`（明文，recovery code 登录提醒标记）
 - **存量迁移**：`migrateColumns()` 泛化支持多表（token_records / virtual_keys / upstreams），通过 `PRAGMA table_info` 检测缺失列并 `ALTER TABLE` 补列（`CREATE TABLE IF NOT EXISTS` 不会补列）；`migrateTokenRecordsModelColumns()` 专用一次性迁移：`request_model` 回填 = model、`model` 覆盖 = `target_model`（旧 schema）、DROP `target_model`（幂等）
@@ -50,8 +60,11 @@ docker compose up -d                                 # 本地运行
 | `/api/dashboard` | GET | 会话 token（`X-API-Key` header） | 聚合统计（total + today + yesterday + daily + models + 365 天 heatmap + 24h 分布） |
 | `/api/providers` `/api/models` `/api/agents` `/api/cli` `/api/records` | GET | 会话 token | 统计/查询 API |
 | `/api/model-pricing` | GET | 会话 token | 已定价模型行集（PriceSimulatorModal 下拉数据源，附带 models.dev 归一化索引推断的 `provider` 分组字段 + `providers` 全量列表）；`?provider=<id>` 返回该 provider 的 models.dev 全部模型（懒加载数据源）；`?search=<q>` 切换为快照全量搜索模式（`searchModelsDevModel` 全量收集 + 相关性排序再截断 50：provider 名精确命中 > modelId 精确 > 归一化精确 > 前缀 > 子串，同级按原厂优先级表，保证原厂不被聚合平台挤出）；models.dev 来源 canonicalId = `providerId/modelId`，cache 价缺失回退 input，快照缺失返回空数组；仿真只读不落库 |
-| `/api/admin/upstreams*` | CRUD | 会话 token | 上游管理（含 keys、模型拉取、连接测试、余额刷新） |
-| `/api/admin/virtual-keys*` | CRUD | 会话 token | 虚拟 key 管理（创建/编辑/吊销/用量，支持 comment + enabledModels） |
+| `/api/admin/upstreams*` | CRUD | 会话 token | 上游管理（含 keys、模型拉取、连接测试、余额刷新；test-connection/fetch-models 复用 `validateUpstreamBaseUrl` SSRF 校验，私网/环回地址 400） |
+| `/api/admin/virtual-keys*` | CRUD | 会话 token | 虚拟 key 管理（创建/编辑/吊销/用量，支持 comment + enabledModels + max_rpm/max_tpm/max_daily_tokens/max_monthly_tokens 配额） |
+| `/api/admin/models` | GET | 会话 token | Admin Models 面板数据源：路由模拟（手动/自动解析到具体 upstream + model）+ 已解析模型列表 |
+| `/api/admin/routing-rules*` | CRUD | 会话 token | 手动路由规则管理（虚拟名 + protocol → upstream + target_model，`UNIQUE(name, protocol)`） |
+| `/api/admin/audit-logs` | GET | 会话 token | 管理操作审计日志（分页查询，action/actor/target_type 过滤） |
 | `/api/admin/auth/totp` `/api/admin/auth/api-key` `/api/admin/auth/sessions` `/api/admin/auth/recovery-codes` `/api/admin/auth/recovery-codes/reminder` | CRUD | 会话 token + TOTP 动态码 | TOTP 绑定/换绑/解绑、修改登录 key、全局登出（token_epoch+1 吊销全部会话）、recovery codes 查询/重新生成/清除提醒标记 |
 | `/api/admin/settings/display` | GET/PUT | 会话 token | Display tab：HIDDEN_PROVIDERS 分组语法（面板优先） |
 | `/api/admin/settings/hidden-sources` | GET/PUT | 会话 token | Display tab：Hidden Sources 配置（`hidden_sources`，`isValidHiddenSources` 校验；GET/PUT 均包 `withSkipCache`） |
@@ -94,7 +107,7 @@ docker compose up -d                                 # 本地运行
 
 - **路由**：`src/app/v1/[...path]/route.ts` + `src/app/v1beta/[...path]/route.ts`（`runtime = "nodejs"`、`dynamic = "force-dynamic"`）
 - **核心逻辑**：`src/lib/gateway/proxy.ts`（纯逻辑可单测）；依赖注入 `src/lib/gateway/proxy-deps.ts`（DB 访问；session/health 为**模块级单例**，因 `createProxyDeps()` 每请求创建）
-- **流程**：path `..` 段净化（`sanitizePathSegments`，逃逸出 base 前缀 → 400）→ 提取虚拟 key（Authorization Bearer / x-api-key / x-goog-api-key / ?key=）→ 校验（**全表解密比对**，AES-256-GCM 随机 IV 无法索引）→ 提取 model（OpenAI/Anthropic 取 body，Gemini 取 path；**长度上限 256**）→ `routeModelByProtocol()` 取候选（精确 > 前缀通配，priority 小者胜，协议过滤）→ **跨 upstream 故障转移链**（session 粘性 binding 优先 → 其余 healthy 候选按 priority；每个 upstream 内遍历 key、每个 key 内 `MAX_RETRY=2`，**401/403 认证错误不重试直接换 key/upstream 并触发 failover**，其余 4xx 直接透传不重试、不触发 failover，**3xx 重定向一律视为失败（`redirect: "manual"`，防上游 key 跨源泄露）**，**流式输出开始后不可重试**；某 upstream 全部 key 失败标记 unhealthy 并继续下一个；**无健康候选时兜底**：自动路由/手动路由/responses 辅助端点均在全部候选不健康时回退尝试 unhealthy 候选（不留 502），**兜底拿到 2xx 立即 markHealthy + markModelHealthy 自愈**）→ 透传（剥离认证头 + 客户端可控源信息头 + `accept-encoding: identity`，按协议注入真实 key）→ 响应管道边透传边增量解析 usage → `withSkipCache` 写库
+- **流程**：path `..` 段净化（`sanitizePathSegments`，逃逸出 base 前缀 → 400）→ 提取虚拟 key（Authorization Bearer / x-api-key / x-goog-api-key / ?key=）→ 校验（**全表解密比对**，AES-256-GCM 随机 IV 无法索引）→ 提取 model（OpenAI/Anthropic 取 body，Gemini 取 path；**长度上限 256**）→ `routeModelByProtocol()` 取候选（精确 > 前缀通配，priority 小者胜，协议过滤）→ **配额检查**（`checkQuota`，`src/lib/gateway/quota.ts`：max_rpm/max_tpm/max_daily_tokens/max_monthly_tokens 任一超限 → 429 `quota_exceeded`，不转发上游）→ **跨 upstream 故障转移链**（session 粘性 binding 优先 → 其余 healthy 候选按 priority；每个 upstream 内遍历 key、每个 key 内 `MAX_RETRY=2`，**401/403 认证错误不重试直接换 key/upstream 并触发 failover**，其余 4xx 直接透传不重试、不触发 failover，**3xx 重定向一律视为失败（`redirect: "manual"`，防上游 key 跨源泄露）**，**流式输出开始后不可重试**；某 upstream 全部 key 失败标记 unhealthy 并继续下一个；**无健康候选时兜底**：自动路由/手动路由/responses 辅助端点均在全部候选不健康时回退尝试 unhealthy 候选（不留 502），**兜底拿到 2xx 立即 markHealthy + markModelHealthy 自愈**）→ 透传（剥离认证头 + 客户端可控源信息头 + `accept-encoding: identity`，按协议注入真实 key）→ 响应管道边透传边增量解析 usage → `withSkipCache` 写库
 - **Session 粘性**：`src/lib/gateway/session.ts` — `sessionId = sha256(system 拼接尾部 1024 + 首条 user 文本前 1024 + model + vkId + protocol)`；内存 LRU（max 5000 / ttl 24h），仅 failover 落点 ≠ 默认 upstream 时保存 binding；binding 失效条件：upstream 被禁用/无 key/协议不匹配/不 healthy/不再匹配 model（链过滤自动覆盖）；单候选跳过 session 计算
 - **健康状态**：`src/lib/gateway/health.ts`（内存缓存 + **DB 持久化**：upstream 级存 `upstreams.health_status`，model 级存 `upstream_model_health`，重启后懒加载恢复探活调度）+ `src/lib/gateway/probe.ts`（非流式小请求探活，不记 token）；**upstream 级** healthy → unhealthy：真实请求中全部 key 失败（401 认证失败触发；403/404 为 model 级，不误伤）；unhealthy 不进入候选池（**仅当存在健康候选时**），30 分钟定时探活恢复（`upstreams.health_check_model` 优先，否则 `enabled_models` 第一个非通配，无则保持 unhealthy）；**model 级**：某 upstream 对该 model 返回 404/403（全部 key）时标记该 model 不可用（TTL 30 分钟自动恢复），路由时跳过该 upstream 并 failover，UI 模型列表显示 unavailable 徽标；**无健康候选时兜底**：全部候选不健康也按 priority 尝试（含手动路由目标 unhealthy 不再 502），**兜底拿到 2xx 立即 markHealthy + markModelHealthy 自愈**（真实请求成功是强恢复信号）；**手动测试（`/api/admin/upstreams/[id]/test-model|test-all-models`）成功即立即恢复健康状态（markHealthy + markModelHealthy），404/403 失败立即标记**，不依赖 30 分钟探活
 - **写库**：仅 2xx 响应记录；响应无 usage 时记 0 且 `status='no_usage'`；`status`/`latency_ms` 为新增列。**口径约定**：`input_tokens` 字段统一按不含 cache_read 写入（OpenAI/Gemini 在 parser 层做减法），`cache_read` 单独列示，展示层 Total Input 含 cache。**model 列写真实名**（路由重写时用 targetModel，否则用请求名），原始请求名写 `request_model`（虚拟名路由可追溯）。
@@ -105,6 +118,8 @@ docker compose up -d                                 # 本地运行
   - `GATEWAY_SECRET` 缺失时代理路由与 admin API 返回 503，不静默降级（`proxy-deps.ts` 的 `GatewaySecretMissingError` 向上传播，不再吞错降级 401/502）
   - 请求体上限默认 32MB（`GATEWAY_MAX_BODY_MB` 可调，超限 413）；非流式响应整包缓冲上限 50MB（超限中断，流式路径 O(1) 不受影响）
   - 502/协议不匹配错误不回显内部细节（upstream 名、内网地址等），仅进服务端日志
+  - **管理端旁路 fetch 同样 `redirect: "manual"`**：`fetchUpstreamModels`（upstream-client.ts）、探活 `probeOnce`（probe.ts）、余额 `fetchBalance`（balance.ts）均带真实 key 访问第三方上游，3xx 一律视为失败（防 key 经跨源重定向被动泄露），与主代理链路 `proxy.ts` 口径一致
+  - test-connection / fetch-models 管理端点与 upstream 创建/更新共用 `validateUpstreamBaseUrl` SSRF 校验（私网/环回/元数据地址 400），不用裸 `^https?://` 正则
   - 日志永不打印请求 body 与任何 key
 
 ### Usage 解析器（`src/lib/gateway/parsers/`）
@@ -304,6 +319,21 @@ docker compose up -d
   - `src/lib/timezone-utils`：`localDateKeyToUtcStartISO` 时区换算（含互逆 round-trip）
   - `src/lib/auth/settings-status`：status_page_config 默认值合并（fail-closed、非法 JSON/字段回退、不污染共享默认）+ 合法性校验
   - `src/lib/status-query`：元素联动（hourly→daily）+ 按需查询断言（cost/topModels 关闭不执行 model 级查询）+ 响应裁剪（不泄露模型名）+ 响应缓存失效 + 60 req/min 限流
+  - `src/lib/gateway/probe`：探活请求构造（三协议 + responses 双风格）+ 双风格回退判定 + 3xx 不跟随（redirect manual）
+  - `src/lib/gateway/quota`：配额窗口计算与超限判定（rpm/tpm/daily/monthly）
+  - `src/lib/gateway/upstream-client`：模型列表拉取 + 3xx 不跟随（redirect manual，防 key 跨源泄露）
+  - `src/lib/gateway/response-rewriter`：响应体模型名改写
+  - `src/lib/models-dev/snapshot`：快照拉取/缓存/消毒
+  - `src/lib/auth/setup`：首次设置向导闸门（canRunSetup 双条件 + runSetup 事务 re-check）
+  - `src/lib/auth/settings-display` / `settings-hidden-sources` / `settings-stream` / `settings-status`：settings 读写与回退优先级（含 stream timeout 函数族、hidden providers/sources、status_page_config）
+  - `src/lib/admin/audit`：审计日志写入
+  - `src/lib/clipboard` / `src/lib/mask-utils`：剪贴板 fallback / 密钥掩码
+  - `src/lib/provider-utils-async`：匿名化分组解析 + 归一化索引
+  - `src/app/api/admin/virtual-keys/route.test`：vk CRUD + 配额用量窗口查询集成测试
+  - `src/app/api/admin/models-dev/upload/route.test`：快照上传校验（大小/结构/全非法 400）
+  - `src/app/api/admin/settings/hidden-sources/route.test`：Hidden Sources API + 统计剔除 + 删除联动
+  - `src/app/api/admin/upstreams/test-connection|fetch-models/route.test`：SSRF 校验（私网 400 不发请求）+ 存储 key 模式 + 3xx 不跟随
+  - `src/app/api/dashboard/route.test` / `src/app/api/records/route.test`：Dashboard/Records API 集成
 - 新增纯逻辑模块（如解析器、路由匹配、加密）时应同步提交单测
 
 ## Git Commit

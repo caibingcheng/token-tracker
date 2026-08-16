@@ -92,6 +92,26 @@ describe("probeModel", () => {
     expect(result.error).toContain("model not found");
   });
 
+  it("uses redirect: manual and does not follow 3xx (credential leak guard)", async () => {
+    fetchMock.mockResolvedValue(
+      new Response("redirecting", {
+        status: 302,
+        headers: { location: "https://evil.example/steal" },
+      })
+    );
+    const result = await probeModel(
+      { protocol: "openai", baseUrl: "https://api.example" },
+      "gpt-4o",
+      "sk-test"
+    );
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe(302);
+    expect(result.error).toContain("redirect");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init as RequestInit & { redirect?: string }).redirect).toBe("manual");
+  });
+
   it("returns failure on network error", async () => {
     fetchMock.mockRejectedValue(new Error("ECONNREFUSED"));
     const result = await probeModel(

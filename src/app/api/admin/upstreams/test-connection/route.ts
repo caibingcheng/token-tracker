@@ -3,6 +3,7 @@ import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";
 import { testUpstreamConnection } from "@/lib/gateway/upstream-client";
 import { isProtocol } from "@/lib/gateway/model-router";
+import { validateUpstreamBaseUrl, InvalidUpstreamUrlError } from "@/lib/gateway/url-guard";
 
 export const POST = withAuth(async (request: NextRequest) => {
   if (!process.env.GATEWAY_SECRET) {
@@ -26,14 +27,20 @@ export const POST = withAuth(async (request: NextRequest) => {
     if (!isProtocol(protocol)) {
       return NextResponse.json({ success: false, error: "Invalid protocol" }, { status: 400 });
     }
-    if (!/^https?:\/\//.test(baseUrl)) {
-      return NextResponse.json({ success: false, error: "baseUrl must start with http(s)://" }, { status: 400 });
+    let validatedBaseUrl: string;
+    try {
+      validatedBaseUrl = await validateUpstreamBaseUrl(baseUrl);
+    } catch (err) {
+      return NextResponse.json(
+        { success: false, error: err instanceof InvalidUpstreamUrlError ? err.message : "Invalid baseUrl" },
+        { status: 400 }
+      );
     }
     if (!apiKey) {
       return NextResponse.json({ success: false, error: "Missing required field: apiKey" }, { status: 400 });
     }
 
-    const result = await testUpstreamConnection({ protocol, baseUrl }, apiKey);
+    const result = await testUpstreamConnection({ protocol, baseUrl: validatedBaseUrl }, apiKey);
     return NextResponse.json({
       success: result.ok,
       data: { ok: result.ok, status: result.status, error: result.error },

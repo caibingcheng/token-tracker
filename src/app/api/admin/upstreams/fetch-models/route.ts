@@ -6,6 +6,7 @@ import { withAuth } from "@/lib/auth/guard";
 import { fetchUpstreamModels } from "@/lib/gateway/upstream-client";
 import { decryptSecret } from "@/lib/gateway/crypto";
 import { isProtocol } from "@/lib/gateway/model-router";
+import { validateUpstreamBaseUrl, InvalidUpstreamUrlError } from "@/lib/gateway/url-guard";
 
 export const POST = withAuth(async (request: NextRequest) => {
   return withSkipCache(async () => {
@@ -31,13 +32,19 @@ export const POST = withAuth(async (request: NextRequest) => {
     if (!isProtocol(protocol)) {
       return NextResponse.json({ success: false, error: "Invalid protocol" }, { status: 400 });
     }
-    if (!/^https?:\/\//.test(baseUrl)) {
-      return NextResponse.json({ success: false, error: "baseUrl must start with http(s)://" }, { status: 400 });
+    let validatedBaseUrl: string;
+    try {
+      validatedBaseUrl = await validateUpstreamBaseUrl(baseUrl);
+    } catch (err) {
+      return NextResponse.json(
+        { success: false, error: err instanceof InvalidUpstreamUrlError ? err.message : "Invalid baseUrl" },
+        { status: 400 }
+      );
     }
 
     // 表单有明文 key 时优先使用
     if (apiKey) {
-      const result = await fetchUpstreamModels({ protocol, baseUrl }, apiKey);
+      const result = await fetchUpstreamModels({ protocol, baseUrl: validatedBaseUrl }, apiKey);
       return NextResponse.json({
         success: !result.error,
         data: { models: result.models, status: result.status, error: result.error },
@@ -65,7 +72,7 @@ export const POST = withAuth(async (request: NextRequest) => {
     for (const keyRow of keyRows) {
       try {
         const plain = decryptSecret(keyRow.apiKeyEncrypted);
-        result = await fetchUpstreamModels({ protocol, baseUrl }, plain);
+        result = await fetchUpstreamModels({ protocol, baseUrl: validatedBaseUrl }, plain);
         if (result.error) continue;
         break;
       } catch {

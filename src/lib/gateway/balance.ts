@@ -28,6 +28,8 @@ export async function fetchBalance(
   if (provider === "deepseek") {
     const res = await fetch(joinUrlPath(baseUrl, "/user/balance"), {
       headers: { Authorization: `Bearer ${apiKey}` },
+      // 手动模式：3xx 视为失败，防 key 经跨源重定向泄露
+      redirect: "manual",
     });
     if (!res.ok) {
       throw new Error(`DeepSeek balance API returned ${res.status}`);
@@ -44,6 +46,8 @@ export async function fetchBalance(
   // openrouter
   const res = await fetch("https://openrouter.ai/api/v1/auth/key", {
     headers: { Authorization: `Bearer ${apiKey}` },
+    // 手动模式：3xx 视为失败，防 key 经跨源重定向泄露
+    redirect: "manual",
   });
   if (!res.ok) {
     throw new Error(`OpenRouter auth/key API returned ${res.status}`);

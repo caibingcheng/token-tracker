@@ -44,6 +44,11 @@ export function buildAuthHeaders(
   }
 }
 
+// 3xx 重定向状态（manual redirect 模式下 fetch 不会跟随，直接暴露状态码）
+export function isRedirectStatus(status: number): boolean {
+  return status >= 300 && status < 400;
+}
+
 export interface ListModelsResult {
   models: string[];
   status: number;
@@ -60,7 +65,13 @@ export async function fetchUpstreamModels(
     const res = await fetch(url, {
       headers: buildAuthHeaders(upstream.protocol, apiKey),
       signal,
+      // 手动模式：3xx 视为失败，防认证头经跨源重定向泄露
+      redirect: "manual",
     });
+    if (isRedirectStatus(res.status)) {
+      await res.body?.cancel();
+      return { models: [], status: res.status, error: `Upstream returned redirect ${res.status}` };
+    }
     const text = await res.text();
     if (!res.ok) {
       return { models: [], status: res.status, error: text.slice(0, 300) };
