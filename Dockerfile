@@ -28,6 +28,8 @@ ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
+# 个人规模内存占用 <100MB，512MB 堆上限足够且可预测（防 OOM-killer / GC 尖峰）
+ENV NODE_OPTIONS=--max-old-space-size=512
 
 RUN set -eux; \
   apt-get update; \

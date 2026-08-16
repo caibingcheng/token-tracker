@@ -1,7 +1,7 @@
 import { db, tokenRecords, getDateGroupExpr } from "@/lib/db";
-import { sql, and, eq, inArray } from "drizzle-orm";
+import { sql, and, eq, inArray, notInArray } from "drizzle-orm";
 import {
-  offsetMinutesToSqlModifiers,
+  localDateKeyToUtcStartISO,
   localDateKeyFromUtcDate,
 } from "@/lib/timezone-utils";
 import {
@@ -11,8 +11,10 @@ import {
   normalizeModel,
   type StatItem,
 } from "@/lib/model-utils";
-import { resolveProviderFilter } from "@/lib/provider-utils";
+import { resolveProviderFilter, loadHiddenProviderGroups } from "@/lib/provider-utils";
+import { loadModelAliases, loadHiddenSources } from "@/lib/auth/settings";
 import { toNum } from "@/lib/number-utils";
+import { loadPriceMap, computeModelCost } from "@/lib/pricing";
 
 export interface StatItemWithGroup extends StatItem {
   group: string;
@@ -35,27 +37,21 @@ export type StatsQueryResult =
   | StatItem[];
 
 // Helper to build combined WHERE clause
-function buildWhereClause(
+export function buildWhereClause(
   dateFilter: Date | string | null,
   providerFilter: string[] | null,
   modelFilter: string[] | null,
   agentFilter: string | null,
-  timezoneOffsetMinutes?: number
+  timezoneOffsetMinutes?: number,
+  exclude?: { providers: string[]; agents: string[] }
 ) {
   const conditions = [];
 
   if (dateFilter) {
     if (typeof dateFilter === "string" && timezoneOffsetMinutes !== undefined) {
-      const modifiers = offsetMinutesToSqlModifiers(timezoneOffsetMinutes);
-      if (modifiers.length === 1) {
-        conditions.push(
-          sql`strftime('%Y-%m-%d', ${tokenRecords.createdAt}, ${modifiers[0]}) >= ${dateFilter}`
-        );
-      } else {
-        conditions.push(
-          sql`strftime('%Y-%m-%d', ${tokenRecords.createdAt}, ${modifiers[0]}, ${modifiers[1]}) >= ${dateFilter}`
-        );
-      }
+      // 直比较 UTC 日界起始时刻：可命中 idx_token_records_created_at（strftime 套列不可命中）
+      const utcStart = localDateKeyToUtcStartISO(dateFilter, timezoneOffsetMinutes);
+      conditions.push(sql`${tokenRecords.createdAt} >= ${utcStart}`);
     } else if (dateFilter instanceof Date) {
       conditions.push(
         sql`${tokenRecords.createdAt} >= ${dateFilter.toISOString()}`
@@ -83,6 +79,17 @@ function buildWhereClause(
     conditions.push(eq(tokenRecords.agent, agentFilter));
   }
 
+  // 独立排除的隐藏数据源（excluded 列表，与隐藏状态无关）：provider/agent 列均 notNull，
+  // 直接 NOT IN 排除；'unknown' 等遗留值不在排除列表中时自然保留
+  if (exclude) {
+    if (exclude.providers.length > 0) {
+      conditions.push(notInArray(tokenRecords.provider, exclude.providers));
+    }
+    if (exclude.agents.length > 0) {
+      conditions.push(notInArray(tokenRecords.agent, exclude.agents));
+    }
+  }
+
   return conditions.length > 0 ? and(...conditions) : null;
 }
 
@@ -98,6 +105,14 @@ export async function executeStatsQuery(params: {
   limit?: number | null;
   timezoneOffsetMinutes?: number;
 }): Promise<StatsQueryResult> {
+  const groups = await loadHiddenProviderGroups();
+  const aliases = await loadModelAliases();
+  const hiddenSources = await loadHiddenSources();
+  // 独立排除列表（不依赖隐藏状态；空数组由 buildWhereClause 跳过）
+  const exclude = {
+    providers: hiddenSources.excludedUpstreams,
+    agents: hiddenSources.excludedVirtualKeys,
+  };
   const {
     groupBy,
     range,
@@ -142,7 +157,7 @@ export async function executeStatsQuery(params: {
         .map((r: any) => r.provider)
         .filter((n: any): n is string => n !== null && n !== undefined);
 
-    providerFilter = resolveProviderFilter(provider, allProviderNames);
+    providerFilter = resolveProviderFilter(provider, allProviderNames, groups);
 
     if (!providerFilter || providerFilter.length === 0) {
       throw new Error(`Unknown provider: ${provider}`);
@@ -169,7 +184,7 @@ export async function executeStatsQuery(params: {
     const matchedRawModels: string[] = [];
     for (const raw of allRawModels) {
       const provider = providerByModel.get(raw);
-      if (normalizeModel(raw, provider) === model) {
+      if (normalizeModel(raw, provider, groups, aliases) === model) {
         matchedRawModels.push(raw);
       }
     }
@@ -203,7 +218,8 @@ export async function executeStatsQuery(params: {
       providerFilter,
       modelFilter,
       agentFilter,
-      timezoneOffsetMinutes
+      timezoneOffsetMinutes,
+      exclude
     );
     if (whereClause) {
       query = query.where(whereClause);
@@ -235,7 +251,8 @@ export async function executeStatsQuery(params: {
       providerFilter,
       modelFilter,
       agentFilter,
-      timezoneOffsetMinutes
+      timezoneOffsetMinutes,
+      exclude
     );
     if (whereClause) {
       query = query.where(whereClause);
@@ -246,6 +263,8 @@ export async function executeStatsQuery(params: {
       effectiveGranularity,
       timezoneOffsetMinutes
     );
+
+    const priceMap = await loadPriceMap();
 
     query = db
       .select({
@@ -269,11 +288,18 @@ export async function executeStatsQuery(params: {
       providerFilter,
       modelFilter,
       agentFilter,
-      timezoneOffsetMinutes
+      timezoneOffsetMinutes,
+      exclude
     );
     if (whereClause) {
       query = query.where(whereClause);
     }
+
+    const rows = await query;
+    // 成本按真实 model 名定价（模型级行附加 cost，供上层 roll up）
+    return rows.map((row: any) =>
+      attachCost(row, priceMap, String(row.model))
+    );
   } else if (groupBy === "model") {
     // 先按 (provider, 原始 model) 分组取 Top N，再应用层归一化合并
     // 当 modelFilter 生效时（按特定归一化 model 筛选），不限制原始 model 数量
@@ -282,7 +308,8 @@ export async function executeStatsQuery(params: {
       providerFilter,
       modelFilter,
       agentFilter,
-      timezoneOffsetMinutes
+      timezoneOffsetMinutes,
+      exclude
     );
 
     const effectiveLimit = limit === null ? null : TOP_N_RAW_MODELS;
@@ -305,7 +332,7 @@ export async function executeStatsQuery(params: {
         .from(tokenRecords)
         .groupBy(tokenRecords.provider, tokenRecords.model)
         .orderBy(
-          sql`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead}) DESC`
+          sql`SUM(${tokenRecords.inputTokens}) DESC`
         );
       rawData = whereClause ? await query.where(whereClause) : await query;
     } else {
@@ -325,23 +352,19 @@ export async function executeStatsQuery(params: {
         .from(tokenRecords)
         .groupBy(tokenRecords.provider, tokenRecords.model)
         .orderBy(
-          sql`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead}) DESC`
+          sql`SUM(${tokenRecords.inputTokens}) DESC`
         )
         .limit(TOP_N_RAW_MODELS);
       rawData = whereClause ? await query.where(whereClause) : await query;
     }
 
+    const priceMap = await loadPriceMap();
     const data = aggregateByNormalizedModel(
-      rawData.map((row: any) => ({
-        group: String(row.group),
-        provider: row.provider ?? undefined,
-        totalInput: toNum(row.totalInput),
-        totalOutput: toNum(row.totalOutput),
-        totalInputCached: toNum(row.totalInputCached),
-        totalInputUncached: toNum(row.totalInputUncached),
-        totalCacheWrite: toNum(row.totalCacheWrite),
-        count: toNum(row.count),
-      }))
+      rawData.map((row: any) =>
+        attachCost(row, priceMap, String(row.group))
+      ),
+      groups,
+      aliases
     );
 
     if (!modelFilter && effectiveLimit !== null) {
@@ -364,7 +387,7 @@ export async function executeStatsQuery(params: {
       .from(tokenRecords)
       .groupBy(tokenRecords.provider)
       .orderBy(
-        sql`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead}) DESC`
+        sql`SUM(${tokenRecords.inputTokens}) DESC`
       );
 
     const whereClause = buildWhereClause(
@@ -372,7 +395,8 @@ export async function executeStatsQuery(params: {
       providerFilter,
       modelFilter,
       agentFilter,
-      timezoneOffsetMinutes
+      timezoneOffsetMinutes,
+      exclude
     );
     if (whereClause) {
       query = query.where(whereClause);
@@ -381,4 +405,33 @@ export async function executeStatsQuery(params: {
 
   const data = await query;
   return data as StatsQueryResult;
+}
+
+// 给模型级分组行附加成本聚合（按真实 model 名定价；未定价 → 全 0）
+function attachCost(
+  row: any,
+  priceMap: Map<string, any>,
+  modelName: string
+): StatItemWithGroupAndModel {
+  return {
+    group: String(row.group),
+    model: modelName,
+    provider: row.provider ?? undefined,
+    totalInput: toNum(row.totalInput),
+    totalOutput: toNum(row.totalOutput),
+    totalInputCached: toNum(row.totalInputCached),
+    totalInputUncached: toNum(row.totalInputUncached),
+    totalCacheWrite: toNum(row.totalCacheWrite),
+    count: toNum(row.count),
+    cost: computeModelCost(
+      modelName,
+      {
+        inputTokens: toNum(row.totalInputUncached),
+        cacheRead: toNum(row.totalInputCached),
+        cacheWrite: toNum(row.totalCacheWrite),
+        outputTokens: toNum(row.totalOutput),
+      },
+      priceMap
+    ),
+  };
 }

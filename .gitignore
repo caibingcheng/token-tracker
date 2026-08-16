@@ -31,6 +31,7 @@ drizzle/
 
 # Docs (plan/spec)
 /docs/
+/specs/
 
 # Local dev tooling
 mise.toml

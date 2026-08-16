@@ -1,6 +1,6 @@
 import { db } from "@/lib/db";
 import { tokenRecords } from "@/lib/db";
-import { resolveProviderFilter } from "@/lib/provider-utils";
+import { resolveProviderFilter, loadHiddenProviderGroups } from "@/lib/provider-utils";
 import { resolveNormalizedModelFilter } from "@/lib/model-utils";
 
 export interface DashboardFilters {
@@ -21,6 +21,7 @@ export async function resolveDashboardFilters(
   model: string,
   agent?: string
 ): Promise<DashboardFilters> {
+  const groups = await loadHiddenProviderGroups();
   let providerFilter: string[] | null = null;
   if (provider !== "all") {
     const allProviderRows = await db
@@ -30,7 +31,7 @@ export async function resolveDashboardFilters(
         .map((r: any) => r.provider)
         .filter((n: any): n is string => n !== null && n !== undefined);
 
-    providerFilter = resolveProviderFilter(provider, allProviderNames);
+    providerFilter = resolveProviderFilter(provider, allProviderNames, groups);
   }
 
   let modelFilter: string[] | null = null;
@@ -48,7 +49,7 @@ export async function resolveDashboardFilters(
       }
     }
 
-    modelFilter = resolveNormalizedModelFilter(model, allRawModels, providerByModel);
+    modelFilter = resolveNormalizedModelFilter(model, allRawModels, providerByModel, groups);
   }
 
   const agentFilter = agent && agent !== "all" ? agent : null;

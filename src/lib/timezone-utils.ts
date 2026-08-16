@@ -52,6 +52,18 @@ export function localDateKeyFromUtcDate(
   return `${y}-${m}-${d}`;
 }
 
+// 本地日期 key（YYYY-MM-DD）对应的 UTC 起始时刻 ISO 字符串。
+// 用于日期过滤直比较（created_at >= utcStart），保证可命中索引
+// （strftime 套列会导致索引失效）。offsetMinutes 为 getTimezoneOffset() 语义。
+export function localDateKeyToUtcStartISO(
+  dateKey: string,
+  offsetMinutes: number
+): string {
+  return new Date(
+    Date.parse(`${dateKey}T00:00:00Z`) + offsetMinutes * 60000
+  ).toISOString();
+}
+
 export function addDaysLocal(
   date: Date,
   days: number,

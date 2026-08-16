@@ -1,222 +1,62 @@
-import fs from "fs";
-import path from "path";
-import { type ModelPricing } from "@/lib/cost-utils";
-import { toNum } from "@/lib/number-utils";
-import { getHiddenProviderGroups, matchesPattern } from "@/lib/provider-utils";
+import type { HiddenProviderGroup } from "@/lib/provider-utils";
+import { matchesPattern } from "@/lib/provider-utils";
 
-interface CanonicalInfo {
-  displayName: string;
+// 纯归一化模块：不加载任何文件。aliases（归一化规则）由调用方注入，
+// 来源为 settings 表 model_aliases（Display pane 编辑）。
+
+// 归一化规则：name = 归一化名（分组 key + UI 展示名），aliases = 匹配别名列表
+export interface ModelAliasRule {
+  name: string;
+  aliases: string[];
 }
 
-interface Registry {
-  canonicalMap: Map<string, CanonicalInfo>;
-  priceMap: Map<string, ModelPricing>;
-  aliasMap: Map<string, string>;
+interface RegistryState {
   rawToCanonical: Map<string, string>;
 }
 
-interface ModelCost {
-  input?: unknown;
-  output?: unknown;
-  cache_read?: unknown;
-  cache_write?: unknown;
+let registry: RegistryState | null = null;
+
+function ensureRegistry(): RegistryState {
+  if (!registry) {
+    registry = { rawToCanonical: new Map() };
+  }
+  return registry;
 }
 
-interface ModelEntry {
-  name?: unknown;
-  cost?: ModelCost;
+export function getRegistry(): RegistryState {
+  return ensureRegistry();
 }
-
-interface ModelRegistryJson {
-  version?: unknown;
-  models?: Record<string, ModelEntry>;
-  aliases?: Record<string, string>;
-}
-
-const MODEL_REGISTRY_PATH =
-  process.env.MODEL_REGISTRY_PATH ||
-  path.join(process.cwd(), "data", "model-registry.json");
 
 function getModelPart(canonicalId: string): string {
   const slashIndex = canonicalId.indexOf("/");
   return slashIndex >= 0 ? canonicalId.slice(slashIndex + 1) : canonicalId;
 }
 
-const SEED_REGISTRY_PATH = path.join(process.cwd(), "public", "data", "model-registry.json");
-
-function loadJsonFile(filePath: string): unknown {
-  try {
-    const content = fs.readFileSync(filePath, "utf-8");
-    return JSON.parse(content);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-      console.warn(`[Registry] Failed to load from ${filePath}:`, err);
-      return null;
-    }
-  }
-
-  const seedPath = SEED_REGISTRY_PATH;
-  try {
-    const seedContent = fs.readFileSync(seedPath, "utf-8");
-    try {
-      fs.mkdirSync(path.dirname(filePath), { recursive: true });
-      fs.writeFileSync(filePath, seedContent, "utf-8");
-      console.log(`[Registry] Copied seed to ${filePath}`);
-    } catch {
-      console.warn(`[Registry] Can't write to ${filePath}, using built-in seed`);
-    }
-    return JSON.parse(seedContent);
-  } catch (seedErr) {
-    if ((seedErr as NodeJS.ErrnoException).code !== "ENOENT") {
-      console.warn(`[Registry] Failed to load seed from ${seedPath}:`, seedErr);
-    }
-    try {
-      fs.mkdirSync(path.dirname(filePath), { recursive: true });
-      fs.writeFileSync(filePath, "{}", "utf-8");
-      console.log(`[Registry] Created empty model registry at ${filePath}`);
-      return {};
-    } catch (writeErr) {
-      console.warn(`[Registry] Failed to create model registry at ${filePath}:`, writeErr);
-    }
-    return null;
-  }
-}
-
-function isValidRegistry(data: unknown): data is ModelRegistryJson {
-  return (
-    data !== null &&
-    typeof data === "object" &&
-    (!("version" in (data as object)) ||
-      typeof (data as ModelRegistryJson).version === "number")
-  );
-}
-
-function buildCanonicalMap(
-  modelsData: Record<string, ModelEntry> | undefined
-): Map<string, CanonicalInfo> {
-  const map = new Map<string, CanonicalInfo>();
-  if (!modelsData || typeof modelsData !== "object") return map;
-
-  for (const [key, value] of Object.entries(modelsData)) {
-    if (!value || typeof value !== "object") continue;
-    const displayName =
-      typeof value.name === "string" && value.name.length > 0
-        ? value.name
-        : getModelPart(key);
-    map.set(key, { displayName });
-  }
-  return map;
-}
-
-function buildPriceMap(
-  canonicalMap: Map<string, CanonicalInfo>,
-  modelsData: Record<string, ModelEntry> | undefined
-): Map<string, ModelPricing> {
-  const priceMap = new Map<string, ModelPricing>();
-  if (!modelsData || typeof modelsData !== "object" || !canonicalMap.size) {
-    return priceMap;
-  }
-
-  canonicalMap.forEach((info, canonicalId) => {
-    const entry = (modelsData as Record<string, ModelEntry>)[canonicalId];
-    if (!entry || typeof entry !== "object") return;
-
-    const cost = entry.cost;
-    if (!cost || typeof cost !== "object") return;
-
-    const inputPrice = toNum(cost.input);
-    const outputPrice = toNum(cost.output);
-    const cacheReadPrice =
-      cost.cache_read !== undefined ? toNum(cost.cache_read) : inputPrice;
-    const cacheWritePrice =
-      cost.cache_write !== undefined ? toNum(cost.cache_write) : inputPrice;
-
-    priceMap.set(canonicalId, {
-      canonicalId,
-      displayName: info.displayName,
-      inputPrice,
-      cacheReadPrice,
-      cacheWritePrice,
-      outputPrice,
-    });
-  });
-
-  return priceMap;
-}
-
-function buildAliasMap(
-  canonicalMap: Map<string, CanonicalInfo>,
-  aliasesData: Record<string, string> | undefined
-): Map<string, string> {
-  const aliasMap = new Map<string, string>();
-  if (!aliasesData || typeof aliasesData !== "object") return aliasMap;
-
-  for (const [raw, canonicalId] of Object.entries(aliasesData)) {
-    if (typeof canonicalId !== "string") continue;
-    const key = raw.toLowerCase().trim();
-    if (!key) continue;
-    if (!canonicalMap.has(canonicalId)) {
-      console.warn(
-        `Model alias "${raw}" points to unknown canonical model "${canonicalId}"`
-      );
-      continue;
-    }
-    if (!aliasMap.has(key)) {
-      aliasMap.set(key, canonicalId);
-    }
-  }
-
-  return aliasMap;
-}
-
-function loadRegistry(): Registry {
-  const data = loadJsonFile(MODEL_REGISTRY_PATH);
-  const registryData: ModelRegistryJson = isValidRegistry(data)
-    ? (data as ModelRegistryJson)
-    : {};
-
-  const models =
-    registryData.models && typeof registryData.models === "object"
-      ? registryData.models
-      : {};
-  const aliases =
-    registryData.aliases && typeof registryData.aliases === "object"
-      ? registryData.aliases
-      : {};
-
-  const canonicalMap = buildCanonicalMap(models);
-  const priceMap = buildPriceMap(canonicalMap, models);
-  const aliasMap = buildAliasMap(canonicalMap, aliases);
-
-  return {
-    canonicalMap,
-    priceMap,
-    aliasMap,
-    rawToCanonical: new Map(),
-  };
-}
-
-let registry: Registry | null = null;
-
-function ensureRegistry(): Registry {
-  if (!registry) {
-    registry = loadRegistry();
-  }
-  return registry;
-}
-
-export function getRegistry(): Registry {
-  return ensureRegistry();
-}
-
-function isProviderHidden(providerName: string): boolean {
-  const groups = getHiddenProviderGroups();
+function isProviderHidden(
+  providerName: string,
+  groups: HiddenProviderGroup[]
+): boolean {
   return groups.some((group) =>
     group.patterns.some((pattern) => matchesPattern(providerName, pattern))
   );
 }
 
-export function normalizeModel(raw: string, provider?: string): string {
+// 清空 normalizeModel 的 rawToCanonical 缓存：
+// 当 HIDDEN_PROVIDERS（settings 表）或 model_aliases 被修改后必须调用，
+// 否则旧匿名/归一化映射长期残留
+export function invalidateModelCache(): void {
+  const reg = registry;
+  if (reg) {
+    reg.rawToCanonical.clear();
+  }
+}
+
+export function normalizeModel(
+  raw: string,
+  provider?: string,
+  groups: HiddenProviderGroup[] = [],
+  aliases: ModelAliasRule[] = []
+): string {
   if (!raw || typeof raw !== "string") return raw;
   const trimmed = raw.trim();
   if (!trimmed) return raw;
@@ -238,56 +78,62 @@ export function normalizeModel(raw: string, provider?: string): string {
   const effectiveProvider = providerTrimmed || rawProvider;
   const effectiveModel = hasRawProvider ? rawModel : trimmed;
 
-  // 1. 精确匹配 canonical ID
-  if (reg.canonicalMap.has(lower)) {
-    reg.rawToCanonical.set(cacheKey, lower);
-    return lower;
+  const rules = Array.isArray(aliases) ? aliases : [];
+
+  const setResult = (result: string): string => {
+    reg.rawToCanonical.set(cacheKey, result);
+    return result;
+  };
+
+  // 1. 精确匹配规则 name（归一化名）
+  for (const rule of rules) {
+    if (rule.name.toLowerCase() === lower) {
+      return setResult(rule.name);
+    }
   }
 
   // 2. 精确匹配 provider/model 别名
   if (effectiveProvider) {
     const combo = `${effectiveProvider.toLowerCase()}/${effectiveModel.toLowerCase()}`;
-    const aliased = reg.aliasMap.get(combo);
-    if (aliased) {
-      reg.rawToCanonical.set(cacheKey, aliased);
-      return aliased;
+    for (const rule of rules) {
+      if (rule.aliases.some((a) => a.toLowerCase().trim() === combo)) {
+        return setResult(rule.name);
+      }
     }
   }
 
   // 3. hidden provider fallback：只按 model 部分匹配别名
-  if (effectiveProvider && isProviderHidden(effectiveProvider)) {
+  if (effectiveProvider && isProviderHidden(effectiveProvider, groups)) {
     const modelOnly = effectiveModel.toLowerCase();
-    const aliased = reg.aliasMap.get(modelOnly);
-    if (aliased) {
-      reg.rawToCanonical.set(cacheKey, aliased);
-      return aliased;
+    for (const rule of rules) {
+      if (rule.aliases.some((a) => a.toLowerCase().trim() === modelOnly)) {
+        return setResult(rule.name);
+      }
     }
   }
 
   // 4. 精确匹配 model 别名
-  const aliased = reg.aliasMap.get(lower);
-  if (aliased) {
-    reg.rawToCanonical.set(cacheKey, aliased);
-    return aliased;
+  for (const rule of rules) {
+    if (rule.aliases.some((a) => a.toLowerCase().trim() === lower)) {
+      return setResult(rule.name);
+    }
   }
 
   // 5. 保持原始名称
-  reg.rawToCanonical.set(cacheKey, trimmed);
-  return trimmed;
+  return setResult(trimmed);
 }
 
-export function getDisplayName(canonicalId: string): string {
-  const reg = ensureRegistry();
-  const info = reg.canonicalMap.get(canonicalId);
-  if (info?.displayName) return info.displayName;
+export function getDisplayName(
+  canonicalId: string,
+  aliases: ModelAliasRule[] = []
+): string {
+  const rules = Array.isArray(aliases) ? aliases : [];
+  for (const rule of rules) {
+    if (rule.name === canonicalId) return rule.name;
+  }
   return getModelPart(canonicalId);
 }
 
 export function getShortDisplayName(canonicalId: string): string {
   return getModelPart(canonicalId);
-}
-
-export function getPricing(canonicalId: string): ModelPricing | null {
-  const reg = ensureRegistry();
-  return reg.priceMap.get(canonicalId) ?? null;
 }

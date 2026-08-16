@@ -5,6 +5,8 @@ export interface ModelPricing {
   cacheReadPrice: number;
   cacheWritePrice: number;
   outputPrice: number;
+  /** 可选：models.dev provider id（服务端推断），缺省由前端按 canonicalId 切分 */
+  provider?: string;
 }
 
 export interface CostInput {
@@ -180,6 +182,30 @@ export function aggregateCost(
     addToAggregate(aggregate, input);
   }
   return finalizeAggregate(aggregate);
+}
+
+// 合并多组 AggregatedCost（归一化 roll up / 日期聚合），按 token 加权重算 perMillion
+export function mergeAggregatedCosts(
+  aggregates: Array<{ cost?: AggregatedCost } | AggregatedCost | null | undefined>
+): AggregatedCost {
+  const merged = emptyAggregatedCost();
+  let hasCost = false;
+  for (const entry of aggregates) {
+    const a = entry && "cost" in entry ? entry.cost : (entry as AggregatedCost | null | undefined);
+    if (!a) continue;
+    hasCost = true;
+    merged.inputTokens += a.inputTokens;
+    merged.cacheReadTokens += a.cacheReadTokens;
+    merged.cacheWriteTokens += a.cacheWriteTokens;
+    merged.outputTokens += a.outputTokens;
+    merged.inputCost += a.inputCost;
+    merged.cacheReadCost += a.cacheReadCost;
+    merged.cacheWriteCost += a.cacheWriteCost;
+    merged.outputCost += a.outputCost;
+    merged.totalCost += a.totalCost;
+    merged.effectiveTokens += a.effectiveTokens;
+  }
+  return hasCost ? finalizeAggregate(merged) : emptyAggregatedCost();
 }
 
 export function calculateCost(input: CostInput): number {

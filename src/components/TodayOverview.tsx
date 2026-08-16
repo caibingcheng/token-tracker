@@ -33,6 +33,8 @@ interface TodayOverviewProps {
   yesterday: TodayData | null;
   loading: boolean;
   topModels?: TopModel[];
+  showCost?: boolean;
+  showTopModels?: boolean;
 }
 
 function formatCost(num: number): string {
@@ -75,7 +77,7 @@ interface TodayItem {
   breakdown?: { label: string; value: number; isCost?: boolean; isRatio?: boolean }[];
 }
 
-export default function TodayOverview({ today, yesterday, loading, topModels }: TodayOverviewProps) {
+export default function TodayOverview({ today, yesterday, loading, topModels, showCost = true, showTopModels = true }: TodayOverviewProps) {
   const { compact } = useNumberFormat();
   const animatedInput = useAnimatedNumber(today?.totalInput || 0, 600);
   const animatedOutput = useAnimatedNumber(today?.totalOutput || 0, 600);
@@ -128,22 +130,26 @@ export default function TodayOverview({ today, yesterday, loading, topModels }: 
       breakdown: [
         { label: "Avg input / req", value: Math.round(avgInputPerReq), isCost: false },
         { label: "Avg output / req", value: Math.round(avgOutputPerReq), isCost: false },
-        { label: "Avg cost / req", value: avgCostPerReq, isCost: true },
+        ...(showCost
+          ? [{ label: "Avg cost / req", value: avgCostPerReq, isCost: true as const }]
+          : []),
       ],
     },
-    {
-      label: "Avg cost / 1M tokens",
-      value: animatedCostPerMillion,
-      isCost: true,
-      today: today?.costPerMillionTokens || 0,
-      yesterday: yesterday?.costPerMillionTokens || 0,
-      breakdown: [
-        { label: "Input / 1M", value: today?.costPerMillionInput || 0, isCost: true },
-        { label: "Cache read / 1M", value: today?.costPerMillionCacheRead || 0, isCost: true },
-        { label: "Output / 1M", value: today?.costPerMillionOutput || 0, isCost: true },
-        { label: "Total Cost", value: today?.totalCost || 0, isCost: true },
-      ],
-    },
+    ...(showCost
+      ? [{
+          label: "Avg cost / 1M tokens",
+          value: animatedCostPerMillion,
+          isCost: true,
+          today: today?.costPerMillionTokens || 0,
+          yesterday: yesterday?.costPerMillionTokens || 0,
+          breakdown: [
+            { label: "Input / 1M", value: today?.costPerMillionInput || 0, isCost: true },
+            { label: "Cache read / 1M", value: today?.costPerMillionCacheRead || 0, isCost: true },
+            { label: "Output / 1M", value: today?.costPerMillionOutput || 0, isCost: true },
+            { label: "Total Cost", value: today?.totalCost || 0, isCost: true },
+          ],
+        }]
+      : []),
   ];
 
   const todayDate = new Date().toLocaleDateString("en-US", {
@@ -164,7 +170,7 @@ export default function TodayOverview({ today, yesterday, loading, topModels }: 
             </div>
           ))}
         </div>
-        <TopModelsCards title="Top 5 Models Today" models={[]} loading />
+        {showTopModels && <TopModelsCards title="Top 5 Models Today" models={[]} loading />}
       </div>
     );
   }
@@ -195,7 +201,9 @@ export default function TodayOverview({ today, yesterday, loading, topModels }: 
           </div>
         ))}
       </div>
-      <TopModelsCards title="Top 5 Models Today" models={topModels ?? []} loading={loading} />
+      {showTopModels && (
+        <TopModelsCards title="Top 5 Models Today" models={topModels ?? []} loading={loading} />
+      )}
     </div>
   );
 }

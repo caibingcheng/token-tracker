@@ -1,15 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db, initDatabase } from "@/lib/db";
 import { tokenRecords } from "@/lib/db";
+import { withAuth } from "@/lib/auth/guard";
+import { loadHiddenSources } from "@/lib/auth/settings";
 
 export const dynamic = "force-dynamic";
-import { anonymizeProvider } from "@/lib/provider-utils";
+import { anonymizeProvider, loadHiddenProviderGroups } from "@/lib/provider-utils";
 
 /**
  * GET /api/providers
  *
  * Returns a list of all unique providers in the database,
  * with hidden providers anonymized to "Provider A", "Provider B", etc.
+ * Hidden upstreams (hidden_sources) are always filtered out; pass
+ * ?includeHidden=1 to skip both the filter and anonymization (real names,
+ * for admin suggestion lists).
  *
  * Response format:
  * {
@@ -20,9 +25,16 @@ import { anonymizeProvider } from "@/lib/provider-utils";
  *   ]
  * }
  */
-export async function GET(request: NextRequest) {
+export const GET = withAuth(async (request: NextRequest) => {
   await initDatabase();
   try {
+    const { searchParams } = new URL(request.url);
+    const includeHidden = searchParams.get("includeHidden") === "1";
+
+    const groups = includeHidden ? [] : await loadHiddenProviderGroups();
+    const hiddenSources = includeHidden ? null : await loadHiddenSources();
+    const hiddenUpstreams = new Set(hiddenSources?.upstreams ?? []);
+
     // Query all unique provider names from the token_records table
     const rows = await db
       .selectDistinct({
@@ -33,11 +45,14 @@ export async function GET(request: NextRequest) {
     // Extract provider names into a flat array
     const allProviderNames: string[] = rows
       .map((row: any) => row.provider)
-      .filter((name: any): name is string => name !== null && name !== undefined);
+      .filter((name: any): name is string => name !== null && name !== undefined)
+      .filter((name: string) => includeHidden || !hiddenUpstreams.has(name));
 
-    // Anonymize each provider name for the response
+    // Anonymize each provider name for the response (includeHidden=1 skips)
     const anonymizedList = allProviderNames.map((realName) => {
-      const displayName = anonymizeProvider(realName, allProviderNames);
+      const displayName = includeHidden
+        ? realName
+        : anonymizeProvider(realName, allProviderNames, groups);
       return {
         id: displayName,
         name: displayName,
@@ -71,4 +86,4 @@ export async function GET(request: NextRequest) {
       { status: 500 }
     );
   }
-}
+});

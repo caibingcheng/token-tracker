@@ -2,17 +2,21 @@ import { NextRequest, NextResponse } from "next/server";
 import { db, initDatabase } from "@/lib/db";
 import { tokenRecords } from "@/lib/db";
 import { sql, desc, eq, and, gte, lte, inArray, SQL } from "drizzle-orm";
-import { resolveProviderFilter } from "@/lib/provider-utils";
+import { resolveProviderFilter, loadHiddenProviderGroups, anonymizeProvider } from "@/lib/provider-utils";
 import { normalizeModel, resolveNormalizedModelFilter } from "@/lib/model-utils";
 import { getDisplayName } from "@/lib/model-registry";
+import { loadModelAliases } from "@/lib/auth/settings";
 import { withSkipCache } from "@/lib/db/cache";
+import { withAuth } from "@/lib/auth/guard";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(request: NextRequest) {
+export const GET = withAuth(async (request: NextRequest) => {
   return withSkipCache(async () => {
     await initDatabase();
     try {
+      const groups = await loadHiddenProviderGroups();
+      const aliases = await loadModelAliases();
       const { searchParams } = new URL(request.url);
 
       // 分页参数
@@ -20,11 +24,22 @@ export async function GET(request: NextRequest) {
       const limit = Math.min(200, Math.max(1, parseInt(searchParams.get("limit") || "50", 10)));
       const offset = (page - 1) * limit;
 
-      // 筛选条件
+      // 筛选条件（过滤参数限长，防缓存 key 膨胀）
       const modelParam = searchParams.get("model");
-
       const provider = searchParams.get("provider");
       const agent = searchParams.get("agent");
+      for (const [name, value] of [
+        ["model", modelParam],
+        ["provider", provider],
+        ["agent", agent],
+      ] as const) {
+        if (value !== null && value.length > 128) {
+          return NextResponse.json(
+            { success: false, error: `Parameter "${name}" is too long` },
+            { status: 400 }
+          );
+        }
+      }
       let providerFilter: string[] | null = null;
       if (provider) {
         const allProviderRows = await db
@@ -34,7 +49,7 @@ export async function GET(request: NextRequest) {
           .map((r: any) => r.provider)
           .filter((n: any): n is string => n !== null && n !== undefined);
 
-        providerFilter = resolveProviderFilter(provider, allProviderNames);
+        providerFilter = resolveProviderFilter(provider, allProviderNames, groups);
 
         if (!providerFilter || providerFilter.length === 0) {
           return NextResponse.json(
@@ -59,7 +74,7 @@ export async function GET(request: NextRequest) {
           }
         }
 
-        modelFilter = resolveNormalizedModelFilter(modelParam, allRawModels, providerByModel);
+        modelFilter = resolveNormalizedModelFilter(modelParam, allRawModels, providerByModel, groups, aliases);
 
         if (!modelFilter || modelFilter.length === 0) {
           return NextResponse.json(
@@ -113,6 +128,9 @@ export async function GET(request: NextRequest) {
           outputTokens: tokenRecords.outputTokens,
           cacheRead: tokenRecords.cacheRead,
           cacheWrite: tokenRecords.cacheWrite,
+          latencyMs: tokenRecords.latencyMs,
+          ttftMs: tokenRecords.ttftMs,
+          requestModel: tokenRecords.requestModel,
           createdAt: tokenRecords.createdAt,
         })
         .from(tokenRecords)
@@ -121,8 +139,21 @@ export async function GET(request: NextRequest) {
         .offset(offset);
       const rawData = whereClause ? await query.where(whereClause) : await query;
       const data = rawData.map((record: any) => ({
-        ...record,
-        normalizedModel: getDisplayName(normalizeModel(record.model, record.provider ?? undefined)),
+        id: record.id,
+        model: record.model,
+        agent: record.agent,
+        inputTokens: record.inputTokens,
+        outputTokens: record.outputTokens,
+        cacheRead: record.cacheRead,
+        cacheWrite: record.cacheWrite,
+        latencyMs: record.latencyMs,
+        ttftMs: record.ttftMs,
+        requestModel: record.requestModel,
+        createdAt: record.createdAt,
+        providerName: record.provider
+          ? anonymizeProvider(record.provider, [], groups)
+          : null,
+        normalizedModel: getDisplayName(normalizeModel(record.model, record.provider ?? undefined, groups, aliases), aliases),
       }));
 
       const countQuery = db
@@ -152,4 +183,4 @@ export async function GET(request: NextRequest) {
       );
     }
   });
-}
+});
