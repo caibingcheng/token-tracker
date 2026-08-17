@@ -535,7 +535,7 @@ interface TooltipEntry {
   stroke?: string;
   strokeDasharray?: string;
   fill?: string;
-  payload?: { streamCount?: number };
+  payload?: { streamCount?: number; [key: string]: unknown };
 }
 
 function TooltipMarker({ entry }: { entry: TooltipEntry }) {
@@ -579,11 +579,25 @@ function TokenBarTooltip({ active, payload, label }: {
   const { compact } = useNumberFormat();
   if (!active || !payload || payload.length === 0) return null;
   const reversed = [...payload].reverse();
+  const filtered = reversed.filter((entry) => {
+    const name = String(entry.name || "");
+    const dataKey = String(entry.dataKey ?? "");
+    if (dataKey.startsWith("ratio-")) {
+      return Number(entry.payload?.[`has-${dataKey}`]) > 0;
+    }
+    if (name === "Cache Hit Ratio") {
+      return Number(entry.payload?.hasCacheHitRate) > 0;
+    }
+    const v = entry.value;
+    if (v == null) return false;
+    return Number.isFinite(Number(v));
+  });
+  if (filtered.length === 0) return null;
   return (
     <div className="bg-white border border-gray-200 rounded-md shadow-sm p-2 text-xs">
       <p className="font-medium text-gray-700 mb-1">{label}</p>
       <div className="space-y-0.5">
-        {reversed.map((entry) => {
+        {filtered.map((entry) => {
           const name = String(entry.name || "");
           const dataKey = String(entry.dataKey ?? "");
           const value = name === "Cache Hit Ratio" || dataKey.startsWith("ratio-")
@@ -611,7 +625,13 @@ function RatioCostTooltip({ active, payload, label }: {
   if (!active || !payload || payload.length === 0) return null;
   const filtered = payload.filter((entry) => {
     const name = String(entry.name || "");
-    return name.trim() !== "" && name !== "dummy";
+    if (name.trim() === "" || name === "dummy") return false;
+    if (name === "Avg cost / 1M") {
+      return Number(entry.payload?.hasCostPerMillion) > 0;
+    }
+    const v = entry.value;
+    if (v == null) return false;
+    return Number.isFinite(Number(v));
   });
   if (filtered.length === 0) return null;
   return (
@@ -648,9 +668,18 @@ function TtftTooltip({ active, payload, label }: {
   label?: string;
 }) {
   if (!active || !payload || payload.length === 0) return null;
-  const filtered = payload.filter((entry) => String(entry.name || "").trim() !== "");
+  const p50Entry = payload.find((entry) => entry.name === "p50 TTFT");
+  const avgEntry = payload.find((entry) => entry.name === "Avg TTFT");
+  const streamCount = payload[0]?.payload?.streamCount ?? 0;
+  if ((p50Entry?.value == null) && (avgEntry?.value == null) && streamCount === 0) return null;
+  const filtered = payload.filter((entry) => {
+    const name = String(entry.name || "").trim();
+    if (name === "") return false;
+    const v = entry.value;
+    if (v == null) return false;
+    return Number.isFinite(Number(v));
+  });
   if (filtered.length === 0) return null;
-  const streamCount = filtered[0].payload?.streamCount ?? 0;
   return (
     <div className="bg-white border border-gray-200 rounded-md shadow-sm p-2 text-xs">
       <p className="font-medium text-gray-700 mb-1">{label}</p>
@@ -659,7 +688,7 @@ function TtftTooltip({ active, payload, label }: {
           <p key={entry.name} className="flex items-center gap-1.5 text-gray-600">
             <TooltipMarker entry={entry} />
             <span className="font-medium">{entry.name}:</span>{" "}
-            <span>{entry.value == null ? "-" : formatLatencyMs(Number(entry.value))}</span>
+            <span>{formatLatencyMs(Number(entry.value))}</span>
           </p>
         ))}
         <p className="text-gray-600">
@@ -1037,6 +1066,7 @@ export default function DailyUsageChart({
         const input = stats?.input ?? 0;
         const cached = stats?.cached ?? 0;
         row[`ratio-provider-${i}`] = input > 0 ? Number(((cached / input) * 100).toFixed(1)) : 0;
+        row[`has-ratio-provider-${i}`] = input > 0 ? 1 : 0;
       });
       return row;
     });
@@ -1091,6 +1121,7 @@ export default function DailyUsageChart({
         const input = stats?.input ?? 0;
         const cached = stats?.cached ?? 0;
         row[`ratio-model-${i}`] = input > 0 ? Number(((cached / input) * 100).toFixed(1)) : 0;
+        row[`has-ratio-model-${i}`] = input > 0 ? 1 : 0;
       });
       return row;
     });
@@ -1188,6 +1219,7 @@ export default function DailyUsageChart({
           costPerMillionCacheWrite: Number(existing.costPerMillionCacheWrite || 0),
           costPerMillionOutput: Number(existing.costPerMillionOutput || 0),
           cacheHitRate: totalInput > 0 ? Number(((cached / totalInput) * 100).toFixed(1)) : 0,
+          hasCacheHitRate: totalInput > 0 ? 1 : 0,
           dummy: 0,
         };
       }
@@ -1206,6 +1238,7 @@ export default function DailyUsageChart({
         costPerMillionCacheWrite: 0,
         costPerMillionOutput: 0,
         cacheHitRate: 0,
+        hasCacheHitRate: 0,
         dummy: 0,
         ...latencyFields,
       };
@@ -1226,15 +1259,19 @@ export default function DailyUsageChart({
 
   const modelCostChartData = useMemo(() => {
     const priceByDate = new Map(data.map((d) => [d.group, d.costPerMillionTokens]));
+    const usageByDate = new Map(data.map((d) => [d.group, d]));
     const keyByGroup = new Map(
       costTopModels.map((m, i) => [m.group, `cost-model-${i}`] as const)
     );
     const top5Groups = new Set(keyByGroup.keys());
     const lastNDays = getLastNDays(range, timezoneOffsetMinutes);
     return lastNDays.map((date) => {
+      const day = usageByDate.get(date);
+      const hasUsage = !!day && (day.totalInput + day.totalOutput + day.totalCacheWrite) > 0;
       const row: Record<string, number | string> = {
         group: date,
         costPerMillionTokens: priceByDate.get(date) || 0,
+        hasCostPerMillion: hasUsage ? 1 : 0,
       };
       const dayModels = dailyTopModels?.[date] ?? [];
       for (const m of dayModels) {
