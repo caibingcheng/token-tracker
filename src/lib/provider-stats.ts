@@ -1,6 +1,6 @@
 import { toNum } from "@/lib/number-utils";
 import type { StatItem } from "@/lib/model-utils";
-import { anonymizeProvider, type HiddenProviderGroup } from "@/lib/provider-utils";
+import { providerGroupKey, type HiddenProviderGroup } from "@/lib/provider-utils";
 import { mergeAggregatedCosts, type AggregatedCost } from "@/lib/cost-utils";
 
 export interface ProviderStat {
@@ -22,7 +22,8 @@ export function aggregateProviders(
   const map = new Map<string, ProviderStat & { costs: AggregatedCost[] }>();
 
   for (const row of rows) {
-    const provider = row.provider ?? "unknown";
+    const rawProvider = row.provider ?? "unknown";
+    const provider = providerGroupKey(rawProvider, groups);
     const totalInput = toNum(row.totalInput);
     const totalInputCached = toNum(row.totalInputCached);
     const totalOutput = toNum(row.totalOutput);
@@ -38,7 +39,7 @@ export function aggregateProviders(
     } else {
       map.set(provider, {
         provider,
-        providerName: anonymizeProvider(provider, [], groups),
+        providerName: provider,
         totalInput,
         totalInputCached,
         totalOutput,

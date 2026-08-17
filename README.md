@@ -51,7 +51,7 @@ docker compose up -d
 | `SQLITE_DATABASE_PATH` | Yes | SQLite 数据库路径（默认 `/app/data/token-tracker.db`） |
 | `ADMIN_API_KEY` | 启动前建议 | 管理面 API Key，逗号分隔（Dashboard / admin / 统计 API 均需；未配置且 DB 无 key 时出现首次设置向导）。旧名 `API_KEYS` 兼容（deprecated） |
 | `GATEWAY_SECRET` | Yes | 网关主密钥，AES-256-GCM（32 字节 hex/base64，用 `openssl rand -hex 32` 生成）；缺失时代理与 admin API 返回 503 |
-| `HIDDEN_PROVIDERS` | No | 需要在 UI 匿名化的 provider |
+| `HIDDEN_PROVIDERS` | No | 需要在 UI 匿名化的 provider；分组格式 `名称:p1,p2`（分号分隔多组），同组多个 provider 在统计中合并为一行 |
 | `API_CACHE_TTL_MS` | No | SELECT 缓存 TTL（毫秒，默认 10000） |
 | `API_CACHE_MAX_SIZE` | No | 缓存最大条目数（默认 1000） |
 

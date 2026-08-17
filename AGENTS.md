@@ -169,8 +169,9 @@ docker compose up -d                                 # 本地运行
 - **数据源**：settings 表 `hidden_providers`（admin panel Display tab 编辑，面板优先）→ env `HIDDEN_PROVIDERS` fallback → 空。**面板保存后 env 被静默忽略**，UI 有提示
 - **唯一 async 入口**：`loadHiddenProviderGroups()`（settings 优先 → env 回退）；纯函数一律接收 `groups` 参数显式传参（`anonymizeProvider` / `resolveProviderFilter` / `deanonymizeProvider` / `parseHiddenProviderGroups`），不直接读 env
 - **分组语法**：分号分组的通配匹配，如 `CustomA:vendor*`；被隐藏的 provider 在 UI 显示为 "Provider A", "Provider B"... 或自定义名称
+- **Provider 维度归并**：同一组内多个真实 provider 在 Provider 维度统计中合并为一行（Top Providers、每日堆叠图、Speed/latency 表），由 `providerGroupKey()` 计算聚合键；组名同时作为 `ProviderStat.provider` 与 `ProviderStat.providerName`，保证前端堆叠图跨日 series 连续；Model 维度仍按归一化 model 名独立聚合，不受影响
 - **缓存失效**：`setHiddenProvidersSetting` 写入时调用 `invalidateModelCache()` 清空 `normalizeModel` 的 `rawToCanonical`，面板改分组后立即生效
-- **相关文件**：`src/lib/provider-utils.ts`、`src/lib/model-registry.ts`（`isProviderHidden`）
+- **相关文件**：`src/lib/provider-utils.ts`（`providerGroupKey`、`anonymizeProvider`、`resolveProviderFilter`）、`src/lib/model-registry.ts`（`isProviderHidden`）
 
 ### Hidden Sources（隐藏 vk / upstream 数据源，`hidden_sources`）
 
