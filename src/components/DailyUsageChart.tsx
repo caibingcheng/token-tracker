@@ -527,9 +527,53 @@ function SummarySection({
   );
 }
 
+interface TooltipEntry {
+  value: number | null;
+  name?: string;
+  dataKey?: string;
+  color?: string;
+  stroke?: string;
+  strokeDasharray?: string;
+  fill?: string;
+  payload?: { streamCount?: number };
+}
+
+function TooltipMarker({ entry }: { entry: TooltipEntry }) {
+  const color = String(entry.color || entry.stroke || entry.fill || "#6b7280");
+  const isLine =
+    typeof entry.stroke === "string" &&
+    entry.stroke.trim() !== "" &&
+    entry.stroke !== "none";
+  if (!isLine) {
+    return (
+      <span
+        className="inline-block w-2.5 h-2.5 shrink-0 rounded-[2px]"
+        style={{ backgroundColor: color }}
+      />
+    );
+  }
+  const dash =
+    typeof entry.strokeDasharray === "string" && entry.strokeDasharray !== "none"
+      ? entry.strokeDasharray
+      : undefined;
+  return (
+    <svg className="shrink-0" width="18" height="10" viewBox="0 0 18 10" aria-hidden="true">
+      <line
+        x1="0"
+        y1="5"
+        x2="18"
+        y2="5"
+        stroke={color}
+        strokeWidth={2}
+        strokeDasharray={dash}
+      />
+    </svg>
+  );
+}
+
 function TokenBarTooltip({ active, payload, label }: {
   active?: boolean;
-  payload?: Array<{ value: number; name: string; dataKey?: string }>;
+  payload?: Array<TooltipEntry>;
   label?: string;
 }) {
   const { compact } = useNumberFormat();
@@ -546,8 +590,10 @@ function TokenBarTooltip({ active, payload, label }: {
             ? `${entry.value}%`
             : formatNumber(Number(entry.value), compact);
           return (
-            <p key={name} className="text-gray-600">
-              <span className="font-medium">{name}:</span> {value}
+            <p key={name} className="flex items-center gap-1.5 text-gray-600">
+              <TooltipMarker entry={entry} />
+              <span className="font-medium">{name}:</span>{" "}
+              <span>{value}</span>
             </p>
           );
         })}
@@ -558,7 +604,7 @@ function TokenBarTooltip({ active, payload, label }: {
 
 function RatioCostTooltip({ active, payload, label }: {
   active?: boolean;
-  payload?: Array<{ value: number; name: string; dataKey?: string }>;
+  payload?: Array<TooltipEntry>;
   label?: string;
 }) {
   const { compact } = useNumberFormat();
@@ -584,8 +630,10 @@ function RatioCostTooltip({ active, payload, label }: {
             value = formatCost(Number(entry.value));
           }
           return (
-            <p key={name} className="text-gray-600">
-              <span className="font-medium">{name}:</span> {value}
+            <p key={name} className="flex items-center gap-1.5 text-gray-600">
+              <TooltipMarker entry={entry} />
+              <span className="font-medium">{name}:</span>{" "}
+              <span>{value}</span>
             </p>
           );
         })}
@@ -596,11 +644,7 @@ function RatioCostTooltip({ active, payload, label }: {
 
 function TtftTooltip({ active, payload, label }: {
   active?: boolean;
-  payload?: Array<{
-    name?: string;
-    value: number | null;
-    payload?: { streamCount?: number };
-  }>;
+  payload?: Array<TooltipEntry>;
   label?: string;
 }) {
   if (!active || !payload || payload.length === 0) return null;
@@ -612,9 +656,10 @@ function TtftTooltip({ active, payload, label }: {
       <p className="font-medium text-gray-700 mb-1">{label}</p>
       <div className="space-y-0.5">
         {filtered.map((entry) => (
-          <p key={entry.name} className="text-gray-600">
+          <p key={entry.name} className="flex items-center gap-1.5 text-gray-600">
+            <TooltipMarker entry={entry} />
             <span className="font-medium">{entry.name}:</span>{" "}
-            {entry.value == null ? "-" : formatLatencyMs(Number(entry.value))}
+            <span>{entry.value == null ? "-" : formatLatencyMs(Number(entry.value))}</span>
           </p>
         ))}
         <p className="text-gray-600">
@@ -1298,7 +1343,7 @@ export default function DailyUsageChart({
                   <ResponsiveContainer width="100%" height="100%">
                     <ComposedChart
                       data={data}
-                      margin={{ top: 10, right: 100, left: 55, bottom: 10 }}
+                      margin={{ top: 10, right: 45, left: 55, bottom: 10 }}
                       barCategoryGap="20%"
                       syncId="daily"
                       onClick={handleChartClick}
@@ -1445,7 +1490,7 @@ export default function DailyUsageChart({
                           <ResponsiveContainer width="100%" height="100%">
                             <ComposedChart
                               data={modelChartData}
-                              margin={{ top: 10, right: 100, left: 55, bottom: 10 }}
+                              margin={{ top: 10, right: 45, left: 55, bottom: 10 }}
                               barCategoryGap="20%"
                               syncId="daily"
                               onClick={handleChartClick}
@@ -1668,7 +1713,7 @@ export default function DailyUsageChart({
                       <ResponsiveContainer width="100%" height="100%">
                       <ComposedChart
                         data={providerChartData}
-                        margin={{ top: 10, right: 100, left: 55, bottom: 10 }}
+                        margin={{ top: 10, right: 45, left: 55, bottom: 10 }}
                         barCategoryGap="20%"
                         syncId="daily"
                         onClick={handleChartClick}
@@ -1786,7 +1831,7 @@ export default function DailyUsageChart({
                     <ResponsiveContainer width="100%" height="100%">
                       <ComposedChart
                         data={modelCostChartData}
-                        margin={{ top: 10, right: 55, left: 55, bottom: 10 }}
+                        margin={{ top: 10, right: 45, left: 55, bottom: 10 }}
                         syncId="daily"
                         barCategoryGap="20%"
                         onClick={handleChartClick}
@@ -2020,7 +2065,7 @@ export default function DailyUsageChart({
                     <ResponsiveContainer width="100%" height="100%">
                       <ComposedChart
                         data={data}
-                        margin={{ top: 10, right: 100, left: 55, bottom: 10 }}
+                        margin={{ top: 10, right: 45, left: 55, bottom: 10 }}
                         syncId="daily"
                         barCategoryGap="20%"
                         onClick={handleChartClick}
@@ -2054,6 +2099,15 @@ export default function DailyUsageChart({
                           width={45}
                           tickFormatter={(v: number) => formatLatencyMs(v)}
                           domain={[0, "auto"]}
+                        />
+                        <YAxis
+                          yAxisId="right"
+                          orientation="right"
+                          width={45}
+                          tick={false}
+                          axisLine={false}
+                          tickLine={false}
+                          domain={[0, 1]}
                         />
                         <Tooltip content={<TtftTooltip />} cursor={false} />
                         <Bar
