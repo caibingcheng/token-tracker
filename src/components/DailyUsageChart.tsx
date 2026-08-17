@@ -967,6 +967,47 @@ export default function DailyUsageChart({
     [providerChartData]
   );
 
+  const modelChartData = useMemo(() => {
+    const top5Models = (topModels ?? []).slice(0, 5);
+    const keyByGroup = new Map(
+      top5Models.map((m, i) => [m.group, `model-${i}`] as const)
+    );
+    const top5Groups = new Set(keyByGroup.keys());
+    const lastNDays = getLastNDays(range, timezoneOffsetMinutes);
+    return lastNDays.map((date) => {
+      const row: Record<string, number | string> = { group: date };
+      const dayModels = dailyTopModels?.[date] ?? [];
+      for (const m of dayModels) {
+        if (top5Groups.has(m.group)) {
+          const key = keyByGroup.get(m.group)!;
+          row[key] = (Number(row[key]) || 0) + m.totalInput;
+        } else {
+          row.others = (Number(row.others) || 0) + m.totalInput;
+        }
+      }
+      return row;
+    });
+  }, [topModels, dailyTopModels, range, timezoneOffsetMinutes]);
+
+  const modelTokenDomain = useMemo(() => {
+    const max = Math.max(
+      ...modelChartData.map((d) =>
+        Object.entries(d).reduce(
+          (sum, [key, value]) =>
+            key === "group" ? sum : sum + (Number(value) || 0),
+          0
+        )
+      ),
+      0
+    );
+    return niceTokenDomain(max);
+  }, [modelChartData]);
+
+  const hasModelOthers = useMemo(
+    () => modelChartData.some((d) => (Number(d.others) || 0) > 0),
+    [modelChartData]
+  );
+
   const activeLatencyByModel = useMemo(() => {
     if (selectedDate) {
       return dailyLatencyByModel?.[selectedDate] ?? [];
@@ -1523,6 +1564,92 @@ export default function DailyUsageChart({
                   ? `Showing top models for ${selectedDate}`
                   : "Click a day in the charts above to see its top models"}
               </p>
+
+              <div className="hidden md:block mb-4">
+                <ChartLegend
+                  items={[
+                    ...(topModels ?? []).slice(0, 5).map((m, i) => ({
+                      color: PROVIDER_COLORS[i % PROVIDER_COLORS.length],
+                      label: m.displayName,
+                      bar: true,
+                      key: `model-${i}`,
+                    })),
+                    ...(hasModelOthers
+                      ? [
+                          {
+                            color: PROVIDER_COLORS[PROVIDER_COLORS.length - 1],
+                            label: "Others",
+                            bar: true,
+                            key: "others",
+                          },
+                        ]
+                      : []),
+                  ]}
+                />
+                <div className="h-[240px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={modelChartData}
+                      margin={{ top: 10, right: 100, left: 55, bottom: 10 }}
+                      barCategoryGap="20%"
+                      syncId="daily"
+                      onClick={handleChartClick}
+                      onMouseMove={handleChartMouseMove}
+                      onMouseLeave={handleChartMouseLeave}
+                      className="cursor-pointer"
+                    >
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                      <XAxis
+                        dataKey="group"
+                        ticks={data.map((d) => d.group)}
+                        tick={(props) => {
+                          const index = props.index ?? 0;
+                          const interval = getXAxisInterval(range);
+                          const showLabel = interval === 0 || index % (interval + 1) === 0;
+                          return (
+                            <CustomXAxisTick
+                              {...props}
+                              selectedDate={selectedDate}
+                              hoveredDate={hoveredDate}
+                              index={showLabel ? index : -1}
+                            />
+                          );
+                        }}
+                        interval={0}
+                        minTickGap={15}
+                      />
+                      <YAxis
+                        yAxisId="left"
+                        tick={{ fontSize: 11 }}
+                        width={45}
+                        tickFormatter={(v: number) => formatAxisNumber(v)}
+                        domain={modelTokenDomain}
+                      />
+                      <Tooltip content={<TokenBarTooltip />} cursor={false} />
+                      {(topModels ?? []).slice(0, 5).map((m, i) => (
+                        <Bar
+                          key={`model-${i}`}
+                          yAxisId="left"
+                          dataKey={`model-${i}`}
+                          stackId="models"
+                          fill={PROVIDER_COLORS[i % PROVIDER_COLORS.length]}
+                          name={m.displayName}
+                        />
+                      ))}
+                      {hasModelOthers && (
+                        <Bar
+                          yAxisId="left"
+                          dataKey="others"
+                          stackId="models"
+                          fill={PROVIDER_COLORS[PROVIDER_COLORS.length - 1]}
+                          name="Others"
+                        />
+                      )}
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
               <div className="hidden md:block overflow-x-auto">
                 {(() => {
                   return (

@@ -23,7 +23,7 @@ import {
 } from "@/lib/latency-query";
 import { anonymizeProvider } from "@/lib/provider-utils";
 import { aggregateProviders, type ProviderStat } from "@/lib/provider-stats";
-import { TOP_N_DISPLAY, TOP_N_RAW_MODELS } from "@/lib/model-utils";
+import { TOP_N_DISPLAY } from "@/lib/model-utils";
 import {
   resolveDashboardFilters,
   validateFilterOrThrow,
@@ -81,7 +81,7 @@ function aggregateTopModelsByDate(
 
   const result = new Map<string, ModelStat[]>();
   byDate.forEach((items, date) => {
-    const aggregated = aggregateByNormalizedModel(items, groups, aliases).slice(0, TOP_N_RAW_MODELS);
+    const aggregated = aggregateByNormalizedModel(items, groups, aliases);
     const models = aggregated.map((item) => {
       return {
         ...item,
