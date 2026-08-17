@@ -70,11 +70,9 @@ const SECTIONS: SectionNavItem[] = [
     id: "trends-section",
     label: "Trends",
     children: [
-      { id: "trends-token", label: "Token Usage" },
-      { id: "trends-upstreams", label: "Upstreams" },
+      { id: "trends-token", label: "Token" },
       { id: "trends-cost", label: "Cost" },
-      { id: "trends-speed", label: "Speed" },
-      { id: "trends-models", label: "Models" },
+      { id: "trends-latency", label: "Latency" },
     ],
   },
   { id: "records-section", label: "Records" },

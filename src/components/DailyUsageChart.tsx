@@ -86,7 +86,9 @@ export interface ProviderStat {
   count: number;
 }
 
-type SortField = 'totalInput' | 'totalInputCached' | 'cacheHitRate' | 'totalOutput' | 'costPerMillionTokens' | 'totalCost' | 'count';
+type SortField = 'totalInput' | 'totalInputCached' | 'cacheHitRate' | 'totalOutput' | 'count';
+
+type CostSortField = 'totalCost' | 'costPerMillionTokens' | 'inputCost' | 'cacheCost' | 'outputCost' | 'count' | 'avgCostPerReq';
 
 function getMetricValue(m: TopModel, field: SortField): number {
   switch (field) {
@@ -94,8 +96,18 @@ function getMetricValue(m: TopModel, field: SortField): number {
     case 'totalInput': return m.totalInput;
     case 'totalInputCached': return m.totalInputCached;
     case 'totalOutput': return m.totalOutput;
+    case 'count': return m.count;
+  }
+}
+
+function getCostMetricValue(m: TopModel, field: CostSortField): number {
+  switch (field) {
     case 'totalCost': return m.totalCost;
     case 'costPerMillionTokens': return m.costPerMillionTokens;
+    case 'inputCost': return m.totalInputUncached * (m.costPerMillionInput / 1_000_000);
+    case 'cacheCost': return m.totalInputCached * (m.costPerMillionCacheRead / 1_000_000);
+    case 'outputCost': return m.totalOutput * (m.costPerMillionOutput / 1_000_000);
+    case 'avgCostPerReq': return m.count > 0 ? m.totalCost / m.count : 0;
     case 'count': return m.count;
   }
 }
@@ -714,19 +726,6 @@ function TopProvidersTable({
 function SpeedTable({ byModel }: { byModel: LatencyModelStat[] }) {
   return (
     <div>
-      <div className="flex items-center justify-between mb-2">
-        <h3 className="text-lg font-semibold">Speed</h3>
-        <span
-          className="text-xs text-gray-400 cursor-help"
-          title="TTFT = 流式请求首个 chunk 到达耗时（首 token 延迟）；Latency = 整请求耗时；tok/s = 流式生成速度（不含首 token 等待）。TTFT 仅流式请求有值，Streams 列展示其样本量。"
-        >
-          ?
-        </span>
-      </div>
-      <p className="text-xs text-gray-400 mb-4">
-        TTFT (p50) · Avg TTFT · Avg Total · Generation Speed
-      </p>
-
       <div className="hidden md:block overflow-x-auto">
         <table className="w-full">
           <thead className="bg-gray-50">
@@ -868,6 +867,17 @@ export default function DailyUsageChart({
     }
   }, [sortBy]);
 
+  const [costSortBy, setCostSortBy] = useState<CostSortField>('totalCost');
+  const [costSortOrder, setCostSortOrder] = useState<'desc' | 'asc'>('desc');
+  const handleCostSort = useCallback((field: typeof costSortBy) => {
+    if (field !== costSortBy) {
+      setCostSortBy(field);
+      setCostSortOrder('desc');
+    } else {
+      setCostSortOrder(o => o === 'desc' ? 'asc' : 'desc');
+    }
+  }, [costSortBy]);
+
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (
@@ -919,6 +929,15 @@ export default function DailyUsageChart({
       })
       .slice(0, 5);
   }, [selectedDate, dailyTopModels, topModels, sortBy, sortOrder]);
+
+  const sortedCostModels = useMemo(() => {
+    return [...activeTopModels]
+      .sort((a, b) => {
+        const aVal = getCostMetricValue(a, costSortBy);
+        const bVal = getCostMetricValue(b, costSortBy);
+        return costSortOrder === 'desc' ? bVal - aVal : aVal - bVal;
+      });
+  }, [activeTopModels, costSortBy, costSortOrder]);
 
   const activeProviders = useMemo(() => {
     if (selectedDate) {
@@ -1145,144 +1164,24 @@ export default function DailyUsageChart({
             />
           )}
 
-          <div className="space-y-6 hidden md:block">
-            <div id="trends-token" className="bg-white rounded-lg shadow p-3 md:p-6 scroll-mt-28">
-              <h3 className="text-lg font-semibold mb-2">Daily Token Usage</h3>
-              <ChartLegend
-                items={[
-                  { color: COLORS.cache, label: "Cache", bar: true },
-                  { color: COLORS.input, label: "Uncache", bar: true },
-                  { color: COLORS.output, label: "Output", bar: true },
-                ]}
-              />
-              <div className="h-[280px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart
-                    data={data}
-                    margin={{ top: 10, right: 100, left: 55, bottom: 10 }}
-                    barCategoryGap="20%"
-                    syncId="daily"
-                    onClick={handleChartClick}
-                    onMouseMove={handleChartMouseMove}
-                    onMouseLeave={handleChartMouseLeave}
-                    className="cursor-pointer"
-                  >
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                    <XAxis
-                      dataKey="group"
-                      ticks={data.map((d) => d.group)}
-                      tick={(props) => {
-                        const index = props.index ?? 0;
-                        const interval = getXAxisInterval(range);
-                        const showLabel = interval === 0 || index % (interval + 1) === 0;
-                        return (
-                          <CustomXAxisTick
-                            {...props}
-                            selectedDate={selectedDate}
-                            hoveredDate={hoveredDate}
-                            index={showLabel ? index : -1}
-                          />
-                        );
-                      }}
-                      interval={0}
-                      minTickGap={15}
-                    />
-                    <YAxis
-                      yAxisId="left"
-                      tick={{ fontSize: 11 }}
-                      width={45}
-                      tickFormatter={(v: number) => formatAxisNumber(v)}
-                      domain={tokenDomain}
-                    />
-                    <Tooltip content={<TokenBarTooltip />} cursor={false} />
-                    <Bar
-                      yAxisId="left"
-                      dataKey="totalInputCached"
-                      stackId="tokens"
-                      fill={COLORS.cache}
-                      name="Cache"
-                    >
-                      {data.map((entry, index) => (
-                        <Cell
-                          key={`cell-cache-${index}`}
-                          fill={COLORS.cache}
-                        />
-                      ))}
-                    </Bar>
-                    <Bar
-                      yAxisId="left"
-                      dataKey="totalInputUncached"
-                      stackId="tokens"
-                      fill={COLORS.input}
-                      name="UnCache"
-                    >
-                      {data.map((entry, index) => (
-                        <Cell
-                          key={`cell-input-${index}`}
-                          fill={COLORS.input}
-                        />
-                      ))}
-                    </Bar>
-                    <Bar
-                      yAxisId="left"
-                      dataKey="totalOutput"
-                      stackId="tokens"
-                      fill={COLORS.output}
-                      name="Output"
-                    >
-                      {data.map((entry, index) => (
-                        <Cell
-                          key={`cell-output-${index}`}
-                          fill={COLORS.output}
-                        />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-          </div>
-
-          {showTopModels && topProviders && topProviders.length > 0 && (
-            <div id="trends-upstreams" className="bg-white rounded-lg shadow p-3 md:p-6 scroll-mt-28">
-              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-1 gap-2">
-                <h3 className="text-lg font-semibold">
-                  {selectedDate
-                    ? `Top 5 Upstreams - ${formatSelectedDateLabel(selectedDate, timezoneOffsetMinutes)}`
-                    : "Top 5 Upstreams"}
-                </h3>
-              </div>
-              <p className="text-xs text-gray-500 mb-3">
+<div id="trends-token" className="bg-white rounded-lg shadow p-3 md:p-6 scroll-mt-28">
+              <h3 className="text-lg font-semibold mb-2">
                 {selectedDate
-                  ? `Showing top upstreams for ${selectedDate}`
-                  : "Daily usage stacked by upstream provider; providers outside Top 5 merged into Others"}
-              </p>
-
-              <div className="hidden md:block mb-4">
+                  ? `Daily Token Usage - ${formatSelectedDateLabel(selectedDate, timezoneOffsetMinutes)}`
+                  : "Daily Token Usage"}
+              </h3>
+              <div className={showTopModels ? 'hidden md:block' : ''}>
                 <ChartLegend
                   items={[
-                    ...(topProviders ?? []).map((p, i) => ({
-                      color: PROVIDER_COLORS[i % PROVIDER_COLORS.length],
-                      label: p.providerName,
-                      bar: true,
-                      key: p.provider,
-                    })),
-                    ...(hasProviderOthers
-                      ? [
-                          {
-                            color: PROVIDER_COLORS[PROVIDER_COLORS.length - 1],
-                            label: "Others",
-                            bar: true,
-                            key: "others",
-                          },
-                        ]
-                      : []),
+                    { color: COLORS.cache, label: "Cache", bar: true },
+                    { color: COLORS.input, label: "Uncache", bar: true },
+                    { color: COLORS.output, label: "Output", bar: true },
                   ]}
                 />
-                <div className="h-[240px]">
+                <div className="h-[280px]">
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart
-                      data={providerChartData}
+                      data={data}
                       margin={{ top: 10, right: 100, left: 55, bottom: 10 }}
                       barCategoryGap="20%"
                       syncId="daily"
@@ -1316,140 +1215,614 @@ export default function DailyUsageChart({
                         tick={{ fontSize: 11 }}
                         width={45}
                         tickFormatter={(v: number) => formatAxisNumber(v)}
-                        domain={providerTokenDomain}
+                        domain={tokenDomain}
                       />
                       <Tooltip content={<TokenBarTooltip />} cursor={false} />
-                      {(topProviders ?? []).map((p, i) => (
-                        <Bar
-                          key={p.provider}
-                          yAxisId="left"
-                          dataKey={p.provider}
-                          stackId="providers"
-                          fill={PROVIDER_COLORS[i % PROVIDER_COLORS.length]}
-                          name={p.providerName}
-                        />
-                      ))}
-                      {hasProviderOthers && (
-                        <Bar
-                          yAxisId="left"
-                          dataKey="others"
-                          stackId="providers"
-                          fill={PROVIDER_COLORS[PROVIDER_COLORS.length - 1]}
-                          name="Others"
-                        />
-                      )}
+                      <Bar
+                        yAxisId="left"
+                        dataKey="totalInputCached"
+                        stackId="tokens"
+                        fill={COLORS.cache}
+                        name="Cache"
+                      >
+                        {data.map((entry, index) => (
+                          <Cell
+                            key={`cell-cache-${index}`}
+                            fill={COLORS.cache}
+                          />
+                        ))}
+                      </Bar>
+                      <Bar
+                        yAxisId="left"
+                        dataKey="totalInputUncached"
+                        stackId="tokens"
+                        fill={COLORS.input}
+                        name="UnCache"
+                      >
+                        {data.map((entry, index) => (
+                          <Cell
+                            key={`cell-input-${index}`}
+                            fill={COLORS.input}
+                          />
+                        ))}
+                      </Bar>
+                      <Bar
+                        yAxisId="left"
+                        dataKey="totalOutput"
+                        stackId="tokens"
+                        fill={COLORS.output}
+                        name="Output"
+                      >
+                        {data.map((entry, index) => (
+                          <Cell
+                            key={`cell-output-${index}`}
+                            fill={COLORS.output}
+                          />
+                        ))}
+                      </Bar>
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
               </div>
 
-              <TopProvidersTable providers={activeProviders} selectedDate={selectedDate} />
-            </div>
-          )}
-
-          <div className="space-y-6 hidden md:block">
-            {showCost && (
-              <div id="trends-cost" className="bg-white rounded-lg shadow p-3 md:p-6 scroll-mt-28">
-                <h3 className="text-lg font-semibold mb-2">Daily Ratio & Cost</h3>
-                <ChartLegend
-                  items={[
-                    { color: COLORS.hitRate, label: "Cache Hit Ratio" },
-                    { color: COLORS.price, label: "Avg cost / 1M" },
-                  ]}
-                />
-                <div className="h-[240px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <ComposedChart
-                    data={data}
-                    margin={{ top: 10, right: 55, left: 55, bottom: 10 }}
-                    syncId="daily"
-                    barCategoryGap="20%"
-                    onClick={handleChartClick}
-                    onMouseMove={handleChartMouseMove}
-                    onMouseLeave={handleChartMouseLeave}
-                    className="cursor-pointer"
-                  >
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                    <XAxis
-                      dataKey="group"
-                      ticks={data.map((d) => d.group)}
-                      tick={(props) => {
-                        const index = props.index ?? 0;
-                        const interval = getXAxisInterval(range);
-                        const showLabel = interval === 0 || index % (interval + 1) === 0;
-                        return (
-                          <CustomXAxisTick
-                            {...props}
-                            selectedDate={selectedDate}
-                            hoveredDate={hoveredDate}
-                            index={showLabel ? index : -1}
+              {showTopModels && topProviders && topProviders.length > 0 && (
+                <div className="mt-8">
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-1 gap-2">
+                    <h4 className="text-lg font-semibold">
+                      {selectedDate
+                        ? `Top 5 Upstreams - ${formatSelectedDateLabel(selectedDate, timezoneOffsetMinutes)}`
+                        : "Top 5 Upstreams"}
+                    </h4>
+                  </div>
+                  <p className="text-xs text-gray-500 mb-3">
+                    {selectedDate
+                      ? `Showing top upstreams for ${selectedDate}`
+                      : "Daily usage stacked by upstream provider; providers outside Top 5 merged into Others"}
+                  </p>
+                  <div className="hidden md:block mb-4">
+                    <ChartLegend
+                      items={[
+                        ...(topProviders ?? []).map((p, i) => ({
+                          color: PROVIDER_COLORS[i % PROVIDER_COLORS.length],
+                          label: p.providerName,
+                          bar: true,
+                          key: p.provider,
+                        })),
+                        ...(hasProviderOthers
+                          ? [
+                              {
+                                color: PROVIDER_COLORS[PROVIDER_COLORS.length - 1],
+                                label: "Others",
+                                bar: true,
+                                key: "others",
+                              },
+                            ]
+                          : []),
+                      ]}
+                    />
+                    <div className="h-[240px]">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart
+                          data={providerChartData}
+                          margin={{ top: 10, right: 100, left: 55, bottom: 10 }}
+                          barCategoryGap="20%"
+                          syncId="daily"
+                          onClick={handleChartClick}
+                          onMouseMove={handleChartMouseMove}
+                          onMouseLeave={handleChartMouseLeave}
+                          className="cursor-pointer"
+                        >
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                          <XAxis
+                            dataKey="group"
+                            ticks={data.map((d) => d.group)}
+                            tick={(props) => {
+                              const index = props.index ?? 0;
+                              const interval = getXAxisInterval(range);
+                              const showLabel = interval === 0 || index % (interval + 1) === 0;
+                              return (
+                                <CustomXAxisTick
+                                  {...props}
+                                  selectedDate={selectedDate}
+                                  hoveredDate={hoveredDate}
+                                  index={showLabel ? index : -1}
+                                />
+                              );
+                            }}
+                            interval={0}
+                            minTickGap={15}
                           />
-                        );
-                      }}
-                      interval={0}
-                      minTickGap={15}
-                    />
-                    <YAxis
-                      yAxisId="left"
-                      tick={{ fontSize: 11, fill: COLORS.hitRate }}
-                      width={45}
-                      tickFormatter={(v: number) => `${v}%`}
-                      domain={[0, 100]}
-                    />
-                    <YAxis
-                      yAxisId="right"
-                      orientation="right"
-                      tick={{ fontSize: 11, fill: COLORS.price }}
-                      width={45}
-                      tickFormatter={(v: number) => formatPriceAxis(v)}
-                      domain={priceDomain}
-                    />
-                    <Tooltip content={<RatioCostTooltip />} cursor={false} />
-                    <Bar
-                      yAxisId="left"
-                      dataKey="dummy"
-                      fill="transparent"
-                      stroke="none"
-                      name=""
-                      isAnimationActive={false}
-                    />
-                    <Line
-                      yAxisId="left"
-                      type="monotone"
-                      dataKey="cacheHitRate"
-                      stroke={COLORS.hitRate}
-                      strokeWidth={2}
-                      dot={false}
-                      activeDot={{ r: 4, fill: COLORS.hitRate, stroke: "#fff", strokeWidth: 1 }}
-                      name="Cache Hit Ratio"
-                    />
-                    <Line
-                      yAxisId="right"
-                      type="monotone"
-                      dataKey="costPerMillionTokens"
-                      stroke={COLORS.price}
-                      strokeWidth={2}
-                      dot={false}
-                      activeDot={{ r: 4, fill: COLORS.price, stroke: "#fff", strokeWidth: 1 }}
-                      name="Avg cost / 1M"
-                    />
-                  </ComposedChart>
-                </ResponsiveContainer>
-              </div>
+                          <YAxis
+                            yAxisId="left"
+                            tick={{ fontSize: 11 }}
+                            width={45}
+                            tickFormatter={(v: number) => formatAxisNumber(v)}
+                            domain={providerTokenDomain}
+                          />
+                          <Tooltip content={<TokenBarTooltip />} cursor={false} />
+                          {(topProviders ?? []).map((p, i) => (
+                            <Bar
+                              key={p.provider}
+                              yAxisId="left"
+                              dataKey={p.provider}
+                              stackId="providers"
+                              fill={PROVIDER_COLORS[i % PROVIDER_COLORS.length]}
+                              name={p.providerName}
+                            />
+                          ))}
+                          {hasProviderOthers && (
+                            <Bar
+                              yAxisId="left"
+                              dataKey="others"
+                              stackId="providers"
+                              fill={PROVIDER_COLORS[PROVIDER_COLORS.length - 1]}
+                              name="Others"
+                            />
+                          )}
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                  <TopProvidersTable providers={activeProviders} selectedDate={selectedDate} />
+                </div>
+              )}
+
+              {showTopModels && (
+                <div className="mt-8">
+                  <div className="mb-1">
+                    <h4 className="text-lg font-semibold">
+                      {selectedDate
+                        ? `Top 5 Model Families - ${formatSelectedDateLabel(selectedDate, timezoneOffsetMinutes)}`
+                        : "Top 5 Model Families"}
+                    </h4>
+                  </div>
+                  {activeTopModels.length === 0 ? (
+                    <p className="text-gray-500">
+                      {selectedDate ? "No data for selected date" : "No data available"}
+                    </p>
+                  ) : (
+                    <>
+                      <p className="text-xs text-gray-500 mb-3">
+                        {selectedDate
+                          ? `Showing top models for ${selectedDate}`
+                          : "Click a day in the charts above to see its top models"}
+                      </p>
+
+                      <div className="hidden md:block mb-4">
+                        <ChartLegend
+                          items={[
+                            ...(topModels ?? []).slice(0, 5).map((m, i) => ({
+                              color: PROVIDER_COLORS[i % PROVIDER_COLORS.length],
+                              label: m.displayName,
+                              bar: true,
+                              key: `model-${i}`,
+                            })),
+                            ...(hasModelOthers
+                              ? [
+                                  {
+                                    color: PROVIDER_COLORS[PROVIDER_COLORS.length - 1],
+                                    label: "Others",
+                                    bar: true,
+                                    key: "others",
+                                  },
+                                ]
+                              : []),
+                          ]}
+                        />
+                        <div className="h-[240px]">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <BarChart
+                              data={modelChartData}
+                              margin={{ top: 10, right: 100, left: 55, bottom: 10 }}
+                              barCategoryGap="20%"
+                              syncId="daily"
+                              onClick={handleChartClick}
+                              onMouseMove={handleChartMouseMove}
+                              onMouseLeave={handleChartMouseLeave}
+                              className="cursor-pointer"
+                            >
+                              <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                              <XAxis
+                                dataKey="group"
+                                ticks={data.map((d) => d.group)}
+                                tick={(props) => {
+                                  const index = props.index ?? 0;
+                                  const interval = getXAxisInterval(range);
+                                  const showLabel = interval === 0 || index % (interval + 1) === 0;
+                                  return (
+                                    <CustomXAxisTick
+                                      {...props}
+                                      selectedDate={selectedDate}
+                                      hoveredDate={hoveredDate}
+                                      index={showLabel ? index : -1}
+                                    />
+                                  );
+                                }}
+                                interval={0}
+                                minTickGap={15}
+                              />
+                              <YAxis
+                                yAxisId="left"
+                                tick={{ fontSize: 11 }}
+                                width={45}
+                                tickFormatter={(v: number) => formatAxisNumber(v)}
+                                domain={modelTokenDomain}
+                              />
+                              <Tooltip content={<TokenBarTooltip />} cursor={false} />
+                              {(topModels ?? []).slice(0, 5).map((m, i) => (
+                                <Bar
+                                  key={`model-${i}`}
+                                  yAxisId="left"
+                                  dataKey={`model-${i}`}
+                                  stackId="models"
+                                  fill={PROVIDER_COLORS[i % PROVIDER_COLORS.length]}
+                                  name={m.displayName}
+                                />
+                              ))}
+                              {hasModelOthers && (
+                                <Bar
+                                  yAxisId="left"
+                                  dataKey="others"
+                                  stackId="models"
+                                  fill={PROVIDER_COLORS[PROVIDER_COLORS.length - 1]}
+                                  name="Others"
+                                />
+                              )}
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </div>
+
+                      <div className="hidden md:block overflow-x-auto">
+                        <table className="w-full" style={{ tableLayout: 'fixed' }}>
+                          <thead className="bg-gray-50">
+                            <tr>
+                              <th className="w-[24%] px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase overflow-hidden">Model</th>
+                              <SortHeader className="w-[19%]" field="totalInput" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort}>Total Input</SortHeader>
+                              <SortHeader className="w-[17%]" field="totalInputCached" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort}>Cache Read</SortHeader>
+                              <SortHeader className="w-[16%]" field="cacheHitRate" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort}>Cache Hit Rate</SortHeader>
+                              <SortHeader className="w-[15%]" field="totalOutput" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort}>Total Output</SortHeader>
+                              <SortHeader className="w-[9%]" field="count" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort}>Requests</SortHeader>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-gray-200">
+                            {activeTopModels.map((model) => {
+                              const metricTotal = activeTopModels.reduce((sum, m) => sum + getMetricValue(m, sortBy), 0);
+                              const metricVal = getMetricValue(model, sortBy);
+                              const percentage = metricTotal > 0 ? (metricVal / metricTotal) * 100 : 0;
+                              const cacheHitRate = model.totalInput > 0
+                                ? (model.totalInputCached / model.totalInput * 100).toFixed(1) + '%'
+                                : '0%';
+                              return (
+                                <tr
+                                  key={model.group}
+                                  style={{
+                                    background: `linear-gradient(to right, rgb(239 246 255) ${percentage}%, transparent ${percentage}%)`
+                                  }}
+                                >
+                                  <td className="px-4 py-3 text-sm font-medium text-gray-900 overflow-hidden">{model.displayName}</td>
+                                  <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden"><AnimatedCell value={model.totalInput} /></td>
+                                  <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden"><AnimatedCell value={model.totalInputCached} /></td>
+                                  <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden">{cacheHitRate}</td>
+                                  <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden"><AnimatedCell value={model.totalOutput} /></td>
+                                  <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden"><AnimatedCell value={model.count} /></td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div className="md:hidden mb-3">
+                        <select
+                          value={sortBy}
+                          onChange={(e) => handleSort(e.target.value as typeof sortBy)}
+                          className="text-xs border border-gray-200 rounded px-2 py-1.5 bg-white text-gray-700 w-full"
+                        >
+                          <option value="totalInput">Total Input</option>
+                          <option value="totalOutput">Total Output</option>
+                          <option value="totalInputCached">Cache Read</option>
+                          <option value="cacheHitRate">Cache Hit Rate</option>
+                          <option value="count">Requests</option>
+                        </select>
+                      </div>
+                      <div className="md:hidden space-y-3">
+                        {(() => {
+                          const metricTotal = activeTopModels.reduce((sum, m) => sum + getMetricValue(m, sortBy), 0);
+                          return activeTopModels.map((model) => {
+                            const metricVal = getMetricValue(model, sortBy);
+                            const percentage = metricTotal > 0 ? (metricVal / metricTotal) * 100 : 0;
+                            return (
+                              <div
+                                key={model.group}
+                                className="rounded-lg border border-gray-200 overflow-hidden"
+                                style={{
+                                  background: `linear-gradient(to right, rgb(239 246 255) ${percentage}%, transparent ${percentage}%)`
+                                }}
+                              >
+                                <div className="px-4 py-3 font-medium text-gray-900 border-b border-gray-100">
+                                  {model.displayName}
+                                </div>
+                                <div className="px-4 py-3 grid grid-cols-2 gap-3">
+                                  <div>
+                                    <p className="text-xs text-gray-500">Total Input</p>
+                                    <p className="text-sm font-semibold text-gray-900">{formatNumber(model.totalInput, compact)}</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-xs text-gray-500">Cache Read</p>
+                                    <p className="text-sm font-semibold text-gray-900">{formatNumber(model.totalInputCached, compact)}</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-xs text-gray-500">Cache Hit Rate</p>
+                                    <p className="text-sm font-semibold text-gray-900">
+                                      {model.totalInput > 0 ? (model.totalInputCached / model.totalInput * 100).toFixed(1) + '%' : '0%'}
+                                    </p>
+                                  </div>
+                                  <div>
+                                    <p className="text-xs text-gray-500">Total Output</p>
+                                    <p className="text-sm font-semibold text-gray-900">{formatNumber(model.totalOutput, compact)}</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-xs text-gray-500">Requests</p>
+                                    <p className="text-sm font-semibold text-gray-900">{formatNumber(model.count, compact)}</p>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          });
+                        })()}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+
+          {showCost && (
+              <div id="trends-cost" className="bg-white rounded-lg shadow p-3 md:p-6 scroll-mt-28">
+                <h3 className="text-lg font-semibold mb-2">
+                  {selectedDate
+                    ? `Daily Ratio & Cost - ${formatSelectedDateLabel(selectedDate, timezoneOffsetMinutes)}`
+                    : "Daily Ratio & Cost"}
+                </h3>
+                <div className="hidden md:block">
+                  <ChartLegend
+                    items={[
+                      { color: COLORS.hitRate, label: "Cache Hit Ratio" },
+                      { color: COLORS.price, label: "Avg cost / 1M" },
+                    ]}
+                  />
+                  <div className="h-[240px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <ComposedChart
+                      data={data}
+                      margin={{ top: 10, right: 55, left: 55, bottom: 10 }}
+                      syncId="daily"
+                      barCategoryGap="20%"
+                      onClick={handleChartClick}
+                      onMouseMove={handleChartMouseMove}
+                      onMouseLeave={handleChartMouseLeave}
+                      className="cursor-pointer"
+                    >
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                      <XAxis
+                        dataKey="group"
+                        ticks={data.map((d) => d.group)}
+                        tick={(props) => {
+                          const index = props.index ?? 0;
+                          const interval = getXAxisInterval(range);
+                          const showLabel = interval === 0 || index % (interval + 1) === 0;
+                          return (
+                            <CustomXAxisTick
+                              {...props}
+                              selectedDate={selectedDate}
+                              hoveredDate={hoveredDate}
+                              index={showLabel ? index : -1}
+                            />
+                          );
+                        }}
+                        interval={0}
+                        minTickGap={15}
+                      />
+                      <YAxis
+                        yAxisId="left"
+                        tick={{ fontSize: 11, fill: COLORS.hitRate }}
+                        width={45}
+                        tickFormatter={(v: number) => `${v}%`}
+                        domain={[0, 100]}
+                      />
+                      <YAxis
+                        yAxisId="right"
+                        orientation="right"
+                        tick={{ fontSize: 11, fill: COLORS.price }}
+                        width={45}
+                        tickFormatter={(v: number) => formatPriceAxis(v)}
+                        domain={priceDomain}
+                      />
+                      <Tooltip content={<RatioCostTooltip />} cursor={false} />
+                      <Bar
+                        yAxisId="left"
+                        dataKey="dummy"
+                        fill="transparent"
+                        stroke="none"
+                        name=""
+                        isAnimationActive={false}
+                      />
+                      <Line
+                        yAxisId="left"
+                        type="monotone"
+                        dataKey="cacheHitRate"
+                        stroke={COLORS.hitRate}
+                        strokeWidth={2}
+                        dot={false}
+                        activeDot={{ r: 4, fill: COLORS.hitRate, stroke: "#fff", strokeWidth: 1 }}
+                        name="Cache Hit Ratio"
+                      />
+                      <Line
+                        yAxisId="right"
+                        type="monotone"
+                        dataKey="costPerMillionTokens"
+                        stroke={COLORS.price}
+                        strokeWidth={2}
+                        dot={false}
+                        activeDot={{ r: 4, fill: COLORS.price, stroke: "#fff", strokeWidth: 1 }}
+                        name="Avg cost / 1M"
+                      />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                </div>
+                </div>
+
+                <div className="mt-8">
+                  <h4 className="text-lg font-semibold mb-2">
+                    {selectedDate
+                      ? `Cost by Model - ${formatSelectedDateLabel(selectedDate, timezoneOffsetMinutes)}`
+                      : "Cost by Model"}
+                  </h4>
+                  {activeTopModels.length === 0 ? (
+                    <p className="text-gray-500">
+                      {selectedDate ? "No data for selected date" : "No data available"}
+                    </p>
+                  ) : (
+                    <>
+                      <div className="hidden md:block overflow-x-auto">
+                        <table className="w-full" style={{ tableLayout: 'fixed' }}>
+                          <thead className="bg-gray-50">
+                            <tr>
+                              <th className="w-[20%] px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase overflow-hidden">Model</th>
+                              <SortHeader className="w-[12%]" field="totalCost" sortBy={costSortBy} sortOrder={costSortOrder} onSort={handleCostSort}>Total Cost</SortHeader>
+                              <SortHeader className="w-[12%]" field="costPerMillionTokens" sortBy={costSortBy} sortOrder={costSortOrder} onSort={handleCostSort}>Avg cost / 1M</SortHeader>
+                              <SortHeader className="w-[12%]" field="inputCost" sortBy={costSortBy} sortOrder={costSortOrder} onSort={handleCostSort}>Input Cost</SortHeader>
+                              <SortHeader className="w-[12%]" field="cacheCost" sortBy={costSortBy} sortOrder={costSortOrder} onSort={handleCostSort}>Cache Cost</SortHeader>
+                              <SortHeader className="w-[12%]" field="outputCost" sortBy={costSortBy} sortOrder={costSortOrder} onSort={handleCostSort}>Output Cost</SortHeader>
+                              <SortHeader className="w-[10%]" field="count" sortBy={costSortBy} sortOrder={costSortOrder} onSort={handleCostSort}>Requests</SortHeader>
+                              <SortHeader className="w-[10%]" field="avgCostPerReq" sortBy={costSortBy} sortOrder={costSortOrder} onSort={handleCostSort}>Avg cost / req</SortHeader>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-gray-200">
+                            {sortedCostModels.map((model) => {
+                              const metricTotal = sortedCostModels.reduce((sum, m) => sum + getCostMetricValue(m, costSortBy), 0);
+                              const metricVal = getCostMetricValue(model, costSortBy);
+                              const percentage = metricTotal > 0 ? (metricVal / metricTotal) * 100 : 0;
+                              const inputCost = model.totalInputUncached * (model.costPerMillionInput / 1_000_000);
+                              const cacheCost = model.totalInputCached * (model.costPerMillionCacheRead / 1_000_000);
+                              const outputCost = model.totalOutput * (model.costPerMillionOutput / 1_000_000);
+                              const avgCostPerReq = model.count > 0 ? model.totalCost / model.count : 0;
+                              return (
+                                <tr
+                                  key={`cost-${model.group}`}
+                                  style={{
+                                    background: `linear-gradient(to right, rgb(239 246 255) ${percentage}%, transparent ${percentage}%)`
+                                  }}
+                                >
+                                  <td className="px-4 py-3 text-sm font-medium text-gray-900 overflow-hidden">{model.displayName}</td>
+                                  <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden">{formatCost(model.totalCost)}</td>
+                                  <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden">{formatCost(model.costPerMillionTokens)}</td>
+                                  <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden">{formatCost(inputCost)}</td>
+                                  <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden">{formatCost(cacheCost)}</td>
+                                  <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden">{formatCost(outputCost)}</td>
+                                  <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden"><AnimatedCell value={model.count} /></td>
+                                  <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden">{formatCost(avgCostPerReq)}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div className="md:hidden mb-3">
+                        <select
+                          value={costSortBy}
+                          onChange={(e) => handleCostSort(e.target.value as typeof costSortBy)}
+                          className="text-xs border border-gray-200 rounded px-2 py-1.5 bg-white text-gray-700 w-full"
+                        >
+                          <option value="totalCost">Total Cost</option>
+                          <option value="costPerMillionTokens">Avg Cost / 1M</option>
+                          <option value="inputCost">Input Cost</option>
+                          <option value="cacheCost">Cache Cost</option>
+                          <option value="outputCost">Output Cost</option>
+                          <option value="count">Requests</option>
+                          <option value="avgCostPerReq">Avg Cost / Req</option>
+                        </select>
+                      </div>
+                      <div className="md:hidden space-y-3">
+                        {(() => {
+                          const metricTotal = sortedCostModels.reduce((sum, m) => sum + getCostMetricValue(m, costSortBy), 0);
+                          return sortedCostModels.map((model) => {
+                            const metricVal = getCostMetricValue(model, costSortBy);
+                            const percentage = metricTotal > 0 ? (metricVal / metricTotal) * 100 : 0;
+                            const inputCost = model.totalInputUncached * (model.costPerMillionInput / 1_000_000);
+                            const cacheCost = model.totalInputCached * (model.costPerMillionCacheRead / 1_000_000);
+                            const outputCost = model.totalOutput * (model.costPerMillionOutput / 1_000_000);
+                            const avgCostPerReq = model.count > 0 ? model.totalCost / model.count : 0;
+                            return (
+                              <div
+                                key={`cost-${model.group}`}
+                                className="rounded-lg border border-gray-200 overflow-hidden"
+                                style={{
+                                  background: `linear-gradient(to right, rgb(239 246 255) ${percentage}%, transparent ${percentage}%)`
+                                }}
+                              >
+                                <div className="px-4 py-3 font-medium text-gray-900 border-b border-gray-100">
+                                  {model.displayName}
+                                </div>
+                                <div className="px-4 py-3 grid grid-cols-2 gap-3">
+                                  <div>
+                                    <p className="text-xs text-gray-500">Total Cost</p>
+                                    <p className="text-sm font-semibold text-gray-900">{formatCost(model.totalCost)}</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-xs text-gray-500">Avg cost / 1M</p>
+                                    <p className="text-sm font-semibold text-gray-900">{formatCost(model.costPerMillionTokens)}</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-xs text-gray-500">Input Cost</p>
+                                    <p className="text-sm font-semibold text-gray-900">{formatCost(inputCost)}</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-xs text-gray-500">Cache Cost</p>
+                                    <p className="text-sm font-semibold text-gray-900">{formatCost(cacheCost)}</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-xs text-gray-500">Output Cost</p>
+                                    <p className="text-sm font-semibold text-gray-900">{formatCost(outputCost)}</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-xs text-gray-500">Requests</p>
+                                    <p className="text-sm font-semibold text-gray-900">{formatNumber(model.count, compact)}</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-xs text-gray-500">Avg cost / req</p>
+                                    <p className="text-sm font-semibold text-gray-900">{formatCost(avgCostPerReq)}</p>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          });
+                        })()}
+                      </div>
+                    </>
+                  )}
+                </div>
               </div>
             )}
 
-          </div>
-
           {(data.some((d) => d.streamCount > 0) || latencyByModel) && (
-            <div id="trends-speed" className="bg-white rounded-lg shadow p-3 md:p-6 scroll-mt-28">
+            <div id="trends-latency" className="bg-white rounded-lg shadow p-3 md:p-6 scroll-mt-28">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-lg font-semibold">
+                  {selectedDate
+                    ? `Latency - ${formatSelectedDateLabel(selectedDate, timezoneOffsetMinutes)}`
+                    : "Latency"}
+                </h3>
+                <span
+                  className="text-xs text-gray-400 cursor-help"
+                  title="TTFT = 流式请求首个 chunk 到达耗时（首 token 延迟）；Latency = 整请求耗时；tok/s = 流式生成速度（不含首 token 等待）。TTFT 仅流式请求有值，Streams 列展示其样本量。"
+                >
+                  ?
+                </span>
+              </div>
               {data.some((d) => d.streamCount > 0) && (
                 <div className="hidden md:block">
-                  <h3 className="text-lg font-semibold mb-2">
-                    {selectedDate
-                      ? `Daily TTFT (p50 / avg) - ${formatSelectedDateLabel(selectedDate, timezoneOffsetMinutes)}`
-                      : "Daily TTFT (p50 / avg)"}
-                  </h3>
+                  <p className="text-xs text-gray-400">Daily TTFT (p50 / avg)</p>
                   <ChartLegend
                     items={[
                       { color: COLORS.ttft, label: "p50 TTFT" },
@@ -1540,267 +1913,7 @@ export default function DailyUsageChart({
             </div>
           )}
 
-          {showTopModels && activeTopModels && activeTopModels.length > 0 && (
-            <div id="trends-models" className="bg-white rounded-lg shadow p-3 md:p-6 scroll-mt-28">
-              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-1 gap-2">
-                <h3 className="text-lg font-semibold">
-                  {selectedDate
-                    ? `Top 5 Model Families - ${formatSelectedDateLabel(selectedDate, timezoneOffsetMinutes)}`
-                    : "Top 5 Model Families"}
-                </h3>
-                {selectedDate && (
-                  <button
-                    type="button"
-                    onClick={() => setSelectedDate(null)}
-                    className="inline-flex items-center gap-1 px-3 py-1 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-full transition-colors"
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                      <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
-                    </svg>
-                    Reset to range total
-                  </button>
-                )}
-              </div>
-              <p className="text-xs text-gray-500 mb-3">
-                {selectedDate
-                  ? `Showing top models for ${selectedDate}`
-                  : "Click a day in the charts above to see its top models"}
-              </p>
-
-              <div className="hidden md:block mb-4">
-                <ChartLegend
-                  items={[
-                    ...(topModels ?? []).slice(0, 5).map((m, i) => ({
-                      color: PROVIDER_COLORS[i % PROVIDER_COLORS.length],
-                      label: m.displayName,
-                      bar: true,
-                      key: `model-${i}`,
-                    })),
-                    ...(hasModelOthers
-                      ? [
-                          {
-                            color: PROVIDER_COLORS[PROVIDER_COLORS.length - 1],
-                            label: "Others",
-                            bar: true,
-                            key: "others",
-                          },
-                        ]
-                      : []),
-                  ]}
-                />
-                <div className="h-[240px]">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart
-                      data={modelChartData}
-                      margin={{ top: 10, right: 100, left: 55, bottom: 10 }}
-                      barCategoryGap="20%"
-                      syncId="daily"
-                      onClick={handleChartClick}
-                      onMouseMove={handleChartMouseMove}
-                      onMouseLeave={handleChartMouseLeave}
-                      className="cursor-pointer"
-                    >
-                      <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                      <XAxis
-                        dataKey="group"
-                        ticks={data.map((d) => d.group)}
-                        tick={(props) => {
-                          const index = props.index ?? 0;
-                          const interval = getXAxisInterval(range);
-                          const showLabel = interval === 0 || index % (interval + 1) === 0;
-                          return (
-                            <CustomXAxisTick
-                              {...props}
-                              selectedDate={selectedDate}
-                              hoveredDate={hoveredDate}
-                              index={showLabel ? index : -1}
-                            />
-                          );
-                        }}
-                        interval={0}
-                        minTickGap={15}
-                      />
-                      <YAxis
-                        yAxisId="left"
-                        tick={{ fontSize: 11 }}
-                        width={45}
-                        tickFormatter={(v: number) => formatAxisNumber(v)}
-                        domain={modelTokenDomain}
-                      />
-                      <Tooltip content={<TokenBarTooltip />} cursor={false} />
-                      {(topModels ?? []).slice(0, 5).map((m, i) => (
-                        <Bar
-                          key={`model-${i}`}
-                          yAxisId="left"
-                          dataKey={`model-${i}`}
-                          stackId="models"
-                          fill={PROVIDER_COLORS[i % PROVIDER_COLORS.length]}
-                          name={m.displayName}
-                        />
-                      ))}
-                      {hasModelOthers && (
-                        <Bar
-                          yAxisId="left"
-                          dataKey="others"
-                          stackId="models"
-                          fill={PROVIDER_COLORS[PROVIDER_COLORS.length - 1]}
-                          name="Others"
-                        />
-                      )}
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-
-              <div className="hidden md:block overflow-x-auto">
-                {(() => {
-                  return (
-                    <table className="w-full" style={{ tableLayout: 'fixed' }}>
-                      <thead className="bg-gray-50">
-                        <tr>
-                          <th className="w-[20%] px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase overflow-hidden">Model</th>
-                          <SortHeader className="w-[12%]" field="totalInput" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort}>Total Input</SortHeader>
-                          <SortHeader className="w-[11%]" field="totalInputCached" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort}>Cache Read</SortHeader>
-                          <SortHeader className="w-[12%]" field="cacheHitRate" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort}>Cache Hit Rate</SortHeader>
-                          <SortHeader className="w-[11%]" field="totalOutput" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort}>Total Output</SortHeader>
-                          <SortHeader className="w-[15%]" field="costPerMillionTokens" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort}>Avg cost / 1M tokens</SortHeader>
-                          <SortHeader className="w-[10%]" field="totalCost" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort}>Total Cost</SortHeader>
-                          <SortHeader className="w-[9%]" field="count" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort}>Requests</SortHeader>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-gray-200">
-                        {activeTopModels.map((model) => {
-                          const metricTotal = activeTopModels.reduce((sum, m) => sum + getMetricValue(m, sortBy), 0);
-                          const metricVal = getMetricValue(model, sortBy);
-                          const percentage = metricTotal > 0 ? (metricVal / metricTotal) * 100 : 0;
-                          const cacheHitRate = model.totalInput > 0
-                            ? (model.totalInputCached / model.totalInput * 100).toFixed(1) + '%'
-                            : '0%';
-                          return (
-                            <tr
-                              key={model.group}
-                              style={{
-                                background: `linear-gradient(to right, rgb(239 246 255) ${percentage}%, transparent ${percentage}%)`
-                              }}
-                            >
-                              <td className="px-4 py-3 text-sm font-medium text-gray-900 overflow-hidden">{model.displayName}</td>
-                              <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden"><AnimatedCell value={model.totalInput} /></td>
-                              <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden"><AnimatedCell value={model.totalInputCached} /></td>
-                              <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden">{cacheHitRate}</td>
-                              <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden"><AnimatedCell value={model.totalOutput} /></td>
-                              <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden">
-                                <div className="flex flex-col items-end">
-                                  <span>{formatCost(model.costPerMillionTokens)}</span>
-                                </div>
-                              </td>
-                              <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden">{formatCost(model.totalCost)}</td>
-                              <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden"><AnimatedCell value={model.count} /></td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  );
-                })()}
-              </div>
-              <div className="md:hidden mb-3">
-                <select
-                  value={sortBy}
-                  onChange={(e) => handleSort(e.target.value as typeof sortBy)}
-                  className="text-xs border border-gray-200 rounded px-2 py-1.5 bg-white text-gray-700 w-full"
-                >
-                  <option value="totalInput">Total Input</option>
-                  <option value="totalOutput">Total Output</option>
-                  <option value="totalInputCached">Cache Read</option>
-                  <option value="cacheHitRate">Cache Hit Rate</option>
-                  <option value="totalCost">Total Cost</option>
-                  <option value="costPerMillionTokens">Avg Cost / 1M</option>
-                  <option value="count">Requests</option>
-                </select>
-              </div>
-              <div className="md:hidden space-y-3">
-                {(() => {
-                  const metricTotal = activeTopModels.reduce((sum, m) => sum + getMetricValue(m, sortBy), 0);
-                  return activeTopModels.map((model) => {
-                    const metricVal = getMetricValue(model, sortBy);
-                    const percentage = metricTotal > 0 ? (metricVal / metricTotal) * 100 : 0;
-                    return (
-                        <div
-                          key={model.group}
-                          className="rounded-lg border border-gray-200 overflow-hidden"
-                          style={{
-                            background: `linear-gradient(to right, rgb(239 246 255) ${percentage}%, transparent ${percentage}%)`
-                          }}
-                        >
-                          <div className="px-4 py-3 font-medium text-gray-900 border-b border-gray-100">
-                            {model.displayName}
-                          </div>
-                          <div className="px-4 py-3 grid grid-cols-2 gap-3">
-                            <div>
-                              <p className="text-xs text-gray-500">Total Input</p>
-                              <p className="text-sm font-semibold text-gray-900">{formatNumber(model.totalInput, compact)}</p>
-                            </div>
-                            <div>
-                              <p className="text-xs text-gray-500">Cache Read</p>
-                              <p className="text-sm font-semibold text-gray-900">{formatNumber(model.totalInputCached, compact)}</p>
-                            </div>
-                            <div>
-                              <p className="text-xs text-gray-500">Cache Hit Rate</p>
-                              <p className="text-sm font-semibold text-gray-900">
-                                {model.totalInput > 0 ? (model.totalInputCached / model.totalInput * 100).toFixed(1) + '%' : '0%'}
-                              </p>
-                            </div>
-                            <div>
-                              <p className="text-xs text-gray-500">Total Output</p>
-                              <p className="text-sm font-semibold text-gray-900">{formatNumber(model.totalOutput, compact)}</p>
-                            </div>
-                            <div>
-                              <p className="text-xs text-gray-500" title="Pricing from models.dev">Avg cost / 1M tokens</p>
-                              <p className="text-sm font-semibold text-gray-900">{formatCost(model.costPerMillionTokens)}</p>
-                            </div>
-                            <div>
-                              <p className="text-xs text-gray-500">Total Cost</p>
-                              <p className="text-sm font-semibold text-gray-900">{formatCost(model.totalCost)}</p>
-                            </div>
-                            <div>
-                              <p className="text-xs text-gray-500">Requests</p>
-                              <p className="text-sm font-semibold text-gray-900">{formatNumber(model.count, compact)}</p>
-                            </div>
-                          </div>
-                        </div>
-                    );
-                  });
-                })()}
-              </div>
-            </div>
-          )}
-          {showTopModels && activeTopModels && activeTopModels.length === 0 && (
-            <div className="bg-white rounded-lg shadow p-3 md:p-6">
-              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-1 gap-2">
-                <h3 className="text-lg font-semibold">
-                  {selectedDate
-                    ? `Top 5 Model Families - ${formatSelectedDateLabel(selectedDate, timezoneOffsetMinutes)}`
-                    : "Top 5 Model Families"}
-                </h3>
-                {selectedDate && (
-                  <button
-                    type="button"
-                    onClick={() => setSelectedDate(null)}
-                    className="inline-flex items-center gap-1 px-3 py-1 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-full transition-colors"
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                      <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
-                    </svg>
-                    Reset to range total
-                  </button>
-                )}
-              </div>
-              <p className="text-gray-500">
-                {selectedDate ? "No data for selected date" : "No data available"}
-              </p>
-            </div>
-          )}
-        </div>
+          </div>
       )}
     </div>
   );
