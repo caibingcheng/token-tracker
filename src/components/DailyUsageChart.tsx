@@ -1446,7 +1446,9 @@ export default function DailyUsageChart({
               {data.some((d) => d.streamCount > 0) && (
                 <div className="hidden md:block">
                   <h3 className="text-lg font-semibold mb-2">
-                    Daily TTFT (p50 / avg)
+                    {selectedDate
+                      ? `Daily TTFT (p50 / avg) - ${formatSelectedDateLabel(selectedDate, timezoneOffsetMinutes)}`
+                      : "Daily TTFT (p50 / avg)"}
                   </h3>
                   <ChartLegend
                     items={[
