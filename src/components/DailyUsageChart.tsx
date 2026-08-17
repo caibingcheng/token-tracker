@@ -529,7 +529,7 @@ function SummarySection({
 
 function TokenBarTooltip({ active, payload, label }: {
   active?: boolean;
-  payload?: Array<{ value: number; name: string }>;
+  payload?: Array<{ value: number; name: string; dataKey?: string }>;
   label?: string;
 }) {
   const { compact } = useNumberFormat();
@@ -539,11 +539,18 @@ function TokenBarTooltip({ active, payload, label }: {
     <div className="bg-white border border-gray-200 rounded-md shadow-sm p-2 text-xs">
       <p className="font-medium text-gray-700 mb-1">{label}</p>
       <div className="space-y-0.5">
-        {reversed.map((entry) => (
-          <p key={entry.name} className="text-gray-600">
-            <span className="font-medium">{entry.name}:</span> {formatNumber(Number(entry.value), compact)}
-          </p>
-        ))}
+        {reversed.map((entry) => {
+          const name = String(entry.name || "");
+          const dataKey = String(entry.dataKey ?? "");
+          const value = name === "Cache Hit Ratio" || dataKey.startsWith("ratio-")
+            ? `${entry.value}%`
+            : formatNumber(Number(entry.value), compact);
+          return (
+            <p key={name} className="text-gray-600">
+              <span className="font-medium">{name}:</span> {value}
+            </p>
+          );
+        })}
       </div>
     </div>
   );
@@ -551,7 +558,7 @@ function TokenBarTooltip({ active, payload, label }: {
 
 function RatioCostTooltip({ active, payload, label }: {
   active?: boolean;
-  payload?: Array<{ value: number; name: string }>;
+  payload?: Array<{ value: number; name: string; dataKey?: string }>;
   label?: string;
 }) {
   const { compact } = useNumberFormat();
@@ -567,13 +574,14 @@ function RatioCostTooltip({ active, payload, label }: {
       <div className="space-y-0.5">
         {filtered.map((entry) => {
           const name = String(entry.name);
+          const dataKey = String(entry.dataKey ?? "");
           let value: string;
-          if (name === "Cache Hit Ratio") {
-            value = `${entry.value}%`;
-          } else if (name === "Avg cost / 1M") {
+          if (name === "Avg cost / 1M") {
             value = formatPriceAxis(Number(entry.value));
+          } else if (dataKey.startsWith("ratio-")) {
+            value = `${entry.value}%`;
           } else {
-            value = formatNumber(Number(entry.value), compact);
+            value = formatCost(Number(entry.value));
           }
           return (
             <p key={name} className="text-gray-600">
@@ -644,18 +652,22 @@ function TopProvidersTable({
             <table className="w-full" style={{ tableLayout: "fixed" }}>
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="w-[24%] px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase overflow-hidden">Provider</th>
-                  <th className="w-[19%] px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase overflow-hidden">Total Input</th>
-                  <th className="w-[17%] px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase overflow-hidden">Cache Read</th>
-                  <th className="w-[18%] px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase overflow-hidden">Total Output</th>
+                  <th className="w-[22%] px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase overflow-hidden">Provider</th>
+                  <th className="w-[17%] px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase overflow-hidden">Total Input</th>
+                  <th className="w-[14%] px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase overflow-hidden">Cache Read</th>
+                  <th className="w-[12%] px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase overflow-hidden">Cache Hit Rate</th>
+                  <th className="w-[15%] px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase overflow-hidden">Total Output</th>
                   <th className="w-[12%] px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase overflow-hidden">Total Cost</th>
-                  <th className="w-[10%] px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase overflow-hidden">Requests</th>
+                  <th className="w-[8%] px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase overflow-hidden">Requests</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
                 {providers.map((p) => {
                   const percentage =
                     totalInputSum > 0 ? (p.totalInput / totalInputSum) * 100 : 0;
+                  const cacheHitRate = p.totalInput > 0
+                    ? (p.totalInputCached / p.totalInput * 100).toFixed(1) + '%'
+                    : '0%';
                   return (
                     <tr
                       key={p.provider}
@@ -666,6 +678,7 @@ function TopProvidersTable({
                       <td className="px-4 py-3 text-sm font-medium text-gray-900 overflow-hidden">{p.providerName}</td>
                       <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden"><AnimatedCell value={p.totalInput} /></td>
                       <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden"><AnimatedCell value={p.totalInputCached} /></td>
+                      <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden">{cacheHitRate}</td>
                       <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden"><AnimatedCell value={p.totalOutput} /></td>
                       <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden">{formatCost(p.totalCost)}</td>
                       <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden"><AnimatedCell value={p.count} /></td>
@@ -699,6 +712,12 @@ function TopProvidersTable({
                     <div>
                       <p className="text-xs text-gray-500">Cache Read</p>
                       <p className="text-sm font-semibold text-gray-900">{formatNumber(p.totalInputCached, compact)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-500">Cache Hit Rate</p>
+                      <p className="text-sm font-semibold text-gray-900">
+                        {p.totalInput > 0 ? (p.totalInputCached / p.totalInput * 100).toFixed(1) + '%' : '0%'}
+                      </p>
                     </div>
                     <div>
                       <p className="text-xs text-gray-500">Total Output</p>
@@ -955,14 +974,25 @@ export default function DailyUsageChart({
     const lastNDays = getLastNDays(range, timezoneOffsetMinutes);
     return lastNDays.map((date) => {
       const row: Record<string, number | string> = { group: date };
+      const providerInput = new Map<string, { input: number; cached: number }>();
       const dayProviders = dailyProviders?.[date] ?? [];
       for (const p of dayProviders) {
         if (top5Keys.has(p.provider)) {
+          providerInput.set(p.provider, {
+            input: (providerInput.get(p.provider)?.input || 0) + p.totalInput,
+            cached: (providerInput.get(p.provider)?.cached || 0) + p.totalInputCached,
+          });
           row[p.provider] = (Number(row[p.provider]) || 0) + p.totalInput;
         } else {
           row.others = (Number(row.others) || 0) + p.totalInput;
         }
       }
+      top5Providers.forEach((p, i) => {
+        const stats = providerInput.get(p.provider);
+        const input = stats?.input ?? 0;
+        const cached = stats?.cached ?? 0;
+        row[`ratio-provider-${i}`] = input > 0 ? Number(((cached / input) * 100).toFixed(1)) : 0;
+      });
       return row;
     });
   }, [topProviders, dailyProviders, range, timezoneOffsetMinutes]);
@@ -972,7 +1002,9 @@ export default function DailyUsageChart({
       ...providerChartData.map((d) =>
         Object.entries(d).reduce(
           (sum, [key, value]) =>
-            key === "group" ? sum : sum + (Number(value) || 0),
+            key === "group" || key.startsWith("ratio-")
+              ? sum
+              : sum + (Number(value) || 0),
           0
         )
       ),
@@ -995,15 +1027,26 @@ export default function DailyUsageChart({
     const lastNDays = getLastNDays(range, timezoneOffsetMinutes);
     return lastNDays.map((date) => {
       const row: Record<string, number | string> = { group: date };
+      const modelInput = new Map<string, { input: number; cached: number }>();
       const dayModels = dailyTopModels?.[date] ?? [];
       for (const m of dayModels) {
         if (top5Groups.has(m.group)) {
           const key = keyByGroup.get(m.group)!;
+          modelInput.set(m.group, {
+            input: (modelInput.get(m.group)?.input || 0) + m.totalInput,
+            cached: (modelInput.get(m.group)?.cached || 0) + m.totalInputCached,
+          });
           row[key] = (Number(row[key]) || 0) + m.totalInput;
         } else {
           row.others = (Number(row.others) || 0) + m.totalInput;
         }
       }
+      top5Models.forEach((m, i) => {
+        const stats = modelInput.get(m.group);
+        const input = stats?.input ?? 0;
+        const cached = stats?.cached ?? 0;
+        row[`ratio-model-${i}`] = input > 0 ? Number(((cached / input) * 100).toFixed(1)) : 0;
+      });
       return row;
     });
   }, [topModels, dailyTopModels, range, timezoneOffsetMinutes]);
@@ -1013,7 +1056,9 @@ export default function DailyUsageChart({
       ...modelChartData.map((d) =>
         Object.entries(d).reduce(
           (sum, [key, value]) =>
-            key === "group" ? sum : sum + (Number(value) || 0),
+            key === "group" || key.startsWith("ratio-")
+              ? sum
+              : sum + (Number(value) || 0),
           0
         )
       ),
@@ -1026,6 +1071,30 @@ export default function DailyUsageChart({
     () => modelChartData.some((d) => (Number(d.others) || 0) > 0),
     [modelChartData]
   );
+
+  const costTopModels = useMemo(() => {
+    const costByGroup = new Map<
+      string,
+      { group: string; displayName: string; totalCost: number }
+    >();
+    for (const date in dailyTopModels) {
+      for (const m of dailyTopModels[date] ?? []) {
+        const existing = costByGroup.get(m.group);
+        if (existing) {
+          existing.totalCost += m.totalCost;
+        } else {
+          costByGroup.set(m.group, {
+            group: m.group,
+            displayName: m.displayName,
+            totalCost: m.totalCost,
+          });
+        }
+      }
+    }
+    return Array.from(costByGroup.values())
+      .sort((a, b) => b.totalCost - a.totalCost)
+      .slice(0, 5);
+  }, [dailyTopModels]);
 
   const activeLatencyByModel = useMemo(() => {
     if (selectedDate) {
@@ -1110,6 +1179,52 @@ export default function DailyUsageChart({
 
   const priceDomain = useMemo(() => calculatePriceDomain(data), [data]);
 
+  const modelCostChartData = useMemo(() => {
+    const priceByDate = new Map(data.map((d) => [d.group, d.costPerMillionTokens]));
+    const keyByGroup = new Map(
+      costTopModels.map((m, i) => [m.group, `cost-model-${i}`] as const)
+    );
+    const top5Groups = new Set(keyByGroup.keys());
+    const lastNDays = getLastNDays(range, timezoneOffsetMinutes);
+    return lastNDays.map((date) => {
+      const row: Record<string, number | string> = {
+        group: date,
+        costPerMillionTokens: priceByDate.get(date) || 0,
+      };
+      const dayModels = dailyTopModels?.[date] ?? [];
+      for (const m of dayModels) {
+        if (top5Groups.has(m.group)) {
+          const key = keyByGroup.get(m.group)!;
+          row[key] = (Number(row[key]) || 0) + m.totalCost;
+        } else {
+          row.others = (Number(row.others) || 0) + m.totalCost;
+        }
+      }
+      return row;
+    });
+  }, [costTopModels, dailyTopModels, range, timezoneOffsetMinutes, data]);
+
+  const modelCostDomain = useMemo(() => {
+    const max = Math.max(
+      ...modelCostChartData.map((d) =>
+        Object.entries(d).reduce(
+          (sum, [key, value]) =>
+            key === "group" || key === "costPerMillionTokens" || key.startsWith("ratio-")
+              ? sum
+              : sum + (Number(value) || 0),
+          0
+        )
+      ),
+      0
+    );
+    return niceTokenDomain(max);
+  }, [modelCostChartData]);
+
+  const hasCostOthers = useMemo(
+    () => modelCostChartData.some((d) => (Number(d.others) || 0) > 0),
+    [modelCostChartData]
+  );
+
   const summary = useMemo(() => {
     if (data.length === 0) return null;
     const totalInput = data.reduce((s, d) => s + d.totalInput, 0);
@@ -1176,11 +1291,12 @@ export default function DailyUsageChart({
                     { color: COLORS.cache, label: "Cache", bar: true },
                     { color: COLORS.input, label: "Uncache", bar: true },
                     { color: COLORS.output, label: "Output", bar: true },
+                    { color: COLORS.hitRate, label: "Cache Hit Ratio" },
                   ]}
                 />
                 <div className="h-[280px]">
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart
+                    <ComposedChart
                       data={data}
                       margin={{ top: 10, right: 100, left: 55, bottom: 10 }}
                       barCategoryGap="20%"
@@ -1216,6 +1332,14 @@ export default function DailyUsageChart({
                         width={45}
                         tickFormatter={(v: number) => formatAxisNumber(v)}
                         domain={tokenDomain}
+                      />
+                      <YAxis
+                        yAxisId="right"
+                        orientation="right"
+                        tick={{ fontSize: 11, fill: COLORS.hitRate }}
+                        width={45}
+                        tickFormatter={(v: number) => `${v}%`}
+                        domain={[0, 100]}
                       />
                       <Tooltip content={<TokenBarTooltip />} cursor={false} />
                       <Bar
@@ -1260,112 +1384,20 @@ export default function DailyUsageChart({
                           />
                         ))}
                       </Bar>
-                    </BarChart>
+                      <Line
+                        yAxisId="right"
+                        type="monotone"
+                        dataKey="cacheHitRate"
+                        stroke={COLORS.hitRate}
+                        strokeWidth={2}
+                        dot={false}
+                        activeDot={{ r: 4, fill: COLORS.hitRate, stroke: "#fff", strokeWidth: 1 }}
+                        name="Cache Hit Ratio"
+                      />
+                    </ComposedChart>
                   </ResponsiveContainer>
                 </div>
               </div>
-
-              {showTopModels && topProviders && topProviders.length > 0 && (
-                <div className="mt-8">
-                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-1 gap-2">
-                    <h4 className="text-lg font-semibold">
-                      {selectedDate
-                        ? `Top 5 Upstreams - ${formatSelectedDateLabel(selectedDate, timezoneOffsetMinutes)}`
-                        : "Top 5 Upstreams"}
-                    </h4>
-                  </div>
-                  <p className="text-xs text-gray-500 mb-3">
-                    {selectedDate
-                      ? `Showing top upstreams for ${selectedDate}`
-                      : "Daily usage stacked by upstream provider; providers outside Top 5 merged into Others"}
-                  </p>
-                  <div className="hidden md:block mb-4">
-                    <ChartLegend
-                      items={[
-                        ...(topProviders ?? []).map((p, i) => ({
-                          color: PROVIDER_COLORS[i % PROVIDER_COLORS.length],
-                          label: p.providerName,
-                          bar: true,
-                          key: p.provider,
-                        })),
-                        ...(hasProviderOthers
-                          ? [
-                              {
-                                color: PROVIDER_COLORS[PROVIDER_COLORS.length - 1],
-                                label: "Others",
-                                bar: true,
-                                key: "others",
-                              },
-                            ]
-                          : []),
-                      ]}
-                    />
-                    <div className="h-[240px]">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart
-                          data={providerChartData}
-                          margin={{ top: 10, right: 100, left: 55, bottom: 10 }}
-                          barCategoryGap="20%"
-                          syncId="daily"
-                          onClick={handleChartClick}
-                          onMouseMove={handleChartMouseMove}
-                          onMouseLeave={handleChartMouseLeave}
-                          className="cursor-pointer"
-                        >
-                          <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                          <XAxis
-                            dataKey="group"
-                            ticks={data.map((d) => d.group)}
-                            tick={(props) => {
-                              const index = props.index ?? 0;
-                              const interval = getXAxisInterval(range);
-                              const showLabel = interval === 0 || index % (interval + 1) === 0;
-                              return (
-                                <CustomXAxisTick
-                                  {...props}
-                                  selectedDate={selectedDate}
-                                  hoveredDate={hoveredDate}
-                                  index={showLabel ? index : -1}
-                                />
-                              );
-                            }}
-                            interval={0}
-                            minTickGap={15}
-                          />
-                          <YAxis
-                            yAxisId="left"
-                            tick={{ fontSize: 11 }}
-                            width={45}
-                            tickFormatter={(v: number) => formatAxisNumber(v)}
-                            domain={providerTokenDomain}
-                          />
-                          <Tooltip content={<TokenBarTooltip />} cursor={false} />
-                          {(topProviders ?? []).map((p, i) => (
-                            <Bar
-                              key={p.provider}
-                              yAxisId="left"
-                              dataKey={p.provider}
-                              stackId="providers"
-                              fill={PROVIDER_COLORS[i % PROVIDER_COLORS.length]}
-                              name={p.providerName}
-                            />
-                          ))}
-                          {hasProviderOthers && (
-                            <Bar
-                              yAxisId="left"
-                              dataKey="others"
-                              stackId="providers"
-                              fill={PROVIDER_COLORS[PROVIDER_COLORS.length - 1]}
-                              name="Others"
-                            />
-                          )}
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </div>
-                  <TopProvidersTable providers={activeProviders} selectedDate={selectedDate} />
-                </div>
-              )}
 
               {showTopModels && (
                 <div className="mt-8">
@@ -1411,7 +1443,7 @@ export default function DailyUsageChart({
                         />
                         <div className="h-[240px]">
                           <ResponsiveContainer width="100%" height="100%">
-                            <BarChart
+                            <ComposedChart
                               data={modelChartData}
                               margin={{ top: 10, right: 100, left: 55, bottom: 10 }}
                               barCategoryGap="20%"
@@ -1448,6 +1480,14 @@ export default function DailyUsageChart({
                                 tickFormatter={(v: number) => formatAxisNumber(v)}
                                 domain={modelTokenDomain}
                               />
+                              <YAxis
+                                yAxisId="right"
+                                orientation="right"
+                                tick={{ fontSize: 11 }}
+                                width={45}
+                                tickFormatter={(v: number) => `${v}%`}
+                                domain={[0, 100]}
+                              />
                               <Tooltip content={<TokenBarTooltip />} cursor={false} />
                               {(topModels ?? []).slice(0, 5).map((m, i) => (
                                 <Bar
@@ -1468,7 +1508,20 @@ export default function DailyUsageChart({
                                   name="Others"
                                 />
                               )}
-                            </BarChart>
+                              {(topModels ?? []).slice(0, 5).map((m, i) => (
+                                <Line
+                                  key={`ratio-model-${i}`}
+                                  yAxisId="right"
+                                  type="monotone"
+                                  dataKey={`ratio-model-${i}`}
+                                  stroke={PROVIDER_COLORS[i % PROVIDER_COLORS.length]}
+                                  strokeWidth={1.5}
+                                  strokeDasharray="4 2"
+                                  dot={false}
+                                  name={`${m.displayName} ratio`}
+                                />
+                              ))}
+                            </ComposedChart>
                           </ResponsiveContainer>
                         </div>
                       </div>
@@ -1575,109 +1628,243 @@ export default function DailyUsageChart({
                   )}
                 </div>
               )}
+
+              {showTopModels && topProviders && topProviders.length > 0 && (
+                <div className="mt-8">
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-1 gap-2">
+                    <h4 className="text-lg font-semibold">
+                      {selectedDate
+                        ? `Top 5 Upstreams - ${formatSelectedDateLabel(selectedDate, timezoneOffsetMinutes)}`
+                        : "Top 5 Upstreams"}
+                    </h4>
+                  </div>
+                  <p className="text-xs text-gray-500 mb-3">
+                    {selectedDate
+                      ? `Showing top upstreams for ${selectedDate}`
+                      : "Daily usage stacked by upstream provider; providers outside Top 5 merged into Others"}
+                  </p>
+                  <div className="hidden md:block mb-4">
+                    <ChartLegend
+                      items={[
+                        ...(topProviders ?? []).map((p, i) => ({
+                          color: PROVIDER_COLORS[i % PROVIDER_COLORS.length],
+                          label: p.providerName,
+                          bar: true,
+                          key: p.provider,
+                        })),
+                        ...(hasProviderOthers
+                          ? [
+                              {
+                                color: PROVIDER_COLORS[PROVIDER_COLORS.length - 1],
+                                label: "Others",
+                                bar: true,
+                                key: "others",
+                              },
+                            ]
+                          : []),
+                      ]}
+                    />
+                    <div className="h-[240px]">
+                      <ResponsiveContainer width="100%" height="100%">
+                      <ComposedChart
+                        data={providerChartData}
+                        margin={{ top: 10, right: 100, left: 55, bottom: 10 }}
+                        barCategoryGap="20%"
+                        syncId="daily"
+                        onClick={handleChartClick}
+                        onMouseMove={handleChartMouseMove}
+                        onMouseLeave={handleChartMouseLeave}
+                        className="cursor-pointer"
+                      >
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                        <XAxis
+                          dataKey="group"
+                          ticks={data.map((d) => d.group)}
+                          tick={(props) => {
+                            const index = props.index ?? 0;
+                            const interval = getXAxisInterval(range);
+                            const showLabel = interval === 0 || index % (interval + 1) === 0;
+                            return (
+                              <CustomXAxisTick
+                                {...props}
+                                selectedDate={selectedDate}
+                                hoveredDate={hoveredDate}
+                                index={showLabel ? index : -1}
+                              />
+                            );
+                          }}
+                          interval={0}
+                          minTickGap={15}
+                        />
+                        <YAxis
+                          yAxisId="left"
+                          tick={{ fontSize: 11 }}
+                          width={45}
+                          tickFormatter={(v: number) => formatAxisNumber(v)}
+                          domain={providerTokenDomain}
+                        />
+                        <YAxis
+                          yAxisId="right"
+                          orientation="right"
+                          tick={{ fontSize: 11 }}
+                          width={45}
+                          tickFormatter={(v: number) => `${v}%`}
+                          domain={[0, 100]}
+                        />
+                        <Tooltip content={<TokenBarTooltip />} cursor={false} />
+                        {(topProviders ?? []).map((p, i) => (
+                          <Bar
+                            key={p.provider}
+                            yAxisId="left"
+                            dataKey={p.provider}
+                            stackId="providers"
+                            fill={PROVIDER_COLORS[i % PROVIDER_COLORS.length]}
+                            name={p.providerName}
+                          />
+                        ))}
+                        {hasProviderOthers && (
+                          <Bar
+                            yAxisId="left"
+                            dataKey="others"
+                            stackId="providers"
+                            fill={PROVIDER_COLORS[PROVIDER_COLORS.length - 1]}
+                            name="Others"
+                          />
+                        )}
+                        {(topProviders ?? []).slice(0, 5).map((p, i) => (
+                          <Line
+                            key={`ratio-${p.provider}`}
+                            yAxisId="right"
+                            type="monotone"
+                            dataKey={`ratio-provider-${i}`}
+                            stroke={PROVIDER_COLORS[i % PROVIDER_COLORS.length]}
+                            strokeWidth={1.5}
+                            strokeDasharray="4 2"
+                            dot={false}
+                            name={`${p.providerName} ratio`}
+                          />
+                        ))}
+                      </ComposedChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                  <TopProvidersTable providers={activeProviders} selectedDate={selectedDate} />
+                </div>
+              )}
             </div>
 
           {showCost && (
               <div id="trends-cost" className="bg-white rounded-lg shadow p-3 md:p-6 scroll-mt-28">
                 <h3 className="text-lg font-semibold mb-2">
                   {selectedDate
-                    ? `Daily Ratio & Cost - ${formatSelectedDateLabel(selectedDate, timezoneOffsetMinutes)}`
-                    : "Daily Ratio & Cost"}
+                    ? `Daily Cost - ${formatSelectedDateLabel(selectedDate, timezoneOffsetMinutes)}`
+                    : "Daily Cost"}
                 </h3>
                 <div className="hidden md:block">
                   <ChartLegend
                     items={[
-                      { color: COLORS.hitRate, label: "Cache Hit Ratio" },
+                      ...(costTopModels ?? []).map((m, i) => ({
+                        color: PROVIDER_COLORS[i % PROVIDER_COLORS.length],
+                        label: m.displayName,
+                        bar: true,
+                        key: `cost-model-${i}`,
+                      })),
+                      ...(hasCostOthers
+                        ? [
+                            {
+                              color: PROVIDER_COLORS[PROVIDER_COLORS.length - 1],
+                              label: "Others",
+                              bar: true,
+                              key: "others",
+                            },
+                          ]
+                        : []),
                       { color: COLORS.price, label: "Avg cost / 1M" },
                     ]}
                   />
                   <div className="h-[240px]">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <ComposedChart
-                      data={data}
-                      margin={{ top: 10, right: 55, left: 55, bottom: 10 }}
-                      syncId="daily"
-                      barCategoryGap="20%"
-                      onClick={handleChartClick}
-                      onMouseMove={handleChartMouseMove}
-                      onMouseLeave={handleChartMouseLeave}
-                      className="cursor-pointer"
-                    >
-                      <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                      <XAxis
-                        dataKey="group"
-                        ticks={data.map((d) => d.group)}
-                        tick={(props) => {
-                          const index = props.index ?? 0;
-                          const interval = getXAxisInterval(range);
-                          const showLabel = interval === 0 || index % (interval + 1) === 0;
-                          return (
-                            <CustomXAxisTick
-                              {...props}
-                              selectedDate={selectedDate}
-                              hoveredDate={hoveredDate}
-                              index={showLabel ? index : -1}
-                            />
-                          );
-                        }}
-                        interval={0}
-                        minTickGap={15}
-                      />
-                      <YAxis
-                        yAxisId="left"
-                        tick={{ fontSize: 11, fill: COLORS.hitRate }}
-                        width={45}
-                        tickFormatter={(v: number) => `${v}%`}
-                        domain={[0, 100]}
-                      />
-                      <YAxis
-                        yAxisId="right"
-                        orientation="right"
-                        tick={{ fontSize: 11, fill: COLORS.price }}
-                        width={45}
-                        tickFormatter={(v: number) => formatPriceAxis(v)}
-                        domain={priceDomain}
-                      />
-                      <Tooltip content={<RatioCostTooltip />} cursor={false} />
-                      <Bar
-                        yAxisId="left"
-                        dataKey="dummy"
-                        fill="transparent"
-                        stroke="none"
-                        name=""
-                        isAnimationActive={false}
-                      />
-                      <Line
-                        yAxisId="left"
-                        type="monotone"
-                        dataKey="cacheHitRate"
-                        stroke={COLORS.hitRate}
-                        strokeWidth={2}
-                        dot={false}
-                        activeDot={{ r: 4, fill: COLORS.hitRate, stroke: "#fff", strokeWidth: 1 }}
-                        name="Cache Hit Ratio"
-                      />
-                      <Line
-                        yAxisId="right"
-                        type="monotone"
-                        dataKey="costPerMillionTokens"
-                        stroke={COLORS.price}
-                        strokeWidth={2}
-                        dot={false}
-                        activeDot={{ r: 4, fill: COLORS.price, stroke: "#fff", strokeWidth: 1 }}
-                        name="Avg cost / 1M"
-                      />
-                    </ComposedChart>
-                  </ResponsiveContainer>
-                </div>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <ComposedChart
+                        data={modelCostChartData}
+                        margin={{ top: 10, right: 55, left: 55, bottom: 10 }}
+                        syncId="daily"
+                        barCategoryGap="20%"
+                        onClick={handleChartClick}
+                        onMouseMove={handleChartMouseMove}
+                        onMouseLeave={handleChartMouseLeave}
+                        className="cursor-pointer"
+                      >
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                        <XAxis
+                          dataKey="group"
+                          ticks={data.map((d) => d.group)}
+                          tick={(props) => {
+                            const index = props.index ?? 0;
+                            const interval = getXAxisInterval(range);
+                            const showLabel = interval === 0 || index % (interval + 1) === 0;
+                            return (
+                              <CustomXAxisTick
+                                {...props}
+                                selectedDate={selectedDate}
+                                hoveredDate={hoveredDate}
+                                index={showLabel ? index : -1}
+                              />
+                            );
+                          }}
+                          interval={0}
+                          minTickGap={15}
+                        />
+                        <YAxis
+                          yAxisId="left"
+                          tick={{ fontSize: 11 }}
+                          width={45}
+                          tickFormatter={(v: number) => formatPriceAxis(v)}
+                          domain={modelCostDomain}
+                        />
+                        <YAxis
+                          yAxisId="right"
+                          orientation="right"
+                          tick={{ fontSize: 11, fill: COLORS.price }}
+                          width={45}
+                          tickFormatter={(v: number) => formatPriceAxis(v)}
+                          domain={priceDomain}
+                        />
+                        <Tooltip content={<RatioCostTooltip />} cursor={false} />
+                        {(costTopModels ?? []).map((m, i) => (
+                          <Bar
+                            key={`cost-model-${i}`}
+                            yAxisId="left"
+                            dataKey={`cost-model-${i}`}
+                            stackId="cost-models"
+                            fill={PROVIDER_COLORS[i % PROVIDER_COLORS.length]}
+                            name={m.displayName}
+                          />
+                        ))}
+                        {hasCostOthers && (
+                          <Bar
+                            yAxisId="left"
+                            dataKey="others"
+                            stackId="cost-models"
+                            fill={PROVIDER_COLORS[PROVIDER_COLORS.length - 1]}
+                            name="Others"
+                          />
+                        )}
+                        <Line
+                          yAxisId="right"
+                          type="monotone"
+                          dataKey="costPerMillionTokens"
+                          stroke={COLORS.price}
+                          strokeWidth={2}
+                          dot={false}
+                          activeDot={{ r: 4, fill: COLORS.price, stroke: "#fff", strokeWidth: 1 }}
+                          name="Avg cost / 1M"
+                        />
+                      </ComposedChart>
+                    </ResponsiveContainer>
+                  </div>
                 </div>
 
                 <div className="mt-8">
-                  <h4 className="text-lg font-semibold mb-2">
-                    {selectedDate
-                      ? `Cost by Model - ${formatSelectedDateLabel(selectedDate, timezoneOffsetMinutes)}`
-                      : "Cost by Model"}
-                  </h4>
                   {activeTopModels.length === 0 ? (
                     <p className="text-gray-500">
                       {selectedDate ? "No data for selected date" : "No data available"}
