@@ -21,6 +21,8 @@ export interface UpstreamItem {
   keyCount: number;
   balance: string | null;
   balanceUpdatedAt: string | null;
+  hasProxy: boolean;
+  proxyDisplay: string | null;
   createdAt: string;
 }
 
@@ -42,6 +44,7 @@ interface FormState {
   enabledModels: string;
   priority: string;
   healthCheckModel: string;
+  proxyUrl: string;
 }
 
 const EMPTY_FORM: FormState = {
@@ -51,6 +54,7 @@ const EMPTY_FORM: FormState = {
   enabledModels: "",
   priority: "0",
   healthCheckModel: "",
+  proxyUrl: "",
 };
 
 interface FormKeyTestResult {
@@ -84,6 +88,7 @@ export default function UpstreamsPanel() {
   const [modelPicker, setModelPicker] = useState<ModelPickerState | null>(null);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [clearProxy, setClearProxy] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const [keysByUpstream, setKeysByUpstream] = useState<Record<number, UpstreamKeyItem[]>>({});
@@ -96,6 +101,11 @@ export default function UpstreamsPanel() {
   const [testingAll, setTestingAll] = useState<Record<number, boolean>>({});
   const [pendingDelete, setPendingDelete] = useState<UpstreamItem | null>(null);
   const [hideHistory, setHideHistory] = useState(false);
+
+  // 当前编辑项已配置的代理展示（仅脱敏 host，供表单提示；无法回显明文）
+  const editingProxy = editingId ? upstreams.find((u) => u.id === editingId) : null;
+  const hasProxyForEditing = editingProxy?.hasProxy ?? false;
+  const editingProxyDisplay = editingProxy?.proxyDisplay ?? null;
 
   const filteredPresets = useMemo(() => {
     const query = form.name.trim().toLowerCase();
@@ -138,7 +148,8 @@ export default function UpstreamsPanel() {
     e.preventDefault();
     setSaving(true);
     setError(null);
-    const payload = {
+    const proxyUrl = form.proxyUrl.trim();
+    const payload: Record<string, unknown> = {
       name: form.name.trim(),
       protocol: form.protocol,
       baseUrl: form.baseUrl.trim(),
@@ -149,6 +160,12 @@ export default function UpstreamsPanel() {
       priority: Number(form.priority) || 0,
       healthCheckModel: form.healthCheckModel.trim() || null,
     };
+    // Proxy URL 写后不可读：编辑态输入为空时省略字段（保持），除非勾选"清除代理"
+    if (proxyUrl) {
+      payload.proxyUrl = proxyUrl;
+    } else if (editingId && clearProxy) {
+      payload.proxyUrl = null;
+    }
     const newKeys = formKeys.map((k) => k.trim()).filter(Boolean);
     try {
       const res = editingId
@@ -185,6 +202,7 @@ export default function UpstreamsPanel() {
       setFormKeyTests({});
       setFormKeyShown({});
       setEditingId(null);
+      setClearProxy(false);
       loadUpstreams();
     } catch {
       setError("Network error");
@@ -202,7 +220,9 @@ export default function UpstreamsPanel() {
       enabledModels: u.enabledModels.join(", "),
       priority: String(u.priority),
       healthCheckModel: u.healthCheckModel ?? "",
+      proxyUrl: "",
     });
+    setClearProxy(false);
     setFormKeys([""]);
     setFormKeyTests({});
     setFormKeyShown({});
@@ -377,6 +397,8 @@ export default function UpstreamsPanel() {
           protocol: form.protocol,
           baseUrl: form.baseUrl.trim(),
           apiKey,
+          proxyUrl: form.proxyUrl.trim() || undefined,
+          upstreamId: form.proxyUrl.trim() ? undefined : editingId,
         }),
       });
       const json = await res.json();
@@ -413,6 +435,7 @@ export default function UpstreamsPanel() {
           baseUrl: form.baseUrl.trim(),
           apiKey,
           upstreamId: apiKey ? undefined : editingId,
+          proxyUrl: form.proxyUrl.trim() || undefined,
         }),
       });
       const json = await res.json();
@@ -545,6 +568,41 @@ export default function UpstreamsPanel() {
               required
               className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
+          </div>
+          <div className="md:col-span-3">
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <label className="min-w-0 text-xs text-gray-600">
+                Proxy URL (optional){" "}
+                <span className="hidden md:inline text-gray-400">
+                  HTTP(S) CONNECT proxy; existing value cannot be re-read
+                </span>
+              </label>
+              {editingId && hasProxyForEditing && (
+                <label className="flex shrink-0 cursor-pointer items-center gap-1.5 text-xs text-gray-500">
+                  <input
+                    type="checkbox"
+                    checked={clearProxy}
+                    onChange={(e) => setClearProxy(e.target.checked)}
+                    className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  Clear proxy
+                </label>
+              )}
+            </div>
+            <input
+              value={form.proxyUrl}
+              onChange={(e) => setForm({ ...form, proxyUrl: e.target.value })}
+              placeholder="http://user:pass@host:port"
+              autoComplete="off"
+              data-1p-ignore
+              data-bitwarden-ignore
+              className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            {editingId && hasProxyForEditing && (
+              <p className="mt-1 text-[10px] text-gray-400">
+                Configured proxy: {editingProxyDisplay ?? "yes"}. Leave blank to keep it, or tick &quot;Clear proxy&quot; to remove.
+              </p>
+            )}
           </div>
           <div className="md:col-span-3">
             <label className="mb-1 block text-xs text-gray-600">
@@ -697,6 +755,7 @@ export default function UpstreamsPanel() {
                   setForm(EMPTY_FORM);
                   setFormKeys([""]);
                   setFormKeyTests({});
+                  setClearProxy(false);
                 }}
                 className="rounded border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50"
               >
@@ -813,6 +872,14 @@ export default function UpstreamsPanel() {
                     title="All keys failed on real requests. Auto-probed every 30 min; requests are routed to other upstreams meanwhile."
                   >
                     unhealthy
+                  </span>
+                )}
+                {u.hasProxy && (
+                  <span
+                    className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500"
+                    title="Requests to this upstream go through an HTTP(S) CONNECT proxy"
+                  >
+                    via proxy {u.proxyDisplay ?? ""}
                   </span>
                 )}
                 {u.balance !== null && (

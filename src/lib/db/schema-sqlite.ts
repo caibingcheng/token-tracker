@@ -43,6 +43,7 @@ export const upstreams = sqliteTable("upstreams", {
   healthUpdatedAt: text("health_updated_at"),
   balance: text("balance"),
   balanceUpdatedAt: text("balance_updated_at"),
+  proxyUrlEncrypted: text("proxy_url_encrypted"), // AES-256-GCM，NULL = 直连
   createdAt: text("created_at").$defaultFn(() => new Date().toISOString()),
 });
 

@@ -6,10 +6,12 @@ import { withAuth } from "@/lib/auth/guard";
 import { isProtocol, parseEnabledModels } from "@/lib/gateway/model-router";
 import {
   validateUpstreamBaseUrl,
+  validateProxyUrl,
   InvalidUpstreamUrlError,
+  sanitizeProxyUrlForDisplay,
 } from "@/lib/gateway/url-guard";
-import { GatewaySecretMissingError } from "@/lib/gateway/crypto";
-import { healthTracker } from "@/lib/gateway/proxy-deps";
+import { encryptSecret, GatewaySecretMissingError } from "@/lib/gateway/crypto";
+import { healthTracker, decryptProxyUrl } from "@/lib/gateway/proxy-deps";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 
 function gatewaySecretError() {
@@ -35,6 +37,7 @@ export const GET = withAuth(async () => {
 
     const data = [];
     for (const row of rows) {
+      const proxyUrl = decryptProxyUrl(row.proxyUrlEncrypted);
       data.push({
         id: row.id,
         name: row.name,
@@ -49,6 +52,8 @@ export const GET = withAuth(async () => {
         keyCount: countMap.get(row.id) || 0,
         balance: row.balance ?? null,
         balanceUpdatedAt: row.balanceUpdatedAt ?? null,
+        hasProxy: proxyUrl !== null,
+        proxyDisplay: proxyUrl ? sanitizeProxyUrlForDisplay(proxyUrl) : null,
         createdAt: row.createdAt,
       });
     }
@@ -99,6 +104,20 @@ export const POST = withAuth(async (request: NextRequest) => {
         ? body.healthCheckModel.trim()
         : null;
 
+    // 可选代理：string（校验后加密落库）或 undefined/空字符串（直连）
+    let proxyUrlEncrypted: string | null = null;
+    if (typeof body.proxyUrl === "string" && body.proxyUrl.trim() !== "") {
+      try {
+        await validateProxyUrl(body.proxyUrl);
+      } catch (err) {
+        if (err instanceof InvalidUpstreamUrlError) {
+          return NextResponse.json({ success: false, error: err.message }, { status: 400 });
+        }
+        throw err;
+      }
+      proxyUrlEncrypted = encryptSecret(body.proxyUrl);
+    }
+
     try {
       const result = await db
         .insert(upstreamsTable)
@@ -110,6 +129,7 @@ export const POST = withAuth(async (request: NextRequest) => {
           priority,
           enabled: enabled ? 1 : 0,
           healthCheckModel,
+          proxyUrlEncrypted,
         })
         .returning();
       const { ip, userAgent } = extractClientInfo(request);
@@ -119,7 +139,8 @@ export const POST = withAuth(async (request: NextRequest) => {
         targetId: result[0].id,
         ip,
         userAgent,
-        details: { name, protocol },
+        // 只记是否存在代理，不回显 proxyUrl（可含凭据）
+        details: { name, protocol, hasProxy: proxyUrlEncrypted !== null },
       });
       // best-effort：对新增 model 自动填充官方价（失败静默，不阻塞保存）
       const { autoFillForModels } = await import("@/lib/model-prices-service");

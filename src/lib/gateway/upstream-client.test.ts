@@ -48,4 +48,31 @@ describe("fetchUpstreamModels", () => {
     expect(result.status).toBe(200);
     expect(result.error).toBeUndefined();
   });
+
+  it("injects dispatcher when upstream has proxyUrl", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    await fetchUpstreamModels(
+      { protocol: "openai", baseUrl: "https://api.example", proxyUrl: "http://user:pass@proxy.example:3128" },
+      "sk-test"
+    );
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit & { dispatcher?: unknown }];
+    expect(init.dispatcher).toBeDefined();
+  });
+
+  it("omits dispatcher key when upstream has no proxyUrl", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    await fetchUpstreamModels({ protocol: "openai", baseUrl: "https://api.example" }, "sk-test");
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit & { dispatcher?: unknown }];
+    expect("dispatcher" in init).toBe(false);
+  });
 });

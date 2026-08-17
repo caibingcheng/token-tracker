@@ -1,4 +1,5 @@
 import { joinUrlPath } from "./url-utils";
+import { getProxyDispatcher } from "./proxy-dispatcher";
 
 export type BalanceProvider = "deepseek" | "openrouter";
 
@@ -18,18 +19,21 @@ export function detectBalanceProvider(baseUrl: string): BalanceProvider | null {
 // 拉取余额；不支持的 provider 抛错由调用方处理
 export async function fetchBalance(
   baseUrl: string,
-  apiKey: string
+  apiKey: string,
+  proxyUrl?: string | null
 ): Promise<BalanceResult> {
   const provider = detectBalanceProvider(baseUrl);
   if (!provider) {
     throw new Error("Balance auto-fetch not supported for this upstream");
   }
+  const dispatcher = getProxyDispatcher(proxyUrl);
 
   if (provider === "deepseek") {
     const res = await fetch(joinUrlPath(baseUrl, "/user/balance"), {
       headers: { Authorization: `Bearer ${apiKey}` },
       // 手动模式：3xx 视为失败，防 key 经跨源重定向泄露
       redirect: "manual",
+      ...(dispatcher ? { dispatcher } : {}),
     });
     if (!res.ok) {
       throw new Error(`DeepSeek balance API returned ${res.status}`);
@@ -48,6 +52,7 @@ export async function fetchBalance(
     headers: { Authorization: `Bearer ${apiKey}` },
     // 手动模式：3xx 视为失败，防 key 经跨源重定向泄露
     redirect: "manual",
+    ...(dispatcher ? { dispatcher } : {}),
   });
   if (!res.ok) {
     throw new Error(`OpenRouter auth/key API returned ${res.status}`);

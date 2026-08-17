@@ -3,10 +3,12 @@
 import type { Protocol } from "./model-router";
 import { buildAuthHeaders, isEdgeBlockStatus } from "./upstream-client";
 import { joinUrlPath } from "./url-utils";
+import { getProxyDispatcher } from "./proxy-dispatcher";
 
 export interface ProbeTarget {
   protocol: Protocol;
   baseUrl: string;
+  proxyUrl?: string | null; // HTTP CONNECT 代理明文 URL（解密后），null/undefined = 直连
 }
 
 export type ProbeStyle = "chat" | "responses";
@@ -75,6 +77,7 @@ async function probeOnce(
     // 显式声明 content-type：undici 对字符串 body 默认发 text/plain，多数上游会拒绝
     const headers = new Headers(buildAuthHeaders(target.protocol, apiKey));
     headers.set("content-type", "application/json");
+    const dispatcher = getProxyDispatcher(target.proxyUrl);
     const res = await fetch(url, {
       method: "POST",
       headers,
@@ -82,6 +85,7 @@ async function probeOnce(
       signal: controller.signal,
       // 手动模式：3xx 视为失败，防已存储的真实 key 经跨源重定向泄露
       redirect: "manual",
+      ...(dispatcher ? { dispatcher } : {}),
     });
     if (res.ok) return { ok: true, status: res.status, style: apiStyle };
     if (res.status >= 300 && res.status < 400) {

@@ -1,10 +1,12 @@
 import type { Protocol } from "./model-router";
 import { joinUrlPath } from "./url-utils";
+import { getProxyDispatcher } from "./proxy-dispatcher";
 
 export interface UpstreamInfo {
   id?: number;
   protocol: Protocol;
   baseUrl: string;
+  proxyUrl?: string | null; // HTTP CONNECT 代理明文 URL（解密后），null/undefined = 直连
 }
 
 // 边缘/反 bot 拦截判读：403 + text/html 是 Cloudflare 等边缘 WAF 的拦截页特征
@@ -62,11 +64,13 @@ export async function fetchUpstreamModels(
 ): Promise<ListModelsResult> {
   const url = buildListModelsUrl(upstream.protocol, upstream.baseUrl);
   try {
+    const dispatcher = getProxyDispatcher(upstream.proxyUrl);
     const res = await fetch(url, {
       headers: buildAuthHeaders(upstream.protocol, apiKey),
       signal,
       // 手动模式：3xx 视为失败，防认证头经跨源重定向泄露
       redirect: "manual",
+      ...(dispatcher ? { dispatcher } : {}),
     });
     if (isRedirectStatus(res.status)) {
       await res.body?.cancel();

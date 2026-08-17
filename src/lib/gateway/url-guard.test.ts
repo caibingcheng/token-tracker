@@ -9,6 +9,8 @@ import {
   isPrivateHost,
   privateUpstreamsAllowed,
   validateUpstreamBaseUrl,
+  validateProxyUrl,
+  sanitizeProxyUrlForDisplay,
   InvalidUpstreamUrlError,
 } from "@/lib/gateway/url-guard";
 
@@ -140,5 +142,86 @@ describe("validateUpstreamBaseUrl", () => {
       "http://127.0.0.1:8000/v1"
     );
     expect(lookupMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("validateProxyUrl", () => {
+  it("rejects non-http(s) schemes and malformed URLs", async () => {
+    await expect(validateProxyUrl("socks5://host:1080")).rejects.toBeInstanceOf(
+      InvalidUpstreamUrlError
+    );
+    await expect(validateProxyUrl("ftp://proxy")).rejects.toBeInstanceOf(
+      InvalidUpstreamUrlError
+    );
+    await expect(validateProxyUrl("http://")).rejects.toBeInstanceOf(
+      InvalidUpstreamUrlError
+    );
+    await expect(validateProxyUrl("not a url")).rejects.toBeInstanceOf(
+      InvalidUpstreamUrlError
+    );
+  });
+
+  it("rejects private IP literals without DNS lookup", async () => {
+    await expect(validateProxyUrl("http://127.0.0.1:8080")).rejects.toBeInstanceOf(
+      InvalidUpstreamUrlError
+    );
+    await expect(validateProxyUrl("http://192.168.1.1:3128")).rejects.toBeInstanceOf(
+      InvalidUpstreamUrlError
+    );
+    await expect(validateProxyUrl("http://100.64.0.1:1080")).rejects.toBeInstanceOf(
+      InvalidUpstreamUrlError
+    );
+    expect(lookupMock).not.toHaveBeenCalled();
+  });
+
+  it("allows public IP literal proxies with credentials", async () => {
+    await expect(
+      validateProxyUrl("http://user:pass@8.8.8.8:3128")
+    ).resolves.toBe("http://user:pass@8.8.8.8:3128");
+    expect(lookupMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects domains resolving to private addresses", async () => {
+    lookupMock.mockResolvedValue([{ address: "10.0.0.5", family: 4 }]);
+    await expect(validateProxyUrl("http://internal-proxy.example.com:8080")).rejects.toBeInstanceOf(
+      InvalidUpstreamUrlError
+    );
+  });
+
+  it("allows domains resolving to public addresses", async () => {
+    lookupMock.mockResolvedValue([{ address: "104.18.20.21", family: 4 }]);
+    await expect(
+      validateProxyUrl("http://user:pass@proxy.example.com:3128")
+    ).resolves.toBe("http://user:pass@proxy.example.com:3128");
+  });
+
+  it("rejects unresolvable domains", async () => {
+    lookupMock.mockRejectedValue(new Error("ENOTFOUND"));
+    await expect(validateProxyUrl("http://nope.invalid:3128")).rejects.toBeInstanceOf(
+      InvalidUpstreamUrlError
+    );
+  });
+
+  it("ALLOW_PRIVATE_UPSTREAMS=true bypasses proxy address classification", async () => {
+    process.env.ALLOW_PRIVATE_UPSTREAMS = "true";
+    await expect(validateProxyUrl("http://10.0.0.1:1080")).resolves.toBe("http://10.0.0.1:1080");
+    expect(lookupMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("sanitizeProxyUrlForDisplay", () => {
+  it("strips userinfo and keeps scheme://host[:port]", () => {
+    expect(sanitizeProxyUrlForDisplay("http://user:pass@proxy.example.com:3128")).toBe(
+      "http://proxy.example.com:3128"
+    );
+    expect(sanitizeProxyUrlForDisplay("https://proxy.example.com:8080")).toBe(
+      "https://proxy.example.com:8080"
+    );
+  });
+
+  it("keeps IPv6 brackets", () => {
+    expect(sanitizeProxyUrlForDisplay("http://user:pass@[2001:db8::1]:1080")).toBe(
+      "http://[2001:db8::1]:1080"
+    );
   });
 });

@@ -407,6 +407,41 @@ describe("handleProxyRequest - failover chain", () => {
     expect(res.status).toBe(502);
     expect(fetchMock).toHaveBeenCalledTimes(2); // 2 keys，每 key 1 次（3xx 不重试）
   });
+
+  it("injects dispatcher when upstream has proxyUrl (main chain)", async () => {
+    fetchMock.mockResolvedValue(
+      new Response("{}", { status: 200, headers: { "content-type": "application/json" } })
+    );
+    const deps = mkDeps({
+      loadUpstreams: vi.fn(async () => [
+        mkUpstream({ proxyUrl: "http://user:pass@proxy.example:3128" }),
+      ]),
+    });
+    await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o" },
+      }),
+      deps
+    );
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit & { dispatcher?: unknown }];
+    expect(init.dispatcher).toBeDefined();
+  });
+
+  it("omits dispatcher key when upstream has no proxyUrl (main chain)", async () => {
+    fetchMock.mockResolvedValue(
+      new Response("{}", { status: 200, headers: { "content-type": "application/json" } })
+    );
+    await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o" },
+      }),
+      mkDeps()
+    );
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit & { dispatcher?: unknown }];
+    expect("dispatcher" in init).toBe(false);
+  });
 });
 
 describe("handleProxyRequest - request body size limit", () => {
@@ -2150,6 +2185,47 @@ describe("handleProxyRequest - responses subresource endpoints", () => {
     expect(markUnhealthy).toHaveBeenCalledWith(1);
     expect(markUnhealthy).toHaveBeenCalledWith(2);
     expect(markModelUnhealthy).not.toHaveBeenCalled();
+  });
+
+  it("injects dispatcher when upstream has proxyUrl (subresource chain)", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ id: "resp_123", object: "response", status: "completed" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    const { deps } = mkSubDeps({
+      loadUpstreams: vi.fn(async () => [
+        mkUpstream({ id: 1, name: "openai-primary", baseUrl: "https://primary.example", priority: 0, proxyUrl: "http://user:pass@proxy.example:3128" }),
+        mkUpstream({ id: 2, name: "openai-alt", baseUrl: "https://alt.example", priority: 1 }),
+      ]),
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/responses/resp_123", { method: "GET", headers: { authorization: "Bearer vk-good" } }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit & { dispatcher?: unknown }];
+    expect(init.dispatcher).toBeDefined();
+  });
+
+  it("omits dispatcher key when upstream has no proxyUrl (subresource chain)", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ id: "resp_123", object: "response", status: "completed" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    const { deps } = mkSubDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/responses/resp_123", { method: "GET", headers: { authorization: "Bearer vk-good" } }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit & { dispatcher?: unknown }];
+    expect("dispatcher" in init).toBe(false);
   });
 
   it("passes through 5xx with original body when all upstreams fail", async () => {
