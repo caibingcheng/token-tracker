@@ -105,3 +105,17 @@ describe("stats-query hidden sources exclusion (静态断言防回归)", () => {
     expect(withExclude.length).toBe(5);
   });
 });
+
+describe("stats-query range date filter off-by-one fix", () => {
+  it("uses computeRangeStartDateKey for tz-aware range filter", () => {
+    expect(SOURCE).toMatch(
+      /computeRangeStartDateKey\(\n\s+days,\n\s+timezoneOffsetMinutes\n\s+\)/
+    );
+  });
+
+  it("does not use the old localDateKeyFromUtcDate round-trip on the base date", () => {
+    expect(SOURCE).not.toMatch(
+      /dateFilter = localDateKeyFromUtcDate\(base, timezoneOffsetMinutes\);/
+    );
+  });
+});

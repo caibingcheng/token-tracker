@@ -18,6 +18,7 @@ export interface Record {
   requestModel?: string | null;
   latencyMs?: number | null;
   ttftMs?: number | null;
+  status?: string | null;
   createdAt: string;
 }
 
@@ -28,6 +29,36 @@ interface RecordsTableProps {
   selectedAgent?: string;
   refreshKey?: number;
   showHeader?: boolean;
+}
+
+function StatusBadge({ status }: { status?: string | null }) {
+  if (!status) return <span className="text-gray-400">-</span>;
+  switch (status) {
+    case "no_usage":
+      return (
+        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800">
+          No usage
+        </span>
+      );
+    case "client_aborted":
+      return (
+        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">
+          Client aborted
+        </span>
+      );
+    case "stream_interrupted":
+      return (
+        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800">
+          Stream interrupted
+        </span>
+      );
+    default:
+      return (
+        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800">
+          {status}
+        </span>
+      );
+  }
 }
 
 interface ToolbarProps {
@@ -200,6 +231,7 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
               <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Output</th>
               <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">TTFT</th>
               <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Latency</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200">
@@ -242,6 +274,9 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
                   {formatLatencyMs(record.latencyMs)}
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm">
+                  <StatusBadge status={record.status} />
                 </td>
               </tr>
             ))}
@@ -298,6 +333,12 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
               <div>
                 <p className="text-xs text-gray-500">Latency</p>
                 <p className="text-sm font-semibold text-gray-900">{formatLatencyMs(record.latencyMs)}</p>
+              </div>
+            </div>
+            <div className="mt-3 pt-3 border-t border-gray-100">
+              <p className="text-xs text-gray-500">Status</p>
+              <div className="mt-1">
+                <StatusBadge status={record.status} />
               </div>
             </div>
           </div>

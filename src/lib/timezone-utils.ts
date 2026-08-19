@@ -64,6 +64,20 @@ export function localDateKeyToUtcStartISO(
   ).toISOString();
 }
 
+// 计算 range 查询的起始本地日期 key（YYYY-MM-DD）。
+// 前端 "Last N Days" 窗口对应 today-(N-1) ~ today 共 N 天；
+// 使用 todayLocal 的纯日期 key 运算，避免 UTC- 时区的 round-trip 漂移。
+export function computeRangeStartDateKey(
+  days: number,
+  offsetMinutes: number,
+  now: Date = new Date()
+): string {
+  const todayLocal = localDateKeyFromUtcDate(now, offsetMinutes);
+  const base = new Date(`${todayLocal}T00:00:00Z`);
+  base.setUTCDate(base.getUTCDate() - (days - 1));
+  return base.toISOString().slice(0, 10);
+}
+
 export function addDaysLocal(
   date: Date,
   days: number,

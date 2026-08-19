@@ -32,5 +32,8 @@ export function formatNumber(num: number, compact: boolean): string {
 
 export function formatLatencyMs(ms: number | null | undefined): string {
   if (ms === null || ms === undefined || !Number.isFinite(ms)) return "-";
+  if (ms >= 1000) {
+    return `${(ms / 1000).toFixed(1)}s`;
+  }
   return `${Math.round(ms)}ms`;
 }

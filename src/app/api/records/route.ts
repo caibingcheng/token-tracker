@@ -130,6 +130,7 @@ export const GET = withAuth(async (request: NextRequest) => {
           cacheWrite: tokenRecords.cacheWrite,
           latencyMs: tokenRecords.latencyMs,
           ttftMs: tokenRecords.ttftMs,
+          status: tokenRecords.status,
           requestModel: tokenRecords.requestModel,
           createdAt: tokenRecords.createdAt,
         })
@@ -148,6 +149,7 @@ export const GET = withAuth(async (request: NextRequest) => {
         cacheWrite: record.cacheWrite,
         latencyMs: record.latencyMs,
         ttftMs: record.ttftMs,
+        status: record.status,
         requestModel: record.requestModel,
         createdAt: record.createdAt,
         providerName: record.provider

@@ -2,7 +2,7 @@ import { db, tokenRecords, getDateGroupExpr } from "@/lib/db";
 import { sql, and, eq, inArray, notInArray } from "drizzle-orm";
 import {
   localDateKeyToUtcStartISO,
-  localDateKeyFromUtcDate,
+  computeRangeStartDateKey,
 } from "@/lib/timezone-utils";
 import {
   TOP_N_RAW_MODELS,
@@ -134,13 +134,10 @@ export async function executeStatsQuery(params: {
       throw new Error(`Invalid range: ${range}`);
     }
     if (timezoneOffsetMinutes !== undefined) {
-      const todayLocal = localDateKeyFromUtcDate(
-        new Date(),
+      dateFilter = computeRangeStartDateKey(
+        days,
         timezoneOffsetMinutes
       );
-      const base = new Date(`${todayLocal}T00:00:00Z`);
-      base.setUTCDate(base.getUTCDate() - days);
-      dateFilter = localDateKeyFromUtcDate(base, timezoneOffsetMinutes);
     } else {
       dateFilter = new Date();
       dateFilter.setDate(dateFilter.getDate() - days);
