@@ -97,3 +97,63 @@ export async function validateUpstreamBaseUrl(baseUrl: string): Promise<string> 
   }
   return baseUrl;
 }
+
+// 校验并返回规范化后的 HTTP(S) 代理 URL（可含 user:pass@ 凭据）。
+// 私网拒绝口径与 validateUpstreamBaseUrl 一致，共用 ALLOW_PRIVATE_UPSTREAMS 逃生开关
+// （公网代理无需开；Tailscale 100.64/10 等内网代理需开）。
+export async function validateProxyUrl(proxyUrl: string): Promise<string> {
+  if (!/^https?:\/\//.test(proxyUrl)) {
+    throw new InvalidUpstreamUrlError("proxyUrl must start with http:// or https://");
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(proxyUrl);
+  } catch {
+    throw new InvalidUpstreamUrlError("proxyUrl is not a valid URL");
+  }
+  const hostname = parsed.hostname;
+  if (!hostname) {
+    throw new InvalidUpstreamUrlError("proxyUrl must include a hostname");
+  }
+  if (privateUpstreamsAllowed()) {
+    return proxyUrl;
+  }
+  if (isPrivateHost(hostname)) {
+    throw new InvalidUpstreamUrlError(
+      "proxyUrl must not be a private address" +
+        " (set ALLOW_PRIVATE_UPSTREAMS=true to allow internal proxies)"
+    );
+  }
+  if (isIP(hostname) !== 0) {
+    // IP 字面量：同步分类已完成（公开地址），无需 DNS
+    return proxyUrl;
+  }
+  let addresses: string[];
+  try {
+    const resolved = await lookup(hostname, { all: true, verbatim: true });
+    addresses = resolved.map((r) => r.address);
+  } catch {
+    throw new InvalidUpstreamUrlError("proxyUrl hostname does not resolve");
+  }
+  if (addresses.length === 0) {
+    throw new InvalidUpstreamUrlError("proxyUrl hostname does not resolve");
+  }
+  for (const addr of addresses) {
+    const ipType = isIP(addr);
+    const blocked =
+      ipType === 4 ? isPrivateIpv4(addr) : ipType === 6 ? isPrivateIpv6(addr) : true;
+    if (blocked) {
+      throw new InvalidUpstreamUrlError(
+        "proxyUrl must not be a private address" +
+          " (set ALLOW_PRIVATE_UPSTREAMS=true to allow internal proxies)"
+      );
+    }
+  }
+  return proxyUrl;
+}
+
+// 脱敏：剥掉 userinfo，返回 scheme://host[:port]（IPv6 保留括号）。永不泄漏凭据。
+export function sanitizeProxyUrlForDisplay(proxyUrl: string): string {
+  const parsed = new URL(proxyUrl);
+  return `${parsed.protocol}//${parsed.host}`;
+}

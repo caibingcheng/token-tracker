@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { db, initDatabase, upstreamsTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";
-import { loadPlainUpstreamKeys, healthTracker } from "@/lib/gateway/proxy-deps";
+import { loadPlainUpstreamKeys, healthTracker, decryptProxyUrl } from "@/lib/gateway/proxy-deps";
 import { probeModelWithKeys } from "@/lib/gateway/probe";
 import { parseEnabledModels } from "@/lib/gateway/model-router";
 
@@ -40,7 +40,11 @@ export const POST = withAuth(async (request: NextRequest, ctx: any) => {
       });
     }
 
-    const target = { protocol: upstream.protocol as any, baseUrl: upstream.baseUrl };
+    const target = {
+      protocol: upstream.protocol as any,
+      baseUrl: upstream.baseUrl,
+      proxyUrl: decryptProxyUrl(upstream.proxyUrlEncrypted),
+    };
     const results: { model: string; ok: boolean; status: number; error?: string; keysTested: number }[] = [];
     let anyOk = false;
     let sawAuthError = false;

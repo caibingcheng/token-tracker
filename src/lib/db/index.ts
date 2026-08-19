@@ -179,6 +179,7 @@ async function ensureClient() {
         { name: "health_updated_at", definition: "health_updated_at TEXT" },
         { name: "balance", definition: "balance TEXT" },
         { name: "balance_updated_at", definition: "balance_updated_at TEXT" },
+        { name: "proxy_url_encrypted", definition: "proxy_url_encrypted TEXT" },
       ],
     },
   ]);

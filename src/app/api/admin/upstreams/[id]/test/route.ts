@@ -5,6 +5,7 @@ import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";
 import { testUpstreamConnection } from "@/lib/gateway/upstream-client";
 import { decryptSecret, GatewaySecretMissingError } from "@/lib/gateway/crypto";
+import { decryptProxyUrl } from "@/lib/gateway/proxy-deps";
 
 function gatewaySecretError() {
   return NextResponse.json(
@@ -67,7 +68,11 @@ export const POST = withAuth(async (request: NextRequest, ctx: any) => {
 
     try {
       const result = await testUpstreamConnection(
-        { protocol: upstream.protocol as any, baseUrl: upstream.baseUrl },
+        {
+          protocol: upstream.protocol as any,
+          baseUrl: upstream.baseUrl,
+          proxyUrl: decryptProxyUrl(upstream.proxyUrlEncrypted),
+        },
         apiKey
       );
       return NextResponse.json({

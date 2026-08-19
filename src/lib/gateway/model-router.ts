@@ -14,6 +14,7 @@ export interface UpstreamRoute {
   priority: number;
   enabled?: boolean;
   enabledModels?: string | string[];
+  proxyUrl?: string | null; // HTTP CONNECT 代理明文 URL（解密后），null = 直连
 }
 
 // 手动路由规则：客户端请求的虚拟名 name + protocol → 目标 upstream 的真实模型 targetModel

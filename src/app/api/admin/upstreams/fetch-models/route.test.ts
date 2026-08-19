@@ -170,4 +170,69 @@ describe("/api/admin/upstreams/fetch-models", () => {
     expect(json.data.status).toBe(302);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it("显式 proxyUrl 校验并透传 dispatcher", async () => {
+    const token = await makeToken();
+    const res = await POST(
+      req("/api/admin/upstreams/fetch-models", token, {
+        protocol: "openai",
+        baseUrl: "https://8.8.8.8",
+        apiKey: "sk-test",
+        proxyUrl: "http://user:pass@8.8.8.8:3128",
+      })
+    );
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit & { dispatcher?: unknown }];
+    expect(init.dispatcher).toBeDefined();
+  });
+
+  it("非法 proxyUrl 400 且不发起 fetch", async () => {
+    const token = await makeToken();
+    const res = await POST(
+      req("/api/admin/upstreams/fetch-models", token, {
+        protocol: "openai",
+        baseUrl: "https://8.8.8.8",
+        apiKey: "sk-test",
+        proxyUrl: "socks5://8.8.8.8:1080",
+      })
+    );
+    expect(res.status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("未显式 proxyUrl 时用 upstreamId 从库存解密补充", async () => {
+    const upstreamId = await withSkipCache(async () => {
+      const row = await db
+        .insert(upstreamsTable)
+        .values({
+          name: "proxy-stored-up",
+          protocol: "openai",
+          baseUrl: "https://8.8.8.8",
+          enabledModels: JSON.stringify(["gpt-4o"]),
+          priority: 0,
+          enabled: 1,
+          proxyUrlEncrypted: encryptSecret("http://user:pass@8.8.8.8:3128"),
+        })
+        .returning();
+      await db.insert(upstreamKeysTable).values({
+        upstreamId: row[0]!.id,
+        apiKeyEncrypted: encryptSecret("sk-stored"),
+        enabled: 1,
+      });
+      return row[0]!.id;
+    });
+    const token = await makeToken();
+    const res = await POST(
+      req("/api/admin/upstreams/fetch-models", token, {
+        protocol: "openai",
+        baseUrl: "https://8.8.8.8",
+        upstreamId,
+      })
+    );
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit & { dispatcher?: unknown }];
+    expect(init.dispatcher).toBeDefined();
+  });
 });

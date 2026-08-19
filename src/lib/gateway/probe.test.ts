@@ -68,6 +68,24 @@ describe("probeModel", () => {
     expect(headers.get("authorization")).toBe("Bearer sk-test");
   });
 
+  it("injects dispatcher when target has proxyUrl", async () => {
+    fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
+    await probeModel(
+      { protocol: "openai", baseUrl: "https://api.example", proxyUrl: "http://user:pass@proxy.example:3128" },
+      "gpt-4o",
+      "sk-test"
+    );
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit & { dispatcher?: unknown }];
+    expect(init.dispatcher).toBeDefined();
+  });
+
+  it("omits dispatcher key when target has no proxyUrl", async () => {
+    fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
+    await probeModel({ protocol: "openai", baseUrl: "https://api.example" }, "gpt-4o", "sk-test");
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit & { dispatcher?: unknown }];
+    expect("dispatcher" in init).toBe(false);
+  });
+
   it("returns ok for 2xx", async () => {
     fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
     const result = await probeModel(

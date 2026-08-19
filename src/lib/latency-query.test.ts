@@ -8,6 +8,7 @@ import {
   aggregateLatencyDaily,
   type LatencyRow,
 } from "@/lib/latency-query";
+import type { HiddenProviderGroup } from "@/lib/provider-utils";
 
 function row(partial: Partial<LatencyRow> & { model: string }): LatencyRow {
   return {
@@ -223,6 +224,83 @@ describe("aggregateLatencyByModelByDate", () => {
 
   it("returns empty object for empty input", () => {
     expect(aggregateLatencyByModelByDate([], active, 0)).toEqual({});
+  });
+});
+
+describe("aggregateLatencyByModel provider group merge", () => {
+  const active = new Set(["gpt-4o"]);
+
+  it("merges same-group providers by model", () => {
+    const groups: HiddenProviderGroup[] = [
+      { name: "opencode", letter: "A", patterns: ["opencode-direct", "opencode-proxy"] },
+    ];
+    const rows: LatencyRow[] = [
+      row({
+        model: "gpt-4o",
+        provider: "opencode-direct",
+        ttftMs: 100,
+        latencyMs: 500,
+        outputTokens: 50,
+      }),
+      row({
+        model: "gpt-4o",
+        provider: "opencode-proxy",
+        ttftMs: 300,
+        latencyMs: 900,
+        outputTokens: 150,
+      }),
+    ];
+
+    const result = aggregateLatencyByModel(rows, active, groups);
+    expect(result).toHaveLength(1);
+    expect(result[0].provider).toBe("opencode");
+    expect(result[0].model).toBe("gpt-4o");
+    expect(result[0].count).toBe(2);
+    expect(result[0].streamCount).toBe(2);
+    expect(result[0].p50TtftMs).toBe(200);
+  });
+
+  it("keeps different models in the same group separate", () => {
+    const groups: HiddenProviderGroup[] = [
+      { name: "opencode", letter: "A", patterns: ["opencode-direct", "opencode-proxy"] },
+    ];
+    const rows: LatencyRow[] = [
+      row({
+        model: "gpt-4o",
+        provider: "opencode-direct",
+        ttftMs: 100,
+        latencyMs: 500,
+        outputTokens: 50,
+      }),
+      row({
+        model: "deepseek-chat",
+        provider: "opencode-proxy",
+        ttftMs: 300,
+        latencyMs: 900,
+        outputTokens: 150,
+      }),
+    ];
+
+    const result = aggregateLatencyByModel(rows, new Set(["gpt-4o", "deepseek-chat"]), groups);
+    expect(result).toHaveLength(2);
+    expect(result.map((r) => `${r.provider}:${r.model}`).sort()).toEqual([
+      "opencode:deepseek-chat",
+      "opencode:gpt-4o",
+    ]);
+  });
+
+  it("keeps ungrouped providers as-is", () => {
+    const groups: HiddenProviderGroup[] = [
+      { name: "opencode", letter: "A", patterns: ["opencode-direct", "opencode-proxy"] },
+    ];
+    const rows: LatencyRow[] = [
+      row({ model: "gpt-4o", provider: "openai", ttftMs: 100, latencyMs: 500, outputTokens: 50 }),
+      row({ model: "gpt-4o", provider: "anthropic", ttftMs: 300, latencyMs: 900, outputTokens: 150 }),
+    ];
+
+    const result = aggregateLatencyByModel(rows, active, groups);
+    expect(result).toHaveLength(2);
+    expect(result.map((r) => r.provider).sort()).toEqual(["anthropic", "openai"]);
   });
 });
 

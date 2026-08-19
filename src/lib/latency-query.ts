@@ -7,7 +7,7 @@ import { normalizeModel } from "@/lib/model-utils";
 import { loadUpstreamModelRows } from "@/lib/model-prices-service";
 import { loadHiddenSources } from "@/lib/auth/settings";
 import { toNum } from "@/lib/number-utils";
-import type { HiddenProviderGroup } from "@/lib/provider-utils";
+import { providerGroupKey, type HiddenProviderGroup } from "@/lib/provider-utils";
 import type { ModelAliasRule } from "@/lib/model-registry";
 
 // 延迟统计：TTFT（流式首 token）/ 总延迟 / 生成速度。
@@ -78,8 +78,9 @@ export function aggregateLatencyByModel(
 
   for (const row of rows) {
     if (!activeModels.has(row.model)) continue;
-    const provider = row.provider ?? "unknown";
-    const normalized = normalizeModel(row.model, provider, groups, aliases);
+    const rawProvider = row.provider ?? "unknown";
+    const provider = providerGroupKey(rawProvider, groups);
+    const normalized = normalizeModel(row.model, rawProvider, groups, aliases);
     const key = `${provider}\u0000${normalized}`;
 
     let bucket = buckets.get(key);

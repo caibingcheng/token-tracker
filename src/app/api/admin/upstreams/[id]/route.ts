@@ -6,8 +6,12 @@ import { withAuth } from "@/lib/auth/guard";
 import { isProtocol, parseEnabledModels } from "@/lib/gateway/model-router";
 import {
   validateUpstreamBaseUrl,
+  validateProxyUrl,
   InvalidUpstreamUrlError,
+  sanitizeProxyUrlForDisplay,
 } from "@/lib/gateway/url-guard";
+import { encryptSecret } from "@/lib/gateway/crypto";
+import { decryptProxyUrl } from "@/lib/gateway/proxy-deps";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 
 interface Params {
@@ -24,12 +28,16 @@ async function withKeys(upstream: any) {
     .select()
     .from(upstreamKeysTable)
     .where(eq(upstreamKeysTable.upstreamId, upstream.id));
+  const proxyUrl = decryptProxyUrl(upstream.proxyUrlEncrypted);
+  const { proxyUrlEncrypted: _proxyUrlEncrypted, ...rest } = upstream;
   return {
-    ...upstream,
+    ...rest,
     enabled: upstream.enabled === 1,
     enabledModels: parseEnabledModels(upstream.enabledModels),
     balance: upstream.balance ?? null,
     balanceUpdatedAt: upstream.balanceUpdatedAt ?? null,
+    hasProxy: proxyUrl !== null,
+    proxyDisplay: proxyUrl ? sanitizeProxyUrlForDisplay(proxyUrl) : null,
     keys: keyRows.map((k: any) => ({
       id: k.id,
       enabled: k.enabled === 1,
@@ -128,6 +136,28 @@ export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
           { status: 400 }
         );
       }
+    }
+    if (body.proxyUrl !== undefined) {
+      if (body.proxyUrl === null) {
+        // 显式 null → 清除代理
+        values.proxyUrlEncrypted = null;
+      } else if (typeof body.proxyUrl === "string" && body.proxyUrl.trim() !== "") {
+        try {
+          await validateProxyUrl(body.proxyUrl);
+        } catch (err) {
+          if (err instanceof InvalidUpstreamUrlError) {
+            return NextResponse.json({ success: false, error: err.message }, { status: 400 });
+          }
+          throw err;
+        }
+        values.proxyUrlEncrypted = encryptSecret(body.proxyUrl);
+      } else if (body.proxyUrl !== "") {
+        return NextResponse.json(
+          { success: false, error: "proxyUrl must be a string or null" },
+          { status: 400 }
+        );
+      }
+      // 空字符串：视为省略（保持现状，不写库）
     }
 
     if (Object.keys(values).length === 0) {

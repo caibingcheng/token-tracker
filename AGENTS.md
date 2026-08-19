@@ -40,7 +40,7 @@ docker compose up -d                                 # 本地运行
 - **自动初始化**：`initDatabase()` 在首次 API 调用时自动建表 + 索引
 - **表结构**：
   - `token_records`（id, model, provider, agent, input_tokens, output_tokens, cache_read, cache_write, status, latency_ms, ttft_ms, virtual_key_id, user_agent, request_model, created_at）：**`model` 列 = 发往 upstream 的真实 model 名**（手动路由场景 = targetModel）；`request_model` = 客户端原始请求名（虚拟名路由场景可追溯，仅展示不参与定价）；`latency_ms` = 整请求耗时（全部请求）；`ttft_ms` = 流式首 token 延迟（首 chunk 到达 - 请求开始，仅流式有值，非流式 NULL）
-  - `upstreams`（id, name, protocol, base_url, enabled_models(JSON), priority, enabled, health_check_model, health_status, health_updated_at, balance, balance_updated_at, created_at）
+  - `upstreams`（id, name, protocol, base_url, enabled_models(JSON), priority, enabled, health_check_model, health_status, health_updated_at, balance, balance_updated_at, proxy_url_encrypted, created_at）：`proxy_url_encrypted` = 可选 HTTP(S) CONNECT 代理 URL（AES-256-GCM 加密，可含 `user:pass@` 凭据，NULL = 直连；写后不可读，API 只回显脱敏 host）
   - `upstream_keys`（id, upstream_id, api_key_encrypted, enabled, last_status, created_at）
   - `upstream_model_health`（upstream_id+model 复合主键, status, expires_at, updated_at）：model 级不可用标记（持久化）
   - `virtual_keys`（id, name, api_key_encrypted, enabled, comment, enabled_models(JSON, 默认 '["*"]'), max_rpm, max_tpm, max_daily_tokens, max_monthly_tokens, last_used_at, created_at）：后 4 列为配额上限（NULL = 不限）
@@ -60,7 +60,7 @@ docker compose up -d                                 # 本地运行
 | `/api/dashboard` | GET | 会话 token（`X-API-Key` header） | 聚合统计（total + today + yesterday + daily + models + 365 天 heatmap + 24h 分布） |
 | `/api/providers` `/api/models` `/api/agents` `/api/cli` `/api/records` | GET | 会话 token | 统计/查询 API |
 | `/api/model-pricing` | GET | 会话 token | 已定价模型行集（PriceSimulatorModal 下拉数据源，附带 models.dev 归一化索引推断的 `provider` 分组字段 + `providers` 全量列表）；`?provider=<id>` 返回该 provider 的 models.dev 全部模型（懒加载数据源）；`?search=<q>` 切换为快照全量搜索模式（`searchModelsDevModel` 全量收集 + 相关性排序再截断 50：provider 名精确命中 > modelId 精确 > 归一化精确 > 前缀 > 子串，同级按原厂优先级表，保证原厂不被聚合平台挤出）；models.dev 来源 canonicalId = `providerId/modelId`，cache 价缺失回退 input，快照缺失返回空数组；仿真只读不落库 |
-| `/api/admin/upstreams*` | CRUD | 会话 token | 上游管理（含 keys、模型拉取、连接测试、余额刷新；test-connection/fetch-models 复用 `validateUpstreamBaseUrl` SSRF 校验，私网/环回地址 400） |
+| `/api/admin/upstreams*` | CRUD | 会话 token | 上游管理（含 keys、模型拉取、连接测试、余额刷新；可配 HTTP CONNECT 代理 `proxy_url`，`validateProxyUrl` SSRF 校验，写后仅回显脱敏 host；test-connection/fetch-models 复用 SSRF 校验，私网/环回地址 400） |
 | `/api/admin/virtual-keys*` | CRUD | 会话 token | 虚拟 key 管理（创建/编辑/吊销/用量，支持 comment + enabledModels + max_rpm/max_tpm/max_daily_tokens/max_monthly_tokens 配额） |
 | `/api/admin/models` | GET | 会话 token | Admin Models 面板数据源：路由模拟（手动/自动解析到具体 upstream + model）+ 已解析模型列表 |
 | `/api/admin/routing-rules*` | CRUD | 会话 token | 手动路由规则管理（虚拟名 + protocol → upstream + target_model，`UNIQUE(name, protocol)`） |
@@ -119,6 +119,7 @@ docker compose up -d                                 # 本地运行
   - 请求体上限默认 32MB（`GATEWAY_MAX_BODY_MB` 可调，超限 413）；非流式响应整包缓冲上限 50MB（超限中断，流式路径 O(1) 不受影响）
   - 502/协议不匹配错误不回显内部细节（upstream 名、内网地址等），仅进服务端日志
   - **管理端旁路 fetch 同样 `redirect: "manual"`**：`fetchUpstreamModels`（upstream-client.ts）、探活 `probeOnce`（probe.ts）、余额 `fetchBalance`（balance.ts）均带真实 key 访问第三方上游，3xx 一律视为失败（防 key 经跨源重定向被动泄露），与主代理链路 `proxy.ts` 口径一致
+  - **Upstream 级 HTTP CONNECT 代理（`proxy_url`）**：仅 `http://`/`https://` 代理（undici `ProxyAgent`），CONNECT 隧道 TLS 端到端，API key 对代理不可见；`proxy_url_encrypted` 走 AES-256-GCM 加密落库（写后不可读，GET/审计仅回显脱敏 `scheme://host[:port]`）；六处出站 fetch（主链、responses 辅助链、probe、fetchUpstreamModels、fetchBalance）统一 `...(dispatcher ? { dispatcher } : {})` 注入（`src/lib/gateway/proxy-dispatcher.ts`，模块级 Map 缓存 `ProxyAgent`，上限 50）；`validateProxyUrl` 复用 `isPrivateIpv4/6` + DNS 全地址私网拒绝 + `ALLOW_PRIVATE_UPSTREAMS` 逃生（公网代理无需开）；模型级粒度用「同 base_url 拆两个 upstream 条目」组合实现；代理不可用时 CONNECT 失败走现有重试/换 key/标记 unhealthy 逻辑
   - test-connection / fetch-models 管理端点与 upstream 创建/更新共用 `validateUpstreamBaseUrl` SSRF 校验（私网/环回/元数据地址 400），不用裸 `^https?://` 正则
   - 日志永不打印请求 body 与任何 key
 
@@ -168,8 +169,9 @@ docker compose up -d                                 # 本地运行
 - **数据源**：settings 表 `hidden_providers`（admin panel Display tab 编辑，面板优先）→ env `HIDDEN_PROVIDERS` fallback → 空。**面板保存后 env 被静默忽略**，UI 有提示
 - **唯一 async 入口**：`loadHiddenProviderGroups()`（settings 优先 → env 回退）；纯函数一律接收 `groups` 参数显式传参（`anonymizeProvider` / `resolveProviderFilter` / `deanonymizeProvider` / `parseHiddenProviderGroups`），不直接读 env
 - **分组语法**：分号分组的通配匹配，如 `CustomA:vendor*`；被隐藏的 provider 在 UI 显示为 "Provider A", "Provider B"... 或自定义名称
+- **Provider 维度归并**：同一组内多个真实 provider 在 Provider 维度统计中合并为一行（Top Providers、每日堆叠图、Speed/latency 表），由 `providerGroupKey()` 计算聚合键；组名同时作为 `ProviderStat.provider` 与 `ProviderStat.providerName`，保证前端堆叠图跨日 series 连续；Model 维度仍按归一化 model 名独立聚合，不受影响
 - **缓存失效**：`setHiddenProvidersSetting` 写入时调用 `invalidateModelCache()` 清空 `normalizeModel` 的 `rawToCanonical`，面板改分组后立即生效
-- **相关文件**：`src/lib/provider-utils.ts`、`src/lib/model-registry.ts`（`isProviderHidden`）
+- **相关文件**：`src/lib/provider-utils.ts`（`providerGroupKey`、`anonymizeProvider`、`resolveProviderFilter`）、`src/lib/model-registry.ts`（`isProviderHidden`）
 
 ### Hidden Sources（隐藏 vk / upstream 数据源，`hidden_sources`）
 
@@ -333,6 +335,10 @@ docker compose up -d
   - `src/app/api/admin/models-dev/upload/route.test`：快照上传校验（大小/结构/全非法 400）
   - `src/app/api/admin/settings/hidden-sources/route.test`：Hidden Sources API + 统计剔除 + 删除联动
   - `src/app/api/admin/upstreams/test-connection|fetch-models/route.test`：SSRF 校验（私网 400 不发请求）+ 存储 key 模式 + 3xx 不跟随
+  - `src/app/api/admin/upstreams/route.test`：proxy_url 加密落库（密文 ≠ 明文可解密还原）、GET/PATCH 不泄漏凭据（仅脱敏 host）、PATCH null 清除/省略保持/换代理、非法 proxyUrl 400、其他字段更新不触碰密文
+  - `src/lib/gateway/proxy-dispatcher`：null/空串 → undefined、同 URL 缓存复用、上限 50 重建
+  - `src/lib/gateway/url-guard`：`validateProxyUrl`（scheme 拒绝/私网 IP + DNS 拒绝/逃生开关/含凭据通过）+ `sanitizeProxyUrlForDisplay` 剥 userinfo
+  - `src/lib/gateway/proxy` / `probe` / `upstream-client` / `balance`：upstream 带 proxyUrl 时 init 含 dispatcher、无 proxyUrl 时无 dispatcher key（主链 + responses 辅助链各一）
   - `src/app/api/dashboard/route.test` / `src/app/api/records/route.test`：Dashboard/Records API 集成
 - 新增纯逻辑模块（如解析器、路由匹配、加密）时应同步提交单测
 

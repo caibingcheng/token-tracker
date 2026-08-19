@@ -24,6 +24,7 @@ import type { ParsedUsage } from "./parsers/types";
 import { checkQuota, hasQuotaLimits } from "./quota";
 import type { QuotaUsage } from "./quota";
 import { rewriteModelNonStreaming, createSseModelRewriter } from "./response-rewriter";
+import { getProxyDispatcher } from "./proxy-dispatcher";
 
 export const MAX_RETRY = 2; // 每个 key 内最多尝试次数
 const NON_STREAMING_TIMEOUT_MS = 60_000;
@@ -504,6 +505,7 @@ export async function handleProxyRequest(
           if (isNonStreaming) {
             timeoutHandle = setTimeout(() => controller.abort(), NON_STREAMING_TIMEOUT_MS);
           }
+          const dispatcher = getProxyDispatcher(upstream.proxyUrl);
 
           upstreamResponse = await fetch(targetUrl, {
             method: request.method,
@@ -512,6 +514,7 @@ export async function handleProxyRequest(
             duplex: "half",
             redirect: "manual",
             signal: controller.signal,
+            ...(dispatcher ? { dispatcher } : {}),
           } as RequestInit & { duplex: "half" });
 
           if (isRedirectStatus(upstreamResponse.status)) {
@@ -800,6 +803,7 @@ async function handleSubresourcePassthrough(
         try {
           const controller = new AbortController();
           timeoutHandle = setTimeout(() => controller.abort(), NON_STREAMING_TIMEOUT_MS);
+          const dispatcher = getProxyDispatcher(upstream.proxyUrl);
 
           upstreamResponse = await fetch(targetUrl, {
             method: request.method,
@@ -808,6 +812,7 @@ async function handleSubresourcePassthrough(
             duplex: "half",
             redirect: "manual",
             signal: controller.signal,
+            ...(dispatcher ? { dispatcher } : {}),
           } as RequestInit & { duplex: "half" });
 
           if (isRedirectStatus(upstreamResponse.status)) {

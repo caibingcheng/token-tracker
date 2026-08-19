@@ -1,12 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
-import { db, initDatabase, upstreamKeysTable } from "@/lib/db";
+import { db, initDatabase, upstreamKeysTable, upstreamsTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";
 import { fetchUpstreamModels } from "@/lib/gateway/upstream-client";
 import { decryptSecret } from "@/lib/gateway/crypto";
+import { decryptProxyUrl } from "@/lib/gateway/proxy-deps";
 import { isProtocol } from "@/lib/gateway/model-router";
-import { validateUpstreamBaseUrl, InvalidUpstreamUrlError } from "@/lib/gateway/url-guard";
+import {
+  validateUpstreamBaseUrl,
+  validateProxyUrl,
+  InvalidUpstreamUrlError,
+} from "@/lib/gateway/url-guard";
 
 export const POST = withAuth(async (request: NextRequest) => {
   return withSkipCache(async () => {
@@ -42,9 +47,30 @@ export const POST = withAuth(async (request: NextRequest) => {
       );
     }
 
+    // 可选代理：显式 proxyUrl 优先（校验）；否则用 upstreamId 从库存解密补充
+    let proxyUrl: string | null = null;
+    if (typeof body.proxyUrl === "string" && body.proxyUrl.trim() !== "") {
+      try {
+        await validateProxyUrl(body.proxyUrl);
+      } catch (err) {
+        return NextResponse.json(
+          { success: false, error: err instanceof InvalidUpstreamUrlError ? err.message : "Invalid proxyUrl" },
+          { status: 400 }
+        );
+      }
+      proxyUrl = body.proxyUrl;
+    } else if (upstreamId !== undefined && Number.isInteger(upstreamId)) {
+      const upstreamRow = (
+        await db.select().from(upstreamsTable).where(eq(upstreamsTable.id, upstreamId))
+      )[0];
+      if (upstreamRow) {
+        proxyUrl = decryptProxyUrl(upstreamRow.proxyUrlEncrypted);
+      }
+    }
+
     // 表单有明文 key 时优先使用
     if (apiKey) {
-      const result = await fetchUpstreamModels({ protocol, baseUrl: validatedBaseUrl }, apiKey);
+      const result = await fetchUpstreamModels({ protocol, baseUrl: validatedBaseUrl, proxyUrl }, apiKey);
       return NextResponse.json({
         success: !result.error,
         data: { models: result.models, status: result.status, error: result.error },
@@ -72,7 +98,7 @@ export const POST = withAuth(async (request: NextRequest) => {
     for (const keyRow of keyRows) {
       try {
         const plain = decryptSecret(keyRow.apiKeyEncrypted);
-        result = await fetchUpstreamModels({ protocol, baseUrl: validatedBaseUrl }, plain);
+        result = await fetchUpstreamModels({ protocol, baseUrl: validatedBaseUrl, proxyUrl }, plain);
         if (result.error) continue;
         break;
       } catch {

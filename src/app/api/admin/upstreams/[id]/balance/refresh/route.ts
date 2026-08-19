@@ -5,6 +5,7 @@ import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";
 import { decryptSecret } from "@/lib/gateway/crypto";
 import { fetchBalance, detectBalanceProvider } from "@/lib/gateway/balance";
+import { decryptProxyUrl } from "@/lib/gateway/proxy-deps";
 
 interface Params {
   params: { id: string };
@@ -53,7 +54,11 @@ export const POST = withAuth(async (request: NextRequest, ctx: any) => {
     }
 
     try {
-      const result = await fetchBalance(upstream.baseUrl, plainKey);
+      const result = await fetchBalance(
+        upstream.baseUrl,
+        plainKey,
+        decryptProxyUrl(upstream.proxyUrlEncrypted)
+      );
       await db
         .update(upstreamsTable)
         .set({

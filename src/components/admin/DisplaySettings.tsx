@@ -391,7 +391,9 @@ export default function DisplaySettings() {
       <p className="mt-1 text-xs text-gray-400">
         Each row is one group; comma separates patterns within a group;
         <code className="rounded bg-gray-100 px-1">*</code> suffix = prefix match.
-        Empty display name renders as Provider A, B, C...
+        Empty display name renders as Provider A, B, C... Multiple providers in
+        the same group are merged into one entry in provider-level stats (Top
+        Providers, daily stacked chart, Speed table).
       </p>
 
       {hiddenError && (

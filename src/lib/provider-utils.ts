@@ -192,14 +192,16 @@ export function matchesPattern(provider: string, pattern: string): boolean {
 }
 
 /**
- * Returns the anonymized display name for a given provider.
+ * 返回 provider 对应的归并键（group key）。
  *
- * - If the provider does NOT match any hidden group, returns the name as-is.
- * - If hidden, maps to the group's display name (custom name or "Provider A/B/...").
+ * - 命中某个 hidden provider group → 返回该组的 name（分组显示名）。
+ * - 未命中 → 返回原始 provider 名。
+ *
+ * 用于 provider 维度统计聚合：同组多个真实 provider 合并为同一聚合桶，
+ * 组名即展示名与 series dataKey。
  */
-export function anonymizeProvider(
+export function providerGroupKey(
   provider: string,
-  _allProviders: string[],
   groups: HiddenProviderGroup[]
 ): string {
   if (groups.length === 0) {
@@ -211,6 +213,20 @@ export function anonymizeProvider(
     }
   }
   return provider;
+}
+
+/**
+ * Returns the anonymized display name for a given provider.
+ *
+ * - If the provider does NOT match any hidden group, returns the name as-is.
+ * - If hidden, maps to the group's display name (custom name or "Provider A/B/...").
+ */
+export function anonymizeProvider(
+  provider: string,
+  _allProviders: string[],
+  groups: HiddenProviderGroup[]
+): string {
+  return providerGroupKey(provider, groups);
 }
 
 /**

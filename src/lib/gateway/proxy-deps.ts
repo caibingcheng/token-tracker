@@ -77,7 +77,11 @@ async function probeUpstream(upstreamId: number): Promise<boolean> {
   if (keys.length === 0) return false;
 
   const result = await probeModel(
-    { protocol: upstream.protocol as Protocol, baseUrl: upstream.baseUrl },
+    {
+      protocol: upstream.protocol as Protocol,
+      baseUrl: upstream.baseUrl,
+      proxyUrl: decryptProxyUrl(upstream.proxyUrlEncrypted),
+    },
     model,
     keys[0]
   );
@@ -176,6 +180,12 @@ export async function loadRoutingRules(): Promise<RoutingRule[]> {
   }));
 }
 
+// 解密上游代理 URL；GATEWAY_SECRET 缺失必须向上传播（fail-closed，与 key 解密同口径）
+export function decryptProxyUrl(encrypted: string | null | undefined): string | null {
+  if (!encrypted) return null;
+  return decryptSecret(encrypted);
+}
+
 // 代理路由的依赖实现（Next.js 服务端使用）
 export function createProxyDeps(): ProxyDeps {
   return {
@@ -229,6 +239,7 @@ export function createProxyDeps(): ProxyDeps {
             priority: row.priority,
             enabled: true,
             enabledModels: row.enabledModels,
+            proxyUrl: decryptProxyUrl(row.proxyUrlEncrypted),
           })
         );
       });

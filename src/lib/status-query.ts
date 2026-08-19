@@ -9,7 +9,7 @@ import type {
   StatusPageConfig,
   StatusPageElementsConfig,
 } from "@/lib/auth/settings";
-import { aggregateByNormalizedModel, TOP_N_DISPLAY, TOP_N_RAW_MODELS, type StatItem } from "@/lib/model-utils";
+import { aggregateByNormalizedModel, TOP_N_DISPLAY, type StatItem } from "@/lib/model-utils";
 import { getDisplayName, type ModelAliasRule } from "@/lib/model-registry";
 import { toNum } from "@/lib/number-utils";
 import {
@@ -327,9 +327,9 @@ function aggregateTopModelsByDate(
   byDate.forEach((items, date) => {
     result.set(
       date,
-      aggregateByNormalizedModel(items, groups, aliases)
-        .slice(0, TOP_N_RAW_MODELS)
-        .map((item) => buildModelStat(item, aliases))
+      aggregateByNormalizedModel(items, groups, aliases).map((item) =>
+        buildModelStat(item, aliases)
+      )
     );
   });
 

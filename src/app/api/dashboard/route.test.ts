@@ -97,13 +97,14 @@ describe("aggregateProviders", () => {
     expect(result[0].totalCost).toBe(0);
   });
 
-  it("遵守 hidden_providers 匿名化", () => {
+  it("遵守 hidden_providers 匿名化并归并同组 provider", () => {
     const rows = [
       makeRow({ provider: "openai" }),
       makeRow({ provider: "anthropic" }),
     ];
     const result = aggregateProviders(rows, HIDDEN_GROUPS);
-    expect(result.find((r) => r.provider === "openai")!.providerName).toBe(
+    // 归并后 provider 字段本身即为组名，与 providerName 一致
+    expect(result.find((r) => r.provider === "Provider A")!.providerName).toBe(
       "Provider A"
     );
     expect(result.find((r) => r.provider === "anthropic")!.providerName).toBe(

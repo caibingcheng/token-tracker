@@ -50,6 +50,38 @@ describe("fetchBalance - deepseek", () => {
     expect(new Headers(init.headers).get("authorization")).toBe("Bearer sk-test");
   });
 
+  it("injects dispatcher when proxyUrl provided", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(
+        JSON.stringify({ balance_infos: [{ currency: "CNY", total_balance: "1" }] }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchBalance(
+      "https://api.deepseek.com",
+      "sk-test",
+      "http://user:pass@proxy.example:3128"
+    );
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit & { dispatcher?: unknown }];
+    expect(init.dispatcher).toBeDefined();
+  });
+
+  it("omits dispatcher key without proxyUrl", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(
+        JSON.stringify({ balance_infos: [{ currency: "CNY", total_balance: "1" }] }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchBalance("https://api.deepseek.com", "sk-test");
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit & { dispatcher?: unknown }];
+    expect("dispatcher" in init).toBe(false);
+  });
+
   it("handles string or numeric total_balance", async () => {
     const fetchMock = vi.fn(async () =>
       new Response(
