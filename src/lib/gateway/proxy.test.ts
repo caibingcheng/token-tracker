@@ -692,6 +692,198 @@ describe("handleProxyRequest - usage capture & write-back", () => {
   });
 });
 
+describe("handleProxyRequest - request health status", () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    fetchMock.mockReset();
+  });
+
+  function makeHangingStreamingResponse(initialBody?: Uint8Array): Response {
+    const encoder = new TextEncoder();
+    const chunk = initialBody ?? encoder.encode('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n');
+    return new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(chunk);
+          // never close / never enqueue again
+        },
+      }),
+      { status: 200, headers: { "content-type": "text/event-stream" } }
+    );
+  }
+
+  it("marks client_aborted when response stream is canceled mid-flight", async () => {
+    fetchMock.mockResolvedValueOnce(makeHangingStreamingResponse());
+
+    const deps = mkDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", stream: true },
+      }),
+      deps
+    );
+
+    const reader = res.body!.getReader();
+    await reader.read();
+    await reader.cancel();
+
+    // wait for onDone in finally
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(deps.onUsage).toHaveBeenCalled();
+    expect(deps.onUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "client_aborted" })
+    );
+  });
+
+  it("records partial usage with client_aborted when stream is canceled after usage chunk", async () => {
+    const encoder = new TextEncoder();
+    const sse =
+      'data: {"id":"1","choices":[],"usage":{"prompt_tokens":50,"completion_tokens":20}}\n\n';
+    fetchMock.mockResolvedValueOnce(makeHangingStreamingResponse(encoder.encode(sse)));
+
+    const deps = mkDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", stream: true },
+      }),
+      deps
+    );
+
+    const reader = res.body!.getReader();
+    await reader.read();
+    await reader.cancel();
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(deps.onUsage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "client_aborted",
+        inputTokens: 50,
+        outputTokens: 20,
+      })
+    );
+  });
+
+  it("marks stream_interrupted when stream idle timeout fires", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(new ReadableStream({ start() {} }), {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      })
+    );
+
+    const deps = mkDeps({
+      resolveStreamIdleTimeoutMs: vi.fn(async () => 10),
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", stream: true },
+      }),
+      deps
+    );
+
+    // wait for idle timeout to fire and onDone to finish
+    await new Promise((r) => setTimeout(r, 200));
+
+    // response body should error out because controller.error() was called
+    await expect(res.text()).rejects.toThrow();
+    expect(deps.onUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "stream_interrupted" })
+    );
+  });
+
+  it("marks client_aborted when request signal aborts during streaming", async () => {
+    const encoder = new TextEncoder();
+    fetchMock.mockResolvedValueOnce(makeHangingStreamingResponse(encoder.encode('data: {"choices":[]}\n\n')));
+
+    const ac = new AbortController();
+    const req = new Request("https://gw.example/v1/chat/completions", {
+      method: "POST",
+      headers: new Headers({
+        "content-type": "application/json",
+        authorization: "Bearer vk-good",
+      }),
+      body: JSON.stringify({ model: "gpt-4o", stream: true }),
+      signal: ac.signal,
+    });
+
+    const deps = mkDeps();
+    const res = await handleProxyRequest(req, deps);
+
+    const reader = res.body!.getReader();
+    await reader.read();
+    ac.abort();
+    await reader.cancel();
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(deps.onUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "client_aborted" })
+    );
+  });
+
+  it("keeps status null/no_usage on normal stream end", async () => {
+    const sse =
+      'data: {"id":"1","choices":[{"delta":{"content":"hi"}}]}\n\n' +
+      'data: {"id":"1","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5}}\n\n' +
+      "data: [DONE]\n\n";
+    fetchMock.mockResolvedValueOnce(
+      new Response(sse, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      })
+    );
+
+    const deps = mkDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", stream: true },
+      }),
+      deps
+    );
+    await res.text();
+
+    const usageCall = vi.mocked(deps.onUsage!).mock.calls[0]![0] as { status?: string };
+    expect(usageCall).not.toHaveProperty("status");
+    expect(usageCall.inputTokens).toBe(10);
+    expect(usageCall.outputTokens).toBe(5);
+  });
+
+  it("keeps status no_usage on normal non-streaming response without usage", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ choices: [{ text: "hi" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+
+    const deps = mkDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o" },
+      }),
+      deps
+    );
+    await res.text();
+
+    expect(deps.onUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "no_usage" })
+    );
+  });
+});
+
 describe("handleProxyRequest - quota", () => {
   const fetchMock = vi.fn();
 

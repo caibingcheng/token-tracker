@@ -75,6 +75,7 @@ async function insertRecord(overrides: Partial<typeof tokenRecords.$inferInsert>
       outputTokens: overrides.outputTokens ?? 50,
       cacheRead: overrides.cacheRead ?? 0,
       cacheWrite: overrides.cacheWrite ?? 0,
+      status: overrides.status ?? null,
       requestModel: overrides.requestModel ?? null,
       createdAt: overrides.createdAt ?? new Date().toISOString(),
     });
@@ -117,5 +118,23 @@ describe("records route", () => {
     // 响应不含任何原始 provider 名（含被隐藏的）
     expect(res.data.some((r: any) => "provider" in r)).toBe(false);
     expect(res.data.some((r: any) => r.provider === "vendor-x")).toBe(false);
+  });
+
+  it("returns status field for each record", async () => {
+    await insertRecord({ model: "gpt-4o", provider: "openai", status: null });
+    await insertRecord({ model: "gpt-4o-mini", provider: "openai", status: "no_usage" });
+    await insertRecord({ model: "o1", provider: "openai", status: "client_aborted" });
+    await insertRecord({ model: "o3", provider: "openai", status: "stream_interrupted" });
+
+    const token = await makeToken();
+    const res = await json(await GET(req("/api/records", "GET", undefined, token)));
+
+    expect(res.success).toBe(true);
+    expect(res.data).toHaveLength(4);
+    const byModel = new Map(res.data.map((r: any) => [r.model, r]));
+    expect(byModel.get("gpt-4o").status).toBeNull();
+    expect(byModel.get("gpt-4o-mini").status).toBe("no_usage");
+    expect(byModel.get("o1").status).toBe("client_aborted");
+    expect(byModel.get("o3").status).toBe("stream_interrupted");
   });
 });

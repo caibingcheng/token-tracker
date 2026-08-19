@@ -650,6 +650,7 @@ export async function handleProxyRequest(
         protocol,
         virtualKeyId: virtualKey.id,
         virtualModelName: manualRoute?.virtualName,
+        clientSignal: request.signal,
       });
     }
     if (manualRoute) {
@@ -713,6 +714,7 @@ export async function handleProxyRequest(
         virtualKeyId: virtualKey.id,
         virtualModelName: manualRoute?.virtualName,
         startTime,
+        clientSignal: request.signal,
       });
 }
 
@@ -887,6 +889,7 @@ async function handleSubresourcePassthrough(
         protocol: "openai",
         virtualKeyId: virtualKey.id,
         recordUsage: false, // 辅助端点不记录 usage（retrieve 重复调用会重复统计）
+        clientSignal: request.signal,
       });
     }
 
@@ -948,9 +951,10 @@ async function passthroughResponse(
     virtualModelName?: string;
     recordUsage?: boolean; // 辅助端点等场景跳过 usage 解析与写库（默认 true）
     startTime?: number; // 请求开始时刻（与 latencyMs 同源），用于流式 TTFT 计算
+    clientSignal?: AbortSignal; // 客户端请求 signal（断开检测）
   }
 ): Promise<Response> {
-  const { meta, deps, bodyJson, protocol, virtualKeyId, virtualModelName, recordUsage = true, startTime } = opts;
+  const { meta, deps, bodyJson, protocol, virtualKeyId, virtualModelName, recordUsage = true, startTime, clientSignal } = opts;
   const headers = new Headers(PROXY_RESPONSE_HEADERS);
   copyHeader(upstreamResponse.headers, headers, "content-type");
   copyHeader(upstreamResponse.headers, headers, "x-ratelimit-remaining-requests");
@@ -970,6 +974,9 @@ async function passthroughResponse(
   // 流式首 chunk 到达时刻（TTFT，相对请求开始）；非流式保持 null 不写入
   let ttftMs: number | null = null;
   let onDone: () => void = () => {};
+  // 客户端断开 / 上游流中断状态标记
+  let clientAborted = false;
+  let streamStatus: string | undefined;
 
   const rewriter = virtualModelName
     ? createSseModelRewriter(protocol, virtualModelName)
@@ -977,6 +984,14 @@ async function passthroughResponse(
 
   const passthrough = new ReadableStream<Uint8Array>({
     start(controller) {
+      // 监听客户端 signal abort（双保险：cancel() 钩子是主要路径）
+      if (clientSignal) {
+        clientSignal.addEventListener("abort", () => {
+          clientAborted = true;
+          streamStatus = "client_aborted";
+          reader.cancel().catch(() => {});
+        });
+      }
       const pump = async () => {
         let idleTimeoutMs = DEFAULT_STREAM_IDLE_TIMEOUT_MS;
         try {
@@ -1048,6 +1063,7 @@ async function passthroughResponse(
           }
         } catch (err) {
           // 释放上游连接，避免超时/异常后连接泄漏
+          streamStatus = clientAborted ? "client_aborted" : "stream_interrupted";
           await reader.cancel().catch(() => {});
           controller.error(err);
         }
@@ -1055,6 +1071,8 @@ async function passthroughResponse(
       pump().finally(() => onDone());
     },
     cancel() {
+      clientAborted = true;
+      streamStatus = "client_aborted";
       reader.cancel();
     },
   });
@@ -1069,7 +1087,7 @@ async function passthroughResponse(
                 new TextDecoder().decode(concatUint8Arrays(chunks)),
                 protocol
               );
-        const usage = toRecordUsage(parsed, meta);
+        const usage = toRecordUsage(parsed, meta, streamStatus);
         // latencyMs 必须在流完全结束后计算：proxy 主流程的初始值只覆盖到
         // 响应头（≈TTFT 窗口），不含流式生成/body 传输阶段
         const finalLatencyMs =
@@ -1119,9 +1137,12 @@ function parseUsageNonStreaming(fullText: string, protocol: Protocol): ParsedUsa
   }
 }
 
-function toRecordUsage(parsed: ParsedUsage | null, meta: RecordUsageMeta): RecordUsageMeta {
+function toRecordUsage(parsed: ParsedUsage | null, meta: RecordUsageMeta, interruptStatus?: string): RecordUsageMeta {
   if (!parsed) {
-    return { ...meta, inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0, status: "no_usage" };
+    return { ...meta, inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0, status: interruptStatus ?? "no_usage" };
+  }
+  if (interruptStatus) {
+    return { ...meta, ...parsed, status: interruptStatus };
   }
   return { ...meta, ...parsed };
 }
