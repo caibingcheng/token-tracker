@@ -2,6 +2,7 @@ import { db, tokenRecords } from "@/lib/db";
 import { buildWhereClause } from "@/lib/stats-query";
 import {
   localDateKeyFromUtcDate,
+  computeRangeStartDateKey,
 } from "@/lib/timezone-utils";
 import { normalizeModel } from "@/lib/model-utils";
 import { loadUpstreamModelRows } from "@/lib/model-prices-service";
@@ -249,13 +250,10 @@ export async function queryLatencyStats(params: {
   if (!Number.isFinite(days) || days <= 0) {
     throw new Error(`Invalid range: ${range}`);
   }
-  const todayLocal = localDateKeyFromUtcDate(
-    new Date(),
+  const dateFilter = computeRangeStartDateKey(
+    days,
     timezoneOffsetMinutes
   );
-  const base = new Date(`${todayLocal}T00:00:00Z`);
-  base.setUTCDate(base.getUTCDate() - days);
-  const dateFilter = localDateKeyFromUtcDate(base, timezoneOffsetMinutes);
 
   // 独立排除列表（不依赖隐藏状态；空数组由 buildWhereClause 跳过）
   const hiddenSources = await loadHiddenSources();

@@ -3,6 +3,7 @@ import {
   localDateKeyFromUtcDate,
   localDateKeyToUtcStartISO,
   offsetMinutesToSqlModifiers,
+  computeRangeStartDateKey,
 } from "./timezone-utils";
 
 describe("localDateKeyToUtcStartISO", () => {
@@ -45,5 +46,25 @@ describe("offsetMinutesToSqlModifiers", () => {
     expect(offsetMinutesToSqlModifiers(-480)).toEqual(["+8 hours"]);
     expect(offsetMinutesToSqlModifiers(330)).toEqual(["-5 hours", "-30 minutes"]);
     expect(offsetMinutesToSqlModifiers(0)).toEqual(["+0 hours"]);
+  });
+});
+
+describe("computeRangeStartDateKey", () => {
+  const now = new Date("2026-08-19T12:00:00.000Z");
+
+  it("returns today-(N-1) for an N-day range", () => {
+    expect(computeRangeStartDateKey(7, -480, now)).toBe("2026-08-13");
+    expect(computeRangeStartDateKey(3, -480, now)).toBe("2026-08-17");
+  });
+
+  it("keeps exactly N days for UTC- time zones (no round-trip drift)", () => {
+    // 修复前 UTC- 时区会多偏一天，导致 7d 实际覆盖 9 个本地日期
+    expect(computeRangeStartDateKey(7, 300, now)).toBe("2026-08-13");
+    expect(computeRangeStartDateKey(3, 300, now)).toBe("2026-08-17");
+  });
+
+  it("returns today for a 1-day range", () => {
+    expect(computeRangeStartDateKey(1, -480, now)).toBe("2026-08-19");
+    expect(computeRangeStartDateKey(1, 300, now)).toBe("2026-08-19");
   });
 });

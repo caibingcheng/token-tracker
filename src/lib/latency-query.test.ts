@@ -321,4 +321,16 @@ describe("queryLatencyStats hidden sources exclusion (静态断言防回归)", (
       /timezoneOffsetMinutes,\n\s+exclude\n\s*\);/
     );
   });
+
+  it("uses computeRangeStartDateKey for range date filter", () => {
+    expect(SOURCE).toMatch(
+      /const dateFilter = computeRangeStartDateKey\(\n\s+days,\n\s+timezoneOffsetMinutes\n\s+\);/
+    );
+  });
+
+  it("does not use the old localDateKeyFromUtcDate round-trip on the base date", () => {
+    expect(SOURCE).not.toMatch(
+      /const dateFilter = localDateKeyFromUtcDate\(base, timezoneOffsetMinutes\);/
+    );
+  });
 });
