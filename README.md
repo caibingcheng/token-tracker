@@ -1,27 +1,38 @@
 # Token Tracker — Personal AI Gateway
 
-轻量级个人 AI Gateway：统一接入多个上游 LLM API（OpenAI 兼容 / Anthropic / Gemini），对外提供标准协议入口，纯透传请求/响应，并在透传过程中自动解析、记录 token 用量。自带 Token Usage Dashboard 与管理界面。
+A lightweight personal AI Gateway: unify access to multiple upstream LLM APIs (OpenAI-compatible / Anthropic / Gemini) behind a single set of standard protocol endpoints, proxy requests and responses transparently, and automatically parse and record token usage along the way. Ships with a Token Usage Dashboard and an admin UI.
 
 ![Dashboard Screenshot](./public/readme-screenshot.png)
 
-## 特点
+## Why this project
 
-- **多协议透传**：`/v1/*`（OpenAI / Anthropic）、`/v1beta/*`（Gemini）catch-all 路由，不改 body、不转换协议
-- **零插件接入**：客户端只需修改 `base_url` 和 key，无需安装任何插件
-- **自动记账**：从响应（流式/非流式）自动解析 input / output / cache token，按虚拟 key 归属到 agent
-- **上游多 key 故障转移**：单上游支持多个 key，429/5xx/超时自动切换，流式开始后不再重试
-- **虚拟 key**：AES-256-GCM 加密存储，可单独吊销，name 即统计维度
-- **管理界面**：`/admin` 配置上游、拉取模型、管理虚拟 key、查看用量
+I use various AI agents on different devices, and I wanted to keep track of how I actually use them. I first tried recording usage through various agent plugins, but that approach worked poorly. The project eventually grew into its current shape: I added a gateway layer so all traffic flows through one entry point where tokens get recorded transparently — clients need zero plugins.
 
-## 客户端接入
+Before writing my own, I looked at and tried other options:
 
-| 客户端 | 配置 |
+- **LiteLLM / NEW API**: solid and full-featured, but built for teams and enterprises — more than I need for personal use.
+- **omniRouter**: positioned as a personal gateway, but it felt overly complex to set up, and its pitch leans heavily toward free APIs.
+
+For personal, everyday use I actually prefer **paid APIs** — like paying a phone bill. Free options always come with nagging worries: they can be unstable, and there's nobody to complain to. Free APIs are fine for non-sensitive testing, not for daily use.
+
+## Features
+
+- **Multi-protocol proxy**: catch-all routes at `/v1/*` (OpenAI / Anthropic) and `/v1beta/*` (Gemini); the body is passed through unchanged, no protocol conversion
+- **Zero-plugin onboarding**: clients just change their `base_url` and key — no plugins required
+- **Automatic accounting**: input / output / cache tokens are parsed from responses (streaming and non-streaming) and attributed to an agent via its virtual key
+- **Multi-key failover per upstream**: several keys per upstream, auto-switching on 429/5xx/timeout; no retry once streaming has started
+- **Virtual keys**: stored encrypted with AES-256-GCM, revocable individually; the key name is the stats dimension
+- **Admin UI**: `/admin` to configure upstreams, fetch models, manage virtual keys, and view usage
+
+## Client Setup
+
+| Client | Configuration |
 |---|---|
-| OpenAI 兼容（Codex / OpenCode 等） | `base_url = http://host:3000/v1`，`api_key = vk-xxx` |
-| Claude Code（Anthropic 协议） | `ANTHROPIC_BASE_URL = http://host:3000`，`ANTHROPIC_AUTH_TOKEN = vk-xxx` |
-| Gemini 协议客户端 | `base_url = http://host:3000`，key 放 `x-goog-api-key` 或 `?key=` |
+| OpenAI-compatible (Codex / OpenCode, etc.) | `base_url = http://host:3000/v1`, `api_key = vk-xxx` |
+| Claude Code (Anthropic protocol) | `ANTHROPIC_BASE_URL = http://host:3000`, `ANTHROPIC_AUTH_TOKEN = vk-xxx` |
+| Gemini-protocol clients | `base_url = http://host:3000`, key via `x-goog-api-key` or `?key=` |
 
-虚拟 key（`vk-` 前缀）在 `/admin` 创建。同一 key 多设备共用不区分设备。
+Virtual keys (the `vk-` prefix) are created in `/admin`. Sharing one key across devices does not distinguish between devices.
 
 ## Deploy with Docker (VPS)
 
@@ -34,56 +45,54 @@
 ```bash
 docker pull ghcr.io/caibingcheng/token-tracker:latest
 cp docker-compose.example.yml docker-compose.yml
-# 编辑 docker-compose.yml：设置 ADMIN_API_KEY、GATEWAY_SECRET、SQLITE_DATABASE_PATH
+# Edit docker-compose.yml: set ADMIN_API_KEY, GATEWAY_SECRET, SQLITE_DATABASE_PATH
 docker compose up -d
 ```
 
-首次启动后：
+After the first start:
 
-1. 打开 `http://host:3000/admin`，用 `ADMIN_API_KEY` 中的任意一个 key 登录（未配置时出现首次设置向导）
-2. 添加上游（名称、协议、Base URL），配置 API Key，拉取/勾选启用模型
-3. 创建虚拟 key，按上表配置客户端即可
+1. Open `http://host:3000/admin` and log in with any key from `ADMIN_API_KEY` (if unset, a first-run setup wizard appears)
+2. Add an upstream (name, protocol, Base URL), configure its API key, and fetch/select the models to enable
+3. Create a virtual key and configure your client as in the table above
 
 ### Environment Variables
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `SQLITE_DATABASE_PATH` | Yes | SQLite 数据库路径（默认 `/app/data/token-tracker.db`） |
-| `ADMIN_API_KEY` | 启动前建议 | 管理面 API Key，逗号分隔（Dashboard / admin / 统计 API 均需；未配置且 DB 无 key 时出现首次设置向导）。旧名 `API_KEYS` 兼容（deprecated） |
-| `GATEWAY_SECRET` | Yes | 网关主密钥，AES-256-GCM（32 字节 hex/base64，用 `openssl rand -hex 32` 生成）；缺失时代理与 admin API 返回 503 |
-| `HIDDEN_PROVIDERS` | No | 需要在 UI 匿名化的 provider；分组格式 `名称:p1,p2`（分号分隔多组），同组多个 provider 在统计中合并为一行 |
-| `API_CACHE_TTL_MS` | No | SELECT 缓存 TTL（毫秒，默认 10000） |
-| `API_CACHE_MAX_SIZE` | No | 缓存最大条目数（默认 1000） |
+| `SQLITE_DATABASE_PATH` | Yes | Path to the SQLite database file (default `/app/data/token-tracker.db`) |
+| `ADMIN_API_KEY` | Suggested at first run | Admin API keys for the management surface, comma-separated (Dashboard / admin / stats APIs all need it; if unset and the DB has no key, a first-run setup wizard appears). Legacy name `API_KEYS` still supported (deprecated) |
+| `GATEWAY_SECRET` | Yes | Gateway master key, AES-256-GCM (32-byte hex/base64, generate with `openssl rand -hex 32`); if missing, the proxy and admin APIs return 503 |
+| `HIDDEN_PROVIDERS` | No | Providers to anonymize in the UI; group syntax `name:p1,p2` (multiple groups separated by `;`); providers in the same group are merged into one row in stats |
+| `API_CACHE_TTL_MS` | No | SELECT cache TTL (ms, default 10000) |
+| `API_CACHE_MAX_SIZE` | No | Max cache entries (default 1000) |
 
-SQLite 数据库文件在首次请求时自动创建（含增量迁移），无需手动操作。
+The SQLite database file is created automatically on the first request (with incremental migrations); no manual setup needed.
 
-> **⚠️ 首次设置向导安全提示**：未配置 `ADMIN_API_KEY` 且 DB 无 key 时，任何能触达 Web 端的人
-> 都可先到先得地设置 admin key（fail-open 设计）。**生产环境请务必设置 `ADMIN_API_KEY`
-> env 或通过防火墙/内网隔离保护首次配置窗口**。向导限流只防爆破，不防首次接管。
+> **⚠️ First-run wizard security note**: if `ADMIN_API_KEY` is not set and the DB has no key, anyone who can reach the web UI can be the first to claim the admin key (fail-open design). **In production, always set `ADMIN_API_KEY`** or protect the first-configuration window with a firewall / internal network. The wizard's rate limiting only prevents brute force, not first-run takeover.
 
 ## Development
 
 ```bash
 npm install
 cp .env.example .env.local
-# 必需：SQLITE_DATABASE_PATH、GATEWAY_SECRET
+# Required: SQLITE_DATABASE_PATH, GATEWAY_SECRET
 npm run dev
-npm test        # vitest 单元测试
+npm test        # vitest unit tests
 npm run lint
 ```
 
-## API 一览
+## API Overview
 
-| 路由 | 认证 | 说明 |
+| Route | Auth | Description |
 |---|---|---|
-| `/v1/*`, `/v1beta/*` | 虚拟 key | 代理入口（透传） |
-| `/api/auth/login` | 原始 API key（+ 可选 TOTP） | 登录换会话 token |
-| `/api/dashboard` 等统计 API | 会话 token（`X-API-Key` header） | Dashboard 数据 |
-| `/api/admin/*` | 会话 token | 上游 / 虚拟 key / 安全设置管理 |
-| `/admin` | 页面 + 会话 token | 管理界面 |
-| `/` | 页面 + 会话 token | 用量 Dashboard |
+| `/v1/*`, `/v1beta/*` | Virtual key | Proxy entry points (pass-through) |
+| `/api/auth/login` | Raw API key (+ optional TOTP) | Login to exchange for a session token |
+| `/api/dashboard` and other stats APIs | Session token (`X-API-Key` header) | Dashboard data |
+| `/api/admin/*` | Session token | Upstream / virtual key / security settings management |
+| `/admin` | Page + session token | Admin UI |
+| `/` | Page + session token | Usage Dashboard |
 
-> 所有 `/api/*`（login 除外）只接受登录换取的会话 token。脚本调用示例：
+> All `/api/*` routes (except `login`) only accept the session token obtained from login. Script example:
 > ```bash
 > TOKEN=$(curl -s -X POST http://host:3000/api/auth/login \
 >   -H 'Content-Type: application/json' \
@@ -91,7 +100,7 @@ npm run lint
 > curl -s http://host:3000/api/dashboard -H "X-API-Key: $TOKEN"
 > ```
 >
-> 忘记登录 key 无法登录时：删除 SQLite `settings` 表中的 `admin_api_key` 行即回退到 env `ADMIN_API_KEY` 兜底。
+> If you forget the login key, delete the `admin_api_key` row from the SQLite `settings` table to fall back to the `ADMIN_API_KEY` env.
 
 ## License
 
