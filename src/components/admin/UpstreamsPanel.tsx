@@ -74,6 +74,7 @@ interface ModelPickerState {
   models: string[];
   selected: Set<string>;
   error?: string;
+  missingCount?: number;
 }
 
 export default function UpstreamsPanel() {
@@ -440,10 +441,30 @@ export default function UpstreamsPanel() {
       });
       const json = await res.json();
       if (json.success && json.data) {
+        const models = json.data.models as string[];
+        const current = form.enabledModels
+          .split(",")
+          .map((m) => m.trim())
+          .filter(Boolean);
+        const selected = new Set<string>();
+        let missingCount = 0;
+        for (const name of current) {
+          if (name.endsWith("*")) {
+            const prefix = name.slice(0, -1);
+            for (const m of models) {
+              if (m.startsWith(prefix)) selected.add(m);
+            }
+          } else if (models.includes(name)) {
+            selected.add(name);
+          } else {
+            missingCount += 1;
+          }
+        }
         setModelPicker({
-          models: json.data.models as string[],
-          selected: new Set<string>(),
+          models,
+          selected,
           error: json.data.error || undefined,
+          missingCount,
         });
       } else {
         setModelPicker({
@@ -788,6 +809,12 @@ export default function UpstreamsPanel() {
             {modelPicker.error && (
               <div className="mx-5 mt-3 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-600">
                 Fetch failed: {modelPicker.error}
+              </div>
+            )}
+
+            {!modelPicker.error && modelPicker.missingCount !== undefined && modelPicker.missingCount > 0 && (
+              <div className="mx-5 mt-3 rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700">
+                {modelPicker.missingCount} configured model(s) are not in the upstream model list and will be kept:
               </div>
             )}
 

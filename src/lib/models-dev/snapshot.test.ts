@@ -119,12 +119,12 @@ describe("sanitizeModelsDevData", () => {
 });
 
 describe("uploadSnapshot", () => {
-  const NOW = new Date("2026-08-12T00:00:00.000Z");
+  const NOW = new Date();
 
   it("makes data available via getSnapshot immediately without network fetch", async () => {
     const fetchImpl = vi.fn();
     const snap = await uploadSnapshot(GOOD, { filePath, now: NOW });
-    expect(snap.fetchedAt).toBe("2026-08-12T00:00:00.000Z");
+    expect(snap.fetchedAt).toBe(NOW.toISOString());
     const read = await getSnapshot({ filePath, fetchImpl });
     expect(read?.data).toEqual(GOOD);
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -133,7 +133,7 @@ describe("uploadSnapshot", () => {
   it("writes the snapshot file to disk", async () => {
     await uploadSnapshot(GOOD, { filePath, now: NOW });
     const onDisk = JSON.parse(readFileSync(filePath, "utf-8"));
-    expect(onDisk).toEqual({ fetchedAt: "2026-08-12T00:00:00.000Z", data: GOOD });
+    expect(onDisk).toEqual({ fetchedAt: NOW.toISOString(), data: GOOD });
   });
 
   it("survives memory cache reset (read back from disk)", async () => {
@@ -141,7 +141,7 @@ describe("uploadSnapshot", () => {
     resetSnapshotCache();
     const read = await getSnapshot({ filePath });
     expect(read?.data).toEqual(GOOD);
-    expect(read?.fetchedAt).toBe("2026-08-12T00:00:00.000Z");
+    expect(read?.fetchedAt).toBe(NOW.toISOString());
   });
 
   it("does not trigger background refresh after reset (uploaded data is fresh)", async () => {
