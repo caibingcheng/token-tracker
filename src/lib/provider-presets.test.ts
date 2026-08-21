@@ -45,14 +45,16 @@ describe("provider-presets", () => {
       "bigmodel",
       "siliconflow",
       "bailian",
+      "opencode",
+      "opencode go",
     ]) {
       expect(names, `missing preset ${expected}`).toContain(expected);
     }
   });
 
-  it("kimi for coding uses the Anthropic-compatible endpoint", () => {
+  it("kimi for coding uses the OpenAI-compatible endpoint", () => {
     const preset = PROVIDER_PRESETS.find((p) => p.name === "kimi for coding");
     expect(preset?.baseUrl).toBe("https://api.kimi.com/coding/v1");
-    expect(preset?.protocol).toBe("anthropic");
+    expect(preset?.protocol).toBe("openai");
   });
 });

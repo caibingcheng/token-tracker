@@ -13,8 +13,10 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
   { name: "moonshot", protocol: "openai", baseUrl: "https://api.moonshot.cn/v1" },
   { name: "openrouter", protocol: "openai", baseUrl: "https://openrouter.ai/api/v1" },
   { name: "dashscope", protocol: "openai", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1" },
-  { name: "kimi for coding", protocol: "anthropic", baseUrl: "https://api.kimi.com/coding/v1" },
+  { name: "kimi for coding", protocol: "openai", baseUrl: "https://api.kimi.com/coding/v1" },
   { name: "bigmodel", protocol: "openai", baseUrl: "https://open.bigmodel.cn/api/paas/v4" },
   { name: "siliconflow", protocol: "openai", baseUrl: "https://api.siliconflow.cn/v1" },
   { name: "bailian", protocol: "openai", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1" },
+  { name: "opencode", protocol: "openai", baseUrl: "https://opencode.ai/zen/v1" },
+  { name: "opencode go", protocol: "openai", baseUrl: "https://opencode.ai/zen/go/v1" },
 ];
