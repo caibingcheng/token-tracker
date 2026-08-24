@@ -7,6 +7,7 @@
 **自动记账的个人 AI 网关**：OpenAI / Anthropic / Gemini 三协议纯透传，流式/非流式 token 用量自动解析归因——客户端零插件，只改 `base_url` 和 key
 
 ![Dashboard 截图](./public/dashboard1.png)
+![Dashboard 截图](./public/dashboard2.png)
 
 ## 架构一览
 
@@ -50,7 +51,7 @@ flowchart LR
 
 ## 与其他方案的对比
 
-试过不少现成方案（LiteLLM、NEW API、OmniRoute 等都很好用），但个人使用要的是更简单的方案。所以我按自己的实际需求做了一台极简的：
+试过不少现成方案（LiteLLM、NEW API、OmniRoute 等都很好用），但是对我来说，我需要更简单的、包含token统计的方案。所以我按自己的实际需求做了一台极简的：
 
 - **token 统计**——三协议流式/非流式自动解析，cache read/write 独立记账，按虚拟 key 归因
 - **延迟统计**——逐条 latency + 流式 TTFT，按模型/日期聚合

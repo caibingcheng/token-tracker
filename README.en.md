@@ -7,6 +7,7 @@ A lightweight personal AI Gateway: unify access to multiple upstream LLM APIs (O
 **Auto-accounting personal AI gateway**: transparent pass-through for OpenAI / Anthropic / Gemini, streaming and non-streaming token usage parsed automatically and attributed per virtual key — zero plugins, clients only change `base_url` and key
 
 ![Dashboard Screenshot](./public/dashboard1.png)
+![Dashboard Screenshot](./public/dashboard2.png)
 
 ## Architecture
 
@@ -50,7 +51,7 @@ When you run AI agents on multiple devices, it's useful to have a real usage led
 
 ## Comparison with other options
 
-I've tried a number of existing solutions (LiteLLM, NEW API, OmniRoute — all great), but for personal use I wanted something simpler. So I built a minimal one around my actual needs:
+I've tried a number of existing solutions (LiteLLM, NEW API, OmniRoute — all great), but for me, I wanted something simpler that includes token stats. So I built a minimal one around my actual needs:
 
 - **Token stats** — auto-parsed for all three protocols streaming and non-streaming, cache read/write tracked separately, attributed per virtual key
 - **Latency stats** — per-record latency + streaming TTFT, aggregated by model/date
