@@ -2,13 +2,12 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { apiFetch } from "@/lib/client/api-client";
+import { detectRequestProtocol, type Protocol } from "@/lib/gateway/model-router";
 import {
-  detectRequestProtocol,
-  routeModelByProtocol,
-  type ModelCandidate,
-  type Protocol,
-  type UpstreamRoute,
-} from "@/lib/gateway/model-router";
+  simulateRoute,
+  type SimRouteResult,
+  type SimManualRule,
+} from "@/lib/gateway/simulate-route";
 import { CopyableCode } from "./CopyableCode";
 import PricePickerModal from "./PricePickerModal";
 
@@ -103,18 +102,6 @@ interface PriceRow {
   };
 }
 
-function toUpstreamRoute(u: UpstreamSummary): UpstreamRoute {
-  return {
-    id: u.id,
-    name: u.name,
-    protocol: u.protocol,
-    baseUrl: u.baseUrl,
-    priority: u.priority,
-    enabled: u.enabled,
-    enabledModels: u.enabledModels,
-  };
-}
-
 const DEFAULT_PATH = "/v1/chat/completions";
 
 function protocolBadgeClass(protocol: Protocol): string {
@@ -188,6 +175,107 @@ function EffectiveBadge({ effective }: { effective: EffectiveRoute }) {
   return null;
 }
 
+// 模拟器结果面板：手动路由短路 / 自动路由统一渲染
+function RouteSimulationResult({ result, model }: { result: SimRouteResult; model: string }) {
+  const winner = result.winner;
+  if (result.manualRouteUnavailable) {
+    return (
+      <div className="text-sm text-red-600">
+        Manual route targets unavailable: no valid upstream targets for{" "}
+        <CopyableCode className="rounded bg-white px-1 py-0.5 text-xs">{model}</CopyableCode>{" "}
+        (gateway returns 502 <code className="text-xs">manual_route_unavailable</code>)
+        {result.skipped.length > 0 && (
+          <p className="mt-1 text-[11px] text-gray-500">
+            Skipped:{" "}
+            {result.skipped.map((s) => (
+              <span key={s.upstreamId} className="mr-2">
+                upstream #{s.upstreamId} → {s.targetModel} ({s.reason})
+              </span>
+            ))}
+          </p>
+        )}
+      </div>
+    );
+  }
+  if (!winner) {
+    return (
+      <div className="text-sm text-red-600">
+        No upstream configured for{" "}
+        <CopyableCode className="rounded bg-white px-1 py-0.5 text-xs">{model}</CopyableCode>
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-3">
+      <div className="rounded border border-green-200 bg-green-50 p-2">
+        <div className="mb-1 flex flex-wrap items-center gap-2 text-xs font-medium text-green-700">
+          Winning Upstream
+          <EffectiveBadge effective={result.effective} />
+        </div>
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <span className="font-semibold">{result.effective.winner?.name ?? winner.name}</span>
+          <span className="text-xs text-gray-500">priority {result.effective.winner?.priority ?? winner.priority}</span>
+          <CopyableCode className="rounded bg-white px-1.5 py-0.5 text-xs">
+            {result.effective.winner?.matchedPattern ?? winner.matchedPattern}
+          </CopyableCode>
+          <MatchTypeBadge type={(result.effective.winner ?? winner).matchType} />
+          <HealthBadges candidate={result.effective.winner ?? winner} />
+        </div>
+        {result.source === "manual" && (
+          <p className="mt-1 text-[11px] text-blue-700">
+            Manual route: request model is rewritten to{" "}
+            <code className="text-xs">{(result.effective.winner ?? winner).matchedPattern}</code> before going upstream.
+          </p>
+        )}
+        {result.source === "auto" && result.effective.failover && winner && (
+          <p className="mt-1 text-[11px] text-amber-700">
+            Static winner {winner.name} is unhealthy — actual route uses fallback.
+          </p>
+        )}
+      </div>
+      {result.skipped.length > 0 && (
+        <p className="text-[11px] text-gray-500">
+          Skipped targets (disabled/missing upstream — gateway skips these):{" "}
+          {result.skipped.map((s) => (
+            <span key={s.upstreamId} className="mr-2">
+              #{s.upstreamId} → {s.targetModel} ({s.reason})
+            </span>
+          ))}
+        </p>
+      )}
+      {result.candidates.length > 1 && (
+        <div>
+          <div className="mb-1 text-xs font-medium text-gray-600">
+            All Candidates ({result.candidates.length})
+          </div>
+          <div className="space-y-1">
+            {result.candidates.map((c) => {
+              const isWinner = c.upstreamId === result.effective.winner?.upstreamId;
+              return (
+                <div
+                  key={c.upstreamId}
+                  className={`flex flex-wrap items-center gap-2 rounded border px-2 py-1.5 text-sm ${
+                    isWinner
+                      ? "border-green-200 bg-green-50"
+                      : "border-gray-200 bg-white"
+                  }`}
+                >
+                  <span className={isWinner ? "font-semibold text-green-700" : ""}>{c.name}</span>
+                  <span className="text-xs text-gray-500">priority {c.priority}</span>
+                  <CopyableCode className="rounded bg-gray-100 px-1.5 py-0.5 text-xs">{c.matchedPattern}</CopyableCode>
+                  <MatchTypeBadge type={c.matchType} />
+                  <HealthBadges candidate={c} />
+                  {isWinner && <span className="ml-auto text-xs font-medium text-green-700">winner</span>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function ModelsPanel() {
   const [data, setData] = useState<ModelsData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -198,9 +286,7 @@ export default function ModelsPanel() {
   const [simulatorResult, setSimulatorResult] = useState<{
     protocol: Protocol;
     model: string;
-    winner: CandidateInfo | null;
-    candidates: CandidateInfo[];
-    effective: EffectiveRoute;
+    result: SimRouteResult | null;
   } | null>(null);
 
   const [selectedProtocol, setSelectedProtocol] = useState<Protocol>("openai");
@@ -384,11 +470,6 @@ export default function ModelsPanel() {
     }
   };
 
-  const upstreamRoutes = useMemo(
-    () => (data ? data.upstreams.filter((u) => u.enabled).map(toUpstreamRoute) : []),
-    [data]
-  );
-
   // provider 下拉选项：按所选 protocol 过滤 + enabled 过滤
   const ruleUpstreamOptions = useMemo(() => {
     if (!data) return [];
@@ -492,40 +573,18 @@ export default function ModelsPanel() {
     const path = pathInput.trim() || DEFAULT_PATH;
     if (!model || !data) return;
     const protocol = detectRequestProtocol(path);
-    const { winner, candidates } = routeModelByProtocol(model, protocol, upstreamRoutes);
-    // 附加健康标记（与 /api/admin/models 同口径：upstream 级 unhealthy + model 级不可用）
-    const toCandidateInfo = (c: ModelCandidate): CandidateInfo => {
-      const upstream = data.upstreams.find((u) => u.id === c.upstream.id);
-      return {
-        upstreamId: c.upstream.id,
-        name: c.upstream.name,
-        priority: c.upstream.priority,
-        matchedPattern: c.matchedPattern,
-        matchType: c.matchType,
-        upstreamUnhealthy: upstream?.unhealthy ?? false,
-        modelUnavailable: upstream?.modelUnhealthy?.includes(model) ?? false,
-      };
-    };
-    const candidateInfos = candidates.map(toCandidateInfo);
-    const healthyFirst = candidateInfos.filter((c) => !c.upstreamUnhealthy && !c.modelUnavailable);
-    const effective: EffectiveRoute =
-      healthyFirst.length > 0
-        ? {
-            winner: healthyFirst[0],
-            failover: healthyFirst[0].upstreamId !== candidateInfos[0]?.upstreamId,
-            allUnhealthy: false,
-          }
-        : {
-            winner: candidateInfos[0] ?? null,
-            failover: false,
-            allUnhealthy: candidateInfos.length > 0,
-          };
+    const rules: SimManualRule[] = data.manualRoutes.map((m) => ({
+      id: m.id,
+      name: m.name,
+      protocol: m.protocol,
+      upstreamId: m.upstreamId,
+      targetModel: m.targetModel,
+      priority: m.priority,
+    }));
     setSimulatorResult({
       protocol,
       model,
-      winner: winner ? toCandidateInfo(winner) : null,
-      candidates: candidateInfos,
-      effective,
+      result: simulateRoute(model, protocol, data.upstreams, rules),
     });
   };
 
@@ -616,68 +675,21 @@ export default function ModelsPanel() {
               <span className={`rounded border px-1.5 py-0.5 text-xs ${protocolBadgeClass(simulatorResult.protocol)}`}>
                 {simulatorResult.protocol}
               </span>
-            </div>
-            {simulatorResult.winner ? (
-              <div className="space-y-3">
-                <div className="rounded border border-green-200 bg-green-50 p-2">
-                  <div className="mb-1 flex flex-wrap items-center gap-2 text-xs font-medium text-green-700">
-                    Winning Upstream
-                    <EffectiveBadge effective={simulatorResult.effective} />
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2 text-sm">
-                    <span className="font-semibold">{simulatorResult.effective.winner?.name ?? simulatorResult.winner.name}</span>
-                    <span className="text-xs text-gray-500">priority {simulatorResult.effective.winner?.priority ?? simulatorResult.winner.priority}</span>
-                    <CopyableCode className="rounded bg-white px-1.5 py-0.5 text-xs">
-                      {simulatorResult.effective.winner?.matchedPattern ?? simulatorResult.winner.matchedPattern}
-                    </CopyableCode>
-                    <MatchTypeBadge type={(simulatorResult.effective.winner ?? simulatorResult.winner).matchType} />
-                    <HealthBadges candidate={simulatorResult.effective.winner ?? simulatorResult.winner} />
-                  </div>
-                  {simulatorResult.effective.failover && simulatorResult.winner && (
-                    <p className="mt-1 text-[11px] text-amber-700">
-                      Static winner {simulatorResult.winner.name} is unhealthy — actual route uses fallback.
-                    </p>
+              {simulatorResult.result && (
+                <span className="text-xs text-gray-500">
+                  via{" "}
+                  {simulatorResult.result.source === "manual" ? (
+                    <MatchTypeBadge type="manual" />
+                  ) : (
+                    <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-600">auto</span>
                   )}
-                </div>
-                {simulatorResult.candidates.length > 1 && (
-                  <div>
-                    <div className="mb-1 text-xs font-medium text-gray-600">
-                      All Candidates ({simulatorResult.candidates.length})
-                    </div>
-                    <div className="space-y-1">
-                      {simulatorResult.candidates.map((c) => {
-                        const isWinner = c.upstreamId === simulatorResult.effective.winner?.upstreamId;
-                        return (
-                          <div
-                            key={c.upstreamId}
-                            className={`flex flex-wrap items-center gap-2 rounded border px-2 py-1.5 text-sm ${
-                              isWinner
-                                ? "border-green-200 bg-green-50"
-                                : "border-gray-200 bg-white"
-                            }`}
-                          >
-                            <span className={isWinner ? "font-semibold text-green-700" : ""}>{c.name}</span>
-                            <span className="text-xs text-gray-500">priority {c.priority}</span>
-                            <CopyableCode className="rounded bg-gray-100 px-1.5 py-0.5 text-xs">{c.matchedPattern}</CopyableCode>
-                            <MatchTypeBadge type={c.matchType} />
-                            <HealthBadges candidate={c} />
-                            {isWinner && <span className="ml-auto text-xs font-medium text-green-700">winner</span>}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="text-sm text-red-600">
-                No upstream configured for{" "}
-                <CopyableCode className="rounded bg-white px-1 py-0.5 text-xs">{simulatorResult.model}</CopyableCode>{" "}
-                under protocol{" "}
-                <span className={`rounded border px-1 py-0.5 text-xs ${protocolBadgeClass(simulatorResult.protocol)}`}>
-                  {simulatorResult.protocol}
                 </span>
-              </div>
+              )}
+            </div>
+            {simulatorResult.result ? (
+              <RouteSimulationResult result={simulatorResult.result} model={simulatorResult.model} />
+            ) : (
+              <div className="text-sm text-red-600">No match</div>
             )}
           </div>
         )}
