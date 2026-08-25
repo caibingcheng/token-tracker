@@ -1,9 +1,17 @@
 import fs from "fs";
 import path from "path";
 
-// models.dev 快照管理：本地缓存 data/models-dev-cache.json，
+// 快照管理：本地缓存 data/models-dev-cache.json，
 // 懒刷新（7 天 TTL + 手动强制），拉取失败静默回退旧快照。
+// 双数据源：models.dev / GitHub LiteLLM 各自动解析为统一 ModelsDevData，
+// 下游（Simulation/Picker/match/stats/UI）零感知；单一当前快照语义（后完成者覆盖）。
 export const MODELS_DEV_API_URL = "https://models.dev/api.json";
+export const MODELS_DEV_SOURCE_DEFAULT = "models.dev" as const;
+export type ModelsDevSource = "models.dev" | "github";
+export const LITELLM_MODEL_PRICES_URL =
+  "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
+export const LITELLM_MODEL_PRICES_FALLBACK_URL =
+  "https://cdn.jsdelivr.net/gh/BerriAI/litellm@main/model_prices_and_context_window.json";
 export const SNAPSHOT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const SNAPSHOT_FILE_NAME = "models-dev-cache.json";
 
@@ -33,6 +41,7 @@ export type ModelsDevData = Record<string, ModelsDevProvider>;
 
 export interface ModelsDevSnapshot {
   fetchedAt: string;
+  source: ModelsDevSource;
   data: ModelsDevData;
 }
 
@@ -62,6 +71,83 @@ export function isFiniteNonNegative(n: unknown): n is number {
   return typeof n === "number" && Number.isFinite(n) && n >= 0;
 }
 
+// ---- LiteLLM 模型价格文件解析（第二数据源）----
+// 扁平结构 modelId -> { input_cost_per_token, output_cost_per_token,
+// cache_read_input_token_cost, cache_creation_input_token_cost, litellm_provider, ... }
+// 价格单位 per-token → 换算 USD/1M ×1e6；仅取标准 per-token 字段，
+// batch / priority / reasoning 细分价统一不取（与 models.dev 单档语义对齐）。
+
+// 检测：parsed 是普通对象，且至少一个条目值为对象并带非空字符串 litellm_provider 字段
+export function looksLikeLitellmStructure(parsed: unknown): boolean {
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return false;
+  }
+  for (const value of Object.values(parsed as Record<string, unknown>)) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const provider = (value as Record<string, unknown>).litellm_provider;
+    if (typeof provider === "string" && provider.trim() !== "") return true;
+  }
+  return false;
+}
+
+// per-token → USD/1M；非有限非负数值忽略（返回 undefined）
+function scalePriceToPerMillion(value: unknown): number | undefined {
+  if (!isFiniteNonNegative(value)) return undefined;
+  const scaled = value * 1_000_000;
+  return isFiniteNonNegative(scaled) ? scaled : undefined;
+}
+
+// 转换 litellm 扁平结构为 models.dev 结构。规则：
+// - 跳过 sample_spec、litellm_provider 空/非字符串的条目
+// - 无任何 token 价的条目 → 保留、cost 省略（= models.dev「无价条目」语义）
+// - 分组 data[litellm_provider].models[modelId]；空 provider 剔除、完全无模型 → {}
+// - 不做 provider 名映射（同名冲突由匹配管线 PRIORITY_PROVIDERS 消解）
+export function convertLitellmToModelsDev(flat: unknown): ModelsDevData {
+  const data: ModelsDevData = {};
+  if (flat === null || typeof flat !== "object" || Array.isArray(flat)) {
+    return data;
+  }
+  for (const [modelKey, entry] of Object.entries(
+    flat as Record<string, unknown>
+  )) {
+    if (
+      modelKey === "sample_spec" ||
+      entry === null ||
+      typeof entry !== "object" ||
+      Array.isArray(entry)
+    ) {
+      continue;
+    }
+    const e = entry as Record<string, unknown>;
+    const rawProvider = e.litellm_provider;
+    const provider =
+      typeof rawProvider === "string" ? rawProvider.trim() : "";
+    if (!provider) continue;
+
+    const cost: Record<string, number> = {};
+    const input = scalePriceToPerMillion(e.input_cost_per_token);
+    if (input !== undefined) cost.input = input;
+    const output = scalePriceToPerMillion(e.output_cost_per_token);
+    if (output !== undefined) cost.output = output;
+    const cacheRead = scalePriceToPerMillion(e.cache_read_input_token_cost);
+    if (cacheRead !== undefined) cost.cache_read = cacheRead;
+    const cacheWrite = scalePriceToPerMillion(
+      e.cache_creation_input_token_cost
+    );
+    if (cacheWrite !== undefined) cost.cache_write = cacheWrite;
+
+    const providerEntry =
+      data[provider] ?? { id: provider, name: provider, models: {} };
+    const modelEntry = { id: modelKey } as ModelsDevModel;
+    if (Object.keys(cost).length > 0) {
+      modelEntry.cost = cost as unknown as ModelsDevCost;
+    }
+    providerEntry.models[modelKey] = modelEntry;
+    data[provider] = providerEntry;
+  }
+  return data;
+}
+
 export function isValidModelsDevData(data: unknown): data is ModelsDevData {
   if (data === null || typeof data !== "object") return false;
   const providers = data as Record<string, unknown>;
@@ -82,6 +168,12 @@ export function isValidModelsDevData(data: unknown): data is ModelsDevData {
   return validCount > 0;
 }
 
+// 旧快照文件缺 source 字段 → 回退默认 "models.dev"（零迁移）
+function parseSnapshotSource(raw: unknown): ModelsDevSource {
+  if (raw === "models.dev" || raw === "github") return raw;
+  return MODELS_DEV_SOURCE_DEFAULT;
+}
+
 export function readSnapshotFile(filePath?: string): ModelsDevSnapshot | null {
   const p = filePath ?? resolveSnapshotPath();
   try {
@@ -93,7 +185,11 @@ export function readSnapshotFile(filePath?: string): ModelsDevSnapshot | null {
     ) {
       return null;
     }
-    return { fetchedAt: parsed.fetchedAt, data: parsed.data };
+    return {
+      fetchedAt: parsed.fetchedAt,
+      source: parseSnapshotSource(parsed.source),
+      data: parsed.data,
+    };
   } catch {
     return null;
   }
@@ -151,15 +247,16 @@ export function sanitizeModelsDevData(
   return { data: out, dropped };
 }
 
-// 手动上传快照（admin API）：构造 {fetchedAt: now, data} 写入内存缓存 + 落盘，
+// 手动上传快照（admin API）：构造 {fetchedAt: now, source, data} 写入内存缓存 + 落盘，
 // 立即生效无需重启；同时清空 in-flight 刷新（进行中的 fetch 不可取消，
 // 其完成后可能覆盖上传结果 —— 极小概率竞态，接受）。
 export function uploadSnapshot(
   data: ModelsDevData,
-  opts: { filePath?: string; now?: Date } = {}
+  opts: { filePath?: string; now?: Date; source?: ModelsDevSource } = {}
 ): ModelsDevSnapshot {
   const snapshot: ModelsDevSnapshot = {
     fetchedAt: (opts.now ?? new Date()).toISOString(),
+    source: opts.source ?? MODELS_DEV_SOURCE_DEFAULT,
     data,
   };
   parsedCache = snapshot;
@@ -168,8 +265,8 @@ export function uploadSnapshot(
   return snapshot;
 }
 
-export async function fetchModelsDevData(
-  fetchImpl: typeof fetch = fetch
+async function fetchModelsDevApi(
+  fetchImpl: typeof fetch
 ): Promise<ModelsDevFetchResult> {
   try {
     const res = await fetchImpl(MODELS_DEV_API_URL, {
@@ -192,34 +289,105 @@ export async function fetchModelsDevData(
   }
 }
 
+// github 源：依次尝试 raw.githubusercontent → jsDelivr CDN 回退；
+// 每个 URL 网络错误 / 非 2xx / 转换后结构非法都换下一个；
+// 全部失败返回最后一个错误分类。
+async function fetchLitellmPrices(
+  fetchImpl: typeof fetch
+): Promise<ModelsDevFetchResult> {
+  const urls = [LITELLM_MODEL_PRICES_URL, LITELLM_MODEL_PRICES_FALLBACK_URL];
+  let lastError: ModelsDevFetchError = { kind: "network" };
+  for (const url of urls) {
+    try {
+      const res = await fetchImpl(url, {
+        headers: { "accept-encoding": "identity" },
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!res.ok) {
+        console.warn(
+          `[models.dev] Litellm fetch failed with status ${res.status} (${url})`
+        );
+        lastError = { kind: "http", status: res.status };
+        continue;
+      }
+      const parsed: unknown = await res.json();
+      const data = convertLitellmToModelsDev(parsed);
+      if (isValidModelsDevData(data)) {
+        return { ok: true, data };
+      }
+      console.warn(`[models.dev] Litellm fetch returned invalid data shape (${url})`);
+      lastError = { kind: "invalid" };
+    } catch (err) {
+      console.warn(`[models.dev] Litellm fetch error (${url}):`, err);
+      lastError = { kind: "network" };
+    }
+  }
+  return { ok: false, error: lastError };
+}
+
+export async function fetchModelsDevData(
+  fetchImpl: typeof fetch = fetch,
+  source: ModelsDevSource = MODELS_DEV_SOURCE_DEFAULT
+): Promise<ModelsDevFetchResult> {
+  if (source === "github") return fetchLitellmPrices(fetchImpl);
+  return fetchModelsDevApi(fetchImpl);
+}
+
+interface RefreshOpts {
+  filePath?: string;
+  fetchImpl?: typeof fetch;
+  now?: Date;
+  source?: ModelsDevSource;
+}
+
+interface InflightRefresh {
+  source: ModelsDevSource;
+  promise: Promise<ModelsDevRefreshResult>;
+}
+
 let parsedCache: ModelsDevSnapshot | null = null;
-let inflightRefresh: Promise<ModelsDevRefreshResult> | null = null;
+let inflightRefresh: InflightRefresh | null = null;
+
+// 发起/复用当前 source 的刷新（in-flight 竞态修复）：
+// - 同源 in-flight → 复用同一 promise（避免重复拉取）
+// - 异源 in-flight → 等待其 settle 后串行再发起（保证写盘顺序 = 发起顺序，
+//   后完成者覆盖，无乱序覆盖）
+async function runRefresh(opts: RefreshOpts): Promise<ModelsDevRefreshResult> {
+  const source = opts.source ?? MODELS_DEV_SOURCE_DEFAULT;
+  while (true) {
+    if (inflightRefresh) {
+      if (inflightRefresh.source === source) {
+        return inflightRefresh.promise;
+      }
+      await inflightRefresh.promise.catch(() => {});
+      continue;
+    }
+    const entry: InflightRefresh = { source, promise: doRefresh(opts) };
+    entry.promise
+      .finally(() => {
+        if (inflightRefresh === entry) inflightRefresh = null;
+      })
+      .catch(() => {});
+    inflightRefresh = entry;
+    return entry.promise;
+  }
+}
 
 // 读取快照（内存缓存解析结果，避免重复 parse 3.6MB）。
 // 懒刷新：fetchedAt 超过 7 天 → 后台异步拉新（不阻塞当前请求），本次仍返回旧快照。
-// force=true 时同步拉取并落盘。
+// force=true 时同步拉取并落盘。source 只影响刷新行为（缓存为单一当前快照，先到先享）。
 export async function getSnapshot(
-  opts: {
-    filePath?: string;
-    force?: boolean;
-    fetchImpl?: typeof fetch;
-    now?: Date;
-  } = {}
+  opts: RefreshOpts & { force?: boolean } = {}
 ): Promise<ModelsDevSnapshot | null> {
   if (parsedCache) {
     const age = Date.now() - new Date(parsedCache.fetchedAt).getTime();
     const stale = age > SNAPSHOT_TTL_MS;
     if (opts.force || stale) {
-      // 已有 in-flight 刷新则复用；否则后台拉取（fire-and-forget，不阻塞）
-      if (!inflightRefresh) {
-        inflightRefresh = doRefresh(opts).finally(() => {
-          inflightRefresh = null;
-        });
-      }
-      inflightRefresh.catch(() => {});
+      // 后台刷新（fire-and-forget，不阻塞本次返回）
+      runRefresh(opts).catch(() => {});
     }
     if (!opts.force) return parsedCache;
-    return await snapshotFromRefresh(inflightRefresh);
+    return await snapshotFromRefresh(await runRefresh(opts));
   }
 
   const disk = readSnapshotFile(opts.filePath);
@@ -227,28 +395,18 @@ export async function getSnapshot(
     parsedCache = disk;
     const age = Date.now() - new Date(disk.fetchedAt).getTime();
     if (opts.force || age > SNAPSHOT_TTL_MS) {
-      if (!inflightRefresh) {
-        inflightRefresh = doRefresh(opts).finally(() => {
-          inflightRefresh = null;
-        });
-      }
-      inflightRefresh.catch(() => {});
+      runRefresh(opts).catch(() => {});
     }
     if (!opts.force) return disk;
-    return await snapshotFromRefresh(inflightRefresh);
+    return await snapshotFromRefresh(await runRefresh(opts));
   }
 
   // 无本地快照：同步拉取（首次使用，无旧快照可回退）
-  if (!inflightRefresh) {
-    inflightRefresh = doRefresh(opts).finally(() => {
-      inflightRefresh = null;
-    });
-  }
-  return await snapshotFromRefresh(inflightRefresh);
+  return await snapshotFromRefresh(await runRefresh(opts));
 }
 
 async function snapshotFromRefresh(
-  p: Promise<ModelsDevRefreshResult> | null
+  p: Promise<ModelsDevRefreshResult> | ModelsDevRefreshResult | null
 ): Promise<ModelsDevSnapshot | null> {
   if (!p) return null;
   const r = await p;
@@ -257,29 +415,19 @@ async function snapshotFromRefresh(
 
 // 强制刷新快照（admin API 手动触发）。返回区分失败原因的结果，
 // 下游 UI 可呈现网络 / 上游 HTTP / 结构非法等具体错误。
-export async function refreshSnapshot(opts: {
-  filePath?: string;
-  fetchImpl?: typeof fetch;
-  now?: Date;
-} = {}): Promise<ModelsDevRefreshResult> {
-  if (!inflightRefresh) {
-    inflightRefresh = doRefresh(opts).finally(() => {
-      inflightRefresh = null;
-    });
-  }
-  const r = await inflightRefresh;
-  return r ?? { ok: false, error: { kind: "network" } };
+export async function refreshSnapshot(
+  opts: RefreshOpts = {}
+): Promise<ModelsDevRefreshResult> {
+  return await runRefresh(opts);
 }
 
-async function doRefresh(opts: {
-  filePath?: string;
-  fetchImpl?: typeof fetch;
-  now?: Date;
-}): Promise<ModelsDevRefreshResult> {
-  const fetched = await fetchModelsDevData(opts.fetchImpl);
+async function doRefresh(opts: RefreshOpts): Promise<ModelsDevRefreshResult> {
+  const source = opts.source ?? MODELS_DEV_SOURCE_DEFAULT;
+  const fetched = await fetchModelsDevData(opts.fetchImpl, source);
   if (!fetched.ok) return { ok: false, error: fetched.error };
   const snapshot: ModelsDevSnapshot = {
     fetchedAt: (opts.now ?? new Date()).toISOString(),
+    source,
     data: fetched.data,
   };
   parsedCache = snapshot;

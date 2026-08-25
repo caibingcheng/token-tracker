@@ -4,8 +4,12 @@ import { withSkipCache } from "@/lib/db/cache";
 import { parseEnabledModels } from "@/lib/gateway/model-router";
 import { getSnapshot, type ModelsDevSnapshot } from "@/lib/models-dev/snapshot";
 import { matchModelsDevModel } from "@/lib/models-dev/match";
-import { autoFillModelPrices } from "@/lib/models-dev/auto-fill";
+import {
+  autoFillModelPrices,
+  type AutoFillModelPrice,
+} from "@/lib/models-dev/auto-fill";
 import { invalidatePriceCache } from "@/lib/pricing";
+import { loadModelsDevSource } from "@/lib/auth/settings-models-dev-source";
 
 // model_prices 管理服务层：行集 = 全部 upstream enabled_models（非通配，去重）
 // ∪ 已定价 model，附徽标状态判定（active/inactive/待确认/未匹配/有更新/已下架）。
@@ -113,7 +117,7 @@ export async function getModelPricesList(): Promise<ModelPriceRow[]> {
   const [upstreamModels, priced, snapshot] = await Promise.all([
     loadUpstreamModelRows(),
     loadPricedModels(),
-    getSnapshot(),
+    getSnapshot({ source: await loadModelsDevSource() }),
   ]);
 
   const upstreamByModel = new Map<string, string[]>();
@@ -311,17 +315,50 @@ export async function deleteModelPrice(model: string): Promise<boolean> {
   return deleted;
 }
 
+// upsert 写出（force 覆盖模式用）：存在同名行则整体更新（保留手工列的语义见 onConflict）
+function upsertPriceRow(price: AutoFillModelPrice) {
+  return withSkipCache(async () => {
+    await db
+      .insert(modelPricesTable)
+      .values({
+        model: price.model,
+        inputPrice: price.inputPrice,
+        outputPrice: price.outputPrice,
+        cacheReadPrice: price.cacheReadPrice,
+        cacheWritePrice: price.cacheWritePrice,
+        source: "models.dev",
+        modelsDevId: price.modelsDevId,
+        updatedAt: price.updatedAt,
+      })
+      .onConflictDoUpdate({
+        target: modelPricesTable.model,
+        set: {
+          inputPrice: price.inputPrice,
+          outputPrice: price.outputPrice,
+          cacheReadPrice: price.cacheReadPrice,
+          cacheWritePrice: price.cacheWritePrice,
+          source: "models.dev",
+          modelsDevId: price.modelsDevId,
+          updatedAt: price.updatedAt,
+        },
+      });
+  });
+}
+
 // 批量自动填充所有未定价行（只填空不覆盖；无快照时跳过全部）
 export async function autoFillAllUnpriced(): Promise<{
   filled: string[];
+  updated: string[];
   skipped: string[];
   unmatched: string[];
 }> {
-  const [upstreamModels, priced, snapshot] = await Promise.all([
+  await initDatabase();
+  const [upstreamModels, priced] = await Promise.all([
     loadUpstreamModelRows(),
     loadPricedModels(),
-    getSnapshot(),
   ]);
+  const source = await loadModelsDevSource();
+  const snapshot = await getSnapshot({ source });
   const pricedSet = new Set(priced.map((p) => p.model));
   const models = Array.from(
     new Set(upstreamModels.map((r) => r.model))
@@ -330,22 +367,48 @@ export async function autoFillAllUnpriced(): Promise<{
   const result = await autoFillModelPrices(models, {
     snapshot,
     isPriced: (m) => pricedSet.has(m),
-    write: async (price) => {
-      await withSkipCache(async () => {
-        await db.insert(modelPricesTable).values({
-          model: price.model,
-          inputPrice: price.inputPrice,
-          outputPrice: price.outputPrice,
-          cacheReadPrice: price.cacheReadPrice,
-          cacheWritePrice: price.cacheWritePrice,
-          source: "models.dev",
-          modelsDevId: price.modelsDevId,
-          updatedAt: price.updatedAt,
-        });
-      });
-    },
+    write: upsertPriceRow,
   });
   if (result.filled.length > 0) invalidatePriceCache();
+  return result;
+}
+
+// 强制重填：覆盖所有非 manual 已定价行（skip manual），填未定价行。
+// manual 保护集：loadPricedModels 中 source='manual' 的行；write 一律 upsert。
+export async function autoFillForceAll(): Promise<{
+  filled: string[];
+  updated: string[];
+  skipped: string[];
+  unmatched: string[];
+}> {
+  await initDatabase();
+  const [upstreamModels, priced] = await Promise.all([
+    loadUpstreamModelRows(),
+    loadPricedModels(),
+  ]);
+  const source = await loadModelsDevSource();
+  const snapshot = await getSnapshot({ source });
+  const manualSet = new Set(
+    priced.filter((p) => p.source === "manual").map((p) => p.model)
+  );
+  const pricedSet = new Set(priced.map((p) => p.model));
+  const models = Array.from(
+    new Set([
+      ...upstreamModels.map((r) => r.model),
+      ...priced.filter((p) => p.source !== "manual").map((p) => p.model),
+    ])
+  );
+
+  const result = await autoFillModelPrices(models, {
+    snapshot,
+    overwrite: true,
+    isPriced: (m) => pricedSet.has(m),
+    isManual: (m) => manualSet.has(m),
+    write: upsertPriceRow,
+  });
+  if (result.filled.length > 0 || result.updated.length > 0) {
+    invalidatePriceCache();
+  }
   return result;
 }
 
@@ -353,25 +416,15 @@ export async function autoFillAllUnpriced(): Promise<{
 export async function autoFillForModels(models: string[]): Promise<void> {
   try {
     await initDatabase();
-    const [priced, snapshot] = await Promise.all([loadPricedModels(), getSnapshot()]);
+    const [priced, snapshot] = await Promise.all([
+      loadPricedModels(),
+      getSnapshot({ source: await loadModelsDevSource() }),
+    ]);
     const pricedSet = new Set(priced.map((p) => p.model));
     const result = await autoFillModelPrices(models, {
       snapshot,
       isPriced: (m) => pricedSet.has(m),
-      write: async (price) => {
-        await withSkipCache(async () => {
-          await db.insert(modelPricesTable).values({
-            model: price.model,
-            inputPrice: price.inputPrice,
-            outputPrice: price.outputPrice,
-            cacheReadPrice: price.cacheReadPrice,
-            cacheWritePrice: price.cacheWritePrice,
-            source: "models.dev",
-            modelsDevId: price.modelsDevId,
-            updatedAt: price.updatedAt,
-          });
-        });
-      },
+      write: upsertPriceRow,
     });
     if (result.filled.length > 0) invalidatePriceCache();
   } catch (err) {

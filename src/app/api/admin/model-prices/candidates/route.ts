@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { withAuth } from "@/lib/auth/guard";
 import { getSnapshot } from "@/lib/models-dev/snapshot";
 import { matchModelsDevModel, searchModelsDevModel } from "@/lib/models-dev/match";
+import { loadModelsDevSource } from "@/lib/auth/settings-models-dev-source";
 
 // Price Picker Modal 候选列表：给定 model，返回快照中全部候选（provider、价格、预选标记）。
 // 可选 q 参数：搜索模式 —— 全量扫描快照中名字包含 q 的条目（不限匹配管线）。
@@ -13,7 +14,8 @@ export const GET = withAuth(async (request: NextRequest) => {
   const query = url.searchParams.get("q") ?? "";
   const model = url.searchParams.get("model") ?? "";
 
-  const snapshot = await getSnapshot();
+  const source = await loadModelsDevSource();
+  const snapshot = await getSnapshot({ source });
   if (!snapshot) {
     return NextResponse.json({ success: true, data: [] });
   }
