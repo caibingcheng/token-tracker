@@ -214,6 +214,7 @@ export default function ModelsPanel() {
   const [pricesError, setPricesError] = useState<string | null>(null);
   const [refreshingSnapshot, setRefreshingSnapshot] = useState(false);
   const [uploadingSnapshot, setUploadingSnapshot] = useState(false);
+  const [pricesSuccess, setPricesSuccess] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Manual Routing 表单
@@ -288,11 +289,18 @@ export default function ModelsPanel() {
   const refreshModelsDev = async () => {
     setRefreshingSnapshot(true);
     setPricesError(null);
+    setPricesSuccess(null);
     try {
       const res = await apiFetch("/api/admin/models-dev/refresh", { method: "POST" });
       const json = await res.json();
       if (json.success) {
         await loadPrices();
+        const fetchedAt = json.data?.fetchedAt;
+        setPricesSuccess(
+          `models.dev snapshot refreshed and price reference updated${
+            fetchedAt ? ` · fetched at ${new Date(fetchedAt).toLocaleString()}` : ""
+          }`
+        );
       } else {
         setPricesError(json.error || "Refresh failed");
       }
@@ -1326,6 +1334,11 @@ export default function ModelsPanel() {
         {pricesError && (
           <div className="mb-3 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-600">
             {pricesError}
+          </div>
+        )}
+        {pricesSuccess && (
+          <div className="mb-3 rounded border border-green-200 bg-green-50 p-3 text-sm text-green-600">
+            {pricesSuccess}
           </div>
         )}
 
