@@ -6,6 +6,7 @@ import {
   sanitizeModelsDevData,
   uploadSnapshot,
   getSnapshot,
+  refreshSnapshot,
   resetSnapshotCache,
   isFiniteNonNegative,
   type ModelsDevData,
@@ -151,5 +152,52 @@ describe("uploadSnapshot", () => {
     const read = await getSnapshot({ filePath, fetchImpl });
     expect(read?.data).toEqual(GOOD);
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe("refreshSnapshot", () => {
+  it("reports HTTP failure with status (no fake success with stale snapshot)", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => ({}),
+    });
+    const snap = await refreshSnapshot({ filePath, fetchImpl, now: new Date() });
+    expect(snap).toEqual({ ok: false, error: { kind: "http", status: 500 } });
+  });
+
+  it("reports network failure and keeps the stale snapshot readable", async () => {
+    const old = new Date("2026-08-21T13:30:49.211Z");
+    await uploadSnapshot(GOOD, { filePath, now: old });
+    resetSnapshotCache();
+    const fetchImpl = vi.fn().mockRejectedValue(new Error("network down"));
+    const snap = await refreshSnapshot({ filePath, fetchImpl, now: new Date() });
+    expect(snap).toEqual({ ok: false, error: { kind: "network" } });
+    const oldSnap = await getSnapshot({ filePath });
+    expect(oldSnap?.fetchedAt).toBe(old.toISOString());
+    expect(oldSnap?.data).toEqual(GOOD);
+  });
+
+  it("reports invalid response shape", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ p1: { id: "p1" } }),
+    });
+    const snap = await refreshSnapshot({ filePath, fetchImpl, now: new Date() });
+    expect(snap).toEqual({ ok: false, error: { kind: "invalid" } });
+  });
+
+  it("rebuilds snapshot freshness after successful fetch", async () => {
+    const old = new Date("2026-08-21T13:30:49.211Z");
+    await uploadSnapshot(GOOD, { filePath, now: old });
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => GOOD,
+    });
+    const now = new Date("2026-08-25T10:00:00.000Z");
+    const snap = await refreshSnapshot({ filePath, fetchImpl, now });
+    expect(snap).toEqual({ ok: true, snapshot: { fetchedAt: now.toISOString(), data: GOOD } });
   });
 });

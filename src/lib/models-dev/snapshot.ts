@@ -36,6 +36,20 @@ export interface ModelsDevSnapshot {
   data: ModelsDevData;
 }
 
+// 快照拉取失败分类（供 Refresh 端点区分网络 / 上游 HTTP / 结构非法）
+export interface ModelsDevFetchError {
+  kind: "network" | "http" | "invalid";
+  status?: number;
+}
+
+export type ModelsDevFetchResult =
+  | { ok: true; data: ModelsDevData }
+  | { ok: false; error: ModelsDevFetchError };
+
+export type ModelsDevRefreshResult =
+  | { ok: true; snapshot: ModelsDevSnapshot }
+  | { ok: false; error: ModelsDevFetchError };
+
 // 快照路径：与 SQLite 同目录（data/），便于 Docker 卷挂载持久化
 export function resolveSnapshotPath(dbPath?: string): string {
   const source = dbPath ?? process.env.SQLITE_DATABASE_PATH;
@@ -156,7 +170,7 @@ export function uploadSnapshot(
 
 export async function fetchModelsDevData(
   fetchImpl: typeof fetch = fetch
-): Promise<ModelsDevData | null> {
+): Promise<ModelsDevFetchResult> {
   try {
     const res = await fetchImpl(MODELS_DEV_API_URL, {
       headers: { "accept-encoding": "identity" },
@@ -164,22 +178,22 @@ export async function fetchModelsDevData(
     });
     if (!res.ok) {
       console.warn(`[models.dev] Fetch failed with status ${res.status}`);
-      return null;
+      return { ok: false, error: { kind: "http", status: res.status } };
     }
     const data: unknown = await res.json();
     if (!isValidModelsDevData(data)) {
       console.warn("[models.dev] Fetch returned invalid data shape");
-      return null;
+      return { ok: false, error: { kind: "invalid" } };
     }
-    return data;
+    return { ok: true, data };
   } catch (err) {
     console.warn("[models.dev] Fetch error:", err);
-    return null;
+    return { ok: false, error: { kind: "network" } };
   }
 }
 
 let parsedCache: ModelsDevSnapshot | null = null;
-let inflightRefresh: Promise<ModelsDevSnapshot | null> | null = null;
+let inflightRefresh: Promise<ModelsDevRefreshResult> | null = null;
 
 // 读取快照（内存缓存解析结果，避免重复 parse 3.6MB）。
 // 懒刷新：fetchedAt 超过 7 天 → 后台异步拉新（不阻塞当前请求），本次仍返回旧快照。
@@ -205,7 +219,7 @@ export async function getSnapshot(
       inflightRefresh.catch(() => {});
     }
     if (!opts.force) return parsedCache;
-    return await inflightRefresh;
+    return await snapshotFromRefresh(inflightRefresh);
   }
 
   const disk = readSnapshotFile(opts.filePath);
@@ -221,7 +235,7 @@ export async function getSnapshot(
       inflightRefresh.catch(() => {});
     }
     if (!opts.force) return disk;
-    return await inflightRefresh;
+    return await snapshotFromRefresh(inflightRefresh);
   }
 
   // 无本地快照：同步拉取（首次使用，无旧快照可回退）
@@ -230,32 +244,47 @@ export async function getSnapshot(
       inflightRefresh = null;
     });
   }
-  return await inflightRefresh;
+  return await snapshotFromRefresh(inflightRefresh);
 }
 
-// 强制刷新快照（admin API 手动触发）
+async function snapshotFromRefresh(
+  p: Promise<ModelsDevRefreshResult> | null
+): Promise<ModelsDevSnapshot | null> {
+  if (!p) return null;
+  const r = await p;
+  return r.ok ? r.snapshot : null;
+}
+
+// 强制刷新快照（admin API 手动触发）。返回区分失败原因的结果，
+// 下游 UI 可呈现网络 / 上游 HTTP / 结构非法等具体错误。
 export async function refreshSnapshot(opts: {
   filePath?: string;
   fetchImpl?: typeof fetch;
   now?: Date;
-} = {}): Promise<ModelsDevSnapshot | null> {
-  return getSnapshot({ ...opts, force: true });
+} = {}): Promise<ModelsDevRefreshResult> {
+  if (!inflightRefresh) {
+    inflightRefresh = doRefresh(opts).finally(() => {
+      inflightRefresh = null;
+    });
+  }
+  const r = await inflightRefresh;
+  return r ?? { ok: false, error: { kind: "network" } };
 }
 
 async function doRefresh(opts: {
   filePath?: string;
   fetchImpl?: typeof fetch;
   now?: Date;
-}): Promise<ModelsDevSnapshot | null> {
-  const data = await fetchModelsDevData(opts.fetchImpl);
-  if (!data) return parsedCache ?? readSnapshotFile(opts.filePath) ?? null;
+}): Promise<ModelsDevRefreshResult> {
+  const fetched = await fetchModelsDevData(opts.fetchImpl);
+  if (!fetched.ok) return { ok: false, error: fetched.error };
   const snapshot: ModelsDevSnapshot = {
     fetchedAt: (opts.now ?? new Date()).toISOString(),
-    data,
+    data: fetched.data,
   };
   parsedCache = snapshot;
   writeSnapshotFile(snapshot, opts.filePath);
-  return snapshot;
+  return { ok: true, snapshot };
 }
 
 // 测试辅助：清空内存缓存（含 in-flight）
