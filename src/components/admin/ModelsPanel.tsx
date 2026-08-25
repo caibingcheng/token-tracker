@@ -223,6 +223,7 @@ export default function ModelsPanel() {
   const [ruleUpstreamId, setRuleUpstreamId] = useState<number | "">("");
   const [ruleTargetModel, setRuleTargetModel] = useState("");
   const [rulePriority, setRulePriority] = useState("0");
+  const [rulePriorityTouched, setRulePriorityTouched] = useState(false);
   const [showTargetSuggestions, setShowTargetSuggestions] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
@@ -424,6 +425,7 @@ export default function ModelsPanel() {
         setRuleUpstreamId("");
         setRuleTargetModel("");
         setRulePriority("0");
+        setRulePriorityTouched(false);
         await load();
       } else {
         setError(json.error || "Failed to create routing rule");
@@ -710,6 +712,7 @@ export default function ModelsPanel() {
                 setRuleProtocol(e.target.value as Protocol);
                 setRuleUpstreamId("");
                 setRuleTargetModel("");
+                if (!rulePriorityTouched) setRulePriority("0");
               }}
               className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             >
@@ -723,8 +726,13 @@ export default function ModelsPanel() {
             <select
               value={ruleUpstreamId}
               onChange={(e) => {
-                setRuleUpstreamId(e.target.value === "" ? "" : Number(e.target.value));
+                const id = e.target.value === "" ? "" : Number(e.target.value);
+                setRuleUpstreamId(id);
                 setRuleTargetModel("");
+                if (!rulePriorityTouched) {
+                  const upstream = ruleUpstreamOptions.find((u) => u.id === id);
+                  setRulePriority(String(upstream?.priority ?? 0));
+                }
               }}
               className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             >
@@ -777,7 +785,10 @@ export default function ModelsPanel() {
             <label className="mb-1 block text-xs font-medium text-gray-700">Priority</label>
             <input
               value={rulePriority}
-              onChange={(e) => setRulePriority(e.target.value)}
+              onChange={(e) => {
+                setRulePriority(e.target.value);
+                setRulePriorityTouched(true);
+              }}
               onKeyDown={(e) => e.key === "Enter" && createRule()}
               type="number"
               min={0}
