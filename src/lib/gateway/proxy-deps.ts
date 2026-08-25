@@ -177,6 +177,7 @@ export async function loadRoutingRules(): Promise<RoutingRule[]> {
     protocol: row.protocol,
     upstreamId: row.upstreamId,
     targetModel: row.targetModel,
+    priority: row.priority ?? 0,
   }));
 }
 

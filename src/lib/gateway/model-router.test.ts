@@ -132,7 +132,7 @@ describe("detectRequestProtocol", () => {
   });
 });
 
-import { findCandidatesByProtocol, routeModelByProtocol, findRoutingRule } from "./model-router";
+import { findCandidatesByProtocol, routeModelByProtocol, findRoutingRules } from "./model-router";
 import type { RoutingRule } from "./model-router";
 
 function mkRule(overrides: Partial<RoutingRule>): RoutingRule {
@@ -142,28 +142,56 @@ function mkRule(overrides: Partial<RoutingRule>): RoutingRule {
     protocol: "openai",
     upstreamId: 3,
     targetModel: "gpt-4o-real",
+    priority: 0,
     ...overrides,
   };
 }
 
-describe("findRoutingRule", () => {
-  it("matches exact name + protocol", () => {
-    const rule = mkRule({ id: 2, name: "alias-x", protocol: "anthropic" });
-    expect(findRoutingRule("alias-x", "anthropic", [rule])?.id).toBe(2);
+describe("findRoutingRules", () => {
+  it("matches all rules with exact name + protocol", () => {
+    const rules = [
+      mkRule({ id: 2, name: "alias-x", protocol: "anthropic", upstreamId: 5 }),
+      mkRule({ id: 1, name: "alias-x", protocol: "openai", upstreamId: 3 }),
+      mkRule({ id: 3, name: "alias-x", protocol: "openai", upstreamId: 4 }),
+      mkRule({ id: 4, name: "other", protocol: "openai", upstreamId: 6 }),
+    ];
+    const matched = findRoutingRules("alias-x", "openai", rules);
+    expect(matched.map((r) => r.id)).toEqual([1, 3]);
+  });
+
+  it("sorts by priority ascending, then id ascending", () => {
+    const rules = [
+      mkRule({ id: 1, priority: 1, upstreamId: 2 }),
+      mkRule({ id: 2, priority: 0, upstreamId: 3 }),
+      mkRule({ id: 3, priority: 1, upstreamId: 4 }),
+      mkRule({ id: 4, priority: 2, upstreamId: 5 }),
+    ];
+    const matched = findRoutingRules("my-alias", "openai", rules);
+    expect(matched.map((r) => r.upstreamId)).toEqual([3, 2, 4, 5]);
   });
 
   it("does not match when protocol differs", () => {
     const rule = mkRule({ name: "alias-x", protocol: "openai" });
-    expect(findRoutingRule("alias-x", "anthropic", [rule])).toBeNull();
+    expect(findRoutingRules("alias-x", "anthropic", [rule])).toEqual([]);
   });
 
   it("does not match when name differs", () => {
     const rule = mkRule({ name: "alias-x" });
-    expect(findRoutingRule("alias-y", "openai", [rule])).toBeNull();
+    expect(findRoutingRules("alias-y", "openai", [rule])).toEqual([]);
   });
 
-  it("returns null with no rules", () => {
-    expect(findRoutingRule("anything", "openai", [])).toBeNull();
+  it("returns empty array with no rules", () => {
+    expect(findRoutingRules("anything", "openai", [])).toEqual([]);
+  });
+
+  it("does not mutate input ordering", () => {
+    const rules = [
+      mkRule({ id: 1, priority: 1 }),
+      mkRule({ id: 2, priority: 0 }),
+    ];
+    const before = rules.map((r) => r.id);
+    findRoutingRules("my-alias", "openai", rules);
+    expect(rules.map((r) => r.id)).toEqual(before);
   });
 });
 

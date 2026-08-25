@@ -47,6 +47,7 @@ interface ResolvedRoute {
   winner: CandidateInfo | null;
   candidates: CandidateInfo[];
   effective: EffectiveRoute;
+  overridden?: boolean;
 }
 
 interface ManualRouteInfo {
@@ -57,6 +58,7 @@ interface ManualRouteInfo {
   upstreamName: string;
   upstreamProtocol: Protocol;
   targetModel: string;
+  priority: number;
 }
 
 interface WildcardInfo {
@@ -219,8 +221,13 @@ export default function ModelsPanel() {
   const [ruleProtocol, setRuleProtocol] = useState<Protocol>("openai");
   const [ruleUpstreamId, setRuleUpstreamId] = useState<number | "">("");
   const [ruleTargetModel, setRuleTargetModel] = useState("");
+  const [rulePriority, setRulePriority] = useState("0");
   const [showTargetSuggestions, setShowTargetSuggestions] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+
+  // 行内编辑（priority / targetModel）
+  const [editingRule, setEditingRule] = useState<{ id: number; priority: string; targetModel: string } | null>(null);
+  const [savingRule, setSavingRule] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -400,6 +407,7 @@ export default function ModelsPanel() {
           protocol: ruleProtocol,
           upstreamId: ruleUpstreamId,
           targetModel: ruleTargetModel.trim(),
+          priority: rulePriority.trim() === "" ? 0 : Number(rulePriority),
         }),
       });
       const json = await res.json();
@@ -407,6 +415,7 @@ export default function ModelsPanel() {
         setRuleName("");
         setRuleUpstreamId("");
         setRuleTargetModel("");
+        setRulePriority("0");
         await load();
       } else {
         setError(json.error || "Failed to create routing rule");
@@ -415,6 +424,41 @@ export default function ModelsPanel() {
       setError("Network error");
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const updateRule = async () => {
+    if (!editingRule) return;
+    const priority = Number(editingRule.priority);
+    if (!Number.isInteger(priority) || priority < 0) {
+      setError("Priority must be a non-negative integer");
+      return;
+    }
+    if (!editingRule.targetModel.trim()) {
+      setError("Target model cannot be empty");
+      return;
+    }
+    setSavingRule(true);
+    try {
+      const res = await apiFetch(`/api/admin/routing-rules/${editingRule.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          priority,
+          targetModel: editingRule.targetModel.trim(),
+        }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        setEditingRule(null);
+        await load();
+      } else {
+        setError(json.error || "Failed to update routing rule");
+      }
+    } catch {
+      setError("Network error");
+    } finally {
+      setSavingRule(false);
     }
   };
 
@@ -634,12 +678,12 @@ export default function ModelsPanel() {
         <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <h2 className="text-base font-semibold">Manual Routing</h2>
           <p className="text-xs text-gray-400">
-            Manual rules take precedence over automatic routing. No cross-upstream fallback.
+            Manual rules completely replace automatic routing. Multiple targets fail over by priority; all fail → 502.
           </p>
         </div>
 
-        {/* 新增行：name / protocol / provider / target model */}
-        <div className="grid grid-cols-1 md:grid-cols-[1fr_150px_1fr_1fr_auto] gap-3">
+        {/* 新增行：name / protocol / provider / target model / priority */}
+        <div className="grid grid-cols-1 md:grid-cols-[1fr_130px_1fr_1fr_90px_auto] gap-3">
           <div>
             <label className="mb-1 block text-xs font-medium text-gray-700">New Model Name</label>
             <input
@@ -721,6 +765,18 @@ export default function ModelsPanel() {
               </div>
             )}
           </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-700">Priority</label>
+            <input
+              value={rulePriority}
+              onChange={(e) => setRulePriority(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && createRule()}
+              type="number"
+              min={0}
+              placeholder="0"
+              className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+          </div>
           <div className="flex items-end">
             <button
               type="button"
@@ -744,40 +800,104 @@ export default function ModelsPanel() {
                     <th className="px-2 py-2">Protocol</th>
                     <th className="px-2 py-2">Provider</th>
                     <th className="px-2 py-2">Target Model</th>
+                    <th className="px-2 py-2">Priority</th>
                     <th className="px-2 py-2"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {data.manualRoutes.map((rule) => (
-                    <tr key={rule.id}>
-                      <td className="px-2 py-2">
-                        <CopyableCode className="text-xs">{rule.name}</CopyableCode>
-                      </td>
-                      <td className="px-2 py-2">
-                        <span className={`rounded border px-1.5 py-0.5 text-[10px] ${protocolBadgeClass(rule.protocol)}`}>
-                          {rule.protocol}
-                        </span>
-                      </td>
-                      <td className="px-2 py-2">
-                        <span className="font-medium">{rule.upstreamName}</span>
-                        <span className={`ml-1.5 rounded border px-1.5 py-0.5 text-[10px] ${protocolBadgeClass(rule.upstreamProtocol)}`}>
-                          {rule.upstreamProtocol}
-                        </span>
-                      </td>
-                      <td className="px-2 py-2">
-                        <CopyableCode className="text-xs">{rule.targetModel}</CopyableCode>
-                      </td>
-                      <td className="px-2 py-2 text-right">
-                        <button
-                          type="button"
-                          onClick={() => deleteRule(rule)}
-                          className="text-xs text-red-500 hover:text-red-700"
-                        >
-                          Delete
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                  {data.manualRoutes.map((rule) => {
+                    const editing = editingRule?.id === rule.id;
+                    return (
+                      <tr key={rule.id}>
+                        <td className="px-2 py-2">
+                          <CopyableCode className="text-xs">{rule.name}</CopyableCode>
+                        </td>
+                        <td className="px-2 py-2">
+                          <span className={`rounded border px-1.5 py-0.5 text-[10px] ${protocolBadgeClass(rule.protocol)}`}>
+                            {rule.protocol}
+                          </span>
+                        </td>
+                        <td className="px-2 py-2">
+                          <span className="font-medium">{rule.upstreamName}</span>
+                          <span className={`ml-1.5 rounded border px-1.5 py-0.5 text-[10px] ${protocolBadgeClass(rule.upstreamProtocol)}`}>
+                            {rule.upstreamProtocol}
+                          </span>
+                        </td>
+                        <td className="px-2 py-2">
+                          {editing ? (
+                            <input
+                              value={editingRule!.targetModel}
+                              onChange={(e) => setEditingRule({ ...editingRule!, targetModel: e.target.value })}
+                              className="w-40 rounded border border-gray-300 px-2 py-1 text-xs focus:border-blue-500 focus:outline-none"
+                            />
+                          ) : (
+                            <CopyableCode className="text-xs">{rule.targetModel}</CopyableCode>
+                          )}
+                        </td>
+                        <td className="px-2 py-2">
+                          {editing ? (
+                            <input
+                              value={editingRule!.priority}
+                              onChange={(e) => setEditingRule({ ...editingRule!, priority: e.target.value })}
+                              type="number"
+                              min={0}
+                              className="w-16 rounded border border-gray-300 px-2 py-1 text-xs focus:border-blue-500 focus:outline-none"
+                            />
+                          ) : (
+                            <span className="inline-flex items-center rounded bg-gray-50 px-1.5 py-0.5 text-xs text-gray-600">
+                              p{rule.priority}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-2 py-2 text-right whitespace-nowrap">
+                          {editing ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={updateRule}
+                                disabled={savingRule}
+                                className="text-xs font-medium text-blue-600 hover:text-blue-800 disabled:opacity-50"
+                              >
+                                {savingRule ? "Saving…" : "Save"}
+                              </button>
+                              {" · "}
+                              <button
+                                type="button"
+                                onClick={() => setEditingRule(null)}
+                                className="text-xs text-gray-500 hover:text-gray-700"
+                              >
+                                Cancel
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setEditingRule({
+                                    id: rule.id,
+                                    priority: String(rule.priority),
+                                    targetModel: rule.targetModel,
+                                  })
+                                }
+                                className="text-xs text-gray-600 hover:text-gray-800"
+                              >
+                                Edit
+                              </button>
+                              {" · "}
+                              <button
+                                type="button"
+                                onClick={() => deleteRule(rule)}
+                                className="text-xs text-red-500 hover:text-red-700"
+                              >
+                                Delete
+                              </button>
+                            </>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -789,13 +909,53 @@ export default function ModelsPanel() {
                       <p className="text-xs text-gray-500">Name</p>
                       <CopyableCode className="text-xs">{rule.name}</CopyableCode>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => deleteRule(rule)}
-                      className="shrink-0 rounded border border-red-200 px-2 py-1 text-xs text-red-500 hover:bg-red-50"
-                    >
-                      Delete
-                    </button>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <span className="rounded bg-gray-50 px-1.5 py-0.5 text-xs text-gray-600">
+                        p{rule.priority}
+                      </span>
+                      {editingRule?.id === rule.id ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={updateRule}
+                            disabled={savingRule}
+                            className="rounded border border-blue-200 bg-blue-50 px-2 py-1 text-xs text-blue-600 disabled:opacity-50"
+                          >
+                            {savingRule ? "Saving…" : "Save"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditingRule(null)}
+                            className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-500"
+                          >
+                            Cancel
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setEditingRule({
+                                id: rule.id,
+                                priority: String(rule.priority),
+                                targetModel: rule.targetModel,
+                              })
+                            }
+                            className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-600"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => deleteRule(rule)}
+                            className="rounded border border-red-200 px-2 py-1 text-xs text-red-500"
+                          >
+                            Delete
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     <div>
@@ -813,8 +973,28 @@ export default function ModelsPanel() {
                     </div>
                     <div className="col-span-2">
                       <p className="text-xs text-gray-500">Target Model</p>
-                      <CopyableCode className="text-xs">{rule.targetModel}</CopyableCode>
+                      {editingRule?.id === rule.id ? (
+                        <input
+                          value={editingRule.targetModel}
+                          onChange={(e) => setEditingRule({ ...editingRule, targetModel: e.target.value })}
+                          className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 text-sm focus:border-blue-500 focus:outline-none"
+                        />
+                      ) : (
+                        <CopyableCode className="text-xs">{rule.targetModel}</CopyableCode>
+                      )}
                     </div>
+                    {editingRule?.id === rule.id && (
+                      <div className="col-span-2">
+                        <p className="text-xs text-gray-500">Priority</p>
+                        <input
+                          value={editingRule.priority}
+                          onChange={(e) => setEditingRule({ ...editingRule, priority: e.target.value })}
+                          type="number"
+                          min={0}
+                          className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 text-sm focus:border-blue-500 focus:outline-none"
+                        />
+                      </div>
+                    )}
                   </div>
                 </div>
               ))}
@@ -892,6 +1072,14 @@ export default function ModelsPanel() {
                         >
                           <td className="px-2 py-2">
                             <CopyableCode className="text-xs">{route.model}</CopyableCode>
+                            {route.source === "auto" && route.overridden && (
+                              <span
+                                className="ml-1.5 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500"
+                                title="Overridden by a manual route with the same name; manual route fully replaces automatic routing"
+                              >
+                                overridden
+                              </span>
+                            )}
                           </td>
                           <td className="px-2 py-2 font-medium">
                             {route.effective.winner ? (
@@ -993,6 +1181,14 @@ export default function ModelsPanel() {
                       <div className="flex items-center justify-between gap-2">
                         <div className="min-w-0">
                           <CopyableCode className="text-xs">{route.model}</CopyableCode>
+                          {route.source === "auto" && route.overridden && (
+                            <span
+                              className="ml-1.5 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500"
+                              title="Overridden by a manual route with the same name; manual route fully replaces automatic routing"
+                            >
+                              overridden
+                            </span>
+                          )}
                           <div className="mt-1 text-sm font-medium text-gray-900">
                             {route.effective.winner ? (
                               <>

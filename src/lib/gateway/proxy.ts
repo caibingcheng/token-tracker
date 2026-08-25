@@ -7,7 +7,7 @@ import {
   modelMatchesPattern,
   parseEnabledModels,
   detectRequestProtocol,
-  findRoutingRule,
+  findRoutingRules,
 } from "./model-router";
 import type { UpstreamRoute, ModelCandidate, RoutingRule } from "./model-router";
 import { buildAuthHeaders, isEdgeBlockStatus } from "./upstream-client";
@@ -337,44 +337,62 @@ export async function handleProxyRequest(
   const upstreams = await deps.loadUpstreams();
   const protocol = detectRequestProtocol(path);
 
-  // 手动路由短路：命中即走目标 upstream 单元素 chain，先于自动路由；
-  // 目标 upstream 禁用/不存在 → 502 manual_route_unavailable；
-  // 目标 unhealthy / model 级不可用 → 同样尝试（无健康候选时兜底），不 502
-  let manualRoute: { virtualName: string; targetModel: string } | null = null;
+  // 手动路由短路：命中即走多目标 failover 链（完全替代自动路由，不回退）；
+  // 规则组内每个目标独立 resolve，禁用/不存在的目标跳过并记日志；
+  // 无有效目标 → 502 manual_route_unavailable
+  let manualRoute: { virtualName: string; targetModelByUpstream: Map<number, string> } | null = null;
   let chain: UpstreamRoute[] = [];
-  // 手动路由目标不健康但兜底尝试成功时，自愈清除健康标记
-  let manualDegraded = false;
-  // 自动路由：健康过滤时被跳过的不健康候选（兜底成功后自愈用）
+  // 健康过滤时被跳过的不健康候选（兜底成功时自愈清除标记，手动/自动统一）
   const degradedUpstreams = new Set<number>();
   if (deps.loadRoutingRules) {
     const rules = await deps.loadRoutingRules();
-    const rule = findRoutingRule(model, protocol, rules);
-    if (rule) {
-      const target = upstreams.find((u) => u.id === rule.upstreamId);
-      if (!target) {
+    const matched = findRoutingRules(model, protocol, rules);
+    if (matched.length > 0) {
+      const targetModelByUpstream = new Map<number, string>();
+      for (const rule of matched) {
+        if (targetModelByUpstream.has(rule.upstreamId)) {
+          // 同 upstream 重复规则（不应出现，UNIQUE 已禁止），跳过防止链重复
+          deps.log?.(
+            `[gateway] manual route duplicate target for upstream (id=${rule.upstreamId}) skipped`
+          );
+          continue;
+        }
+        const target = upstreams.find((u) => u.id === rule.upstreamId);
+        if (!target) {
+          deps.log?.(
+            `[gateway] manual route target upstream (id=${rule.upstreamId}) is disabled or does not exist; skipping`
+          );
+          continue;
+        }
+        targetModelByUpstream.set(rule.upstreamId, rule.targetModel);
+        chain.push(target);
+      }
+      if (targetModelByUpstream.size === 0 || chain.length === 0) {
         return proxyError(
           502,
-          `Manual route target upstream (id=${rule.upstreamId}) is disabled or does not exist`,
+          "Manual route target unavailable: no valid upstream targets",
           "manual_route_unavailable"
         );
       }
-      if (deps.health && !(await deps.health.isHealthy(target.id))) {
-        deps.log?.(
-          `[gateway] manual route target upstream "${target.name}" is unhealthy; attempting anyway`
-        );
-        manualDegraded = true;
+      // 健康排序对齐自动路由：健康目标在链首，unhealthy / model 级不可用目标排尾（兜底尝试）；
+      // 不健康目标记入 degradedUpstreams，兜底成功时统一自愈清除健康标记
+      const healthyChain: UpstreamRoute[] = [];
+      const fallbackChain: UpstreamRoute[] = [];
+      for (const target of chain) {
+        const targetModel = targetModelByUpstream.get(target.id)!;
+        const upDown = deps.health && !(await deps.health.isHealthy(target.id));
+        const modelDown =
+          deps.health?.isModelHealthy &&
+          !(await deps.health.isModelHealthy(target.id, targetModel));
+        if (upDown || modelDown) {
+          degradedUpstreams.add(target.id);
+          fallbackChain.push(target);
+        } else {
+          healthyChain.push(target);
+        }
       }
-      if (
-        deps.health?.isModelHealthy &&
-        !(await deps.health.isModelHealthy(target.id, rule.targetModel))
-      ) {
-        deps.log?.(
-          `[gateway] manual route target model "${rule.targetModel}" marked unavailable on upstream "${target.name}"; attempting anyway`
-        );
-        manualDegraded = true;
-      }
-      chain = [target];
-      manualRoute = { virtualName: model, targetModel: rule.targetModel };
+      chain = [...healthyChain, ...fallbackChain];
+      manualRoute = { virtualName: model, targetModelByUpstream };
     }
   }
 
@@ -459,23 +477,6 @@ export async function handleProxyRequest(
   const startTime = Date.now();
   const isNonStreaming = isNonStreamingRequestBody(bodyJson);
 
-  // 手动路由请求改写：OpenAI/Anthropic 改 body.model，Gemini 改 path 中模型段
-  let effectivePath = path;
-  let effectiveBodyBuffer = bodyBuffer;
-  const effectiveModel = manualRoute ? manualRoute.targetModel : model;
-  if (manualRoute) {
-    if (protocol === "gemini") {
-      effectivePath = path.replace(
-        /^(\/v1(?:\/?beta)?\/models\/)[^/:]+/,
-        `$1${manualRoute.targetModel}`
-      );
-    } else if (bodyJson && typeof bodyJson === "object") {
-      effectiveBodyBuffer = new TextEncoder().encode(
-        JSON.stringify({ ...(bodyJson as Record<string, unknown>), model: manualRoute.targetModel })
-      );
-    }
-  }
-
   let lastError: { status: number; text?: string } | null = null;
   let lastResponse: Response | null = null;
   let successUpstream: UpstreamRoute | null = null;
@@ -485,12 +486,32 @@ export async function handleProxyRequest(
   // 跨 upstream 故障转移链：按链序遍历 upstream，每个 upstream 内遍历 key，
   // 每个 key 内重试 MAX_RETRY 次；只在收到响应头之前允许重试/切换（流式输出开始后不可重试）
   for (const upstream of chain) {
+    // per-hop 改写：手动路由多目标各自 targetModel 不同，
+    // body / path 改写按当跳 upstream 计算，改用真实 model 名（与自动路由路径一致）
+    const hopModel = manualRoute
+      ? manualRoute.targetModelByUpstream.get(upstream.id) ?? model
+      : model;
+    let hopPath = path;
+    let hopBodyBuffer = bodyBuffer;
+    if (manualRoute) {
+      if (protocol === "gemini") {
+        hopPath = path.replace(
+          /^(\/v1(?:\/?beta)?\/models\/)[^/:]+/,
+          `$1${hopModel}`
+        );
+      } else if (bodyJson && typeof bodyJson === "object") {
+        hopBodyBuffer = new TextEncoder().encode(
+          JSON.stringify({ ...(bodyJson as Record<string, unknown>), model: hopModel })
+        );
+      }
+    }
+
     const keys = await deps.resolveUpstreamKeys(upstream.id);
     if (keys.length === 0) {
       lastError = { status: 0, text: `No API keys configured for upstream: ${upstream.name}` };
       continue;
     }
-    const targetUrl = `${joinUrlPath(upstream.baseUrl, effectivePath)}${stripQueryKey(url)}`;
+    const targetUrl = `${joinUrlPath(upstream.baseUrl, hopPath)}${stripQueryKey(url)}`;
 
     let upstreamFailed = true;
     let modelNotFound = false;
@@ -510,7 +531,7 @@ export async function handleProxyRequest(
           upstreamResponse = await fetch(targetUrl, {
             method: request.method,
             headers: buildUpstreamHeaders(request.headers, protocol, apiKey),
-            body: effectiveBodyBuffer.length > 0 ? effectiveBodyBuffer : null,
+            body: hopBodyBuffer.length > 0 ? hopBodyBuffer : null,
             duplex: "half",
             redirect: "manual",
             signal: controller.signal,
@@ -557,9 +578,9 @@ export async function handleProxyRequest(
             fallbackBusinessResponse = upstreamResponse; // 不 cancel：保留透传
             modelNotFound = true;
             if (!isResponsesCreate) {
-              deps.health?.markModelUnhealthy?.(upstream.id, effectiveModel);
+              deps.health?.markModelUnhealthy?.(upstream.id, hopModel);
               deps.log?.(
-                `[gateway] model "${effectiveModel}" marked unavailable on upstream "${upstream.name}" (404)`
+                `[gateway] model "${hopModel}" marked unavailable on upstream "${upstream.name}" (404)`
               );
             }
             break;
@@ -589,10 +610,10 @@ export async function handleProxyRequest(
       if (
         lastResponse.status >= 200 &&
         lastResponse.status < 300 &&
-        (degradedUpstreams.has(upstream.id) || (manualRoute && manualDegraded))
+        degradedUpstreams.has(upstream.id)
       ) {
         deps.health?.markHealthy?.(upstream.id);
-        deps.health?.markModelHealthy?.(upstream.id, effectiveModel);
+        deps.health?.markModelHealthy?.(upstream.id, hopModel);
         deps.log?.(
           `[gateway] upstream "${upstream.name}" recovered via real request; health marks cleared`
         );
@@ -608,9 +629,9 @@ export async function handleProxyRequest(
       if (saw403 && !isResponsesCreate) {
         // 全部 key 均 403：大概率是该 key 对该 model 无权限 → model 级标记，不误伤其他 model
         // （responses create 除外：403 可能是"不支持 responses"而非 key 权限问题）
-        deps.health?.markModelUnhealthy?.(upstream.id, effectiveModel);
+        deps.health?.markModelUnhealthy?.(upstream.id, hopModel);
         deps.log?.(
-          `[gateway] model "${effectiveModel}" marked unavailable on upstream "${upstream.name}" (403 on all keys)`
+          `[gateway] model "${hopModel}" marked unavailable on upstream "${upstream.name}" (403 on all keys)`
         );
       } else if (sawEdgeBlock && !saw403) {
         // 全部 key 均 403 + text/html：客户端特征被上游边缘（WAF/反 bot）拒绝，
@@ -632,7 +653,9 @@ export async function handleProxyRequest(
     deps.onComplete?.({ virtualKeyId: virtualKey.id }).catch(() => {});
     if (fallbackBusinessResponse) {
       const meta: RecordUsageMeta = {
-        model: manualRoute ? manualRoute.targetModel : model,
+        model: manualRoute
+          ? manualRoute.targetModelByUpstream.get(defaultUpstream.id) ?? model
+          : model,
         provider: defaultUpstream.name,
         agent: virtualKey.name,
         inputTokens: 0,
@@ -654,7 +677,7 @@ export async function handleProxyRequest(
       });
     }
     if (manualRoute) {
-      // 手动路由不做跨 upstream fallback：目标 upstream 无 key / 全部 key 失败 → 502。
+      // 手动路由多目标链全部失败 → 502（不回退自动路由）。
       // 不回显 lastError.text（可能含内网地址等内部细节），仅日志保留
       if (lastError?.text) {
         deps.log?.(`[gateway] manual route failed: ${lastError.text}`);
@@ -692,9 +715,12 @@ export async function handleProxyRequest(
   }
 
   const latencyMs = Date.now() - startTime;
+  const successModel = successUpstream ?? defaultUpstream;
   const meta: RecordUsageMeta = {
-    model: manualRoute ? manualRoute.targetModel : model,
-    provider: (successUpstream ?? defaultUpstream).name,
+    model: manualRoute
+      ? manualRoute.targetModelByUpstream.get(successModel.id) ?? model
+      : model,
+    provider: successModel.name,
     agent: virtualKey.name,
     inputTokens: 0,
     outputTokens: 0,

@@ -1780,6 +1780,15 @@ describe("handleProxyRequest - manual routing", () => {
     protocol: "openai" as const,
     upstreamId: 1,
     targetModel: "gpt-4o-real",
+    priority: 0,
+  };
+  const RULE2 = {
+    id: 2,
+    name: "my-alias",
+    protocol: "openai" as const,
+    upstreamId: 2,
+    targetModel: "gpt-4o-alt",
+    priority: 1,
   };
 
   function mkManualDeps(overrides: Partial<ProxyDeps> = {}): ProxyDeps {
@@ -1789,6 +1798,19 @@ describe("handleProxyRequest - manual routing", () => {
       ]),
       resolveUpstreamKeys: vi.fn(async () => ["key-1"]),
       loadRoutingRules: vi.fn(async () => [RULE]),
+      ...overrides,
+    });
+  }
+
+  // 多目标手动路由依赖：primary(priority 0) + secondary(priority 1)
+  function mkManualMultiDeps(overrides: Partial<ProxyDeps> = {}): ProxyDeps {
+    return mkDeps({
+      loadUpstreams: vi.fn(async () => [
+        mkUpstream({ id: 1, name: "primary-up", baseUrl: "https://primary.example", enabledModels: ["gpt-4o-real"] }),
+        mkUpstream({ id: 2, name: "secondary-up", baseUrl: "https://secondary.example", enabledModels: ["gpt-4o-alt"] }),
+      ]),
+      resolveUpstreamKeys: vi.fn(async () => ["key-1", "key-2"]),
+      loadRoutingRules: vi.fn(async () => [RULE, RULE2]),
       ...overrides,
     });
   }
@@ -1972,6 +1994,259 @@ describe("handleProxyRequest - manual routing", () => {
     expect(res.status).toBe(200);
     expect(isModelHealthy).toHaveBeenCalledWith(1, "gpt-4o-real"); // 用映射后的真实名检查
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("multi-target: fails over to secondary when primary has no keys", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ model: "gpt-4o-alt", usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    const deps = mkManualMultiDeps({
+      resolveUpstreamKeys: vi.fn(async (upstreamId: number) => (upstreamId === 1 ? [] : ["key-2"])),
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "my-alias", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toContain("secondary.example");
+    expect(deps.onUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "gpt-4o-alt", requestModel: "my-alias", provider: "secondary-up" })
+    );
+    expect(deps.onComplete).toHaveBeenCalledWith({ virtualKeyId: 1 });
+  });
+
+  it("multi-target: fails over to secondary when all primary keys return 401", async () => {
+    fetchMock.mockImplementation((url: string) =>
+      url.startsWith("https://secondary.example")
+        ? Promise.resolve(
+            new Response(JSON.stringify({ model: "gpt-4o-alt", usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            })
+          )
+        : Promise.resolve(new Response("unauthorized", { status: 401 }))
+    );
+    const markUnhealthy = vi.fn();
+    const deps = mkManualMultiDeps({
+      health: {
+        isHealthy: vi.fn(() => true),
+        markUnhealthy,
+        isModelHealthy: vi.fn(() => true),
+        markModelUnhealthy: vi.fn(),
+      },
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "my-alias", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(3); // primary 2 keys 401（不重试）+ secondary 成功
+    expect(fetchMock.mock.calls[2][0]).toContain("secondary.example");
+    expect(deps.onUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "gpt-4o-alt", provider: "secondary-up" })
+    );
+  });
+
+  it("multi-target: rewrites body per hop (each target receives its own targetModel)", async () => {
+    fetchMock.mockImplementation((url: string) =>
+      url.startsWith("https://secondary.example")
+        ? Promise.resolve(
+            new Response(JSON.stringify({ model: "gpt-4o-alt", usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            })
+          )
+        : Promise.resolve(new Response("server error", { status: 503 }))
+    );
+    const deps = mkManualMultiDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "my-alias", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    // primary：503 重试 MAX_RETRY=2 次 × 2 keys = 4 次，每跳用 primary 的 targetModel
+    const first = fetchMock.mock.calls[0] as [string, RequestInit];
+    const firstBody = JSON.parse(new TextDecoder().decode(first[1].body as Uint8Array));
+    expect(firstBody.model).toBe("gpt-4o-real");
+    const last = fetchMock.mock.calls.at(-1) as [string, RequestInit];
+    const lastBody = JSON.parse(new TextDecoder().decode(last[1].body as Uint8Array));
+    expect(lastBody.model).toBe("gpt-4o-alt");
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
+
+  it("multi-target: unhealthy primary sorted to tail; healthy secondary tried first and self-heals", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ model: "gpt-4o-alt", usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    const markHealthy = vi.fn();
+    const markModelHealthy = vi.fn();
+    const deps = mkManualMultiDeps({
+      health: {
+        isHealthy: vi.fn(async (id: number) => id !== 1),
+        markUnhealthy: vi.fn(),
+        markHealthy,
+        isModelHealthy: vi.fn(async () => true),
+        markModelUnhealthy: vi.fn(),
+        markModelHealthy,
+      },
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "my-alias", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toContain("secondary.example"); // 健康目标先试（primary 排尾）
+    expect(markHealthy).not.toHaveBeenCalled(); // healthy 目标不需要自愈
+    expect(deps.onUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "gpt-4o-alt", provider: "secondary-up" })
+    );
+  });
+
+  it("multi-target: all unhealthy → falls back by priority and self-heals on 2xx", async () => {
+    fetchMock.mockImplementation((url: string) =>
+      url.startsWith("https://secondary.example")
+        ? Promise.resolve(
+            new Response(JSON.stringify({ model: "gpt-4o-alt", usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            })
+          )
+        : Promise.resolve(new Response("server error", { status: 503 }))
+    );
+    const markHealthy = vi.fn();
+    const markModelHealthy = vi.fn();
+    const deps = mkManualMultiDeps({
+      health: {
+        isHealthy: vi.fn(async () => false),
+        markUnhealthy: vi.fn(),
+        markHealthy,
+        isModelHealthy: vi.fn(async () => true),
+        markModelUnhealthy: vi.fn(),
+        markModelHealthy,
+      },
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "my-alias", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    // 兜底按 priority 原序尝试：primary（503 重试 2 次）→ secondary 成功
+    expect(fetchMock.mock.calls[0][0]).toContain("primary.example");
+    // 只有落点（secondary）自愈，失败目标不标记
+    expect(markHealthy).toHaveBeenCalledWith(2);
+    expect(markModelHealthy).toHaveBeenCalledWith(2, "gpt-4o-alt");
+    expect(deps.onUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "gpt-4o-alt", provider: "secondary-up" })
+    );
+  });
+
+  it("multi-target: applies session stickiness (bound secondary preferred)", async () => {
+    const sessionId = buildSessionId(
+      { messages: [{ role: "user", content: "hi" }] },
+      "my-alias",
+      1,
+      "openai"
+    );
+    fetchMock.mockImplementation((url: string) =>
+      url.startsWith("https://secondary.example")
+        ? Promise.resolve(
+            new Response(JSON.stringify({ model: "gpt-4o-alt", usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            })
+          )
+        : Promise.resolve(new Response("should not be called", { status: 200 }))
+    );
+    const getBinding = vi.fn(() => ({ upstreamId: 2, boundAt: Date.now() }));
+    const setBinding = vi.fn();
+    const deps = mkManualMultiDeps({
+      session: { getBinding, setBinding },
+      health: { isHealthy: vi.fn(() => true), markUnhealthy: vi.fn(), isModelHealthy: vi.fn(() => true), markModelUnhealthy: vi.fn() },
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "my-alias", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    expect(getBinding).toHaveBeenCalledWith(sessionId);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toContain("secondary.example");
+  });
+
+  it("multi-target: skips disabled/missing rule targets but uses remaining targets", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ model: "gpt-4o-alt", usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    // RULE 指向的 upstream 1 不在 loadUpstreams 中（被禁用/删除），仅 RULE2 有效
+    const deps = mkManualMultiDeps({
+      loadUpstreams: vi.fn(async () => [
+        mkUpstream({ id: 2, name: "secondary-up", baseUrl: "https://secondary.example", enabledModels: ["gpt-4o-alt"] }),
+      ]),
+      loadRoutingRules: vi.fn(async () => [RULE, RULE2]),
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "my-alias", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toContain("secondary.example");
+  });
+
+  it("multi-target: 502 manual_route_unavailable when no rule target is valid", async () => {
+    const deps = mkManualMultiDeps({
+      loadUpstreams: vi.fn(async () => []),
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "my-alias" },
+      }),
+      deps
+    );
+    expect(res.status).toBe(502);
+    const json = await res.json();
+    expect(json.error.type).toBe("manual_route_unavailable");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("tries next key within the same upstream on 401 (no cross-upstream fallback)", async () => {

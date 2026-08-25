@@ -17,22 +17,28 @@ export interface UpstreamRoute {
   proxyUrl?: string | null; // HTTP CONNECT 代理明文 URL（解密后），null = 直连
 }
 
-// 手动路由规则：客户端请求的虚拟名 name + protocol → 目标 upstream 的真实模型 targetModel
+// 手动路由规则：客户端请求的虚拟名 name + protocol → 目标 upstream 的真实模型 targetModel。
+// 同名同协议可挂多条（多目标 failover 链），priority 小者先尝试，同 priority 按 id 升序
 export interface RoutingRule {
   id: number;
   name: string;
   protocol: Protocol;
   upstreamId: number;
   targetModel: string;
+  priority: number;
 }
 
-// 手动路由精确匹配：name + protocol 均一致才命中（不做跨 upstream fallback）
-export function findRoutingRule(
+// 手动路由精确匹配：返回该 name + protocol 的全部命中规则，
+// 按 priority 升序、同 priority 按 id 升序（与自动路由链路组合成多目标 failover 链）
+export function findRoutingRules(
   model: string,
   protocol: Protocol,
   rules: RoutingRule[]
-): RoutingRule | null {
-  return rules.find((r) => r.protocol === protocol && r.name === model) ?? null;
+): RoutingRule[] {
+  return rules
+    .filter((r) => r.protocol === protocol && r.name === model)
+    .slice()
+    .sort((a, b) => a.priority - b.priority || a.id - b.id);
 }
 
 // 前缀通配（如 "gpt-*"）匹配："gpt-4o" 命中，但 "gpt" 本身不命中

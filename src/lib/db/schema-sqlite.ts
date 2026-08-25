@@ -50,7 +50,9 @@ export const upstreams = sqliteTable("upstreams", {
 export type Upstream = typeof upstreams.$inferSelect;
 export type NewUpstream = typeof upstreams.$inferInsert;
 
-// 手动路由规则：虚拟名 + protocol → 目标 upstream 的某个 model（优先级高于自动路由）
+// 手动路由规则：虚拟名 + protocol → 目标 upstream 的某个 model（优先级高于自动路由）。
+// 同名同协议允许挂多个目标 upstream（带 priority），命中后按 priority 构成多目标 failover 链；
+// 同 upstream 重复无意义，禁止
 export const routingRules = sqliteTable(
   "routing_rules",
   {
@@ -61,11 +63,16 @@ export const routingRules = sqliteTable(
       .notNull()
       .references(() => upstreams.id, { onDelete: "cascade" }),
     targetModel: text("target_model").notNull(), // 上游真实模型名
+    priority: integer("priority").notNull().default(0), // 小者先尝试；同 priority 按 id 升序
     createdAt: text("created_at").$defaultFn(() => new Date().toISOString()),
   },
   (table) => [
-    // 与 raw SQL UNIQUE(name, protocol) 保持一致：同名同协议规则只允许一条
-    uniqueIndex("uq_routing_rules_name_protocol").on(table.name, table.protocol),
+    // 同名同协议允许挂多个不同 upstream；同 upstream 重复禁止
+    uniqueIndex("uq_routing_rules_name_protocol_upstream").on(
+      table.name,
+      table.protocol,
+      table.upstreamId
+    ),
     index("idx_routing_rules_protocol_name").on(table.protocol, table.name),
   ]
 );
