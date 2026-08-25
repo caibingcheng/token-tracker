@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import Database from "better-sqlite3";
-import { migrateColumns, migrateTokenRecordsModelColumns } from "./migrate";
+import { migrateColumns, migrateTokenRecordsModelColumns, migrateRoutingRulesTable } from "./migrate";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -206,5 +206,88 @@ describe("migrateTokenRecordsModelColumns", () => {
       .all();
     expect(rows[0]).toEqual({ model: "gpt-4o-real", request_model: "my-alias" });
     expect(rows[1]).toEqual({ model: "plain-model", request_model: "plain-model" });
+  });
+});
+
+describe("migrateRoutingRulesTable", () => {
+  let dir3: string;
+  let db3: InstanceType<typeof Database>;
+
+  beforeAll(() => {
+    dir3 = mkdtempSync(join(tmpdir(), "tt-migrate-rr-"));
+    db3 = new Database(join(dir3, "test.db"));
+    // 模拟旧 schema：UNIQUE(name, protocol) 单目标结构（无 priority 列）
+    db3.exec(`
+      CREATE TABLE upstreams (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        protocol TEXT NOT NULL,
+        base_url TEXT NOT NULL,
+        priority INTEGER NOT NULL DEFAULT 0,
+        enabled INTEGER NOT NULL DEFAULT 1
+      );
+      CREATE TABLE routing_rules (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        protocol TEXT NOT NULL,
+        upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
+        target_model TEXT NOT NULL,
+        created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        UNIQUE(name, protocol)
+      );
+      INSERT INTO upstreams (name, protocol, base_url) VALUES
+        ('up-a', 'openai', 'https://a.example'),
+        ('up-b', 'openai', 'https://b.example');
+      INSERT INTO routing_rules (name, protocol, upstream_id, target_model) VALUES
+        ('my-alias', 'openai', 1, 'gpt-4o-real'),
+        ('other-alias', 'openai', 2, 'deepseek-chat');
+    `);
+  });
+
+  afterAll(() => {
+    db3.close();
+    rmSync(dir3, { recursive: true, force: true });
+  });
+
+  it("adds priority column, rebuilds table with new unique key and preserves data", () => {
+    migrateRoutingRulesTable(db3);
+
+    expect(db3.prepare(`PRAGMA table_info(routing_rules)`).all().map((c: any) => c.name)).toEqual(
+      expect.arrayContaining(["priority"])
+    );
+
+    const rows: any[] = db3
+      .prepare(`SELECT name, protocol, upstream_id, target_model, priority FROM routing_rules ORDER BY id`)
+      .all();
+    expect(rows).toEqual([
+      { name: "my-alias", protocol: "openai", upstream_id: 1, target_model: "gpt-4o-real", priority: 0 },
+      { name: "other-alias", protocol: "openai", upstream_id: 2, target_model: "deepseek-chat", priority: 0 },
+    ]);
+
+    // 旧约束已换成新约束：同名同协议不同 upstream 允许插入（旧 UNIQUE 下会失败）
+    db3.exec(
+      `INSERT INTO routing_rules (name, protocol, upstream_id, target_model, priority) VALUES ('my-alias', 'openai', 2, 'gpt-4o-other', 1)`
+    );
+    const inserted: any = db3
+      .prepare(`SELECT upstream_id, priority FROM routing_rules WHERE name = 'my-alias' AND upstream_id = 2`)
+      .get();
+    expect(inserted).toEqual({ upstream_id: 2, priority: 1 });
+
+    // 同 name+protocol+upstream 重复 → 约束拒绝
+    expect(() =>
+      db3.exec(
+        `INSERT INTO routing_rules (name, protocol, upstream_id, target_model) VALUES ('my-alias', 'openai', 1, 'dup')`
+      )
+    ).toThrow(/UNIQUE/i);
+  });
+
+  it("is idempotent on re-run and preserves data written after first migration", () => {
+    migrateRoutingRulesTable(db3);
+    migrateRoutingRulesTable(db3);
+    const count: any = db3.prepare(`SELECT COUNT(*) AS c FROM routing_rules`).get();
+    expect(count.c).toBe(3); // 2 条旧数据 + 1 条迁移后插入
+    expect(db3.prepare(`PRAGMA table_info(routing_rules)`).all().map((c: any) => c.name)).toEqual(
+      expect.arrayContaining(["priority"])
+    );
   });
 });

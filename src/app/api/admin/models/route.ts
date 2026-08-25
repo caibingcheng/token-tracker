@@ -46,6 +46,7 @@ interface ResolvedRoute {
   winner: CandidateInfo | null;
   candidates: CandidateInfo[];
   effective: EffectiveRoute;
+  overridden?: boolean; // 自动路由行：同名手动规则已存在（手动完全替代，仅展示溯源）
 }
 
 interface ManualRouteInfo {
@@ -56,6 +57,7 @@ interface ManualRouteInfo {
   upstreamName: string;
   upstreamProtocol: Protocol;
   targetModel: string;
+  priority: number;
 }
 
 interface WildcardInfo {
@@ -113,7 +115,10 @@ export const GET = withAuth(async () => {
   const upstreamRoutes = rows.map(toUpstreamRoute);
 
   // 手动路由规则（join upstream 供 UI 展示）
-  const ruleRows = await db.select().from(routingRulesTable).orderBy(routingRulesTable.name);
+  const ruleRows = await db
+    .select()
+    .from(routingRulesTable)
+    .orderBy(routingRulesTable.name, routingRulesTable.protocol, routingRulesTable.priority);
   const upstreamById = new Map<number, any>(rows.map((r: any) => [r.id, r]));
   const manualRoutes: ManualRouteInfo[] = ruleRows.map((r: any) => {
     const u = upstreamById.get(r.upstreamId);
@@ -125,16 +130,25 @@ export const GET = withAuth(async () => {
       upstreamName: u?.name ?? "(deleted)",
       upstreamProtocol: u && isProtocol(u.protocol) ? u.protocol : "openai",
       targetModel: r.targetModel,
+      priority: r.priority ?? 0,
     };
   });
-  const manualByKey = new Map<string, ManualRouteInfo>();
+  // 同名同协议可挂多条（多目标 failover 链），Map 值改为数组
+  const manualByKey = new Map<string, ManualRouteInfo[]>();
   for (const m of manualRoutes) {
-    manualByKey.set(`${m.protocol}:${m.name}`, m);
+    const key = `${m.protocol}:${m.name}`;
+    const list = manualByKey.get(key) ?? [];
+    list.push(m);
+    manualByKey.set(key, list);
   }
 
-  // 实际路由 = 健康过滤后链首；全部不健康时兜底 = 静态 priority 链首（与 proxy 兜底行为一致）
-  const computeEffective = (candidates: CandidateInfo[], model: string): EffectiveRoute => {
-    const healthyFirst = candidates.filter((c) => isCandidateHealthy(c.upstreamId, model));
+  // 实际路由 = 健康过滤后链首；全部不健康时兜底 = 静态 priority 链首（与 proxy 兜底行为一致）。
+  // 健康判定由调用方注入：自动路由按 upstream/model 级检查，手动路由按候选自身健康字段
+  const computeEffective = (
+    candidates: CandidateInfo[],
+    isHealthy: (c: CandidateInfo) => boolean
+  ): EffectiveRoute => {
+    const healthyFirst = candidates.filter(isHealthy);
     if (healthyFirst.length > 0) {
       return {
         winner: healthyFirst[0],
@@ -157,6 +171,32 @@ export const GET = withAuth(async () => {
     upstreamUnhealthy: upstreamUnhealthy.has(c.upstreamId),
     modelUnavailable: upstreamModelUnhealthy.get(c.upstreamId)?.has(model) ?? false,
   });
+
+  // 手动路由 resolve 行：多目标 failover 链（按 rule priority 排序），
+  // model 级健康按各目标自己的 targetModel 检查（proxy 标记也是真实名）
+  const buildManualRoute = (list: ManualRouteInfo[]): ResolvedRoute => {
+    const sorted = list
+      .slice()
+      .sort((a, b) => a.priority - b.priority || a.id - b.id);
+    const candidates: CandidateInfo[] = sorted.map((m) => ({
+      upstreamId: m.upstreamId,
+      name: m.upstreamName,
+      priority: m.priority,
+      matchedPattern: m.targetModel,
+      matchType: "exact",
+      upstreamUnhealthy: upstreamUnhealthy.has(m.upstreamId),
+      modelUnavailable:
+        upstreamModelUnhealthy.get(m.upstreamId)?.has(m.targetModel) ?? false,
+    }));
+    return {
+      protocol: sorted[0].protocol,
+      model: sorted[0].name,
+      source: "manual",
+      winner: candidates[0] ?? null,
+      candidates,
+      effective: computeEffective(candidates, (c) => !c.upstreamUnhealthy && !c.modelUnavailable),
+    };
+  };
 
   // 按 protocol 收集具体模型（非通配）和通配模式
   const concreteModelsByProtocol = new Map<Protocol, Set<string>>();
@@ -189,31 +229,10 @@ export const GET = withAuth(async () => {
     if (!models) continue;
     const sortedModels = Array.from(models).sort((a, b) => a.localeCompare(b));
     for (const model of sortedModels) {
-      const manual = manualByKey.get(`${protocol}:${model}`);
-      if (manual) {
-        // 手动路由行排在自动行之前（winner = 配置的目标 upstream，candidates 单元素）
-        const manualCandidate: CandidateInfo = {
-          upstreamId: manual.upstreamId,
-          name: manual.upstreamName,
-          priority: 0,
-          matchedPattern: manual.targetModel,
-          matchType: "exact",
-          upstreamUnhealthy: upstreamUnhealthy.has(manual.upstreamId),
-          modelUnavailable: upstreamModelUnhealthy.get(manual.upstreamId)?.has(manual.targetModel) ?? false,
-        };
-        resolvedRoutes.push({
-          protocol,
-          model,
-          source: "manual",
-          winner: manualCandidate,
-          candidates: [manualCandidate],
-          effective: {
-            winner: manualCandidate,
-            failover: false,
-            allUnhealthy:
-              manualCandidate.upstreamUnhealthy || manualCandidate.modelUnavailable,
-          },
-        });
+      const manualList = manualByKey.get(`${protocol}:${model}`);
+      if (manualList) {
+        // 手动路由行排在自动行之前：多目标 failover 链（按 rule priority 排序，含健康标记）
+        resolvedRoutes.push(buildManualRoute(manualList));
       }
       const { winner, candidates } = routeModelByProtocol(model, protocol, upstreamRoutes);
       const candidateInfos = candidates.map((c) =>
@@ -245,36 +264,24 @@ export const GET = withAuth(async () => {
             )
           : null,
         candidates: candidateInfos,
-        effective: computeEffective(candidateInfos, model),
+        effective: computeEffective(candidateInfos, (c) => isCandidateHealthy(c.upstreamId, model)),
+        overridden: manualList ? true : undefined,
       });
     }
-    // 未配置在任何 upstream 的纯手动路由名（如仅用于手动转发的虚拟名）
-    const manualOnly = manualRoutes
-      .filter((m) => m.protocol === protocol && !models.has(m.name))
-      .sort((a, b) => a.name.localeCompare(b.name));
-    for (const manual of manualOnly) {
-      const manualCandidate: CandidateInfo = {
-        upstreamId: manual.upstreamId,
-        name: manual.upstreamName,
-        priority: 0,
-        matchedPattern: manual.targetModel,
-        matchType: "exact",
-        upstreamUnhealthy: upstreamUnhealthy.has(manual.upstreamId),
-        modelUnavailable: upstreamModelUnhealthy.get(manual.upstreamId)?.has(manual.targetModel) ?? false,
-      };
-      resolvedRoutes.push({
-        protocol,
-        model: manual.name,
-        source: "manual",
-        winner: manualCandidate,
-        candidates: [manualCandidate],
-        effective: {
-          winner: manualCandidate,
-          failover: false,
-          allUnhealthy:
-            manualCandidate.upstreamUnhealthy || manualCandidate.modelUnavailable,
-        },
-      });
+    // 未配置在任何 upstream 的纯手动路由名（如仅用于手动转发的虚拟名）；
+    // 按 (protocol, name) 分组，同名多目标合并为一条链
+    const manualOnly: ManualRouteInfo[][] = [];
+    const seenKeys = new Set<string>();
+    for (const m of manualRoutes) {
+      if (m.protocol !== protocol || models.has(m.name)) continue;
+      const key = `${m.protocol}:${m.name}`;
+      if (seenKeys.has(key)) continue;
+      seenKeys.add(key);
+      manualOnly.push(manualByKey.get(key)!);
+    }
+    manualOnly.sort((a, b) => a[0].name.localeCompare(b[0].name));
+    for (const list of manualOnly) {
+      resolvedRoutes.push(buildManualRoute(list));
     }
   }
 

@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm";
 import { wrapDatabaseClient } from "./cache";
 import { offsetMinutesToSqlModifiers } from "@/lib/timezone-utils";
-import { migrateColumns, migrateTokenRecordsModelColumns } from "./migrate";
+import { migrateColumns, migrateTokenRecordsModelColumns, migrateRoutingRulesTable } from "./migrate";
 
 let db: any;
 let tokenRecords: any;
@@ -132,8 +132,9 @@ async function ensureClient() {
       protocol TEXT NOT NULL,
       upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
       target_model TEXT NOT NULL,
+      priority INTEGER NOT NULL DEFAULT 0,
       created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-      UNIQUE(name, protocol)
+      UNIQUE(name, protocol, upstream_id)
     );
     CREATE INDEX IF NOT EXISTS idx_routing_rules_protocol_name ON routing_rules(protocol, name);
     CREATE TABLE IF NOT EXISTS model_prices (
@@ -186,6 +187,9 @@ async function ensureClient() {
 
   // token_records 专用迁移：model 列改为真实名 + request_model 回填 + target_model 删除
   migrateTokenRecordsModelColumns(client);
+
+  // routing_rules 专用迁移：旧 UNIQUE(name, protocol) 结构 → 多目标结构（priority 列 + 新唯一约束）
+  migrateRoutingRulesTable(client);
 
   client.exec(`
     CREATE INDEX IF NOT EXISTS idx_token_records_virtual_key_id ON token_records(virtual_key_id);

@@ -15,6 +15,7 @@ interface RuleWithUpstream {
   upstreamName: string;
   upstreamProtocol: Protocol;
   targetModel: string;
+  priority: number;
   createdAt: string;
 }
 
@@ -29,7 +30,12 @@ export const GET = withAuth(async () => {
       })
       .from(routingRulesTable)
       .leftJoin(upstreamsTable, eq(routingRulesTable.upstreamId, upstreamsTable.id))
-      .orderBy(routingRulesTable.name, routingRulesTable.protocol);
+      .orderBy(
+        routingRulesTable.name,
+        routingRulesTable.protocol,
+        routingRulesTable.priority,
+        routingRulesTable.id
+      );
 
     const data: RuleWithUpstream[] = rows.map((row: any) => ({
       id: row.rule.id,
@@ -39,6 +45,7 @@ export const GET = withAuth(async () => {
       upstreamName: row.upstream?.name ?? "(deleted)",
       upstreamProtocol: row.upstream && isProtocol(row.upstream.protocol) ? row.upstream.protocol : "openai",
       targetModel: row.rule.targetModel,
+      priority: row.rule.priority,
       createdAt: row.rule.createdAt,
     }));
 
@@ -60,6 +67,18 @@ export const POST = withAuth(async (request: NextRequest) => {
     const protocol = typeof body.protocol === "string" ? body.protocol : "";
     const upstreamId = Number(body.upstreamId);
     const targetModel = typeof body.targetModel === "string" ? body.targetModel.trim() : "";
+
+    // priority 可选：非负整数（默认 0），小者先尝试
+    let priority = 0;
+    if (body.priority !== undefined && body.priority !== null) {
+      if (typeof body.priority !== "number" || !Number.isInteger(body.priority) || body.priority < 0) {
+        return NextResponse.json(
+          { success: false, error: "priority must be a non-negative integer" },
+          { status: 400 }
+        );
+      }
+      priority = body.priority;
+    }
 
     if (!name || !protocol || !upstreamId || !targetModel) {
       return NextResponse.json(
@@ -98,6 +117,7 @@ export const POST = withAuth(async (request: NextRequest) => {
           protocol,
           upstreamId,
           targetModel,
+          priority,
         })
         .returning();
       const { ip, userAgent } = extractClientInfo(request);
@@ -107,14 +127,17 @@ export const POST = withAuth(async (request: NextRequest) => {
         targetId: result[0].id,
         ip,
         userAgent,
-        details: { name, protocol, upstreamId, targetModel },
+        details: { name, protocol, upstreamId, targetModel, priority },
       });
       return NextResponse.json({ success: true, data: result[0] }, { status: 201 });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (message.includes("UNIQUE")) {
         return NextResponse.json(
-          { success: false, error: `Routing rule already exists for "${name}" (${protocol})` },
+          {
+            success: false,
+            error: `Routing rule already exists for "${name}" (${protocol}, upstream ${upstreamId})`,
+          },
           { status: 409 }
         );
       }

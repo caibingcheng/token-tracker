@@ -2,13 +2,12 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { apiFetch } from "@/lib/client/api-client";
+import { detectRequestProtocol, type Protocol } from "@/lib/gateway/model-router";
 import {
-  detectRequestProtocol,
-  routeModelByProtocol,
-  type ModelCandidate,
-  type Protocol,
-  type UpstreamRoute,
-} from "@/lib/gateway/model-router";
+  simulateRoute,
+  type SimRouteResult,
+  type SimManualRule,
+} from "@/lib/gateway/simulate-route";
 import { CopyableCode } from "./CopyableCode";
 import PricePickerModal from "./PricePickerModal";
 
@@ -47,6 +46,7 @@ interface ResolvedRoute {
   winner: CandidateInfo | null;
   candidates: CandidateInfo[];
   effective: EffectiveRoute;
+  overridden?: boolean;
 }
 
 interface ManualRouteInfo {
@@ -57,6 +57,7 @@ interface ManualRouteInfo {
   upstreamName: string;
   upstreamProtocol: Protocol;
   targetModel: string;
+  priority: number;
 }
 
 interface WildcardInfo {
@@ -98,18 +99,6 @@ interface PriceRow {
       cacheReadPrice: number | null;
       cacheWritePrice: number | null;
     } | null;
-  };
-}
-
-function toUpstreamRoute(u: UpstreamSummary): UpstreamRoute {
-  return {
-    id: u.id,
-    name: u.name,
-    protocol: u.protocol,
-    baseUrl: u.baseUrl,
-    priority: u.priority,
-    enabled: u.enabled,
-    enabledModels: u.enabledModels,
   };
 }
 
@@ -186,6 +175,107 @@ function EffectiveBadge({ effective }: { effective: EffectiveRoute }) {
   return null;
 }
 
+// 模拟器结果面板：手动路由短路 / 自动路由统一渲染
+function RouteSimulationResult({ result, model }: { result: SimRouteResult; model: string }) {
+  const winner = result.winner;
+  if (result.manualRouteUnavailable) {
+    return (
+      <div className="text-sm text-red-600">
+        Manual route targets unavailable: no valid upstream targets for{" "}
+        <CopyableCode className="rounded bg-white px-1 py-0.5 text-xs">{model}</CopyableCode>{" "}
+        (gateway returns 502 <code className="text-xs">manual_route_unavailable</code>)
+        {result.skipped.length > 0 && (
+          <p className="mt-1 text-[11px] text-gray-500">
+            Skipped:{" "}
+            {result.skipped.map((s) => (
+              <span key={s.upstreamId} className="mr-2">
+                upstream #{s.upstreamId} → {s.targetModel} ({s.reason})
+              </span>
+            ))}
+          </p>
+        )}
+      </div>
+    );
+  }
+  if (!winner) {
+    return (
+      <div className="text-sm text-red-600">
+        No upstream configured for{" "}
+        <CopyableCode className="rounded bg-white px-1 py-0.5 text-xs">{model}</CopyableCode>
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-3">
+      <div className="rounded border border-green-200 bg-green-50 p-2">
+        <div className="mb-1 flex flex-wrap items-center gap-2 text-xs font-medium text-green-700">
+          Winning Upstream
+          <EffectiveBadge effective={result.effective} />
+        </div>
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <span className="font-semibold">{result.effective.winner?.name ?? winner.name}</span>
+          <span className="text-xs text-gray-500">priority {result.effective.winner?.priority ?? winner.priority}</span>
+          <CopyableCode className="rounded bg-white px-1.5 py-0.5 text-xs">
+            {result.effective.winner?.matchedPattern ?? winner.matchedPattern}
+          </CopyableCode>
+          <MatchTypeBadge type={(result.effective.winner ?? winner).matchType} />
+          <HealthBadges candidate={result.effective.winner ?? winner} />
+        </div>
+        {result.source === "manual" && (
+          <p className="mt-1 text-[11px] text-blue-700">
+            Manual route: request model is rewritten to{" "}
+            <code className="text-xs">{(result.effective.winner ?? winner).matchedPattern}</code> before going upstream.
+          </p>
+        )}
+        {result.source === "auto" && result.effective.failover && winner && (
+          <p className="mt-1 text-[11px] text-amber-700">
+            Static winner {winner.name} is unhealthy — actual route uses fallback.
+          </p>
+        )}
+      </div>
+      {result.skipped.length > 0 && (
+        <p className="text-[11px] text-gray-500">
+          Skipped targets (disabled/missing upstream — gateway skips these):{" "}
+          {result.skipped.map((s) => (
+            <span key={s.upstreamId} className="mr-2">
+              #{s.upstreamId} → {s.targetModel} ({s.reason})
+            </span>
+          ))}
+        </p>
+      )}
+      {result.candidates.length > 1 && (
+        <div>
+          <div className="mb-1 text-xs font-medium text-gray-600">
+            All Candidates ({result.candidates.length})
+          </div>
+          <div className="space-y-1">
+            {result.candidates.map((c) => {
+              const isWinner = c.upstreamId === result.effective.winner?.upstreamId;
+              return (
+                <div
+                  key={c.upstreamId}
+                  className={`flex flex-wrap items-center gap-2 rounded border px-2 py-1.5 text-sm ${
+                    isWinner
+                      ? "border-green-200 bg-green-50"
+                      : "border-gray-200 bg-white"
+                  }`}
+                >
+                  <span className={isWinner ? "font-semibold text-green-700" : ""}>{c.name}</span>
+                  <span className="text-xs text-gray-500">priority {c.priority}</span>
+                  <CopyableCode className="rounded bg-gray-100 px-1.5 py-0.5 text-xs">{c.matchedPattern}</CopyableCode>
+                  <MatchTypeBadge type={c.matchType} />
+                  <HealthBadges candidate={c} />
+                  {isWinner && <span className="ml-auto text-xs font-medium text-green-700">winner</span>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function ModelsPanel() {
   const [data, setData] = useState<ModelsData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -196,9 +286,7 @@ export default function ModelsPanel() {
   const [simulatorResult, setSimulatorResult] = useState<{
     protocol: Protocol;
     model: string;
-    winner: CandidateInfo | null;
-    candidates: CandidateInfo[];
-    effective: EffectiveRoute;
+    result: SimRouteResult | null;
   } | null>(null);
 
   const [selectedProtocol, setSelectedProtocol] = useState<Protocol>("openai");
@@ -212,6 +300,7 @@ export default function ModelsPanel() {
   const [pricesError, setPricesError] = useState<string | null>(null);
   const [refreshingSnapshot, setRefreshingSnapshot] = useState(false);
   const [uploadingSnapshot, setUploadingSnapshot] = useState(false);
+  const [pricesSuccess, setPricesSuccess] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Manual Routing 表单
@@ -219,8 +308,14 @@ export default function ModelsPanel() {
   const [ruleProtocol, setRuleProtocol] = useState<Protocol>("openai");
   const [ruleUpstreamId, setRuleUpstreamId] = useState<number | "">("");
   const [ruleTargetModel, setRuleTargetModel] = useState("");
+  const [rulePriority, setRulePriority] = useState("0");
+  const [rulePriorityTouched, setRulePriorityTouched] = useState(false);
   const [showTargetSuggestions, setShowTargetSuggestions] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+
+  // 行内编辑（priority / targetModel）
+  const [editingRule, setEditingRule] = useState<{ id: number; priority: string; targetModel: string } | null>(null);
+  const [savingRule, setSavingRule] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -281,11 +376,18 @@ export default function ModelsPanel() {
   const refreshModelsDev = async () => {
     setRefreshingSnapshot(true);
     setPricesError(null);
+    setPricesSuccess(null);
     try {
       const res = await apiFetch("/api/admin/models-dev/refresh", { method: "POST" });
       const json = await res.json();
       if (json.success) {
         await loadPrices();
+        const fetchedAt = json.data?.fetchedAt;
+        setPricesSuccess(
+          `models.dev snapshot refreshed and price reference updated${
+            fetchedAt ? ` · fetched at ${new Date(fetchedAt).toLocaleString()}` : ""
+          }`
+        );
       } else {
         setPricesError(json.error || "Refresh failed");
       }
@@ -368,11 +470,6 @@ export default function ModelsPanel() {
     }
   };
 
-  const upstreamRoutes = useMemo(
-    () => (data ? data.upstreams.filter((u) => u.enabled).map(toUpstreamRoute) : []),
-    [data]
-  );
-
   // provider 下拉选项：按所选 protocol 过滤 + enabled 过滤
   const ruleUpstreamOptions = useMemo(() => {
     if (!data) return [];
@@ -400,6 +497,7 @@ export default function ModelsPanel() {
           protocol: ruleProtocol,
           upstreamId: ruleUpstreamId,
           targetModel: ruleTargetModel.trim(),
+          priority: rulePriority.trim() === "" ? 0 : Number(rulePriority),
         }),
       });
       const json = await res.json();
@@ -407,6 +505,8 @@ export default function ModelsPanel() {
         setRuleName("");
         setRuleUpstreamId("");
         setRuleTargetModel("");
+        setRulePriority("0");
+        setRulePriorityTouched(false);
         await load();
       } else {
         setError(json.error || "Failed to create routing rule");
@@ -415,6 +515,41 @@ export default function ModelsPanel() {
       setError("Network error");
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const updateRule = async () => {
+    if (!editingRule) return;
+    const priority = Number(editingRule.priority);
+    if (!Number.isInteger(priority) || priority < 0) {
+      setError("Priority must be a non-negative integer");
+      return;
+    }
+    if (!editingRule.targetModel.trim()) {
+      setError("Target model cannot be empty");
+      return;
+    }
+    setSavingRule(true);
+    try {
+      const res = await apiFetch(`/api/admin/routing-rules/${editingRule.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          priority,
+          targetModel: editingRule.targetModel.trim(),
+        }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        setEditingRule(null);
+        await load();
+      } else {
+        setError(json.error || "Failed to update routing rule");
+      }
+    } catch {
+      setError("Network error");
+    } finally {
+      setSavingRule(false);
     }
   };
 
@@ -438,40 +573,18 @@ export default function ModelsPanel() {
     const path = pathInput.trim() || DEFAULT_PATH;
     if (!model || !data) return;
     const protocol = detectRequestProtocol(path);
-    const { winner, candidates } = routeModelByProtocol(model, protocol, upstreamRoutes);
-    // 附加健康标记（与 /api/admin/models 同口径：upstream 级 unhealthy + model 级不可用）
-    const toCandidateInfo = (c: ModelCandidate): CandidateInfo => {
-      const upstream = data.upstreams.find((u) => u.id === c.upstream.id);
-      return {
-        upstreamId: c.upstream.id,
-        name: c.upstream.name,
-        priority: c.upstream.priority,
-        matchedPattern: c.matchedPattern,
-        matchType: c.matchType,
-        upstreamUnhealthy: upstream?.unhealthy ?? false,
-        modelUnavailable: upstream?.modelUnhealthy?.includes(model) ?? false,
-      };
-    };
-    const candidateInfos = candidates.map(toCandidateInfo);
-    const healthyFirst = candidateInfos.filter((c) => !c.upstreamUnhealthy && !c.modelUnavailable);
-    const effective: EffectiveRoute =
-      healthyFirst.length > 0
-        ? {
-            winner: healthyFirst[0],
-            failover: healthyFirst[0].upstreamId !== candidateInfos[0]?.upstreamId,
-            allUnhealthy: false,
-          }
-        : {
-            winner: candidateInfos[0] ?? null,
-            failover: false,
-            allUnhealthy: candidateInfos.length > 0,
-          };
+    const rules: SimManualRule[] = data.manualRoutes.map((m) => ({
+      id: m.id,
+      name: m.name,
+      protocol: m.protocol,
+      upstreamId: m.upstreamId,
+      targetModel: m.targetModel,
+      priority: m.priority,
+    }));
     setSimulatorResult({
       protocol,
       model,
-      winner: winner ? toCandidateInfo(winner) : null,
-      candidates: candidateInfos,
-      effective,
+      result: simulateRoute(model, protocol, data.upstreams, rules),
     });
   };
 
@@ -562,68 +675,21 @@ export default function ModelsPanel() {
               <span className={`rounded border px-1.5 py-0.5 text-xs ${protocolBadgeClass(simulatorResult.protocol)}`}>
                 {simulatorResult.protocol}
               </span>
-            </div>
-            {simulatorResult.winner ? (
-              <div className="space-y-3">
-                <div className="rounded border border-green-200 bg-green-50 p-2">
-                  <div className="mb-1 flex flex-wrap items-center gap-2 text-xs font-medium text-green-700">
-                    Winning Upstream
-                    <EffectiveBadge effective={simulatorResult.effective} />
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2 text-sm">
-                    <span className="font-semibold">{simulatorResult.effective.winner?.name ?? simulatorResult.winner.name}</span>
-                    <span className="text-xs text-gray-500">priority {simulatorResult.effective.winner?.priority ?? simulatorResult.winner.priority}</span>
-                    <CopyableCode className="rounded bg-white px-1.5 py-0.5 text-xs">
-                      {simulatorResult.effective.winner?.matchedPattern ?? simulatorResult.winner.matchedPattern}
-                    </CopyableCode>
-                    <MatchTypeBadge type={(simulatorResult.effective.winner ?? simulatorResult.winner).matchType} />
-                    <HealthBadges candidate={simulatorResult.effective.winner ?? simulatorResult.winner} />
-                  </div>
-                  {simulatorResult.effective.failover && simulatorResult.winner && (
-                    <p className="mt-1 text-[11px] text-amber-700">
-                      Static winner {simulatorResult.winner.name} is unhealthy — actual route uses fallback.
-                    </p>
+              {simulatorResult.result && (
+                <span className="text-xs text-gray-500">
+                  via{" "}
+                  {simulatorResult.result.source === "manual" ? (
+                    <MatchTypeBadge type="manual" />
+                  ) : (
+                    <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-600">auto</span>
                   )}
-                </div>
-                {simulatorResult.candidates.length > 1 && (
-                  <div>
-                    <div className="mb-1 text-xs font-medium text-gray-600">
-                      All Candidates ({simulatorResult.candidates.length})
-                    </div>
-                    <div className="space-y-1">
-                      {simulatorResult.candidates.map((c) => {
-                        const isWinner = c.upstreamId === simulatorResult.effective.winner?.upstreamId;
-                        return (
-                          <div
-                            key={c.upstreamId}
-                            className={`flex flex-wrap items-center gap-2 rounded border px-2 py-1.5 text-sm ${
-                              isWinner
-                                ? "border-green-200 bg-green-50"
-                                : "border-gray-200 bg-white"
-                            }`}
-                          >
-                            <span className={isWinner ? "font-semibold text-green-700" : ""}>{c.name}</span>
-                            <span className="text-xs text-gray-500">priority {c.priority}</span>
-                            <CopyableCode className="rounded bg-gray-100 px-1.5 py-0.5 text-xs">{c.matchedPattern}</CopyableCode>
-                            <MatchTypeBadge type={c.matchType} />
-                            <HealthBadges candidate={c} />
-                            {isWinner && <span className="ml-auto text-xs font-medium text-green-700">winner</span>}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="text-sm text-red-600">
-                No upstream configured for{" "}
-                <CopyableCode className="rounded bg-white px-1 py-0.5 text-xs">{simulatorResult.model}</CopyableCode>{" "}
-                under protocol{" "}
-                <span className={`rounded border px-1 py-0.5 text-xs ${protocolBadgeClass(simulatorResult.protocol)}`}>
-                  {simulatorResult.protocol}
                 </span>
-              </div>
+              )}
+            </div>
+            {simulatorResult.result ? (
+              <RouteSimulationResult result={simulatorResult.result} model={simulatorResult.model} />
+            ) : (
+              <div className="text-sm text-red-600">No match</div>
             )}
           </div>
         )}
@@ -634,12 +700,12 @@ export default function ModelsPanel() {
         <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <h2 className="text-base font-semibold">Manual Routing</h2>
           <p className="text-xs text-gray-400">
-            Manual rules take precedence over automatic routing. No cross-upstream fallback.
+            Manual rules completely replace automatic routing. Multiple targets fail over by priority; all fail → 502.
           </p>
         </div>
 
-        {/* 新增行：name / protocol / provider / target model */}
-        <div className="grid grid-cols-1 md:grid-cols-[1fr_150px_1fr_1fr_auto] gap-3">
+        {/* 新增行：name / protocol / provider / target model / priority */}
+        <div className="grid grid-cols-1 md:grid-cols-[1fr_130px_1fr_1fr_90px_auto] gap-3">
           <div>
             <label className="mb-1 block text-xs font-medium text-gray-700">New Model Name</label>
             <input
@@ -658,6 +724,7 @@ export default function ModelsPanel() {
                 setRuleProtocol(e.target.value as Protocol);
                 setRuleUpstreamId("");
                 setRuleTargetModel("");
+                if (!rulePriorityTouched) setRulePriority("0");
               }}
               className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             >
@@ -671,8 +738,13 @@ export default function ModelsPanel() {
             <select
               value={ruleUpstreamId}
               onChange={(e) => {
-                setRuleUpstreamId(e.target.value === "" ? "" : Number(e.target.value));
+                const id = e.target.value === "" ? "" : Number(e.target.value);
+                setRuleUpstreamId(id);
                 setRuleTargetModel("");
+                if (!rulePriorityTouched) {
+                  const upstream = ruleUpstreamOptions.find((u) => u.id === id);
+                  setRulePriority(String(upstream?.priority ?? 0));
+                }
               }}
               className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             >
@@ -721,6 +793,21 @@ export default function ModelsPanel() {
               </div>
             )}
           </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-700">Priority</label>
+            <input
+              value={rulePriority}
+              onChange={(e) => {
+                setRulePriority(e.target.value);
+                setRulePriorityTouched(true);
+              }}
+              onKeyDown={(e) => e.key === "Enter" && createRule()}
+              type="number"
+              min={0}
+              placeholder="0"
+              className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+          </div>
           <div className="flex items-end">
             <button
               type="button"
@@ -744,40 +831,104 @@ export default function ModelsPanel() {
                     <th className="px-2 py-2">Protocol</th>
                     <th className="px-2 py-2">Provider</th>
                     <th className="px-2 py-2">Target Model</th>
+                    <th className="px-2 py-2">Priority</th>
                     <th className="px-2 py-2"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {data.manualRoutes.map((rule) => (
-                    <tr key={rule.id}>
-                      <td className="px-2 py-2">
-                        <CopyableCode className="text-xs">{rule.name}</CopyableCode>
-                      </td>
-                      <td className="px-2 py-2">
-                        <span className={`rounded border px-1.5 py-0.5 text-[10px] ${protocolBadgeClass(rule.protocol)}`}>
-                          {rule.protocol}
-                        </span>
-                      </td>
-                      <td className="px-2 py-2">
-                        <span className="font-medium">{rule.upstreamName}</span>
-                        <span className={`ml-1.5 rounded border px-1.5 py-0.5 text-[10px] ${protocolBadgeClass(rule.upstreamProtocol)}`}>
-                          {rule.upstreamProtocol}
-                        </span>
-                      </td>
-                      <td className="px-2 py-2">
-                        <CopyableCode className="text-xs">{rule.targetModel}</CopyableCode>
-                      </td>
-                      <td className="px-2 py-2 text-right">
-                        <button
-                          type="button"
-                          onClick={() => deleteRule(rule)}
-                          className="text-xs text-red-500 hover:text-red-700"
-                        >
-                          Delete
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                  {data.manualRoutes.map((rule) => {
+                    const editing = editingRule?.id === rule.id;
+                    return (
+                      <tr key={rule.id}>
+                        <td className="px-2 py-2">
+                          <CopyableCode className="text-xs">{rule.name}</CopyableCode>
+                        </td>
+                        <td className="px-2 py-2">
+                          <span className={`rounded border px-1.5 py-0.5 text-[10px] ${protocolBadgeClass(rule.protocol)}`}>
+                            {rule.protocol}
+                          </span>
+                        </td>
+                        <td className="px-2 py-2">
+                          <span className="font-medium">{rule.upstreamName}</span>
+                          <span className={`ml-1.5 rounded border px-1.5 py-0.5 text-[10px] ${protocolBadgeClass(rule.upstreamProtocol)}`}>
+                            {rule.upstreamProtocol}
+                          </span>
+                        </td>
+                        <td className="px-2 py-2">
+                          {editing ? (
+                            <input
+                              value={editingRule!.targetModel}
+                              onChange={(e) => setEditingRule({ ...editingRule!, targetModel: e.target.value })}
+                              className="w-40 rounded border border-gray-300 px-2 py-1 text-xs focus:border-blue-500 focus:outline-none"
+                            />
+                          ) : (
+                            <CopyableCode className="text-xs">{rule.targetModel}</CopyableCode>
+                          )}
+                        </td>
+                        <td className="px-2 py-2">
+                          {editing ? (
+                            <input
+                              value={editingRule!.priority}
+                              onChange={(e) => setEditingRule({ ...editingRule!, priority: e.target.value })}
+                              type="number"
+                              min={0}
+                              className="w-16 rounded border border-gray-300 px-2 py-1 text-xs focus:border-blue-500 focus:outline-none"
+                            />
+                          ) : (
+                            <span className="inline-flex items-center rounded bg-gray-50 px-1.5 py-0.5 text-xs text-gray-600">
+                              p{rule.priority}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-2 py-2 text-right whitespace-nowrap">
+                          {editing ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={updateRule}
+                                disabled={savingRule}
+                                className="text-xs font-medium text-blue-600 hover:text-blue-800 disabled:opacity-50"
+                              >
+                                {savingRule ? "Saving…" : "Save"}
+                              </button>
+                              {" · "}
+                              <button
+                                type="button"
+                                onClick={() => setEditingRule(null)}
+                                className="text-xs text-gray-500 hover:text-gray-700"
+                              >
+                                Cancel
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setEditingRule({
+                                    id: rule.id,
+                                    priority: String(rule.priority),
+                                    targetModel: rule.targetModel,
+                                  })
+                                }
+                                className="text-xs text-gray-600 hover:text-gray-800"
+                              >
+                                Edit
+                              </button>
+                              {" · "}
+                              <button
+                                type="button"
+                                onClick={() => deleteRule(rule)}
+                                className="text-xs text-red-500 hover:text-red-700"
+                              >
+                                Delete
+                              </button>
+                            </>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -789,13 +940,53 @@ export default function ModelsPanel() {
                       <p className="text-xs text-gray-500">Name</p>
                       <CopyableCode className="text-xs">{rule.name}</CopyableCode>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => deleteRule(rule)}
-                      className="shrink-0 rounded border border-red-200 px-2 py-1 text-xs text-red-500 hover:bg-red-50"
-                    >
-                      Delete
-                    </button>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <span className="rounded bg-gray-50 px-1.5 py-0.5 text-xs text-gray-600">
+                        p{rule.priority}
+                      </span>
+                      {editingRule?.id === rule.id ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={updateRule}
+                            disabled={savingRule}
+                            className="rounded border border-blue-200 bg-blue-50 px-2 py-1 text-xs text-blue-600 disabled:opacity-50"
+                          >
+                            {savingRule ? "Saving…" : "Save"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditingRule(null)}
+                            className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-500"
+                          >
+                            Cancel
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setEditingRule({
+                                id: rule.id,
+                                priority: String(rule.priority),
+                                targetModel: rule.targetModel,
+                              })
+                            }
+                            className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-600"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => deleteRule(rule)}
+                            className="rounded border border-red-200 px-2 py-1 text-xs text-red-500"
+                          >
+                            Delete
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     <div>
@@ -813,8 +1004,28 @@ export default function ModelsPanel() {
                     </div>
                     <div className="col-span-2">
                       <p className="text-xs text-gray-500">Target Model</p>
-                      <CopyableCode className="text-xs">{rule.targetModel}</CopyableCode>
+                      {editingRule?.id === rule.id ? (
+                        <input
+                          value={editingRule.targetModel}
+                          onChange={(e) => setEditingRule({ ...editingRule, targetModel: e.target.value })}
+                          className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 text-sm focus:border-blue-500 focus:outline-none"
+                        />
+                      ) : (
+                        <CopyableCode className="text-xs">{rule.targetModel}</CopyableCode>
+                      )}
                     </div>
+                    {editingRule?.id === rule.id && (
+                      <div className="col-span-2">
+                        <p className="text-xs text-gray-500">Priority</p>
+                        <input
+                          value={editingRule.priority}
+                          onChange={(e) => setEditingRule({ ...editingRule, priority: e.target.value })}
+                          type="number"
+                          min={0}
+                          className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 text-sm focus:border-blue-500 focus:outline-none"
+                        />
+                      </div>
+                    )}
                   </div>
                 </div>
               ))}
@@ -892,6 +1103,14 @@ export default function ModelsPanel() {
                         >
                           <td className="px-2 py-2">
                             <CopyableCode className="text-xs">{route.model}</CopyableCode>
+                            {route.source === "auto" && route.overridden && (
+                              <span
+                                className="ml-1.5 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500"
+                                title="Overridden by a manual route with the same name; manual route fully replaces automatic routing"
+                              >
+                                overridden
+                              </span>
+                            )}
                           </td>
                           <td className="px-2 py-2 font-medium">
                             {route.effective.winner ? (
@@ -993,6 +1212,14 @@ export default function ModelsPanel() {
                       <div className="flex items-center justify-between gap-2">
                         <div className="min-w-0">
                           <CopyableCode className="text-xs">{route.model}</CopyableCode>
+                          {route.source === "auto" && route.overridden && (
+                            <span
+                              className="ml-1.5 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500"
+                              title="Overridden by a manual route with the same name; manual route fully replaces automatic routing"
+                            >
+                              overridden
+                            </span>
+                          )}
                           <div className="mt-1 text-sm font-medium text-gray-900">
                             {route.effective.winner ? (
                               <>
@@ -1130,6 +1357,11 @@ export default function ModelsPanel() {
         {pricesError && (
           <div className="mb-3 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-600">
             {pricesError}
+          </div>
+        )}
+        {pricesSuccess && (
+          <div className="mb-3 rounded border border-green-200 bg-green-50 p-3 text-sm text-green-600">
+            {pricesSuccess}
           </div>
         )}
 
