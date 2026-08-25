@@ -21,17 +21,17 @@ export interface ModelPriceRow {
   outputPrice: number | null;
   cacheReadPrice: number | null;
   cacheWritePrice: number | null;
-  source: "models.dev" | "manual" | null;
+  source: "models.dev" | "github" | "manual" | null;
   modelsDevId: string | null;
-  sourceProvider: string | null; // models.dev 来源的 provider 显示名（manual 为 null）
+  sourceProvider: string | null; // 自动来源（models.dev / github）的 provider 显示名（manual 为 null）
   updatedAt: string | null;
   status: {
     active: boolean;
     inactive: boolean;
     pending: boolean; // 未定价且候选 >1 且价格不一致
     unmatched: boolean; // 未定价且无候选
-    hasUpdate: boolean; // source=models.dev 且快照同 id 价格不同
-    removed: boolean; // source=models.dev 且快照无该 id
+    hasUpdate: boolean; // source=models.dev/github 且快照同 id 价格不同
+    removed: boolean; // source=models.dev/github 且快照无该 id
     diff: {
       inputPrice: number;
       outputPrice: number;
@@ -144,9 +144,9 @@ export async function getModelPricesList(): Promise<ModelPriceRow[]> {
     const upstreams = upstreamByModel.get(model) ?? [];
     const active = upstreams.length > 0;
 
-    // models.dev 来源：解析 modelsDevId 的 provider 段，显示名优先取快照 name，缺失回退 providerId
+    // 自动来源（models.dev / github）：解析 modelsDevId 的 provider 段，显示名优先取快照 name，缺失回退 providerId
     let sourceProvider: string | null = null;
-    if (price?.source === "models.dev" && price.modelsDevId) {
+    if ((price?.source === "models.dev" || price?.source === "github") && price.modelsDevId) {
       const slash = price.modelsDevId.indexOf("/");
       if (slash > 0) {
         const providerId = price.modelsDevId.slice(0, slash);
@@ -165,7 +165,7 @@ export async function getModelPricesList(): Promise<ModelPriceRow[]> {
     };
 
     if (price) {
-      if (price.source === "models.dev" && price.modelsDevId) {
+      if ((price.source === "models.dev" || price.source === "github") && price.modelsDevId) {
         const snapshotPrice = snapshotPriceFor(snapshot, price.modelsDevId);
         if (snapshotPrice) {
           const current: SnapshotPrice = {
@@ -263,7 +263,7 @@ export async function upsertManualPrice(entry: {
   invalidatePriceCache();
 }
 
-// 从候选选定落库（source='models.dev'，记录 models_dev_id）
+// 从候选选定落库（source 取自当前快照，记录 models_dev_id）
 export async function selectModelsDevPrice(entry: {
   model: string;
   modelsDevId: string;
@@ -271,6 +271,7 @@ export async function selectModelsDevPrice(entry: {
   outputPrice: number;
   cacheReadPrice: number | null;
   cacheWritePrice: number | null;
+  source: "models.dev" | "github";
 }): Promise<void> {
   await initDatabase();
   await withSkipCache(async () => {
@@ -282,7 +283,7 @@ export async function selectModelsDevPrice(entry: {
         outputPrice: entry.outputPrice,
         cacheReadPrice: entry.cacheReadPrice,
         cacheWritePrice: entry.cacheWritePrice,
-        source: "models.dev",
+        source: entry.source,
         modelsDevId: entry.modelsDevId,
         updatedAt: new Date().toISOString(),
       })
@@ -293,7 +294,7 @@ export async function selectModelsDevPrice(entry: {
           outputPrice: entry.outputPrice,
           cacheReadPrice: entry.cacheReadPrice,
           cacheWritePrice: entry.cacheWritePrice,
-          source: "models.dev",
+          source: entry.source,
           modelsDevId: entry.modelsDevId,
           updatedAt: new Date().toISOString(),
         },
@@ -326,7 +327,7 @@ function upsertPriceRow(price: AutoFillModelPrice) {
         outputPrice: price.outputPrice,
         cacheReadPrice: price.cacheReadPrice,
         cacheWritePrice: price.cacheWritePrice,
-        source: "models.dev",
+        source: price.source,
         modelsDevId: price.modelsDevId,
         updatedAt: price.updatedAt,
       })
@@ -337,7 +338,7 @@ function upsertPriceRow(price: AutoFillModelPrice) {
           outputPrice: price.outputPrice,
           cacheReadPrice: price.cacheReadPrice,
           cacheWritePrice: price.cacheWritePrice,
-          source: "models.dev",
+          source: price.source,
           modelsDevId: price.modelsDevId,
           updatedAt: price.updatedAt,
         },

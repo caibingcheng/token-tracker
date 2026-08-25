@@ -13,7 +13,7 @@ export interface AutoFillModelPrice {
   outputPrice: number;
   cacheReadPrice: number | null;
   cacheWritePrice: number | null;
-  source: "models.dev";
+  source: "models.dev" | "github";
   modelsDevId: string;
   updatedAt: string;
 }
@@ -68,7 +68,7 @@ export async function autoFillModelPrices(
       outputPrice: matched.outputPrice,
       cacheReadPrice: matched.cacheReadPrice,
       cacheWritePrice: matched.cacheWritePrice,
-      source: "models.dev",
+      source: opts.snapshot.source,
       modelsDevId: matched.modelsDevId,
       updatedAt: (opts.now ?? new Date()).toISOString(),
     });

@@ -82,7 +82,7 @@ interface PriceRow {
   outputPrice: number | null;
   cacheReadPrice: number | null;
   cacheWritePrice: number | null;
-  source: "models.dev" | "manual" | null;
+  source: "models.dev" | "github" | "manual" | null;
   modelsDevId: string | null;
   sourceProvider: string | null;
   updatedAt: string | null;
@@ -1609,11 +1609,12 @@ function PriceBadges({
 }) {
   const badges: Array<{ key: string; cls: string; label: string; action?: () => void; title?: string }> = [];
 
-  if (row.source === "models.dev") {
+  if (row.source === "models.dev" || row.source === "github") {
+    const label = modelSourceLabel(row.source);
     badges.push({
       key: "src",
       cls: "bg-green-50 text-green-700 border-green-200",
-      label: row.sourceProvider ? `models.dev · ${row.sourceProvider}` : "models.dev",
+      label: row.sourceProvider ? `${label} · ${row.sourceProvider}` : label,
       title: row.modelsDevId ?? undefined,
     });
   } else if (row.source === "manual") {

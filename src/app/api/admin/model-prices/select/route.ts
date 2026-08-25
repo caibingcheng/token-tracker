@@ -60,6 +60,7 @@ export const POST = withAuth(async (request: NextRequest) => {
     cacheWritePrice: isFiniteNonNegative(cost.cache_write)
       ? cost.cache_write
       : null,
+    source: snapshot.source,
   });
   const { ip, userAgent } = extractClientInfo(request);
   await recordAuditLog({
