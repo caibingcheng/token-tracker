@@ -1446,9 +1446,9 @@ export default function ModelsPanel() {
               type="button"
               disabled={refreshingSnapshot}
               onClick={refreshModelsDev}
-              className="rounded border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 min-h-[36px] md:min-h-0"
+              className="rounded border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 whitespace-nowrap min-h-[36px] md:min-h-0"
             >
-              {refreshingSnapshot ? "Refreshing…" : `Refresh ${modelSourceLabel(modelsDevSource)}`}
+              {refreshingSnapshot ? "Refreshing…" : "Refresh"}
             </button>
           </div>
         </div>
