@@ -1388,15 +1388,6 @@ export default function ModelsPanel() {
             )}
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <label className="flex items-center gap-1.5 text-xs text-gray-600">
-              <input
-                type="checkbox"
-                checked={showInactive}
-                onChange={(e) => setShowInactive(e.target.checked)}
-                className="h-4 w-4 rounded border-gray-300"
-              />
-              Show removed
-            </label>
             <select
               value={modelsDevSource}
               onChange={(e) => changeModelsDevSource(e.target.value as ModelsDevSource)}
@@ -1409,19 +1400,11 @@ export default function ModelsPanel() {
             </select>
             <button
               type="button"
-              disabled={pricesBusy}
-              onClick={autoFillPrices}
-              className="rounded border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50 min-h-[36px] md:min-h-0"
+              disabled={refreshingSnapshot}
+              onClick={refreshModelsDev}
+              className="rounded border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 whitespace-nowrap min-h-[36px] md:min-h-0"
             >
-              Auto-fill unmatched
-            </button>
-            <button
-              type="button"
-              disabled={pricesBusy}
-              onClick={refillAllPrices}
-              className="rounded border border-green-200 bg-green-50 px-3 py-1.5 text-xs font-medium text-green-700 hover:bg-green-100 disabled:opacity-50 min-h-[36px] md:min-h-0"
-            >
-              Re-fill all
+              {refreshingSnapshot ? "Refreshing…" : "Refresh"}
             </button>
             <input
               ref={fileInputRef}
@@ -1444,12 +1427,29 @@ export default function ModelsPanel() {
             </button>
             <button
               type="button"
-              disabled={refreshingSnapshot}
-              onClick={refreshModelsDev}
-              className="rounded border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 whitespace-nowrap min-h-[36px] md:min-h-0"
+              disabled={pricesBusy}
+              onClick={autoFillPrices}
+              className="rounded border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50 min-h-[36px] md:min-h-0"
             >
-              {refreshingSnapshot ? "Refreshing…" : "Refresh"}
+              Auto-fill unmatched
             </button>
+            <button
+              type="button"
+              disabled={pricesBusy}
+              onClick={refillAllPrices}
+              className="rounded border border-green-200 bg-green-50 px-3 py-1.5 text-xs font-medium text-green-700 hover:bg-green-100 disabled:opacity-50 min-h-[36px] md:min-h-0"
+            >
+              Re-fill all
+            </button>
+            <label className="flex items-center gap-1.5 text-xs text-gray-600 sm:ml-2 sm:border-l sm:border-gray-200 sm:pl-3">
+              <input
+                type="checkbox"
+                checked={showInactive}
+                onChange={(e) => setShowInactive(e.target.checked)}
+                className="h-4 w-4 rounded border-gray-300"
+              />
+              Show removed
+            </label>
           </div>
         </div>
 
