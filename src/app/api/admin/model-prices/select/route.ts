@@ -40,7 +40,13 @@ export const POST = withAuth(async (request: NextRequest) => {
   const modelId = modelsDevId.slice(slash + 1);
   const source = await loadModelsDevSource();
   const snapshot = await getSnapshot({ source });
-  const target = snapshot?.data[providerId]?.models[modelId];
+  if (!snapshot) {
+    return NextResponse.json(
+      { success: false, error: "Candidate not found in models.dev snapshot" },
+      { status: 404 }
+    );
+  }
+  const target = snapshot.data[providerId]?.models[modelId];
   if (!target?.cost) {
     return NextResponse.json(
       { success: false, error: "Candidate not found in models.dev snapshot" },
