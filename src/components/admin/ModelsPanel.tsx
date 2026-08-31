@@ -82,7 +82,7 @@ interface PriceRow {
   outputPrice: number | null;
   cacheReadPrice: number | null;
   cacheWritePrice: number | null;
-  source: "models.dev" | "manual" | null;
+  source: "models.dev" | "github" | "manual" | null;
   modelsDevId: string | null;
   sourceProvider: string | null;
   updatedAt: string | null;
@@ -103,6 +103,12 @@ interface PriceRow {
 }
 
 const DEFAULT_PATH = "/v1/chat/completions";
+
+type ModelsDevSource = "models.dev" | "github";
+
+function modelSourceLabel(source: ModelsDevSource): string {
+  return source === "github" ? "LiteLLM" : "models.dev";
+}
 
 function protocolBadgeClass(protocol: Protocol): string {
   switch (protocol) {
@@ -301,6 +307,9 @@ export default function ModelsPanel() {
   const [refreshingSnapshot, setRefreshingSnapshot] = useState(false);
   const [uploadingSnapshot, setUploadingSnapshot] = useState(false);
   const [pricesSuccess, setPricesSuccess] = useState<string | null>(null);
+  const [modelsDevSource, setModelsDevSource] = useState<ModelsDevSource>("models.dev");
+  const [snapshotSource, setSnapshotSource] = useState<ModelsDevSource | null>(null);
+  const [savingSource, setSavingSource] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Manual Routing 表单
@@ -338,7 +347,47 @@ export default function ModelsPanel() {
   useEffect(() => {
     load();
     loadPrices();
+    loadSourceConfig();
   }, []);
+
+  const loadSourceConfig = async () => {
+    try {
+      const res = await apiFetch("/api/admin/settings/models-dev-source");
+      const json = await res.json();
+      if (json.success) {
+        setModelsDevSource(json.data.source as ModelsDevSource);
+        setSnapshotSource((json.data.snapshotSource as ModelsDevSource) ?? null);
+      }
+    } catch {
+      // 静默：源下拉保持默认，快照源提示不显示
+    }
+  };
+
+  const changeModelsDevSource = async (value: ModelsDevSource) => {
+    const prev = modelsDevSource;
+    setModelsDevSource(value);
+    setSavingSource(true);
+    setPricesSuccess(null);
+    try {
+      const res = await apiFetch("/api/admin/settings/models-dev-source", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ source: value }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        setPricesSuccess("Data source saved · refresh to apply");
+      } else {
+        setPricesError(json.error || "Failed to save data source");
+        setModelsDevSource(prev);
+      }
+    } catch {
+      setPricesError("Network error");
+      setModelsDevSource(prev);
+    } finally {
+      setSavingSource(false);
+    }
+  };
 
   const loadPrices = async () => {
     setPricesError(null);
@@ -381,10 +430,11 @@ export default function ModelsPanel() {
       const res = await apiFetch("/api/admin/models-dev/refresh", { method: "POST" });
       const json = await res.json();
       if (json.success) {
-        await loadPrices();
+        await Promise.all([loadPrices(), loadSourceConfig()]);
         const fetchedAt = json.data?.fetchedAt;
+        const source = json.data?.source as ModelsDevSource | undefined;
         setPricesSuccess(
-          `models.dev snapshot refreshed and price reference updated${
+          `${modelSourceLabel(source ?? modelsDevSource)} snapshot refreshed and price reference updated${
             fetchedAt ? ` · fetched at ${new Date(fetchedAt).toLocaleString()}` : ""
           }`
         );
@@ -395,6 +445,32 @@ export default function ModelsPanel() {
       setPricesError("Network error");
     } finally {
       setRefreshingSnapshot(false);
+    }
+  };
+
+  const refillAllPrices = async () => {
+    if (!window.confirm("Overwrite all auto-filled prices (skips manually edited rows), continue?")) return;
+    setPricesBusy(true);
+    setPricesError(null);
+    try {
+      const res = await apiFetch("/api/admin/model-prices/auto-fill", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mode: "force" }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        await loadPrices();
+        setPricesSuccess(
+          `Re-fill done: ${json.data.filled.length} filled · ${json.data.updated.length} updated · ${json.data.skipped.length} skipped · ${json.data.unmatched.length} unmatched`
+        );
+      } else {
+        setPricesError(json.error || "Re-fill failed");
+      }
+    } catch {
+      setPricesError("Network error");
+    } finally {
+      setPricesBusy(false);
     }
   };
 
@@ -1305,24 +1381,30 @@ export default function ModelsPanel() {
             <p className="mt-0.5 text-xs text-gray-400">
               Official price reference (USD / 1M tokens). Calculated on query; historical costs recompute on price change.
             </p>
+            {snapshotSource && snapshotSource !== modelsDevSource && (
+              <p className="mt-1 text-[11px] text-amber-600">
+                Snapshot source: {modelSourceLabel(snapshotSource)} · refresh to switch
+              </p>
+            )}
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <label className="flex items-center gap-1.5 text-xs text-gray-600">
-              <input
-                type="checkbox"
-                checked={showInactive}
-                onChange={(e) => setShowInactive(e.target.checked)}
-                className="h-4 w-4 rounded border-gray-300"
-              />
-              Show removed
-            </label>
+            <select
+              value={modelsDevSource}
+              onChange={(e) => changeModelsDevSource(e.target.value as ModelsDevSource)}
+              disabled={savingSource}
+              title="Snapshot data source; saved on change, applied on next refresh"
+              className="rounded border border-gray-300 bg-white px-2 py-1.5 text-xs text-gray-700 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50 min-h-[36px] md:min-h-0"
+            >
+              <option value="models.dev">models.dev</option>
+              <option value="github">GitHub LiteLLM</option>
+            </select>
             <button
               type="button"
-              disabled={pricesBusy}
-              onClick={autoFillPrices}
-              className="rounded border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50 min-h-[36px] md:min-h-0"
+              disabled={refreshingSnapshot}
+              onClick={refreshModelsDev}
+              className="rounded border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 whitespace-nowrap min-h-[36px] md:min-h-0"
             >
-              Auto-fill unmatched
+              {refreshingSnapshot ? "Refreshing…" : "Refresh"}
             </button>
             <input
               ref={fileInputRef}
@@ -1345,12 +1427,29 @@ export default function ModelsPanel() {
             </button>
             <button
               type="button"
-              disabled={refreshingSnapshot}
-              onClick={refreshModelsDev}
-              className="rounded border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 min-h-[36px] md:min-h-0"
+              disabled={pricesBusy}
+              onClick={autoFillPrices}
+              className="rounded border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50 min-h-[36px] md:min-h-0"
             >
-              {refreshingSnapshot ? "Refreshing…" : "Refresh models.dev"}
+              Auto-fill unmatched
             </button>
+            <button
+              type="button"
+              disabled={pricesBusy}
+              onClick={refillAllPrices}
+              className="rounded border border-green-200 bg-green-50 px-3 py-1.5 text-xs font-medium text-green-700 hover:bg-green-100 disabled:opacity-50 min-h-[36px] md:min-h-0"
+            >
+              Re-fill all
+            </button>
+            <label className="flex items-center gap-1.5 text-xs text-gray-600 sm:ml-2 sm:border-l sm:border-gray-200 sm:pl-3">
+              <input
+                type="checkbox"
+                checked={showInactive}
+                onChange={(e) => setShowInactive(e.target.checked)}
+                className="h-4 w-4 rounded border-gray-300"
+              />
+              Show removed
+            </label>
           </div>
         </div>
 
@@ -1510,11 +1609,12 @@ function PriceBadges({
 }) {
   const badges: Array<{ key: string; cls: string; label: string; action?: () => void; title?: string }> = [];
 
-  if (row.source === "models.dev") {
+  if (row.source === "models.dev" || row.source === "github") {
+    const label = modelSourceLabel(row.source);
     badges.push({
       key: "src",
       cls: "bg-green-50 text-green-700 border-green-200",
-      label: row.sourceProvider ? `models.dev · ${row.sourceProvider}` : "models.dev",
+      label: row.sourceProvider ? `${label} · ${row.sourceProvider}` : label,
       title: row.modelsDevId ?? undefined,
     });
   } else if (row.source === "manual") {

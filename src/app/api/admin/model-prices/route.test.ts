@@ -368,6 +368,7 @@ describe("model-prices admin routes", () => {
     const res = await json(await autofillPOST(req("/api/admin/model-prices/auto-fill", "POST", undefined, token)));
     expect(res.success).toBe(true);
     expect(res.data.filled).toEqual(["claude-sonnet-4-6"]);
+    expect(res.data.updated).toEqual([]);
     expect(res.data.skipped).toEqual(["gpt-4o"]);
     expect(res.data.unmatched).toEqual(["no-candidate-model"]);
 
@@ -380,5 +381,44 @@ describe("model-prices admin routes", () => {
     expect(byModel.get("claude-sonnet-4-6").source).toBe("models.dev");
     expect(byModel.get("claude-sonnet-4-6").inputPrice).toBe(3);
     expect(byModel.get("claude-sonnet-4-6").modelsDevId).toBe("anthropic/claude-sonnet-4-6");
+  });
+
+  it("auto-fill force: overwrites models.dev rows, skips manual rows, fills & counts updated", async () => {
+    const token = await makeToken();
+    // claude-sonnet-4-6 先手动写成非官方价（模拟混源污染，source=manual 保护）
+    await insertUpstream({ enabledModels: ["gpt-4o", "claude-sonnet-4-6"] });
+    await json(await PUT(req("/api/admin/model-prices", "PUT", {
+      model: "claude-sonnet-4-6",
+      inputPrice: 99,
+      outputPrice: 99,
+    }, token)));
+    // gpt-4o 先用 models.dev 价写旧价（非 manual，可覆盖）
+    await json(await selectPOST(req("/api/admin/model-prices/select", "POST", {
+      model: "gpt-4o",
+      modelsDevId: "openai/gpt-4o",
+    }, token)));
+
+    const res = await json(await autofillPOST(
+      req("/api/admin/model-prices/auto-fill", "POST", { mode: "force" }, token)
+    ));
+    expect(res.success).toBe(true);
+    expect(res.data.updated).toEqual(["gpt-4o"]);
+    expect(res.data.filled).toEqual([]);
+    expect(res.data.skipped).toEqual(["claude-sonnet-4-6"]);
+    // gpt-4o 与 SNAPSHOT 快照同价（2.5/10）→ updated 已记但价格一致；manual 行价格保持
+    const rows = await getRows();
+    const byModel = new Map(rows.map((r) => [r.model, r]));
+    expect(byModel.get("claude-sonnet-4-6").inputPrice).toBe(99);
+    expect(byModel.get("claude-sonnet-4-6").source).toBe("manual");
+    expect(byModel.get("gpt-4o").source).toBe("models.dev");
+    expect(byModel.get("gpt-4o").modelsDevId).toBe("openai/gpt-4o");
+  });
+
+  it("auto-fill force: rejects unknown mode (400)", async () => {
+    const token = await makeToken();
+    const res = await autofillPOST(
+      req("/api/admin/model-prices/auto-fill", "POST", { mode: "super-force" }, token)
+    );
+    expect(res.status).toBe(400);
   });
 });

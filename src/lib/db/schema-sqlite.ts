@@ -160,7 +160,7 @@ export const modelPrices = sqliteTable("model_prices", {
   outputPrice: real("output_price").notNull(),
   cacheReadPrice: real("cache_read_price"), // NULL → 计算时回退 input_price
   cacheWritePrice: real("cache_write_price"), // NULL → 回退 input_price
-  source: text("source").notNull(), // 'models.dev' | 'manual'
+  source: text("source").notNull(), // 'models.dev' | 'github' | 'manual'
   modelsDevId: text("models_dev_id"), // 'provider/model'，models.dev 来源时记录
   updatedAt: text("updated_at").notNull(),
 });

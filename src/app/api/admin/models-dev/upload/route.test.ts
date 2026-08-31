@@ -132,7 +132,59 @@ describe("POST /api/admin/models-dev/upload", () => {
     );
     expect(res.status).toBe(400);
     const j = await json(res);
-    expect(j.error).toMatch(/api\.json|snapshot/i);
+    expect(j.error).toMatch(/api\.json|litellm|snapshot/i);
+  });
+
+  it("accepts litellm model prices format: converts, tags source=github, audits source", async () => {
+    const token = await makeToken();
+    const litellm = {
+      "sample_spec": { input_cost_per_token: 0, litellm_provider: "", description: "x" },
+      "gpt-4o": {
+        input_cost_per_token: 2.5e-6,
+        output_cost_per_token: 1e-5,
+        litellm_provider: "openai",
+      },
+      "claude-sonnet-4-6": {
+        input_cost_per_token: 3e-6,
+        output_cost_per_token: 1.5e-5,
+        litellm_provider: "anthropic",
+      },
+    };
+    const res = await POST(
+      req("/api/admin/models-dev/upload", "POST", litellm, token)
+    );
+    expect(res.status).toBe(200);
+    const j = await json(res);
+    expect(j.success).toBe(true);
+    expect(j.dropped).toBe(0);
+
+    // 转换后立即可读（USD/1M ×1e6）
+    const snap = await getSnapshot();
+    expect(snap?.source).toBe("github");
+    expect(snap?.data.openai.models["gpt-4o"].cost.input).toBe(2.5);
+    expect(snap?.data.anthropic.models["claude-sonnet-4-6"].cost.output).toBe(15);
+    expect(snap?.data.sample_spec).toBeUndefined();
+
+    // 审计含 source
+    const logs = await withSkipCache(async () =>
+      db.select().from(adminAuditLogsTable)
+    );
+    const upload = logs.find((l) => l.action === "models_dev_upload");
+    const details = JSON.parse(upload!.details!);
+    expect(details.source).toBe("github");
+    expect(details.providerCount).toBe(2);
+  });
+
+  it("rejects litellm-shaped garbage with no usable entries (400)", async () => {
+    const token = await makeToken();
+    // looksLikeLitellmStructure 为 true（有 litellm_provider）但转换后为空
+    const res = await POST(
+      req("/api/admin/models-dev/upload", "POST", {
+        "weird": { litellm_provider: " " },
+      }, token)
+    );
+    // litellm_provider 空白 → 转换后空 → sanitize 后空 → 400
+    expect(res.status).toBe(400);
   });
 
   it("accepts api.json payload: updates memory cache + disk + audit log", async () => {

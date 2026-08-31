@@ -12,6 +12,7 @@ import {
   type PriceCandidate,
 } from "@/lib/models-dev/match";
 import { type ModelPricing } from "@/lib/cost-utils";
+import { loadModelsDevSource } from "@/lib/auth/settings-models-dev-source";
 
 export const dynamic = "force-dynamic";
 
@@ -37,9 +38,10 @@ export const GET = withAuth(async (request: NextRequest) => {
   try {
     const search = request.nextUrl.searchParams.get("search") ?? "";
     const providerId = request.nextUrl.searchParams.get("provider") ?? "";
+    const source = await loadModelsDevSource();
 
     if (search.trim()) {
-      const snapshot = await getSnapshot();
+      const snapshot = await getSnapshot({ source });
       if (!snapshot) {
         return NextResponse.json({ success: true, data: [] });
       }
@@ -50,7 +52,7 @@ export const GET = withAuth(async (request: NextRequest) => {
     }
 
     if (providerId.trim()) {
-      const snapshot = await getSnapshot();
+      const snapshot = await getSnapshot({ source });
       if (!snapshot) {
         return NextResponse.json({ success: true, data: [] });
       }
@@ -65,7 +67,7 @@ export const GET = withAuth(async (request: NextRequest) => {
     const rows = await withSkipCache(async () => {
       return db.select().from(modelPricesTable);
     });
-    const snapshot = await getSnapshot();
+    const snapshot = await getSnapshot({ source });
     const index = snapshot ? buildModelsDevIndex(snapshot.data) : null;
     // 响应字段保留 canonicalId（语义 = model 名），PriceSimulatorModal 前端零改动
     const data: ModelPricing[] = rows.map((row: any) => ({

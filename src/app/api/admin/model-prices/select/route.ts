@@ -3,6 +3,7 @@ import { withAuth } from "@/lib/auth/guard";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 import { selectModelsDevPrice } from "@/lib/model-prices-service";
 import { getSnapshot, isFiniteNonNegative } from "@/lib/models-dev/snapshot";
+import { loadModelsDevSource } from "@/lib/auth/settings-models-dev-source";
 
 // 从候选选定价格落库（source='models.dev'，记录 models_dev_id）。
 // 校验：modelsDevId 必须存在于快照（防篡改，价格以快照为准，不接受客户端传入价格）。
@@ -37,8 +38,15 @@ export const POST = withAuth(async (request: NextRequest) => {
   }
   const providerId = modelsDevId.slice(0, slash);
   const modelId = modelsDevId.slice(slash + 1);
-  const snapshot = await getSnapshot();
-  const target = snapshot?.data[providerId]?.models[modelId];
+  const source = await loadModelsDevSource();
+  const snapshot = await getSnapshot({ source });
+  if (!snapshot) {
+    return NextResponse.json(
+      { success: false, error: "Candidate not found in models.dev snapshot" },
+      { status: 404 }
+    );
+  }
+  const target = snapshot.data[providerId]?.models[modelId];
   if (!target?.cost) {
     return NextResponse.json(
       { success: false, error: "Candidate not found in models.dev snapshot" },
@@ -58,6 +66,7 @@ export const POST = withAuth(async (request: NextRequest) => {
     cacheWritePrice: isFiniteNonNegative(cost.cache_write)
       ? cost.cache_write
       : null,
+    source: snapshot.source,
   });
   const { ip, userAgent } = extractClientInfo(request);
   await recordAuditLog({

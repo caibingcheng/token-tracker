@@ -5,10 +5,14 @@ import {
   uploadSnapshot,
   sanitizeModelsDevData,
   isValidModelsDevData,
+  looksLikeLitellmStructure,
+  convertLitellmToModelsDev,
   type ModelsDevData,
+  type ModelsDevSource,
 } from "@/lib/models-dev/snapshot";
 
-// 手动上传 models.dev 快照（api.json 原文，或 {fetchedAt, data} 包装格式）。
+// 手动上传快照：models.dev api.json 原文 / {fetchedAt, data} 包装格式 /
+// LiteLLM model_prices_and_context_window.json（自动识别转换为 models.dev 结构，source=github）。
 // 安全：withAuth 会话认证 + body 上限 10MB + 规模上限 + sanitize（有限非负价格校验），
 // 非法条目丢弃并返回 dropped 计数；上传后立即更新内存缓存 + 落盘，无需重启。
 // 响应/审计不包含上传内容本身。
@@ -54,8 +58,9 @@ export const POST = withAuth(async (request: NextRequest) => {
     );
   }
 
-  // 格式识别：api.json 原文 / {fetchedAt, data} 快照包装格式（复用已下载的快照文件）
+  // 格式识别：api.json 原文 / {fetchedAt, data} 快照包装 / LiteLLM 扁平结构（自动转换）
   let raw: unknown;
+  let source: ModelsDevSource = "models.dev";
   if (isValidModelsDevData(parsed)) {
     raw = parsed;
   } else if (
@@ -64,11 +69,15 @@ export const POST = withAuth(async (request: NextRequest) => {
     isValidModelsDevData((parsed as Record<string, unknown>).data)
   ) {
     raw = (parsed as Record<string, unknown>).data;
+  } else if (looksLikeLitellmStructure(parsed)) {
+    raw = convertLitellmToModelsDev(parsed);
+    source = "github";
   } else {
     return NextResponse.json(
       {
         success: false,
-        error: "Invalid models.dev data: expected api.json or {fetchedAt, data} snapshot",
+        error:
+          "Invalid snapshot data: expected models.dev api.json, litellm model prices, or {fetchedAt, data} snapshot",
       },
       { status: 400 }
     );
@@ -91,7 +100,7 @@ export const POST = withAuth(async (request: NextRequest) => {
     );
   }
 
-  const snapshot = uploadSnapshot(data);
+  const snapshot = uploadSnapshot(data, { source });
 
   const { ip, userAgent } = extractClientInfo(request);
   await recordAuditLog({
@@ -101,6 +110,7 @@ export const POST = withAuth(async (request: NextRequest) => {
     userAgent,
     details: {
       fetchedAt: snapshot.fetchedAt,
+      source,
       providerCount: Object.keys(data).length,
       modelCount: countModelsDevModels(data),
       dropped,

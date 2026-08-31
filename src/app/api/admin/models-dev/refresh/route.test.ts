@@ -13,6 +13,8 @@ import {
 } from "@/lib/auth/settings";
 import { signSessionToken, keyFingerprint } from "@/lib/auth/session";
 import { resetSnapshotCache } from "@/lib/models-dev/snapshot";
+import { MODELS_DEV_SOURCE_SETTING_KEY, setModelsDevSource } from "@/lib/auth/settings-models-dev-source";
+import { LITELLM_MODEL_PRICES_URL } from "@/lib/models-dev/snapshot";
 
 const ORIG_DB = process.env.SQLITE_DATABASE_PATH;
 const ORIG_SECRET = process.env.GATEWAY_SECRET;
@@ -156,6 +158,55 @@ describe("POST /api/admin/models-dev/refresh", () => {
     expect(refreshLog).toBeTruthy();
     expect(JSON.parse(refreshLog!.details!)).toEqual({
       fetchedAt: j.data.fetchedAt,
+      source: "models.dev",
     });
+  });
+
+  it("uses github source when setting is enabled (200, audit source=github)", async () => {
+    await setModelsDevSource("github");
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        "gpt-4o": {
+          input_cost_per_token: 2.5e-6,
+          output_cost_per_token: 1e-5,
+          litellm_provider: "openai",
+        },
+      }),
+    });
+    vi.stubGlobal("fetch", fetchImpl);
+    const token = await makeToken();
+    const res = await POST(req("/api/admin/models-dev/refresh", "POST", token));
+    expect(res.status).toBe(200);
+    expect(res.json).toBeTypeOf("function");
+    const j = await json(res);
+    expect(j.success).toBe(true);
+    expect(j.data.source).toBe("github");
+    expect(fetchImpl.mock.calls[0][0]).toBe(LITELLM_MODEL_PRICES_URL);
+
+    const logs = await withSkipCache(async () =>
+      db.select().from(adminAuditLogsTable)
+    );
+    const refreshLog = logs.find((l) => l.action === "models_dev_refresh");
+    expect(JSON.parse(refreshLog!.details!).source).toBe("github");
+  });
+
+  it("falls back to default source for corrupt setting value", async () => {
+    const { setSetting } = await import("@/lib/auth/settings");
+    await setSetting(MODELS_DEV_SOURCE_SETTING_KEY, "bogus");
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => API_JSON,
+    });
+    vi.stubGlobal("fetch", fetchImpl);
+    const token = await makeToken();
+    const res = await POST(req("/api/admin/models-dev/refresh", "POST", token));
+    expect(res.status).toBe(200);
+    const j = await json(res);
+    expect(j.data.source).toBe("models.dev");
+    // 已确认走 models.dev 源 URL
+    expect(fetchImpl.mock.calls[0][0]).toBe("https://models.dev/api.json");
   });
 });

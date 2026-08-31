@@ -46,8 +46,8 @@ docker compose up -d                                 # 本地运行
   - `virtual_keys`（id, name, api_key_encrypted, enabled, comment, enabled_models(JSON, 默认 '["*"]'), max_rpm, max_tpm, max_daily_tokens, max_monthly_tokens, last_used_at, created_at）：后 4 列为配额上限（NULL = 不限）
   - `routing_rules`（id, name, protocol, upstream_id, target_model, priority, created_at）：**手动路由规则**，`name` = 客户端请求的虚拟模型名，`target_model` = 上游真实模型名；`UNIQUE(name, protocol, upstream_id)` 同名同协议可挂多个不同 upstream（多目标 failover 链，按 `priority` 升序、同 priority 按 id 升序；drizzle 用 `uniqueIndex("uq_routing_rules_name_protocol_upstream")` 对齐 raw SQL）；`migrateRoutingRulesTable()` 表重建迁移（旧 `UNIQUE(name, protocol)` 结构 → 新结构，priority 回填 0，幂等）
   - `admin_audit_logs`（id, action, actor, target_type, target_id, ip, user_agent, details, created_at）：管理操作审计日志（含网关 user-agent 记录）
-  - `model_prices`（model PRIMARY KEY, input_price, output_price, cache_read_price(NULL→回退 input), cache_write_price(NULL→回退 input), source('models.dev'|'manual'), models_dev_id, updated_at）：官方价参考（USD/1M），**查询时计算**，record 不存价格；`model` = 发往 upstream 的真实名
-  - `settings`（key TEXT PRIMARY KEY, value TEXT）：`admin_api_key`（AES-256-GCM 加密）、`totp_secret`、`totp_enabled`、`token_epoch`、`hidden_providers`（明文）、`session_token_ttl_hours`（明文）、`stream_idle_timeout_minutes`（明文，Security tab 编辑）、`status_page_config`（明文 JSON：`{enabled, elements:{total,today,daily,heatmap,hourly,topModels,cost}}`，**默认 enabled=false**）、`model_aliases`（明文 JSON：`[{name, aliases[]}]` 归一化配置，Display pane 编辑）、`hidden_sources`（明文 JSON：`{upstreams: string[], virtualKeys: string[], excludedUpstreams: string[], excludedVirtualKeys: string[]}`，Display pane 编辑；hidden = 隐藏源、excluded = 从总计剔除，两维度独立，查询层过滤零删除）、`totp_fail_count`（明文，TOTP 失败计数）、`totp_locked_until`（明文，TOTP 锁定截止时间戳）、`recovery_codes`（明文 JSON：`{hashes:[sha256...], used:[bool...]}`，只存哈希不存明文）、`recovery_code_login_reminder`（明文，recovery code 登录提醒标记）
+  - `model_prices`（model PRIMARY KEY, input_price, output_price, cache_read_price(NULL→回退 input), cache_write_price(NULL→回退 input), source('models.dev'|'github'|'manual'), models_dev_id, updated_at）：官方价参考（USD/1M），**查询时计算**，record 不存价格；`model` = 发往 upstream 的真实名
+  - `settings`（key TEXT PRIMARY KEY, value TEXT）：`admin_api_key`（AES-256-GCM 加密）、`totp_secret`、`totp_enabled`、`token_epoch`、`hidden_providers`（明文）、`session_token_ttl_hours`（明文）、`stream_idle_timeout_minutes`（明文，Security tab 编辑）、`status_page_config`（明文 JSON：`{enabled, elements:{total,today,daily,heatmap,hourly,topModels,cost}}`，**默认 enabled=false**）、`model_aliases`（明文 JSON：`[{name, aliases[]}]` 归一化配置，Display pane 编辑）、`hidden_sources`（明文 JSON：`{upstreams: string[], virtualKeys: string[], excludedUpstreams: string[], excludedVirtualKeys: string[]}`，Display pane 编辑；hidden = 隐藏源、excluded = 从总计剔除，两维度独立，查询层过滤零删除）、`models_dev_source`（明文，快照数据源开关 `"models.dev"|"github"`，Models 面板切换；非法值回退默认，无 env fallback）、`totp_fail_count`（明文，TOTP 失败计数）、`totp_locked_until`（明文，TOTP 锁定截止时间戳）、`recovery_codes`（明文 JSON：`{hashes:[sha256...], used:[bool...]}`，只存哈希不存明文）、`recovery_code_login_reminder`（明文，recovery code 登录提醒标记）
 - **存量迁移**：`migrateColumns()` 泛化支持多表（token_records / virtual_keys / upstreams），通过 `PRAGMA table_info` 检测缺失列并 `ALTER TABLE` 补列（`CREATE TABLE IF NOT EXISTS` 不会补列）；`migrateTokenRecordsModelColumns()` 专用一次性迁移：`request_model` 回填 = model、`model` 覆盖 = `target_model`（旧 schema）、DROP `target_model`（幂等）
 
 ## API 路由与认证
@@ -71,10 +71,11 @@ docker compose up -d                                 # 本地运行
 | `/api/admin/settings/session` `/api/admin/settings/stream` | GET/PUT | 会话 token | Security tab：会话 TTL + 流式空闲超时（分钟，settings 表，面板优先） |
 | `/api/admin/settings/status` | GET/PUT | 会话 token | Display tab：公开 Status 面板配置（status_page_config，`isValidStatusPageConfig` 校验） |
 | `/api/admin/settings/aliases` | GET/PUT | 会话 token | Display tab：Model Aliases 归一化配置（model_aliases，`isValidModelAliases` 校验） |
+| `/api/admin/settings/models-dev-source` | GET/PUT | 会话 token | Models 面板：快照数据源开关（`models_dev_source`，`isValidModelsDevSource` 校验；PUT 仅写开关**不触发拉取**，下次 Refresh/懒刷新按新源；GET 返回 `{source, snapshotSource}`——快照实际来源，过渡期可与开关不一致供 UI 提示） |
 | `/api/admin/model-prices` | GET/PUT/DELETE | 会话 token | 官方价参考管理：GET 行集 = 全部启用 upstream 非通配 enabled_models ∪ 已定价 model（附徽标：active/inactive、待确认/未匹配、有更新+diff、已下架）；PUT 手动编辑（`source='manual'`，清空 models_dev_id）；DELETE 删价（model 走 query，**不用 `[model]` 动态段**，model 名可能含 `/`） |
-| `/api/admin/model-prices/candidates?model=X` `/api/admin/model-prices/candidates?q=...` `/api/admin/model-prices/select` `/api/admin/model-prices/auto-fill` | GET/POST/POST | 会话 token | Price Picker Modal 候选列表（provider、4 价格、预选标记；`q` = 搜索模式，全量扫描快照不限匹配管线）；从候选选定落库（`source='models.dev'`，校验 modelsDevId 存在于快照即可，价格以快照为准防篡改——搜索选中的条目与自动匹配等价）；批量填充所有未定价行（只填空不覆盖，manual 行不动） |
-| `/api/admin/models-dev/refresh` | POST | 会话 token | 强制刷新 models.dev 快照（失败回退旧快照） |
-| `/api/admin/models-dev/upload` | POST | 会话 token | 手动上传 models.dev 快照（api.json 原文或 `{fetchedAt,data}` 包装格式；body ≤10MB、provider ≤1000、model ≤50k，`sanitizeModelsDevData` 丢弃结构/数值非法条目并返回 `dropped` 计数（**cost 缺失的无价条目保留**，官方 api.json 含无价模型），全非法 400；`uploadSnapshot` 更新内存缓存 + 落盘，**无需重启**；审计 `models_dev_upload`） |
+| `/api/admin/model-prices/candidates?model=X` `/api/admin/model-prices/candidates?q=...` `/api/admin/model-prices/select` `/api/admin/model-prices/auto-fill` | GET/POST/POST | 会话 token | Price Picker Modal 候选列表（provider、4 价格、预选标记；`q` = 搜索模式，全量扫描快照不限匹配管线）；从候选选定落库（`source='models.dev'`，校验 modelsDevId 存在于快照即可，价格以快照为准防篡改——搜索选中的条目与自动匹配等价）；批量填充（POST body `{mode?}`：`"fill"` 缺省只填空不覆盖 / `"force"` 覆盖所有非 manual 已定价行即 Re-fill all；manual 行永不被自动流程触碰） |
+| `/api/admin/models-dev/refresh` | POST | 会话 token | 强制刷新快照（失败回退旧快照；按 `models_dev_source` 开关用 models.dev 或 Litellm 源，审计含 `source`） |
+| `/api/admin/models-dev/upload` | POST | 会话 token | 手动上传快照（**格式自动识别**：api.json 原文 / `{fetchedAt,data}` 包装 / Litellm `model_prices_and_context_window.json`——后者自动转换为 models.dev 结构并标记 `source='github'`；body ≤10MB、provider ≤1000、model ≤50k，`sanitizeModelsDevData` 丢弃结构/数值非法条目并返回 `dropped` 计数（**cost 缺失的无价条目保留**，官方 api.json 含无价模型），全非法 400；`uploadSnapshot` 更新内存缓存 + 落盘，**无需重启**；审计 `models_dev_upload` 含 `source`） |
 | `/status/data` | GET | **无（有意公开）** | 公开用量数据端点：详见下方「公开 Status 面板」小节 |
 
 - **认证架构（多层防漏）**：验签 middleware（第一层，WebCrypto 验 HMAC 签名 + exp，Edge runtime）→ 路由内 `withAuth`（第二层，epoch 检查 + DB key 指纹校验）→ vitest 静态扫描测试（第三层，`src/lib/auth/guard-scan.test.ts`，login + setup 白名单）→ 本文件约定（第四层）
@@ -189,9 +190,10 @@ docker compose up -d                                 # 本地运行
 - **定价键**：一律按真实 model 名（`model_prices.model` = 发往 upstream 的真实名）；归一化 alias 仅作展示层 roll up 分组键；虚拟名（`request_model`）仅追溯，不参与定价
 - **成本链路**：`stats-query.ts` 在 model/date-model 分组输出行上按真实名附加 `cost`（`computeModelCost`，未定价 → 全 0）→ 归一化聚合时随行合并（`mergeAggregatedCosts`）；未定价 model 成本为 0，补价后历史立即重算
 - **写接口**：`/api/admin/model-prices` PUT/DELETE、select、auto-fill、aliases 均须 `withSkipCache()` + `invalidatePriceCache()`（pricing.ts 内存缓存）；价格变更后 Dashboard/Status 立即反映
-- **models.dev 集成**（`src/lib/models-dev/`，纯逻辑可单测）：数据源 `https://models.dev/api.json`（USD/1M）；本地快照 `data/models-dev-cache.json`（`{fetchedAt, data}`），**懒刷新 7 天 TTL**（访问时超期则本次用旧快照、后台异步拉新）+ `POST /api/admin/models-dev/refresh` 强制刷新 + `POST /api/admin/models-dev/upload` 手动上传（`uploadSnapshot` 内存缓存 + 落盘立即生效；`sanitizeModelsDevData` 仅上传路径严格校验，非法条目丢弃）；拉取失败静默回退旧快照；**数值信任链兜底**：`isFiniteNonNegative`（有限非负）守卫贯穿 `toCandidate` 与 select 落库，所有快照来源（网络/手工文件/上传）的负数/NaN 价格均回退 0/null，防成本计算污染
+- **models.dev 集成**（`src/lib/models-dev/`，纯逻辑可单测）：**双数据源** —— `https://models.dev/api.json`（USD/1M）+ GitHub LiteLLM `model_prices_and_context_window.json`（raw.githubusercontent 主源，jsDelivr CDN 回退；per-token → ×1e6 换算 USD/1M，`sample_spec` 剔除、`litellm_provider` 空/非字符串跳过、无 token 价条目保留为无价条目、batch/reasoning 细分价不取）；两源各自解析器统一输出 `ModelsDevData`，下游零感知；本地快照 `data/models-dev-cache.json`（`{fetchedAt, source, data}`），**单一当前快照语义**（文件 + 内存缓存不拆分，谁最后成功谁是当前快照；旧文件缺 `source` 字段回退 `"models.dev"` 零迁移），**懒刷新 7 天 TTL**（访问时超期则本次用旧快照、后台异步拉新）+ `POST /api/admin/models-dev/refresh` 强制刷新 + `POST /api/admin/models-dev/upload` 手动上传（`uploadSnapshot` 内存缓存 + 落盘立即生效；`sanitizeModelsDevData` 仅上传路径严格校验，非法条目丢弃）；拉取失败静默回退旧快照；**数值信任链兜底**：`isFiniteNonNegative`（有限非负）守卫贯穿 `toCandidate` 与 select 落库，所有快照来源（网络/手工文件/上传）的负数/NaN 价格均回退 0/null，防成本计算污染；**in-flight 竞态对策**：`runRefresh` 同源复用 promise、异源等待 settle 后串行发起（写盘顺序 = 发起顺序，无乱序覆盖）
 - **匹配管线**（`match.ts`）：精确 → 归一化（小写去 `-_.`）→ 日期变体剥离（`-\d{8}$`）；多 provider 冲突按内置原厂优先级表自动预选（anthropic > openai > google > deepseek > ...），价格相同不视为冲突，全部候选供 Price Picker Modal 切换。候选集 = 名字命中的条目，**不含同系列不同名**；需要非匹配条目时用 Price Picker 搜索（`searchModelsDevModel`：model id / provider 名归一化子串匹配，上限 50）——搜索选中落库后与自动匹配完全等价（`source='models.dev'` + modelsDevId，hasUpdate/removed 检测照常）
-- **自动填充**（`auto-fill.ts`）：只填空行、永不覆盖已有价格，`source='manual'` 的行永不被自动流程触碰；触发点：upstream 保存 enabled_models 后（best-effort）+ auto-fill API 批量填充
+- **自动填充**（`auto-fill.ts`）：双模式契约——**fill 模式**（缺省）只填空行、永不覆盖已有价格；**force 模式**（`overwrite:true` + `isManual` 保护集）覆盖所有非 manual 已定价行（结果 `updated` 计数）；`source='manual'` 的行永不被任何自动流程触碰；触发点：upstream 保存 enabled_models 后（best-effort，只填空）+ auto-fill API 批量填充（`{mode:"fill"|"force"}`）
+- **已知限制**（litellm 源）：embedding 模型仅 input 价 → output=0；jsDelivr 缓存滞后 / 超 20MB 拒载（litellm JSON 现约 2-3MB 安全）；litellm 候选搜索噪声（bedrock/azure 变体多，由匹配管线 & Price Picker 消解）
 - **徽标判定**（`src/lib/model-prices-service.ts`）：`active`（在任一 enabled_models）/`inactive`（已定价但已移除，价格保留供历史）；`待确认`（未定价且多候选价格不一致）/`未匹配`（未定价无候选）；`有更新`（models.dev 来源且快照同 id 价格不同，带 diff）/`已下架`（models.dev 来源且快照无该 id）；行含 `sourceProvider`（models.dev 来源的 provider 显示名，快照缺失回退 providerId；manual 为 null），表格徽标显示 `models.dev · {providerName}`
 
 ### Model 归一化
@@ -307,10 +309,12 @@ docker compose up -d
   - `src/lib/gateway/balance`：deepseek/openrouter 余额解析（mock fetch）、provider 判定
   - `src/lib/db/migrate`：存量表补列迁移（临时 SQLite 库，幂等性 + NOT NULL 默认值回填）+ `migrateTokenRecordsModelColumns`（request_model 回填、model 覆盖 target_model、DROP、幂等）
   - `src/lib/models-dev/match`：三级匹配管线（精确/归一化/日期变体剥离）、多候选冲突按优先级预选、价格相同不视为冲突、`searchModelsDevModel` 搜索（子串/大小写/provider 名命中、上限截断）
-  - `src/lib/models-dev/auto-fill`：只填空不覆盖、manual 行不动、未匹配跳过
+  - `src/lib/models-dev/auto-fill`：fill 只填空不覆盖、manual 行不动、未匹配跳过；force 覆盖非 manual / 跳过 manual / updated 计数（fill 模式零回归）
+  - `src/lib/auth/settings-models-dev-source`：合法值往返（withSkipCache 即时生效）、非法值回退默认、isValid/parse 边界
+  - `src/lib/models-dev/snapshot`：convertLitellmToModelsDev（×1e6 换算、cache 映射、sample_spec/空 provider 跳过、无价条目保留、含 `/` model id、NaN/负数忽略）、looksLikeLitellmStructure 正反例、fetch 两 URL 顺序与回退、readSnapshotFile 旧文件 source 回退、uploadSnapshot source 标签、in-flight 同源复用/异源串行
   - `src/lib/pricing`：loadPriceMap cache 价 NULL 回退 input + 内存缓存/失效、computeModelCost
   - `src/lib/model-registry`：注入 aliases 的归一化各优先级规则、缓存失效、getDisplayName、isValidModelAliases/parseModelAliases
-  - `src/app/api/admin/model-prices/route.test`：Admin API 集成测试（临时 SQLite + 真实 handler + 签名 token）——GET 行集与徽标状态（active/inactive/待确认/未匹配/有更新/已下架）、PUT 手动编辑（source='manual' 清空 modelsDevId、model 名含 `/`）、DELETE、select 落库、auto-fill 只填空不覆盖 manual 行、未带 withAuth 401
+  - `src/app/api/admin/model-prices/route.test`：Admin API 集成测试（临时 SQLite + 真实 handler + 签名 token）——GET 行集与徽标状态（active/inactive/待确认/未匹配/有更新/已下架）、PUT 手动编辑（source='manual' 清空 modelsDevId、model 名含 `/`）、DELETE、select 落库、auto-fill `mode=force` 分支 + 缺省 fill 兼容 + 非法 mode 400、未带 withAuth 401
   - `src/app/api/model-pricing/route.test`：模拟器数据源集成测试（临时 SQLite + 临时快照文件 + 签名 token）——已定价行 + providers 列表、provider 推断（含日期变体剥离）、`?provider=` 懒加载/未知 provider 空数组、`?search=` 命中（canonicalId 格式 + cache 回退）/无结果、未带 token 401
   - `src/lib/provider-presets`：预设合法性（protocol/baseUrl/唯一性）
   - `src/lib/gateway/url-guard`：上游 baseUrl SSRF 防护（环回/私有/链路本地/元数据 IP 拒绝、DNS 解析后分类、ALLOW_PRIVATE_UPSTREAMS 逃生开关）
@@ -334,7 +338,8 @@ docker compose up -d
   - `src/lib/provider-utils-async`：匿名化分组解析 + 归一化索引
   - `src/app/api/admin/virtual-keys/route.test`：vk CRUD + 配额用量窗口查询集成测试
   - `src/app/api/admin/routing-rules/route.test`：priority POST/PATCH、重复 (name, protocol, upstream) → 409、同名不同 upstream 允许创建、GET 排序
-  - `src/app/api/admin/models-dev/upload/route.test`：快照上传校验（大小/结构/全非法 400）
+  - `src/app/api/admin/models-dev/upload/route.test`：快照上传校验（大小/结构/全非法 400）+ litellm 格式自动识别转换上传成功 + 审计 source
+  - `src/app/api/admin/models-dev/refresh/route.test`：双源 refresh（github 分支走 Litellm URL、非法 setting 值回退默认）+ 审计含 source
   - `src/app/api/admin/settings/hidden-sources/route.test`：Hidden Sources API + 统计剔除 + 删除联动
   - `src/app/api/admin/upstreams/test-connection|fetch-models/route.test`：SSRF 校验（私网 400 不发请求）+ 存储 key 模式 + 3xx 不跟随
   - `src/app/api/admin/upstreams/route.test`：proxy_url 加密落库（密文 ≠ 明文可解密还原）、GET/PATCH 不泄漏凭据（仅脱敏 host）、PATCH null 清除/省略保持/换代理、非法 proxyUrl 400、其他字段更新不触碰密文
