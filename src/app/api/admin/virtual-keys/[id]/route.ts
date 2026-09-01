@@ -4,6 +4,7 @@ import { db, initDatabase, virtualKeysTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
+import { isReservedRemoteName, REMOTE_NAME_PREFIX } from "@/lib/ingest/validate";
 
 interface Params {
   params: { id: string };
@@ -47,6 +48,12 @@ export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
       const name = body.name.trim();
       if (!name) {
         return NextResponse.json({ success: false, error: "name cannot be empty" }, { status: 400 });
+      }
+      if (isReservedRemoteName(name)) {
+        return NextResponse.json(
+          { success: false, error: "name cannot start with \"" + REMOTE_NAME_PREFIX + "\"" },
+          { status: 400 }
+        );
       }
       values.name = name;
     }

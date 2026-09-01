@@ -12,6 +12,7 @@ import {
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 import { hasQuotaLimits } from "@/lib/gateway/quota";
 import { loadQuotaUsageBatch } from "@/lib/gateway/quota-db";
+import { isReservedRemoteName, REMOTE_NAME_PREFIX } from "@/lib/ingest/validate";
 
 function gatewaySecretError() {
   return NextResponse.json(
@@ -126,6 +127,12 @@ export const POST = withAuth(async (request: NextRequest) => {
     const name = typeof body.name === "string" ? body.name.trim() : "";
     if (!name) {
       return NextResponse.json({ success: false, error: "Missing required field: name" }, { status: 400 });
+    }
+    if (isReservedRemoteName(name)) {
+      return NextResponse.json(
+        { success: false, error: "name cannot start with \"" + REMOTE_NAME_PREFIX + "\"" },
+        { status: 400 }
+      );
     }
 
     const comment = typeof body.comment === "string" ? body.comment.trim() : "";

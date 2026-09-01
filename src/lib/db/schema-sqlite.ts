@@ -167,3 +167,28 @@ export const modelPrices = sqliteTable("model_prices", {
 
 export type ModelPrice = typeof modelPrices.$inferSelect;
 export type NewModelPrice = typeof modelPrices.$inferInsert;
+
+// 多实例同步：A 侧 ingest token（仿 virtual_keys 模式，AES-256-GCM 加密，写后不可读）
+export const ingestTokens = sqliteTable("ingest_tokens", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  name: text("name").notNull(),
+  apiKeyEncrypted: text("api_key_encrypted").notNull(),
+  boundInstance: text("bound_instance"), // TOFU 绑定目标，NULL = 未绑定
+  enabled: integer("enabled").notNull().default(1),
+  lastUsedAt: text("last_used_at"),
+  createdAt: text("created_at").$defaultFn(() => new Date().toISOString()),
+});
+
+export type IngestToken = typeof ingestTokens.$inferSelect;
+export type NewIngestToken = typeof ingestTokens.$inferInsert;
+
+// 多实例同步：A 侧去重水位表（每实例一行；epoch 变化 → 水位归零）
+export const syncInstances = sqliteTable("sync_instances", {
+  instance: text("instance").primaryKey(),
+  epoch: text("epoch").notNull(),
+  lastRecordId: integer("last_record_id").notNull().default(0),
+  updatedAt: text("updated_at"),
+});
+
+export type SyncInstance = typeof syncInstances.$inferSelect;
+export type NewSyncInstance = typeof syncInstances.$inferInsert;

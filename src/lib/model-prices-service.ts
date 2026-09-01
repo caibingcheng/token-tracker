@@ -1,6 +1,7 @@
-import { eq } from "drizzle-orm";
-import { db, initDatabase, modelPricesTable, upstreamsTable } from "@/lib/db";
+import { eq, gte } from "drizzle-orm";
+import { db, initDatabase, modelPricesTable, upstreamsTable, tokenRecords, syncInstancesTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
+import { sql } from "drizzle-orm";
 import { parseEnabledModels } from "@/lib/gateway/model-router";
 import { getSnapshot, type ModelsDevSnapshot } from "@/lib/models-dev/snapshot";
 import { matchModelsDevModel } from "@/lib/models-dev/match";
@@ -12,11 +13,15 @@ import { invalidatePriceCache } from "@/lib/pricing";
 import { loadModelsDevSource } from "@/lib/auth/settings-models-dev-source";
 
 // model_prices 管理服务层：行集 = 全部 upstream enabled_models（非通配，去重）
-// ∪ 已定价 model，附徽标状态判定（active/inactive/待确认/未匹配/有更新/已下架）。
+// ∪ 已定价 model ∪ 近期推送记录出现过的 model（可被发现、可补价），
+// 附徽标状态判定（active/inactive/待确认/未匹配/有更新/已下架）+ 近期流量可见性。
+
+// 近期流量窗口：近 30 天有记录（含推送）→ 默认可见；过期自动隐藏
+export const RECENT_ACTIVITY_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 export interface ModelPriceRow {
   model: string;
-  upstreams: string[];
+  upstreams: string[]; // 本机 upstream 名 + 近期推送来源（remote/{instance}/{upstream}）
   inputPrice: number | null;
   outputPrice: number | null;
   cacheReadPrice: number | null;
@@ -25,6 +30,7 @@ export interface ModelPriceRow {
   modelsDevId: string | null;
   sourceProvider: string | null; // 自动来源（models.dev / github）的 provider 显示名（manual 为 null）
   updatedAt: string | null;
+  recentActivity: boolean; // 近 30 天有记录（含推送）→ 默认可见
   status: {
     active: boolean;
     inactive: boolean;
@@ -76,6 +82,69 @@ export async function loadPricedModels(): Promise<
   return withSkipCache(async () => db.select().from(modelPricesTable));
 }
 
+// ---- 近期推送来源模型：sync_instances 实例名驱动的 provider 前缀匹配（有界 distinct + 内存缓存）----
+
+let remoteModelCache: {
+  at: number;
+  rows: Array<{ model: string; providers: string[] }>;
+} | null = null;
+
+const REMOTE_MODEL_CACHE_TTL_MS = 60_000;
+
+export function invalidateRemoteModelCache(): void {
+  remoteModelCache = null;
+}
+
+async function loadRemoteModelRows(): Promise<
+  Array<{ model: string; providers: string[] }>
+> {
+  const now = Date.now();
+  if (remoteModelCache && now - remoteModelCache.at < REMOTE_MODEL_CACHE_TTL_MS) {
+    return remoteModelCache.rows;
+  }
+  await initDatabase();
+  const instances = (await withSkipCache(async () =>
+    db.select({ instance: syncInstancesTable.instance }).from(syncInstancesTable)
+  )) as Array<{ instance: string }>;
+  const map = new Map<string, Set<string>>();
+  for (const inst of instances) {
+    // 全历史推送模型（行集可发现、可补价）；近期流量由 recentActivity 单独判定
+    const rows = (await withSkipCache(async () =>
+      db
+        .selectDistinct({
+          model: tokenRecords.model,
+          provider: tokenRecords.provider,
+        })
+        .from(tokenRecords)
+        .where(sql`${tokenRecords.provider} LIKE ${`remote/${inst.instance}/%`}`)
+    )) as Array<{ model: string; provider: string }>;
+    for (const r of rows) {
+      const set = map.get(r.model) ?? new Set<string>();
+      set.add(r.provider);
+      map.set(r.model, set);
+    }
+  }
+  const result = Array.from(map.entries()).map(([model, providers]) => ({
+    model,
+    providers: Array.from(providers),
+  }));
+  remoteModelCache = { at: now, rows: result };
+  return result;
+}
+
+// 近 30 天有记录（全部来源：本机 + 推送）模型集合 → 默认可见
+async function loadRecentActivityModels(): Promise<Set<string>> {
+  await initDatabase();
+  const cutoff = new Date(Date.now() - RECENT_ACTIVITY_WINDOW_MS).toISOString();
+  const rows = (await withSkipCache(async () =>
+    db
+      .selectDistinct({ model: tokenRecords.model })
+      .from(tokenRecords)
+      .where(gte(tokenRecords.createdAt, cutoff))
+  )) as Array<{ model: string }>;
+  return new Set(rows.map((r) => r.model));
+}
+
 interface SnapshotPrice {
   inputPrice: number;
   outputPrice: number;
@@ -114,10 +183,12 @@ function samePrice(a: SnapshotPrice | null, b: SnapshotPrice | null): boolean {
 }
 
 export async function getModelPricesList(): Promise<ModelPriceRow[]> {
-  const [upstreamModels, priced, snapshot] = await Promise.all([
+  const [upstreamModels, priced, snapshot, remoteModels, recentActivity] = await Promise.all([
     loadUpstreamModelRows(),
     loadPricedModels(),
     getSnapshot({ source: await loadModelsDevSource() }),
+    loadRemoteModelRows(),
+    loadRecentActivityModels(),
   ]);
 
   const upstreamByModel = new Map<string, string[]>();
@@ -127,22 +198,30 @@ export async function getModelPricesList(): Promise<ModelPriceRow[]> {
     upstreamByModel.set(row.model, list);
   }
 
+  const remoteByModel = new Map<string, string[]>();
+  for (const row of remoteModels) {
+    remoteByModel.set(row.model, row.providers);
+  }
+
   const pricedByModel = new Map<string, (typeof priced)[number]>();
   for (const p of priced) {
     pricedByModel.set(p.model, p);
   }
 
-  // 行集 = upstream models ∪ 已定价 model
+  // 行集 = upstream models ∪ 已定价 model ∪ 近期推送记录出现过的 model
   const models = new Set<string>([
     ...Array.from(upstreamByModel.keys()),
     ...Array.from(pricedByModel.keys()),
+    ...Array.from(remoteByModel.keys()),
   ]);
   const rows: ModelPriceRow[] = [];
 
   for (const model of Array.from(models).sort((a, b) => a.localeCompare(b))) {
     const price = pricedByModel.get(model);
     const upstreams = upstreamByModel.get(model) ?? [];
+    const remoteProviders = remoteByModel.get(model) ?? [];
     const active = upstreams.length > 0;
+    const hasRecentActivity = recentActivity.has(model);
 
     // 自动来源（models.dev / github）：解析 modelsDevId 的 provider 段，显示名优先取快照 name，缺失回退 providerId
     let sourceProvider: string | null = null;
@@ -209,7 +288,7 @@ export async function getModelPricesList(): Promise<ModelPriceRow[]> {
 
     rows.push({
       model,
-      upstreams,
+      upstreams: [...upstreams, ...remoteProviders],
       inputPrice: price?.inputPrice ?? null,
       outputPrice: price?.outputPrice ?? null,
       cacheReadPrice: price?.cacheReadPrice ?? null,
@@ -218,6 +297,7 @@ export async function getModelPricesList(): Promise<ModelPriceRow[]> {
       modelsDevId: price?.modelsDevId ?? null,
       sourceProvider,
       updatedAt: price?.updatedAt ?? null,
+      recentActivity: hasRecentActivity,
       status,
     });
   }

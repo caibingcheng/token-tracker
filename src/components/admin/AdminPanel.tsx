@@ -7,9 +7,10 @@ import VirtualKeysPanel from "./VirtualKeysPanel";
 import SecuritySettings from "./SecuritySettings";
 import DisplaySettings from "./DisplaySettings";
 import AuditLogsPanel from "./AuditLogsPanel";
+import SyncPanel from "./SyncPanel";
 import Link from "next/link";
 
-type Tab = "upstreams" | "models" | "virtual-keys" | "security" | "display" | "audit";
+type Tab = "upstreams" | "models" | "virtual-keys" | "security" | "display" | "sync" | "audit";
 
 export default function AdminPanel() {
   const [tab, setTab] = useState<Tab>("upstreams");
@@ -35,6 +36,7 @@ export default function AdminPanel() {
                 ["virtual-keys", "Virtual Keys"],
                 ["security", "Security"],
                 ["display", "Display"],
+                ["sync", "Sync"],
                 ["audit", "Audit"],
               ] as [Tab, string][]
             ).map(([id, label]) => (
@@ -64,6 +66,8 @@ export default function AdminPanel() {
           <SecuritySettings />
         ) : tab === "display" ? (
           <DisplaySettings />
+        ) : tab === "sync" ? (
+          <SyncPanel />
         ) : (
           <AuditLogsPanel />
         )}

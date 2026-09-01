@@ -274,6 +274,9 @@ export function createProxyDeps(): ProxyDeps {
           userAgent: usage.userAgent ?? null,
           requestModel: usage.requestModel ?? null,
         });
+        // fire-and-forget 通知推送 worker（未配置同步时零开销）
+        const { syncPusher } = await import("@/lib/sync/pusher");
+        syncPusher.notify();
       });
     },
 

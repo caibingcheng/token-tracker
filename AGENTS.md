@@ -47,7 +47,8 @@ docker compose up -d                                 # 本地运行
   - `routing_rules`（id, name, protocol, upstream_id, target_model, priority, created_at）：**手动路由规则**，`name` = 客户端请求的虚拟模型名，`target_model` = 上游真实模型名；`UNIQUE(name, protocol, upstream_id)` 同名同协议可挂多个不同 upstream（多目标 failover 链，按 `priority` 升序、同 priority 按 id 升序；drizzle 用 `uniqueIndex("uq_routing_rules_name_protocol_upstream")` 对齐 raw SQL）；`migrateRoutingRulesTable()` 表重建迁移（旧 `UNIQUE(name, protocol)` 结构 → 新结构，priority 回填 0，幂等）
   - `admin_audit_logs`（id, action, actor, target_type, target_id, ip, user_agent, details, created_at）：管理操作审计日志（含网关 user-agent 记录）
   - `model_prices`（model PRIMARY KEY, input_price, output_price, cache_read_price(NULL→回退 input), cache_write_price(NULL→回退 input), source('models.dev'|'github'|'manual'), models_dev_id, updated_at）：官方价参考（USD/1M），**查询时计算**，record 不存价格；`model` = 发往 upstream 的真实名
-  - `settings`（key TEXT PRIMARY KEY, value TEXT）：`admin_api_key`（AES-256-GCM 加密）、`totp_secret`、`totp_enabled`、`token_epoch`、`hidden_providers`（明文）、`session_token_ttl_hours`（明文）、`stream_idle_timeout_minutes`（明文，Security tab 编辑）、`status_page_config`（明文 JSON：`{enabled, elements:{total,today,daily,heatmap,hourly,topModels,cost}}`，**默认 enabled=false**）、`model_aliases`（明文 JSON：`[{name, aliases[]}]` 归一化配置，Display pane 编辑）、`hidden_sources`（明文 JSON：`{upstreams: string[], virtualKeys: string[], excludedUpstreams: string[], excludedVirtualKeys: string[]}`，Display pane 编辑；hidden = 隐藏源、excluded = 从总计剔除，两维度独立，查询层过滤零删除）、`models_dev_source`（明文，快照数据源开关 `"models.dev"|"github"`，Models 面板切换；非法值回退默认，无 env fallback）、`totp_fail_count`（明文，TOTP 失败计数）、`totp_locked_until`（明文，TOTP 锁定截止时间戳）、`recovery_codes`（明文 JSON：`{hashes:[sha256...], used:[bool...]}`，只存哈希不存明文）、`recovery_code_login_reminder`（明文，recovery code 登录提醒标记）
+  - `settings`（key TEXT PRIMARY KEY, value TEXT）：`admin_api_key`（AES-256-GCM 加密）、`totp_secret`、`totp_enabled`、`token_epoch`、`hidden_providers`（明文）、`session_token_ttl_hours`（明文）、`stream_idle_timeout_minutes`（明文，Security tab 编辑）、`status_page_config`（明文 JSON：`{enabled, elements:{total,today,daily,heatmap,hourly,topModels,cost}}`，**默认 enabled=false**）、`model_aliases`（明文 JSON：`[{name, aliases[]}]` 归一化配置，Display pane 编辑）、`hidden_sources`（明文 JSON：`{upstreams: string[], virtualKeys: string[], excludedUpstreams: string[], excludedVirtualKeys: string[]}`，Display pane 编辑；hidden = 隐藏源、excluded = 从总计剔除，两维度独立，查询层过滤零删除）、`models_dev_source`（明文，快照数据源开关 `"models.dev"|"github"`，Models 面板切换；非法值回退默认，无 env fallback）、`totp_fail_count`（明文，TOTP 失败计数）、`totp_locked_until`（明文，TOTP 锁定截止时间戳）、`recovery_codes`（明文 JSON：`{hashes:[sha256...], used:[bool...]}`，只存哈希不存明文）、`recovery_code_login_reminder`（明文，recovery code 登录提醒标记）、`sync_target_url`（明文，A 端 ingest URL）、`sync_token_encrypted`（AES-256-GCM 加密，ingest token）、`sync_instance`（明文 `[a-z0-9-]{1,32}`，默认主机名回退 `b-xxxxxxxx`）、`sync_epoch`（明文，DB 初始化时生成持久不变）、`sync_cursor`（明文数字，已确认推送的最大 record id）、`sync_bound_instance`（明文，A 端确认的绑定实例名）、`sync_dropped_count`（明文数字，累计 drop 记录数）、`sync_last_success_at` / `sync_last_attempt_at`（明文 ISO）、`sync_last_error`（明文 JSON `{type, message, firstFailedAt}`，B 端推送状态可观测）
+- **多实例同步新表**：`ingest_tokens`（id, name, api_key_encrypted(AES-256-GCM), bound_instance(TOFU 绑定), enabled, last_used_at, created_at）、`sync_instances`（instance PRIMARY KEY, epoch, last_record_id 去重水位, updated_at）。两表纯新增 `CREATE TABLE IF NOT EXISTS` 幂等，`token_records` 零改动
 - **存量迁移**：`migrateColumns()` 泛化支持多表（token_records / virtual_keys / upstreams），通过 `PRAGMA table_info` 检测缺失列并 `ALTER TABLE` 补列（`CREATE TABLE IF NOT EXISTS` 不会补列）；`migrateTokenRecordsModelColumns()` 专用一次性迁移：`request_model` 回填 = model、`model` 覆盖 = `target_model`（旧 schema）、DROP `target_model`（幂等）
 
 ## API 路由与认证
@@ -76,6 +77,14 @@ docker compose up -d                                 # 本地运行
 | `/api/admin/model-prices/candidates?model=X` `/api/admin/model-prices/candidates?q=...` `/api/admin/model-prices/select` `/api/admin/model-prices/auto-fill` | GET/POST/POST | 会话 token | Price Picker Modal 候选列表（provider、4 价格、预选标记；`q` = 搜索模式，全量扫描快照不限匹配管线）；从候选选定落库（`source='models.dev'`，校验 modelsDevId 存在于快照即可，价格以快照为准防篡改——搜索选中的条目与自动匹配等价）；批量填充（POST body `{mode?}`：`"fill"` 缺省只填空不覆盖 / `"force"` 覆盖所有非 manual 已定价行即 Re-fill all；manual 行永不被自动流程触碰） |
 | `/api/admin/models-dev/refresh` | POST | 会话 token | 强制刷新快照（失败回退旧快照；按 `models_dev_source` 开关用 models.dev 或 Litellm 源，审计含 `source`） |
 | `/api/admin/models-dev/upload` | POST | 会话 token | 手动上传快照（**格式自动识别**：api.json 原文 / `{fetchedAt,data}` 包装 / Litellm `model_prices_and_context_window.json`——后者自动转换为 models.dev 结构并标记 `source='github'`；body ≤10MB、provider ≤1000、model ≤50k，`sanitizeModelsDevData` 丢弃结构/数值非法条目并返回 `dropped` 计数（**cost 缺失的无价条目保留**，官方 api.json 含无价模型），全非法 400；`uploadSnapshot` 更新内存缓存 + 落盘，**无需重启**；审计 `models_dev_upload` 含 `source`） |
+| `/ingest/records` | POST | **ingest token（`it-` 前缀，Bearer）** | 多实例同步接收端点（位于 /api 之外，middleware 天然不拦）：详见下方「多实例同步」小节 |
+| `/api/admin/ingest-tokens` `/api/admin/ingest-tokens/[id]` `/api/admin/ingest-tokens/[id]/unbind` | CRUD/POST | 会话 token | A 侧 ingest token 管理：列表/创建（创建返回一次明文 `it-` + 32 base64url，写后不可读）/PATCH 启停改名/DELETE 吊销/unbind 解绑（清空 bound_instance，下次推送重新 TOFU）；审计 `ingest_token_*` |
+| `/api/admin/sync-instances` `/api/admin/sync-instances/[instance]` | GET/DELETE | 会话 token | A 侧实例水位查看/删除（删除行后同名新实例可干净重绑）；审计 `sync_instance_deleted` |
+| `/api/admin/sync/config` | GET/PUT | 会话 token | B 侧同步配置：GET 脱敏回显 token；PUT 校验 URL/instance 格式 + token 加密落库 + `withSkipCache`；instance 在 A 端已绑定时锁定拒绝改名；审计 `sync_config_updated` |
+| `/api/admin/sync/status` | GET | 会话 token | B 侧推送状态：cursor/待推送数（`[cursor+1, maxId]` 非 -1）/maxRecordId/droppedCount/boundInstance/lastSuccessAt/lastError/lastAttemptAt——丢失可观测 |
+| `/api/admin/sync/trigger` | POST | 会话 token | 手动触发推送一轮（`SyncPusher.trigger()`）；审计 `sync_triggered` |
+| `/api/admin/sync/skip` | POST | 会话 token | 手动跳过：body `{upToRecordId}` 必须 > 当前游标，强制推进游标丢弃区间 + dropped_count 累计 + 审计 `sync_skip` |
+| `/api/admin/sync/reset` | POST | 会话 token | 重置同步状态：游标归零 + 重新生成 epoch + 解除本地锁定（A 重建场景，纯本地）；dropped_count 保留；审计 `sync_reset` |
 | `/status/data` | GET | **无（有意公开）** | 公开用量数据端点：详见下方「公开 Status 面板」小节 |
 
 - **认证架构（多层防漏）**：验签 middleware（第一层，WebCrypto 验 HMAC 签名 + exp，Edge runtime）→ 路由内 `withAuth`（第二层，epoch 检查 + DB key 指纹校验）→ vitest 静态扫描测试（第三层，`src/lib/auth/guard-scan.test.ts`，login + setup 白名单）→ 本文件约定（第四层）
@@ -103,6 +112,23 @@ docker compose up -d                                 # 本地运行
 - **限流**：`checkStatusRateLimit()`（status-query.ts 导出，60 req/min 固定窗口，`getRateLimitKey()` 取 key），与 setup/login 同款内存 bucket 模式
 - **⚠️ `/status/data/route.ts` 必须 `dynamic = "force-dynamic"`**：否则构建期预渲染会把 enabled/disabled 决策烘焙进产物
 - **配置**：`parseStatusPageConfig` 逐 key 与默认值合并（非法 JSON/字段回退默认，返回全新对象不污染共享默认）；PUT 校验 `isValidStatusPageConfig`（enabled + 全部 7 元素 boolean，未知 key 拒绝）
+
+## 多实例同步
+
+多级部署：A = 公网主实例（汇总），B = 本地实例（可多个），B 将自己 token_records 推送 A。核心保证：**丢失可能（可观测、有兜底），重复不可能**。
+
+- **两端同代码库**：A/B 均为本仓库，B 仅需在 Admin Sync tab 配置 URL + token；未配置同步时 worker 完全不起动（单机零开销）
+- **推送机制**（`src/lib/sync/`）：持久化游标队列 —— settings `sync_cursor` 即队列水位，推送 `SELECT id > cursor AND COALESCE(virtual_key_id,0) != -1 ORDER BY id LIMIT 200`，A ack 后推进游标；**严格串行**（拉取 → 推送 → ack → 推进），`SyncPusher` 模块级单例（`src/lib/sync/pusher.ts`）in-flight 互斥锁；onUsage 写库后 fire-and-forget `notify()` + 60s 定时兜底；**单进程假设**（一个 B = 一进程连一 SQLite，不支持同库多进程）
+  - **分级重试**：2xx 推进游标（skippedInvalid 计入 `sync_dropped_count`）；401/403 **无限退避不 drop**（1s→5min 封顶，索引 `lastError.type=auth` 红字）；400 连续 50 次自动 drop 该批（推进游标 + dropped 累计 + 审计）；5xx/网络/超时无限重试
+  - **游标推进细节**：以原始扫描（含被跳过的 -1 记录）的最大 id 推进，防停在哨兵记录前反复空扫；`stream-usage`-式批注
+  - **哨兵防级联**：`virtual_key_id = -1` 的记录（经 ingest 进入本机）**不再向外转发** —— 级联拓扑（C→B→A）B 只做末端展示，环路（A→B→A）自然断开；本地 upstream/vk 名新增校验禁止 `remote/` 前缀（保留字隔离命名空间）
+- **A 侧接收**（`src/app/ingest/records/route.ts`，/api 之外 + `runtime=nodejs` + `dynamic=force-dynamic`）：`Authorization: Bearer it-xxx` 全表解密比对（仿 `resolveVirtualKey`）；内存限流 + body ≤2MB + 批 ≤500；TOFU 绑定（先推先绑，instance 不匹配 403 `instance_mismatch`）；**部分接受**（单条非法跳过 + `skippedInvalid` ids，结构性错误整批 400）
+- **去重水位**（`src/lib/ingest/watermark.ts`，`BEGIN IMMEDIATE` 单事务）：`sync_instances` 每实例一行 `(instance, epoch, last_record_id)`；**epoch 变化 → A 重置水位 0**（B 重建 DB 场景）；`UPDATE ... WHERE last_record_id < :w` 只升不降；同实例并发由 SQLite 单写者串行化（最坏整批 skip）
+- **字段改写**：A 收到后 `provider`/`agent` → `remote/{instance}/{原名}`，`virtual_key_id` → **-1**（哨兵：防转发 + 三态区分本机 vk/NULL/-1），model/requestModel/created_at 等原样保留，created_at 保留 B 原始时间；**契约上拒绝价格字段**（A 是唯一定价权威）
+- **定价/统计集成**：推送 model 参与 A 的定价（原名命中 model_prices 自动匹配）+ 归一化（同名 roll up）；`/api/admin/model-prices` 行集 = 启用 upstream ∪ 已定价 ∪ **推送记录出现过的 model**（基于 sync_instances 实例名的 `provider LIKE 'remote/{instance}/%'` 有界 distinct + 内存缓存），upstreams 列标注 `remote/{instance}/{原名}` 来源
+- **活跃模型可见性（修正）**：默认可见 = active（启用 upstream）∪ **近 30 天有记录**（含推送）；inactive 且 30 天无记录自动隐藏（`ModelsPanel` 的 `showInactive` 仍可查看）；`recentActivity` 标记由 30 天窗口查询驱动；Speed 表 `loadActiveModelSet()` 同步扩展为「启用 ∪ 近 30 天有记录」
+- **Hidden Sources / 匿名化**：B 来源以 `remote/{instance}/{名字}` 出现于建议列表，按名字精确匹配可正常隐藏/剔除，无改动
+- **↔ingest 认证隔离**：ingest 端点独立于会话认证体系，token 泄露不影响 admin/API；TOFU 残余风险由 UI 展示绑定关系 + last_used_at 发现并吊销；审计覆盖 token CRUD/解绑/水位删除/skip/reset/config
 
 ## AI Gateway 代理链路（核心）
 
@@ -347,6 +373,11 @@ docker compose up -d
   - `src/lib/gateway/url-guard`：`validateProxyUrl`（scheme 拒绝/私网 IP + DNS 拒绝/逃生开关/含凭据通过）+ `sanitizeProxyUrlForDisplay` 剥 userinfo
   - `src/lib/gateway/proxy` / `probe` / `upstream-client` / `balance`：upstream 带 proxyUrl 时 init 含 dispatcher、无 proxyUrl 时无 dispatcher key（主链 + responses 辅助链各一）
   - `src/app/api/dashboard/route.test` / `src/app/api/records/route.test`：Dashboard/Records API 集成
+  - `src/lib/ingest/validate.test`：payload 校验（instance 格式、结构错误 400、批量上限、部分接受 skippedInvalid、token 非负、userAgent 截断、空批）
+  - `src/app/ingest/records/route.test`：ingest 端点集成（临时 SQLite + 真实 handler + 真实 token）——401/禁用、113/2MB、400 超限、TOFU 绑定与 instance_mismatch、字段改写（remote 前缀 + vk=-1 + createdAt 保留）、同 epoch 去重重推、epoch 变化重置水位、部分接受、同实例并发串行化
+  - `src/lib/sync/pusher.test`：推送 worker（mock fetch）——成功推进（含 -1 哨兵夹心、redirect=manual、boundInstance 锁定）、401 不 drop、5xx/网络不 drop、400 五十次自动 drop 累计计数、skippedInvalid 计入 dropped、未配置不启动、多批推送
+  - `src/lib/sync/config.test`：URL 格式校验、token 加密往返与清除、instance 校验、cursor/dropped 读写往返、reset 语义（dropped 保留）、instance/epoch 自动生成持久
+  - `src/lib/model-prices-service.test`：可见性（近期流量 30 天窗口、推送模型行集含全历史 + 来源标注、active 判定、过期推送模型默认隐藏）
 - 新增纯逻辑模块（如解析器、路由匹配、加密）时应同步提交单测
 
 ## Git Commit

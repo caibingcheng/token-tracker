@@ -13,6 +13,8 @@ let adminAuditLogsTable: any;
 let upstreamModelHealthTable: any;
 let routingRulesTable: any;
 let modelPricesTable: any;
+let ingestTokensTable: any;
+let syncInstancesTable: any;
 let initialized = false;
 
 export async function initDatabase() {
@@ -49,6 +51,8 @@ async function ensureClient() {
   upstreamModelHealthTable = sqliteModule.upstreamModelHealth;
   routingRulesTable = sqliteModule.routingRules;
   modelPricesTable = sqliteModule.modelPrices;
+  ingestTokensTable = sqliteModule.ingestTokens;
+  syncInstancesTable = sqliteModule.syncInstances;
 
   client.exec(`
     CREATE TABLE IF NOT EXISTS token_records (
@@ -146,6 +150,21 @@ async function ensureClient() {
       source TEXT NOT NULL,
       models_dev_id TEXT,
       updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS ingest_tokens (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      api_key_encrypted TEXT NOT NULL,
+      bound_instance TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      last_used_at TEXT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+    CREATE TABLE IF NOT EXISTS sync_instances (
+      instance TEXT PRIMARY KEY,
+      epoch TEXT NOT NULL,
+      last_record_id INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT
     );
   `);
 
@@ -251,5 +270,5 @@ export function getDateGroupExpr(
   return sql<string>`strftime('%Y-%m-%d', ${tokenRecords.createdAt}, ${modifiers[0]}, ${modifiers[1]})`;
 }
 
-export { db, tokenRecords, upstreamsTable, upstreamKeysTable, virtualKeysTable, settingsTable, adminAuditLogsTable, upstreamModelHealthTable, routingRulesTable, modelPricesTable };
+export { db, tokenRecords, upstreamsTable, upstreamKeysTable, virtualKeysTable, settingsTable, adminAuditLogsTable, upstreamModelHealthTable, routingRulesTable, modelPricesTable, ingestTokensTable, syncInstancesTable };
 export type { TokenRecord, NewTokenRecord } from "./schema-sqlite";
