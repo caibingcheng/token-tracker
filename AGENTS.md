@@ -78,10 +78,10 @@ docker compose up -d                                 # 本地运行
 | `/api/admin/models-dev/refresh` | POST | 会话 token | 强制刷新快照（失败回退旧快照；按 `models_dev_source` 开关用 models.dev 或 Litellm 源，审计含 `source`） |
 | `/api/admin/models-dev/upload` | POST | 会话 token | 手动上传快照（**格式自动识别**：api.json 原文 / `{fetchedAt,data}` 包装 / Litellm `model_prices_and_context_window.json`——后者自动转换为 models.dev 结构并标记 `source='github'`；body ≤10MB、provider ≤1000、model ≤50k，`sanitizeModelsDevData` 丢弃结构/数值非法条目并返回 `dropped` 计数（**cost 缺失的无价条目保留**，官方 api.json 含无价模型），全非法 400；`uploadSnapshot` 更新内存缓存 + 落盘，**无需重启**；审计 `models_dev_upload` 含 `source`） |
 | `/ingest/records` | POST | **ingest token（`it-` 前缀，Bearer）** | 多实例同步接收端点（位于 /api 之外，middleware 天然不拦）：详见下方「多实例同步」小节 |
-| `/api/admin/ingest-tokens` `/api/admin/ingest-tokens/[id]` `/api/admin/ingest-tokens/[id]/unbind` | CRUD/POST | 会话 token | A 侧 ingest token 管理：列表/创建（创建返回一次明文 `it-` + 32 base64url，写后不可读）/PATCH 启停改名/DELETE 吊销/unbind 解绑（清空 bound_instance，下次推送重新 TOFU）；审计 `ingest_token_*` |
+| `/api/admin/ingest-tokens` `/api/admin/ingest-tokens/[id]` `/api/admin/ingest-tokens/[id]/unbind` | CRUD/POST | 会话 token | A 侧 ingest token 管理：列表/创建（创建返回一次明文 `it-` + 32 base64url；**列表可回显明文供随时复制**，与 virtual_keys 惯例一致）/PATCH 启停改名/DELETE 吊销/unbind 解绑（清空 bound_instance，下次推送重新 TOFU）；审计 `ingest_token_*` |
 | `/api/admin/sync-instances` `/api/admin/sync-instances/[instance]` | GET/DELETE | 会话 token | A 侧实例水位查看/删除（删除行后同名新实例可干净重绑）；审计 `sync_instance_deleted` |
 | `/api/admin/sync/config` | GET/PUT | 会话 token | B 侧同步配置：GET 脱敏回显 token；PUT 校验 URL/instance 格式 + token 加密落库 + `withSkipCache`；instance 在 A 端已绑定时锁定拒绝改名；审计 `sync_config_updated` |
-| `/api/admin/sync/status` | GET | 会话 token | B 侧推送状态：cursor/待推送数（`[cursor+1, maxId]` 非 -1）/maxRecordId/droppedCount/boundInstance/lastSuccessAt/lastError/lastAttemptAt——丢失可观测 |
+| `/api/admin/sync/status` | GET | 会话 token | B 侧推送状态：cursor/待推送数（`[cursor+1, maxId]` 非 -1）/maxRecordId/droppedCount/boundInstance/lastSuccessAt/lastError/lastAttemptAt/lastSkippedInvalid——丢失可观测；GET 同时 arm 60s 兜底轮询（`syncPusher.kick()`，未配置零开销） |
 | `/api/admin/sync/trigger` | POST | 会话 token | 手动触发推送一轮（`SyncPusher.trigger()`）；审计 `sync_triggered` |
 | `/api/admin/sync/skip` | POST | 会话 token | 手动跳过：body `{upToRecordId}` 必须 > 当前游标，强制推进游标丢弃区间 + dropped_count 累计 + 审计 `sync_skip` |
 | `/api/admin/sync/reset` | POST | 会话 token | 重置同步状态：游标归零 + 重新生成 epoch + 解除本地锁定（A 重建场景，纯本地）；dropped_count 保留；审计 `sync_reset` |

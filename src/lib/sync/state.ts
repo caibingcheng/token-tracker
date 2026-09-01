@@ -22,6 +22,7 @@ export interface SyncStatus {
   lastSuccessAt: string | null;
   lastError: SyncLastError | null;
   lastAttemptAt: string | null;
+  lastSkippedInvalid: number[] | null; // 最近一次 ack 的部分接受记录 id
 }
 
 export async function getSyncStatus(): Promise<SyncStatus> {
@@ -52,5 +53,6 @@ export async function getSyncStatus(): Promise<SyncStatus> {
     lastSuccessAt: config.lastSuccessAt,
     lastError: config.lastError,
     lastAttemptAt: config.lastAttemptAt,
+    lastSkippedInvalid: config.lastSkippedInvalid,
   };
 }

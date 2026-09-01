@@ -1,6 +1,7 @@
 // A 侧 ingest token 管理：生成 / 加密比对 / CRUD。
-// 仿 virtual_keys 模式：AES-256-GCM 加密落库（写后不可读，UI 仅创建时展示明文一次），
-// 认证时全表解密比对（随机 IV 无法索引，safeCompare 防时序侧信道）。
+// 仿 virtual_keys 模式：AES-256-GCM 加密落库；认证时全表解密比对（随机 IV 无法索引，
+// safeCompare 防时序侧信道）；admin 列表可回显明文供复制（与 virtual_keys 惯例一致），
+// 创建时额外展示一次明文提示立即配置到 B 端。
 
 import { eq, desc, sql } from "drizzle-orm";
 import { db, initDatabase, ingestTokensTable } from "@/lib/db";

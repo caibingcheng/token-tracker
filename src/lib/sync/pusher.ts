@@ -18,6 +18,7 @@ import {
   setSyncLastSuccessAt,
   setSyncLastError,
   setSyncLastAttemptAt,
+  setSyncLastSkippedInvalid,
   type SyncLastError,
 } from "./config";
 import { recordAuditLog } from "@/lib/admin/audit";
@@ -53,6 +54,7 @@ export interface SyncPushResult {
   message: string;
   pushedCount: number;
   skippedInvalidCount: number;
+  skippedInvalidIds: number[]; // ack 返回的部分接受记录 id（lastSkippedInvalid 可观测）
   boundInstance: string | null;
 }
 
@@ -150,9 +152,29 @@ export class SyncPusher {
     await this.runLocked();
   }
 
-  // 60s 定时兜底（幂等；未配置时跳过启动）
-  private schedule(ms: number): void {
+  // 启动兜底：进程启动后无流量场景也能自愈（配置存在才 arm，未配置零开销）。
+  // 幂等：timer 已存在或不可用时不重复创建
+  kick(): void {
+    void this.ensureBootTimer();
+  }
+
+  private async ensureBootTimer(): Promise<void> {
     if (this.timer) return;
+    const config = await loadSyncConfig().catch(() => null);
+    if (!config) return;
+    if (!config.targetUrl || !config.hasToken) return; // 未配置：零开销
+    this.schedule(RETRY_INTERVAL_MS);
+  }
+
+  // 60s 定时兜底 / 退避调度（幂等；未配置时跳过启动）。
+  // 失败退避必须能替换已有 timer：成功追平后 arm 的 60s timer 若已在队列中，
+  // 失败路径应插队换用更短的退避，避免重试被推迟到 60s 兜底
+  private schedule(ms: number, replace = false): void {
+    if (this.timer && !replace) return;
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
     const callback = () => {
       this.timer = null;
       void this.runLocked();
@@ -170,7 +192,8 @@ export class SyncPusher {
     } catch (err) {
       console.error("[sync] push loop failed:", err);
       await this.recordError("internal", "push loop failed").catch(() => {});
-      this.schedule(Math.min(this.backoffMs * 2, MAX_BACKOFF_MS));
+      this.backoffMs = Math.min(this.backoffMs * 2, MAX_BACKOFF_MS);
+      this.schedule(this.backoffMs, true);
     } finally {
       this.running = false;
     }
@@ -208,7 +231,7 @@ export class SyncPusher {
         }
       }
       this.backoffMs = Math.min(this.backoffMs * 2, MAX_BACKOFF_MS);
-      this.schedule(this.backoffMs);
+      this.schedule(this.backoffMs, true);
       return;
     }
   }
@@ -218,14 +241,14 @@ export class SyncPusher {
     const cursor = config.cursor;
     const maxId = await scanMaxId(cursor);
     if (maxId <= cursor) {
-      return { advancedTo: cursor, obtained: { kind: "ok", message: "up to date", pushedCount: 0, skippedInvalidCount: 0, boundInstance: null }, batchSize: 0 };
+      return { advancedTo: cursor, obtained: { kind: "ok", message: "up to date", pushedCount: 0, skippedInvalidCount: 0, skippedInvalidIds: [], boundInstance: null }, batchSize: 0 };
     }
 
     const rows = await fetchBatch(cursor);
     if (rows.length === 0) {
       // 区间内只有 -1 哨兵记录：不推送，直接推进游标
       await setSyncCursor(maxId);
-      return { advancedTo: maxId, obtained: { kind: "ok", message: "skipped remote records", pushedCount: 0, skippedInvalidCount: 0, boundInstance: null }, batchSize: 0 };
+      return { advancedTo: maxId, obtained: { kind: "ok", message: "skipped remote records", pushedCount: 0, skippedInvalidCount: 0, skippedInvalidIds: [], boundInstance: null }, batchSize: 0 };
     }
 
     const result = await this.pushBatch(config, rows);
@@ -250,6 +273,7 @@ export class SyncPusher {
     if (result.skippedInvalidCount > 0) {
       await incrementDroppedCount(result.skippedInvalidCount);
     }
+    await setSyncLastSkippedInvalid(result.skippedInvalidIds);
     return { advancedTo, obtained: result, batchSize: rows.length };
   }
 
@@ -260,7 +284,7 @@ export class SyncPusher {
     const token = await getSyncToken();
     const targetUrl = config.targetUrl!;
     if (!token) {
-      return { kind: "auth", message: "sync token is not configured", pushedCount: 0, skippedInvalidCount: 0, boundInstance: null };
+      return { kind: "auth", message: "sync token is not configured", pushedCount: 0, skippedInvalidCount: 0, skippedInvalidIds: [], boundInstance: null };
     }
     await setSyncLastAttemptAt(new Date().toISOString());
 
@@ -288,7 +312,7 @@ export class SyncPusher {
       const aborted = err instanceof Error && err.name === "TimeoutError";
       const message = aborted ? "fetch timeout" : err instanceof Error ? err.message.slice(0, 200) : "network error";
       await this.recordError(aborted ? "network" : "network", message);
-      return { kind: "network", message, pushedCount: 0, skippedInvalidCount: 0, boundInstance: null };
+      return { kind: "network", message, pushedCount: 0, skippedInvalidCount: 0, skippedInvalidIds: [], boundInstance: null };
     }
 
     const status = response.status;
@@ -301,7 +325,10 @@ export class SyncPusher {
     }
 
     if (status >= 200 && status < 300) {
-      const skippedInvalid = Array.isArray(parsed?.skippedInvalid) ? parsed.skippedInvalid.length : 0;
+      const skippedInvalid =
+        Array.isArray(parsed?.skippedInvalid)
+          ? (parsed.skippedInvalid as unknown[]).filter((n): n is number => typeof n === "number")
+          : [];
       const boundInstance =
         typeof parsed?.boundInstance === "string" && parsed.boundInstance !== ""
           ? (parsed.boundInstance as string)
@@ -310,18 +337,19 @@ export class SyncPusher {
         kind: "ok",
         message: `ack ${status}`,
         pushedCount: rows.length,
-        skippedInvalidCount: skippedInvalid,
+        skippedInvalidCount: skippedInvalid.length,
+        skippedInvalidIds: skippedInvalid,
         boundInstance,
       };
     }
 
     if (status === 401 || status === 403) {
       await this.recordError("auth", `A rejected batch (HTTP ${status}${errorSuffix(parsed)})`);
-      return { kind: "auth", message: `HTTP ${status}`, pushedCount: 0, skippedInvalidCount: 0, boundInstance: null };
+      return { kind: "auth", message: `HTTP ${status}`, pushedCount: 0, skippedInvalidCount: 0, skippedInvalidIds: [], boundInstance: null };
     }
     if (status === 400) {
       await this.recordError("batch_rejected", `A rejected batch (HTTP 400${errorSuffix(parsed)})`);
-      return { kind: "batch_rejected", message: `HTTP 400`, pushedCount: 0, skippedInvalidCount: 0, boundInstance: null };
+      return { kind: "batch_rejected", message: `HTTP 400`, pushedCount: 0, skippedInvalidCount: 0, skippedInvalidIds: [], boundInstance: null };
     }
     // 429 / 5xx / 3xx
     await this.recordError(status >= 500 ? "server" : "network", `A returned HTTP ${status}${errorSuffix(parsed)}`);
@@ -330,6 +358,7 @@ export class SyncPusher {
       message: `HTTP ${status}`,
       pushedCount: 0,
       skippedInvalidCount: 0,
+      skippedInvalidIds: [],
       boundInstance: null,
     };
   }

@@ -95,7 +95,7 @@ export async function POST(request: NextRequest) {
   } catch {
     return NextResponse.json({ success: false, error: "Invalid request body" }, { status: 400 });
   }
-  if (raw.length > MAX_BODY_BYTES) {
+  if (Buffer.byteLength(raw, "utf8") > MAX_BODY_BYTES) {
     return NextResponse.json(
       { success: false, error: `Body too large (max ${MAX_BODY_BYTES} bytes)` },
       { status: 413 }

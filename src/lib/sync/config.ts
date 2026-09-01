@@ -17,6 +17,7 @@ const KEY_BOUND = "sync_bound_instance";
 const KEY_LAST_SUCCESS = "sync_last_success_at";
 const KEY_LAST_ERROR = "sync_last_error";
 const KEY_LAST_ATTEMPT = "sync_last_attempt_at";
+const KEY_LAST_SKIPPED_INVALID = "sync_last_skipped_invalid";
 
 export interface SyncLastError {
   type: "auth" | "batch_rejected" | "network" | "server" | "internal";
@@ -35,6 +36,7 @@ export interface SyncConfig {
   lastSuccessAt: string | null;
   lastError: SyncLastError | null;
   lastAttemptAt: string | null;
+  lastSkippedInvalid: number[] | null; // 最近一次 ack 的 skippedInvalid（部分接受可观测）
 }
 
 export function isValidTargetUrl(url: string): boolean {
@@ -119,7 +121,28 @@ export async function loadSyncConfig(): Promise<SyncConfig> {
     lastSuccessAt: await getSetting(KEY_LAST_SUCCESS),
     lastError,
     lastAttemptAt: await getSetting(KEY_LAST_ATTEMPT),
+    lastSkippedInvalid: parseSkippedInvalid(await getSetting(KEY_LAST_SKIPPED_INVALID)),
   };
+}
+
+function parseSkippedInvalid(raw: string | null): number[] | null {
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return null;
+    const ids = parsed.filter((n): n is number => Number.isInteger(n) && n > 0);
+    return ids.slice(0, 200); // 有界，防响应体积失控
+  } catch {
+    return null;
+  }
+}
+
+export async function setSyncLastSkippedInvalid(ids: number[]): Promise<void> {
+  if (ids.length === 0) {
+    await deleteSetting(KEY_LAST_SKIPPED_INVALID);
+    return;
+  }
+  await setSetting(KEY_LAST_SKIPPED_INVALID, JSON.stringify(ids.slice(0, 200)));
 }
 
 // 保存配置：undefined 字段不改变；token=null 清除
@@ -213,4 +236,5 @@ export async function resetSyncState(): Promise<void> {
   await setSyncLastError(null);
   await deleteSetting(KEY_LAST_SUCCESS);
   await deleteSetting(KEY_LAST_ATTEMPT);
+  await deleteSetting(KEY_LAST_SKIPPED_INVALID);
 }
