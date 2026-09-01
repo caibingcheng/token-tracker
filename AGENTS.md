@@ -79,7 +79,7 @@ docker compose up -d                                 # 本地运行
 | `/api/admin/models-dev/upload` | POST | 会话 token | 手动上传快照（**格式自动识别**：api.json 原文 / `{fetchedAt,data}` 包装 / Litellm `model_prices_and_context_window.json`——后者自动转换为 models.dev 结构并标记 `source='github'`；body ≤10MB、provider ≤1000、model ≤50k，`sanitizeModelsDevData` 丢弃结构/数值非法条目并返回 `dropped` 计数（**cost 缺失的无价条目保留**，官方 api.json 含无价模型），全非法 400；`uploadSnapshot` 更新内存缓存 + 落盘，**无需重启**；审计 `models_dev_upload` 含 `source`） |
 | `/ingest/records` | POST | **ingest token（`it-` 前缀，Bearer）** | 多实例同步接收端点（位于 /api 之外，middleware 天然不拦）：详见下方「多实例同步」小节 |
 | `/api/admin/ingest-tokens` `/api/admin/ingest-tokens/[id]` `/api/admin/ingest-tokens/[id]/unbind` | CRUD/POST | 会话 token | A 侧 ingest token 管理：列表/创建（创建返回一次明文 `it-` + 32 base64url；**列表可回显明文供随时复制**，与 virtual_keys 惯例一致）/PATCH 启停改名/DELETE 吊销/unbind 解绑（清空 bound_instance，下次推送重新 TOFU）；审计 `ingest_token_*` |
-| `/api/admin/sync-instances` `/api/admin/sync-instances/[instance]` | GET/DELETE | 会话 token | A 侧实例水位查看/删除（删除行后同名新实例可干净重绑）；审计 `sync_instance_deleted` |
+| `/api/admin/sync-instances` `/api/admin/sync-instances/[instance]` | GET/DELETE | 会话 token | A 侧实例水位查看/删除（删除行后同名新实例可干净重绑；DELETE 支持 `?deleteRecords=1` 级联删除该实例已推送历史记录——`provider LIKE 'remote/{instance}/%' AND virtual_key_id = -1` 双保险防误删本地记录，默认保留，删记录后 `invalidateStatusCache()`；先查水位存在否则 404 不动记录）；审计 `sync_instance_deleted` 含 `{deleteRecords, deletedRecords}` |
 | `/api/admin/sync/config` | GET/PUT | 会话 token | B 侧同步配置：GET 脱敏回显 token；PUT 校验 URL/instance 格式 + token 加密落库 + `withSkipCache`；instance 在 A 端已绑定时锁定拒绝改名；审计 `sync_config_updated` |
 | `/api/admin/sync/status` | GET | 会话 token | B 侧推送状态：cursor/待推送数（`[cursor+1, maxId]` 非 -1）/maxRecordId/droppedCount/boundInstance/lastSuccessAt/lastError/lastAttemptAt/lastSkippedInvalid——丢失可观测；GET 同时 arm 60s 兜底轮询（`syncPusher.kick()`，未配置零开销） |
 | `/api/admin/sync/trigger` | POST | 会话 token | 手动触发推送一轮（`SyncPusher.trigger()`）；审计 `sync_triggered` |
@@ -129,6 +129,7 @@ docker compose up -d                                 # 本地运行
 - **活跃模型可见性（修正）**：默认可见 = active（启用 upstream）∪ **近 30 天有记录**（含推送）；inactive 且 30 天无记录自动隐藏（`ModelsPanel` 的 `showInactive` 仍可查看）；`recentActivity` 标记由 30 天窗口查询驱动；Speed 表 `loadActiveModelSet()` 同步扩展为「启用 ∪ 近 30 天有记录」
 - **Hidden Sources / 匿名化**：B 来源以 `remote/{instance}/{名字}` 出现于建议列表，按名字精确匹配可正常隐藏/剔除，无改动
 - **↔ingest 认证隔离**：ingest 端点独立于会话认证体系，token 泄露不影响 admin/API；TOFU 残余风险由 UI 展示绑定关系 + last_used_at 发现并吊销；审计覆盖 token CRUD/解绑/水位删除/skip/reset/config
+- **安全重发流程**：A 端 Sync Instances → Delete（勾选 "Also delete its pushed records" 即 `?deleteRecords=1` 级联清历史）→ B 端 Reset sync state（游标归零 + 新 epoch，confirm 文案明确重复风险、按钮红系描边）→ B 端正常推送（换不换 token 均可，TOFU 重新绑定）→ A 端得到干净全量数据无重复。唯一重复风险组合（A 删实例行但保留记录 + B 端 reset 全量重放）由该流程前端约束消除
 
 ## AI Gateway 代理链路（核心）
 

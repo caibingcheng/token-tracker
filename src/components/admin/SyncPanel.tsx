@@ -112,6 +112,9 @@ export default function SyncPanel() {
   // ---- sync instances（A 角色）----
   const [instances, setInstances] = useState<SyncInstanceItem[]>([]);
   const [instancesError, setInstancesError] = useState<string | null>(null);
+  const [instancesSuccess, setInstancesSuccess] = useState<string | null>(null);
+  const [pendingDeleteInstance, setPendingDeleteInstance] = useState<SyncInstanceItem | null>(null);
+  const [deleteInstanceRecords, setDeleteInstanceRecords] = useState(false);
 
   // ---- B 端配置 ----
   const [targetUrl, setTargetUrl] = useState("");
@@ -300,14 +303,33 @@ export default function SyncPanel() {
 
   // ---- sync instance actions ----
   const deleteInstance = async (instance: SyncInstanceItem) => {
-    if (!window.confirm(`Delete watermark for instance "${instance.instance}"? Its watermark will be lost; the next push re-binds (token binding on A still applies).`)) return;
+    setPendingDeleteInstance(instance);
+    setDeleteInstanceRecords(false);
+    setInstancesSuccess(null);
+  };
+
+  const confirmDeleteInstance = async () => {
+    if (!pendingDeleteInstance) return;
+    const query = deleteInstanceRecords ? "?deleteRecords=1" : "";
+    setPendingDeleteInstance(null);
     setInstancesError(null);
+    setInstancesSuccess(null);
     try {
-      const res = await apiFetch(`/api/admin/sync-instances/${encodeURIComponent(instance.instance)}`, {
-        method: "DELETE",
-      });
+      const res = await apiFetch(
+        `/api/admin/sync-instances/${encodeURIComponent(pendingDeleteInstance.instance)}${query}`,
+        { method: "DELETE" }
+      );
       const json = await res.json();
-      if (!json.success) {
+      if (json.success) {
+        const deletedRecords: number = json.data?.deletedRecords ?? 0;
+        setInstancesSuccess(
+          deleteInstanceRecords
+            ? deletedRecords > 0
+              ? `Instance deleted — ${deletedRecords} pushed record(s) removed`
+              : "Instance deleted (no pushed records to remove)"
+            : "Instance deleted — history kept"
+        );
+      } else {
         setInstancesError(json.error || "Failed to delete instance");
       }
       await loadInstances();
@@ -427,7 +449,15 @@ export default function SyncPanel() {
   };
 
   const resetSync = async () => {
-    if (!window.confirm("Reset sync state (cursor to 0, new epoch, unlock instance)? Use when A was rebuilt. This is local only and cannot be undone.")) return;
+    if (
+      !window.confirm(
+        "Reset sync state (cursor → 0, new epoch, unlock instance)? " +
+          "The next push will replay ALL local history. Use only when A already deleted this " +
+          "instance's records (Sync Instances → Delete with the delete-records checkbox) or A was " +
+          "rebuilt — otherwise A-side data will be duplicated. This cannot be undone."
+      )
+    )
+      return;
     setResetting(true);
     setStatusError(null);
     try {
@@ -627,7 +657,7 @@ export default function SyncPanel() {
                 type="button"
                 onClick={resetSync}
                 disabled={resetting}
-                className="rounded border border-gray-300 bg-white px-3 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50 min-h-[40px] md:min-h-0"
+                className="rounded border border-red-300 bg-white px-3 py-2 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 min-h-[40px] md:min-h-0"
               >
                 {resetting ? "Resetting…" : "Reset sync state"}
               </button>
@@ -840,6 +870,7 @@ export default function SyncPanel() {
                 Dedup watermark per B instance. Deleting a row lets a new instance with the same name start clean (re-Token+push).
               </p>
               {instancesError && <p className="mb-2 text-xs text-red-600">{instancesError}</p>}
+              {instancesSuccess && <p className="mb-2 text-xs text-green-600">{instancesSuccess}</p>}
 
             <div className="hidden md:block overflow-x-auto">
               <table className="w-full text-sm">
@@ -914,6 +945,60 @@ export default function SyncPanel() {
             </div>
           </section>
         </>
+      )}
+
+      {pendingDeleteInstance && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="flex h-full w-full flex-col rounded-none bg-white shadow-xl md:h-auto md:max-w-md md:rounded-lg">
+            <div className="flex items-center justify-between border-b px-5 py-3">
+              <h3 className="font-semibold">Delete sync instance</h3>
+              <button
+                type="button"
+                onClick={() => setPendingDeleteInstance(null)}
+                className="text-2xl leading-none text-gray-400 hover:text-gray-600"
+              >
+                ×
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-5">
+              <p className="text-sm text-gray-700">
+                Delete watermark for instance{" "}
+                <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">
+                  {pendingDeleteInstance.instance}
+                </code>
+                ? Its watermark will be lost; the next push re-binds (token binding on A still applies).
+              </p>
+              <label className="mt-4 flex items-center gap-3 min-h-[40px] cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={deleteInstanceRecords}
+                  onChange={(e) => setDeleteInstanceRecords(e.target.checked)}
+                  className="h-5 w-5 rounded border-gray-300 text-red-600 focus:ring-red-500"
+                />
+                <span className="text-sm text-gray-700">Also delete its pushed records</span>
+              </label>
+              <p className="mt-1 text-xs text-gray-400">
+                Permanently removes this instance&apos;s pushed history, not recoverable. Required when the B side will Reset and re-push everything — otherwise records would duplicate.
+              </p>
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t px-5 py-3">
+              <button
+                type="button"
+                onClick={() => setPendingDeleteInstance(null)}
+                className="rounded border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmDeleteInstance}
+                className="rounded bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
