@@ -1,0 +1,21 @@
+# 本地整机零配置部署（可作 B 节点推送，也可开 ingest 当作 A 实例接收）
+# 用法：
+#   从 ghcr 拉取：docker compose -f docker-compose.local.yml up -d
+#   本地源码构建：docker compose -f docker-compose.local.yml up -d --build
+# 数据与自动生成的密钥均位于 ~/.token-tracker/（权限 600），本文件不含任何机密
+# 登录凭据：cat ~/.token-tracker/.b-node-env
+services:
+  token-tracker-local:
+    image: ghcr.io/caibingcheng/token-tracker:latest
+    build:
+      context: .
+    container_name: token-tracker-local
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:39001:3000"
+    environment:
+      - SQLITE_DATABASE_PATH=/app/data/token-tracker.db
+    volumes:
+      - ${HOME}/.token-tracker:/app/data
+      - ./scripts/local-entrypoint.sh:/usr/local/bin/local-entrypoint.sh:ro
+    entrypoint: ["/usr/local/bin/local-entrypoint.sh"]
