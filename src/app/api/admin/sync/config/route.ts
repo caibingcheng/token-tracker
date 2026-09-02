@@ -27,8 +27,9 @@ export const GET = withAuth(async () => {
         targetUrl: config.targetUrl,
         hasToken: config.hasToken,
         instance: config.instance,
+        uid: config.uid,
         epoch: config.epoch,
-        boundInstance: config.boundInstance,
+        boundUid: config.boundUid,
       },
     });
   });
@@ -62,13 +63,7 @@ export const PUT = withAuth(async (request: NextRequest) => {
           { status: 400 }
         );
       }
-      const current = await loadSyncConfig();
-      if (current.boundInstance && current.boundInstance !== instance) {
-        return NextResponse.json(
-          { success: false, error: "instance is locked by A-side binding; unbind on A first" },
-          { status: 400 }
-        );
-      }
+      // instance 是纯展示名：身份键为 uid，改名随时安全，无锁定校验
       input.instance = instance;
     }
     if (body.token !== undefined) {
@@ -124,7 +119,9 @@ export const PUT = withAuth(async (request: NextRequest) => {
         targetUrl: config.targetUrl,
         hasToken: config.hasToken,
         instance: config.instance,
-        boundInstance: config.boundInstance,
+        uid: config.uid,
+        epoch: config.epoch,
+        boundUid: config.boundUid,
       },
     });
   });

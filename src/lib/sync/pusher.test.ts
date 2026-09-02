@@ -13,6 +13,7 @@ const ORIG_DB = process.env.SQLITE_DATABASE_PATH;
 const ORIG_SECRET = process.env.GATEWAY_SECRET;
 const TARGET = "http://a.example.com/ingest/records";
 const TOKEN = "it-test-pusher-token-1234567890abcdef";
+const UID = "u-0123456789abcdef0123456789abcdef";
 
 let dir: string;
 
@@ -38,10 +39,11 @@ beforeEach(async () => {
   await setSetting("sync_target_url", TARGET);
   await setSetting("sync_token_encrypted", encryptSecret(TOKEN));
   await setSetting("sync_instance", "b-host");
+  await setSetting("sync_instance_uid", UID);
   await setSetting("sync_epoch", "epoch-1");
   await setSetting("sync_cursor", "0");
   await setSetting("sync_dropped_count", "0");
-  await deleteSetting("sync_bound_instance").catch(() => {});
+  await deleteSetting("sync_bound_uid").catch(() => {});
   await deleteSetting("sync_last_error").catch(() => {});
   await deleteSetting("sync_last_success_at").catch(() => {});
 });
@@ -70,7 +72,7 @@ async function config(): Promise<{ cursor: number; dropped: number; bound: strin
   return {
     cursor: Number(await getSetting("sync_cursor")) || 0,
     dropped: Number(await getSetting("sync_dropped_count")) || 0,
-    bound: await getSetting("sync_bound_instance"),
+    bound: await getSetting("sync_bound_uid"),
     lastError: await getSetting("sync_last_error"),
     lastSuccess: await getSetting("sync_last_success_at"),
   };
@@ -104,7 +106,7 @@ describe("SyncPusher", () => {
         skipped: 0,
         skippedInvalid: [],
         watermark: payload.records[payload.records.length - 1]?.sourceRecordId ?? 0,
-        boundInstance: "b-host",
+        boundUid: UID,
       });
     });
 
@@ -116,10 +118,12 @@ describe("SyncPusher", () => {
     const init = fetchMock.mock.calls[0]![1]!;
     expect(String(init.redirect)).toBe("manual");
     const payload = JSON.parse(String(init.body)) as {
+      instanceUid: string;
       instance: string;
       epoch: string;
       records: Array<{ sourceRecordId: number; model: string }>;
     };
+    expect(payload.instanceUid).toBe(UID);
     expect(payload.instance).toBe("b-host");
     expect(payload.epoch).toBe("epoch-1");
     expect(payload.records.map((r) => r.sourceRecordId)).toEqual([rows[0]!.id, rows[2]!.id]);
@@ -127,7 +131,7 @@ describe("SyncPusher", () => {
 
     const c = await config();
     expect(c.cursor).toBe(rows[2]!.id); // 原始扫描最大 id（含 -1 哨兵）
-    expect(c.bound).toBe("b-host");
+    expect(c.bound).toBe(UID);
     expect(c.lastSuccess).not.toBeNull();
   });
 
@@ -196,7 +200,7 @@ describe("SyncPusher", () => {
   it("accumulates dropped count from skippedInvalid in ack", async () => {
     await insertRecord();
     const fetchMock = vi.fn(async () =>
-      jsonResponse(200, { received: 1, skipped: 1, skippedInvalid: [7], watermark: 1, boundInstance: null })
+      jsonResponse(200, { received: 1, skipped: 1, skippedInvalid: [7], watermark: 1, boundUid: null })
     );
     const pusher = new SyncPusher({ fetchImpl: fetchMock as typeof fetch });
     await pusher.trigger();
@@ -224,7 +228,7 @@ describe("SyncPusher", () => {
     const fetchMock = vi.fn(async (_url: string, init?: RequestInit): Promise<Response> => {
       const payload = JSON.parse(String(init?.body)) as { records: Array<{ sourceRecordId: number }> };
       const last = payload.records[payload.records.length - 1]?.sourceRecordId ?? 0;
-      return jsonResponse(200, { received: payload.records.length, skipped: 0, skippedInvalid: [], watermark: last, boundInstance: null });
+      return jsonResponse(200, { received: payload.records.length, skipped: 0, skippedInvalid: [], watermark: last, boundUid: null });
     });
     const pusher = new SyncPusher({ fetchImpl: fetchMock as typeof fetch });
     await pusher.trigger();

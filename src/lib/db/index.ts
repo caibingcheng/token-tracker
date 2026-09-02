@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm";
 import { wrapDatabaseClient } from "./cache";
 import { offsetMinutesToSqlModifiers } from "@/lib/timezone-utils";
-import { migrateColumns, migrateTokenRecordsModelColumns, migrateRoutingRulesTable } from "./migrate";
+import { migrateColumns, migrateTokenRecordsModelColumns, migrateRoutingRulesTable, migrateSyncInstancesTable, migrateIngestTokensTable } from "./migrate";
 
 let db: any;
 let tokenRecords: any;
@@ -155,13 +155,14 @@ async function ensureClient() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       api_key_encrypted TEXT NOT NULL,
-      bound_instance TEXT,
+      bound_uid TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
       last_used_at TEXT,
       created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     );
     CREATE TABLE IF NOT EXISTS sync_instances (
-      instance TEXT PRIMARY KEY,
+      uid TEXT PRIMARY KEY,
+      instance_name TEXT,
       epoch TEXT NOT NULL,
       last_record_id INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT
@@ -178,6 +179,7 @@ async function ensureClient() {
         { name: "ttft_ms", definition: "ttft_ms INTEGER" },
         { name: "virtual_key_id", definition: "virtual_key_id INTEGER" },
         { name: "user_agent", definition: "user_agent TEXT" },
+        { name: "remote_instance_uid", definition: "remote_instance_uid TEXT" },
       ],
     },
     {
@@ -210,9 +212,16 @@ async function ensureClient() {
   // routing_rules 专用迁移：旧 UNIQUE(name, protocol) 结构 → 多目标结构（priority 列 + 新唯一约束）
   migrateRoutingRulesTable(client);
 
+  // 多实例同步表专用迁移（幂等，全新库无旧结构自动跳过）：
+  // - sync_instances：instance 主键 → uid 主键 + instance_name（旧行丢弃）
+  // - ingest_tokens：bound_instance → bound_uid（行回迁 + bound_uid 置 NULL）
+  migrateSyncInstancesTable(client);
+  migrateIngestTokensTable(client);
+
   client.exec(`
     CREATE INDEX IF NOT EXISTS idx_token_records_virtual_key_id ON token_records(virtual_key_id);
     CREATE INDEX IF NOT EXISTS idx_token_records_vk_created_at ON token_records(virtual_key_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_token_records_remote_instance_uid_created_at ON token_records(remote_instance_uid, created_at);
   `);
 
   console.log("[DB] SQLite initialized at:", dbPath);

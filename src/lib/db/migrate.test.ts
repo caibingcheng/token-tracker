@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import Database from "better-sqlite3";
-import { migrateColumns, migrateTokenRecordsModelColumns, migrateRoutingRulesTable } from "./migrate";
+import { migrateColumns, migrateTokenRecordsModelColumns, migrateRoutingRulesTable, migrateSyncInstancesTable, migrateIngestTokensTable } from "./migrate";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -17,6 +17,7 @@ const TABLES = [
       { name: "ttft_ms", definition: "ttft_ms INTEGER" },
       { name: "virtual_key_id", definition: "virtual_key_id INTEGER" },
       { name: "user_agent", definition: "user_agent TEXT" },
+      { name: "remote_instance_uid", definition: "remote_instance_uid TEXT" },
     ],
   },
   {
@@ -93,7 +94,7 @@ describe("migrateColumns", () => {
     migrateColumns(db, TABLES);
 
     expect(tableColumns("token_records")).toEqual(
-      expect.arrayContaining(["status", "latency_ms", "ttft_ms", "virtual_key_id", "user_agent"])
+      expect.arrayContaining(["status", "latency_ms", "ttft_ms", "virtual_key_id", "user_agent", "remote_instance_uid"])
     );
     expect(tableColumns("virtual_keys")).toEqual(
       expect.arrayContaining([
@@ -131,10 +132,11 @@ describe("migrateColumns", () => {
     db.exec(`INSERT INTO token_records (model, provider, status, latency_ms) VALUES ('gpt-4o', 'openai', 'ok', 1234)`);
     migrateColumns(db, TABLES);
     const row: any = db
-      .prepare(`SELECT latency_ms, ttft_ms FROM token_records WHERE model = 'gpt-4o'`)
+      .prepare(`SELECT latency_ms, ttft_ms, remote_instance_uid FROM token_records WHERE model = 'gpt-4o'`)
       .get();
     expect(row.latency_ms).toBe(1234);
     expect(row.ttft_ms).toBeNull();
+    expect(row.remote_instance_uid).toBeNull(); // 存量 remote 行不回填
   });
 
   it("leaves untouched tables alone", () => {
@@ -289,5 +291,110 @@ describe("migrateRoutingRulesTable", () => {
     expect(db3.prepare(`PRAGMA table_info(routing_rules)`).all().map((c: any) => c.name)).toEqual(
       expect.arrayContaining(["priority"])
     );
+  });
+});
+
+describe("migrateSyncInstancesTable", () => {
+  let dir4: string;
+  let db4: InstanceType<typeof Database>;
+
+  beforeAll(() => {
+    dir4 = mkdtempSync(join(tmpdir(), "tt-migrate-si-"));
+    db4 = new Database(join(dir4, "test.db"));
+    // 模拟旧 schema：instance 主键（无 uid 列）
+    db4.exec(`
+      CREATE TABLE sync_instances (
+        instance TEXT PRIMARY KEY,
+        epoch TEXT NOT NULL,
+        last_record_id INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT
+      );
+      INSERT INTO sync_instances (instance, epoch, last_record_id, updated_at) VALUES
+        ('bing-mbp', 'e1', 42, '2026-09-01T10:00:00.000Z');
+    `);
+  });
+
+  afterAll(() => {
+    db4.close();
+    rmSync(dir4, { recursive: true, force: true });
+  });
+
+  it("rebuilds to uid PK + instance_name, drops legacy rows", () => {
+    migrateSyncInstancesTable(db4);
+
+    const cols = db4.prepare(`PRAGMA table_info(sync_instances)`).all().map((c: any) => c.name);
+    expect(cols).toEqual(expect.arrayContaining(["uid", "instance_name", "epoch", "last_record_id", "updated_at"]));
+    expect(cols).not.toContain("instance");
+
+    // 旧行丢弃（协议已破坏，必然重绑重推）
+    const count: any = db4.prepare(`SELECT COUNT(*) AS c FROM sync_instances`).get();
+    expect(count.c).toBe(0);
+
+    // 新结构按 uid 写入可用
+    db4.exec(`INSERT INTO sync_instances (uid, instance_name, epoch, last_record_id) VALUES ('u-aaa', 'new-host', 'e2', 7)`);
+  });
+
+  it("is idempotent on re-run and preserves rows written after migration", () => {
+    migrateSyncInstancesTable(db4);
+    migrateSyncInstancesTable(db4);
+    const row: any = db4
+      .prepare(`SELECT uid, instance_name, last_record_id FROM sync_instances WHERE uid = 'u-aaa'`)
+      .get();
+    expect(row).toEqual({ uid: "u-aaa", instance_name: "new-host", last_record_id: 7 });
+  });
+});
+
+describe("migrateIngestTokensTable", () => {
+  let dir5: string;
+  let db5: InstanceType<typeof Database>;
+
+  beforeAll(() => {
+    dir5 = mkdtempSync(join(tmpdir(), "tt-migrate-it-"));
+    db5 = new Database(join(dir5, "test.db"));
+    // 模拟旧 schema：bound_instance 列
+    db5.exec(`
+      CREATE TABLE ingest_tokens (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        api_key_encrypted TEXT NOT NULL,
+        bound_instance TEXT,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        last_used_at TEXT,
+        created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      );
+      INSERT INTO ingest_tokens (name, api_key_encrypted, bound_instance, enabled, last_used_at) VALUES
+        ('bing-mbp', 'enc-1', 'bing-mbp', 1, '2026-09-01T10:00:00.000Z'),
+        ('other', 'enc-2', NULL, 0, NULL);
+    `);
+  });
+
+  afterAll(() => {
+    db5.close();
+    rmSync(dir5, { recursive: true, force: true });
+  });
+
+  it("rebuilds to bound_uid, migrates all token rows with bound_uid NULL", () => {
+    migrateIngestTokensTable(db5);
+
+    const cols = db5.prepare(`PRAGMA table_info(ingest_tokens)`).all().map((c: any) => c.name);
+    expect(cols).toEqual(expect.arrayContaining(["bound_uid"]));
+    expect(cols).not.toContain("bound_instance");
+
+    // token 行全量回迁（用户资产不丢弃），bound_uid 全部置 NULL 等待重新 TOFU
+    const rows: any[] = db5
+      .prepare(`SELECT id, name, api_key_encrypted, bound_uid, enabled, last_used_at FROM ingest_tokens ORDER BY id`)
+      .all();
+    expect(rows).toEqual([
+      { id: 1, name: "bing-mbp", api_key_encrypted: "enc-1", bound_uid: null, enabled: 1, last_used_at: "2026-09-01T10:00:00.000Z" },
+      { id: 2, name: "other", api_key_encrypted: "enc-2", bound_uid: null, enabled: 0, last_used_at: null },
+    ]);
+  });
+
+  it("is idempotent on re-run", () => {
+    migrateIngestTokensTable(db5);
+    migrateIngestTokensTable(db5);
+    // 不重复重建：两张表迁移后行数不变
+    const count: any = db5.prepare(`SELECT COUNT(*) AS c FROM ingest_tokens`).get();
+    expect(count.c).toBe(2);
   });
 });

@@ -13,12 +13,13 @@ export interface SyncStatus {
   targetUrl: string | null;
   hasToken: boolean;
   instance: string;
+  uid: string; // 稳定身份键（A 端 TOFU/水位/删除均按 uid）
   epoch: string;
   cursor: number;
   pendingCount: number; // 待推送记录数（游标之后非 -1 哨兵）
   maxRecordId: number; // 本地最大 record id（含 -1 哨兵）
   droppedCount: number;
-  boundInstance: string | null;
+  boundUid: string | null;
   lastSuccessAt: string | null;
   lastError: SyncLastError | null;
   lastAttemptAt: string | null;
@@ -44,12 +45,13 @@ export async function getSyncStatus(): Promise<SyncStatus> {
     targetUrl: config.targetUrl,
     hasToken: config.hasToken,
     instance: config.instance,
+    uid: config.uid,
     epoch: config.epoch,
     cursor: config.cursor,
     pendingCount: Number(rows[0]?.pending ?? 0),
     maxRecordId: Number(rows[0]?.maxId ?? 0),
     droppedCount: config.droppedCount,
-    boundInstance: config.boundInstance,
+    boundUid: config.boundUid,
     lastSuccessAt: config.lastSuccessAt,
     lastError: config.lastError,
     lastAttemptAt: config.lastAttemptAt,

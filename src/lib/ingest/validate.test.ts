@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   validateIngestPayload,
   isValidInstanceName,
+  isValidInstanceUid,
   MAX_RECORDS_PER_BATCH,
   MAX_BODY_BYTES,
 } from "./validate";
@@ -26,6 +27,8 @@ function validRecord(overrides: Record<string, unknown> = {}) {
   };
 }
 
+const VALID_UID = "u-0123456789abcdef0123456789abcdef";
+
 describe("isValidInstanceName", () => {
   it("accepts [a-z0-9-]{1,32}", () => {
     expect(isValidInstanceName("bing-mbp")).toBe(true);
@@ -43,9 +46,28 @@ describe("isValidInstanceName", () => {
   });
 });
 
+describe("isValidInstanceUid", () => {
+  it("accepts u- + 32 hex", () => {
+    expect(isValidInstanceUid(VALID_UID)).toBe(true);
+    expect(isValidInstanceUid("u-00000000000000000000000000000000")).toBe(true);
+  });
+
+  it("rejects invalid uids", () => {
+    expect(isValidInstanceUid("")).toBe(false);
+    expect(isValidInstanceUid("bing-mbp")).toBe(false);
+    expect(isValidInstanceUid("U-0123456789abcdef0123456789abcdef")).toBe(false);
+    expect(isValidInstanceUid(`u-${"z".repeat(32)}`)).toBe(false); // 非 hex
+    expect(isValidInstanceUid(`u-${"a".repeat(31)}`)).toBe(false); // 长度不足
+    expect(isValidInstanceUid(`u-${"a".repeat(33)}`)).toBe(false); // 长度超
+    expect(isValidInstanceUid(`v-${"a".repeat(32)}`)).toBe(false); // 前缀错误
+    expect(isValidInstanceUid("u-" + "a".repeat(32).toUpperCase())).toBe(false); // 大写
+  });
+});
+
 describe("validateIngestPayload", () => {
   it("accepts a valid payload", () => {
     const result = validateIngestPayload({
+      instanceUid: VALID_UID,
       instance: "bing-mbp",
       epoch: "abc123",
       records: [validRecord()],
@@ -54,6 +76,7 @@ describe("validateIngestPayload", () => {
     if (result.ok) {
       expect(result.payload.records).toHaveLength(1);
       expect(result.payload.skippedInvalid).toEqual([]);
+      expect(result.payload.instanceUid).toBe(VALID_UID);
       expect(result.payload.records[0]).toMatchObject({
         sourceRecordId: 1,
         model: "gpt-4o",
@@ -62,12 +85,15 @@ describe("validateIngestPayload", () => {
     }
   });
 
-  it("rejects missing/invalid instance and epoch (structural 400)", () => {
-    expect(validateIngestPayload({ epoch: "e", records: [] }).ok).toBe(false);
-    expect(validateIngestPayload({ instance: "BAD", epoch: "e", records: [] }).ok).toBe(false);
-    expect(validateIngestPayload({ instance: "ok", records: [] }).ok).toBe(false);
-    expect(validateIngestPayload({ instance: "ok", epoch: "", records: [] }).ok).toBe(false);
-    expect(validateIngestPayload({ instance: "ok", epoch: "e", records: "x" }).ok).toBe(false);
+  it("rejects missing/invalid instanceUid, instance and epoch (structural 400)", () => {
+    expect(validateIngestPayload({ instance: "ok", epoch: "e", records: [] }).ok).toBe(false);
+    expect(validateIngestPayload({ instanceUid: "bad", instance: "ok", epoch: "e", records: [] }).ok).toBe(false);
+    expect(validateIngestPayload({ instanceUid: "u-" + "a".repeat(31), instance: "ok", epoch: "e", records: [] }).ok).toBe(false);
+    expect(validateIngestPayload({ instanceUid: VALID_UID, epoch: "e", records: [] }).ok).toBe(false);
+    expect(validateIngestPayload({ instanceUid: VALID_UID, instance: "BAD", epoch: "e", records: [] }).ok).toBe(false);
+    expect(validateIngestPayload({ instanceUid: VALID_UID, instance: "ok", records: [] }).ok).toBe(false);
+    expect(validateIngestPayload({ instanceUid: VALID_UID, instance: "ok", epoch: "", records: [] }).ok).toBe(false);
+    expect(validateIngestPayload({ instanceUid: VALID_UID, instance: "ok", epoch: "e", records: "x" }).ok).toBe(false);
     expect(validateIngestPayload(null).ok).toBe(false);
     expect(validateIngestPayload("x").ok).toBe(false);
   });
@@ -76,16 +102,17 @@ describe("validateIngestPayload", () => {
     const records = Array.from({ length: MAX_RECORDS_PER_BATCH + 1 }, (_, i) =>
       validRecord({ sourceRecordId: i + 1 })
     );
-    expect(validateIngestPayload({ instance: "ok", epoch: "e", records }).ok).toBe(false);
+    expect(validateIngestPayload({ instanceUid: VALID_UID, instance: "ok", epoch: "e", records }).ok).toBe(false);
   });
 
   it("accepts empty records array", () => {
-    const result = validateIngestPayload({ instance: "ok", epoch: "e", records: [] });
+    const result = validateIngestPayload({ instanceUid: VALID_UID, instance: "ok", epoch: "e", records: [] });
     expect(result.ok).toBe(true);
   });
 
   it("skips invalid records individually (partial accept)", () => {
     const result = validateIngestPayload({
+      instanceUid: VALID_UID,
       instance: "ok",
       epoch: "e",
       records: [
@@ -108,6 +135,7 @@ describe("validateIngestPayload", () => {
 
   it("accepts large finite token values and truncates userAgent", () => {
     const result = validateIngestPayload({
+      instanceUid: VALID_UID,
       instance: "ok",
       epoch: "e",
       records: [

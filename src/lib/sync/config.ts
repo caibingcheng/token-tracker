@@ -5,15 +5,16 @@ import { randomBytes } from "crypto";
 import { hostname } from "os";
 import { getSetting, setSetting, deleteSetting } from "@/lib/auth/settings";
 import { encryptSecret, decryptSecret, GatewaySecretMissingError } from "@/lib/gateway/crypto";
-import { isValidInstanceName } from "@/lib/ingest/validate";
+import { isValidInstanceName, isValidInstanceUid } from "@/lib/ingest/validate";
 
 const KEY_TARGET_URL = "sync_target_url";
 const KEY_TOKEN = "sync_token_encrypted";
 const KEY_INSTANCE = "sync_instance";
+const KEY_UID = "sync_instance_uid";
 const KEY_EPOCH = "sync_epoch";
 const KEY_CURSOR = "sync_cursor";
 const KEY_DROPPED = "sync_dropped_count";
-const KEY_BOUND = "sync_bound_instance";
+const KEY_BOUND = "sync_bound_uid";
 const KEY_LAST_SUCCESS = "sync_last_success_at";
 const KEY_LAST_ERROR = "sync_last_error";
 const KEY_LAST_ATTEMPT = "sync_last_attempt_at";
@@ -29,10 +30,11 @@ export interface SyncConfig {
   targetUrl: string | null;
   hasToken: boolean;
   instance: string;
+  uid: string; // 稳定身份键（TOFU/水位/级联删除），B 端首先生成、持久不变、reset 不重置
   epoch: string;
   cursor: number;
   droppedCount: number;
-  boundInstance: string | null;
+  boundUid: string | null;
   lastSuccessAt: string | null;
   lastError: SyncLastError | null;
   lastAttemptAt: string | null;
@@ -69,8 +71,15 @@ export function defaultInstanceName(): string {
   return `b-${randomBytes(4).toString("hex")}`;
 }
 
-// 唯一 async 入口：读取全部配置；instance / epoch 缺失时生成并持久化（幂等）
+// 唯一 async 入口：读取全部配置；uid / instance / epoch 缺失时生成并持久化（幂等）。
+// uid = 稳定身份键：首次生成后持久不变、不可编辑、reset 不重置；
+// instance = 展示名：随时可改（重名无害，身份与名字解耦）。
 export async function loadSyncConfig(): Promise<SyncConfig> {
+  let uid = await getSetting(KEY_UID);
+  if (!uid || !isValidInstanceUid(uid)) {
+    uid = `u-${randomBytes(16).toString("hex")}`;
+    await setSetting(KEY_UID, uid);
+  }
   let instance = await getSetting(KEY_INSTANCE);
   if (!instance || !isValidInstanceName(instance)) {
     instance = defaultInstanceName();
@@ -84,7 +93,7 @@ export async function loadSyncConfig(): Promise<SyncConfig> {
 
   const targetUrl = await getSetting(KEY_TARGET_URL);
   const tokenEncrypted = await getSetting(KEY_TOKEN);
-  const boundInstance = await getSetting(KEY_BOUND);
+  const boundUid = await getSetting(KEY_BOUND);
   const cursor = parseNumber(await getSetting(KEY_CURSOR));
   const droppedCount = parseNumber(await getSetting(KEY_DROPPED));
 
@@ -114,10 +123,11 @@ export async function loadSyncConfig(): Promise<SyncConfig> {
     targetUrl: targetUrl && targetUrl.trim() !== "" ? targetUrl : null,
     hasToken: !!tokenEncrypted,
     instance,
+    uid,
     epoch,
     cursor,
     droppedCount,
-    boundInstance,
+    boundUid,
     lastSuccessAt: await getSetting(KEY_LAST_SUCCESS),
     lastError,
     lastAttemptAt: await getSetting(KEY_LAST_ATTEMPT),
@@ -204,11 +214,11 @@ export async function incrementDroppedCount(n: number): Promise<void> {
   await setSetting(KEY_DROPPED, String(config.droppedCount + n));
 }
 
-export async function setSyncBoundInstance(instance: string | null): Promise<void> {
-  if (instance === null) {
+export async function setSyncBoundUid(uid: string | null): Promise<void> {
+  if (uid === null) {
     await deleteSetting(KEY_BOUND);
   } else {
-    await setSetting(KEY_BOUND, instance);
+    await setSetting(KEY_BOUND, uid);
   }
 }
 
@@ -228,11 +238,12 @@ export async function setSyncLastAttemptAt(iso: string): Promise<void> {
   await setSetting(KEY_LAST_ATTEMPT, iso);
 }
 
-// 重置同步状态（A 重建场景）：游标归零 + 重新生成 epoch + 解除本地锁定
+// 重置同步状态（A 重建场景）：游标归零 + 重新生成 epoch + 解除本地锁定。
+// uid 是稳定身份键：reset 不重置（A 端按 uid 恢复水位/TOFU，无需重推身份）。
 export async function resetSyncState(): Promise<void> {
   await setSetting(KEY_CURSOR, "0");
   await setSetting(KEY_EPOCH, randomBytes(16).toString("hex"));
-  await setSyncBoundInstance(null);
+  await setSyncBoundUid(null);
   await setSyncLastError(null);
   await deleteSetting(KEY_LAST_SUCCESS);
   await deleteSetting(KEY_LAST_ATTEMPT);

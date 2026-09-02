@@ -124,7 +124,7 @@ export async function POST(request: NextRequest) {
   try {
     const result = await ingestRecords(payload, {
       id: tokenInfo.id,
-      boundInstance: tokenInfo.boundInstance,
+      boundUid: tokenInfo.boundUid,
     });
 
     if (result.status === "instance_mismatch") {
@@ -132,7 +132,7 @@ export async function POST(request: NextRequest) {
         {
           success: false,
           error: "instance_mismatch",
-          boundInstance: result.boundInstance,
+          boundUid: result.boundUid,
         },
         { status: 403 }
       );
@@ -159,7 +159,7 @@ export async function POST(request: NextRequest) {
       skipped: result.skipped,
       skippedInvalid: result.skippedInvalid,
       watermark: result.watermark,
-      boundInstance: result.boundInstance,
+      boundUid: result.boundUid,
     });
   } catch (err) {
     console.error("[ingest] write failed:", err);

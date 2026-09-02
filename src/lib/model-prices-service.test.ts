@@ -10,6 +10,7 @@ import { setSetting } from "@/lib/auth/settings";
 
 const ORIG_DB = process.env.SQLITE_DATABASE_PATH;
 const ORIG_SECRET = process.env.GATEWAY_SECRET;
+const UID = "u-0123456789abcdef0123456789abcdef";
 let dir: string;
 
 beforeAll(() => {
@@ -53,18 +54,31 @@ async function insertUpstream(name: string, models: string[]) {
   });
 }
 
-async function insertRemoteRecord(model: string, createdAt: string) {
+async function insertRemoteRecord(model: string, createdAt: string, provider = "remote/bing-mbp/openai") {
   await withSkipCache(async () => {
     await db.insert(tokenRecords).values({
       model,
-      provider: "remote/bing-mbp/openai",
+      provider,
       agent: "remote/bing-mbp/claude-code",
       inputTokens: 1,
       outputTokens: 1,
       cacheRead: 0,
       cacheWrite: 0,
       virtualKeyId: -1,
+      remoteInstanceUid: UID,
       createdAt,
+    });
+  });
+}
+
+async function insertRemoteInstance(instanceName: string, lastRecordId = 5) {
+  await withSkipCache(async () => {
+    await db.insert(syncInstancesTable).values({
+      uid: UID,
+      instanceName,
+      epoch: "e",
+      lastRecordId,
+      updatedAt: new Date().toISOString(),
     });
   });
 }
@@ -73,9 +87,7 @@ const daysAgo = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000).to
 
 describe("model prices visibility (近期流量)", () => {
   it("row set includes pushed models (all history); recentActivity true within 30d", async () => {
-    await withSkipCache(async () => {
-      await db.insert(syncInstancesTable).values({ instance: "bing-mbp", epoch: "e", lastRecordId: 5, updatedAt: new Date().toISOString() });
-    });
+    await insertRemoteInstance("bing-mbp");
     await insertRemoteRecord("push-recent", daysAgo(5));
     await insertRemoteRecord("push-old", daysAgo(60));
 
@@ -107,9 +119,7 @@ describe("model prices visibility (近期流量)", () => {
   });
 
   it("推送模型 30 天前=inactive 且无近期流量；30 天内=近期流量（UI 默认可见）", async () => {
-    await withSkipCache(async () => {
-      await db.insert(syncInstancesTable).values({ instance: "bing-mbp", epoch: "e", lastRecordId: 5, updatedAt: new Date().toISOString() });
-    });
+    await insertRemoteInstance("bing-mbp");
     await insertRemoteRecord("trojan-gpt", daysAgo(40));
     const rows = await getModelPricesList();
     const trojan = rows.find((r) => r.model === "trojan-gpt");
@@ -122,5 +132,40 @@ describe("model prices visibility (近期流量)", () => {
 
   it("RECENT_ACTIVITY_WINDOW_MS is 30 days", () => {
     expect(RECENT_ACTIVITY_WINDOW_MS).toBe(30 * 24 * 60 * 60 * 1000);
+  });
+
+  it("改名后历史行仍可被行集发现（uid 等值匹配，前缀失配不丢模型）", async () => {
+    // 实例改名前推送的行：前缀还是旧名，remote_instance_uid 指向 uid
+    await insertRemoteInstance("new-name");
+    await insertRemoteRecord("renamed-model", daysAgo(5), "remote/old-name/openai");
+
+    const rows = await getModelPricesList();
+    const m = rows.find((r) => r.model === "renamed-model");
+    expect(m).toBeDefined();
+    expect(m!.recentActivity).toBe(true);
+    expect(m!.upstreams).toContain("remote/old-name/openai");
+  });
+
+  it("legacy rows with uid NULL are still discovered via instance_name LIKE fallback", async () => {
+    await insertRemoteInstance("bing-mbp");
+    await withSkipCache(async () => {
+      await db.insert(tokenRecords).values({
+        model: "legacy-model",
+        provider: "remote/bing-mbp/openai",
+        agent: "remote/bing-mbp/claude-code",
+        inputTokens: 1,
+        outputTokens: 1,
+        cacheRead: 0,
+        cacheWrite: 0,
+        virtualKeyId: -1,
+        remoteInstanceUid: null, // 旧迁移前行
+        createdAt: daysAgo(5),
+      });
+    });
+
+    const rows = await getModelPricesList();
+    const m = rows.find((r) => r.model === "legacy-model");
+    expect(m).toBeDefined();
+    expect(m!.upstreams).toContain("remote/bing-mbp/openai");
   });
 });

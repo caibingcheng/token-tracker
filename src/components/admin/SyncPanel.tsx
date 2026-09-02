@@ -15,13 +15,14 @@ export interface IngestTokenItem {
   name: string;
   apiKey: string | null;
   enabled: boolean;
-  boundInstance: string | null;
+  boundUid: string | null;
   lastUsedAt: string | null;
   createdAt: string;
 }
 
 export interface SyncInstanceItem {
-  instance: string;
+  uid: string;
+  instanceName: string | null;
   epoch: string;
   lastRecordId: number;
   updatedAt: string | null;
@@ -32,12 +33,13 @@ export interface SyncStatusData {
   targetUrl: string | null;
   hasToken: boolean;
   instance: string;
+  uid: string;
   epoch: string;
   cursor: number;
   pendingCount: number;
   maxRecordId: number;
   droppedCount: number;
-  boundInstance: string | null;
+  boundUid: string | null;
   lastSuccessAt: string | null;
   lastError: {
     type: "auth" | "batch_rejected" | "network" | "server" | "internal";
@@ -121,7 +123,7 @@ export default function SyncPanel() {
   const [tokenInput, setTokenInput] = useState("");
   const [instanceName, setInstanceName] = useState("");
   const [configuredInstance, setConfiguredInstance] = useState("");
-  const [boundInstance, setBoundInstance] = useState<string | null>(null);
+  const [boundUid, setBoundUid] = useState<string | null>(null);
   const [configBusy, setConfigBusy] = useState(false);
   const [configError, setConfigError] = useState<string | null>(null);
   const [configSuccess, setConfigSuccess] = useState<string | null>(null);
@@ -184,14 +186,15 @@ export default function SyncPanel() {
           targetUrl: string | null;
           hasToken: boolean;
           instance: string;
+          uid: string;
           epoch: string;
-          boundInstance: string | null;
+          boundUid: string | null;
         };
         setTargetUrl(data.targetUrl ?? "");
         setTokenInput(""); // 不回显
         setConfiguredInstance(data.instance);
         setInstanceName(data.instance);
-        setBoundInstance(data.boundInstance);
+        setBoundUid(data.boundUid);
       }
     } catch {
       // 静默
@@ -272,7 +275,7 @@ export default function SyncPanel() {
   };
 
   const unbindToken = async (token: IngestTokenItem) => {
-    if (!window.confirm(`Unbind ingest token "${token.name}"? The next push will bind to the new instance name.`)) return;
+    if (!window.confirm(`Unbind ingest token "${token.name}"? The next push will bind to the new instance uid.`)) return;
     setTokensError(null);
     try {
       const res = await apiFetch(`/api/admin/ingest-tokens/${token.id}/unbind`, { method: "POST" });
@@ -316,7 +319,7 @@ export default function SyncPanel() {
     setInstancesSuccess(null);
     try {
       const res = await apiFetch(
-        `/api/admin/sync-instances/${encodeURIComponent(pendingDeleteInstance.instance)}${query}`,
+        `/api/admin/sync-instances/${encodeURIComponent(pendingDeleteInstance.uid)}${query}`,
         { method: "DELETE" }
       );
       const json = await res.json();
@@ -383,13 +386,15 @@ export default function SyncPanel() {
           targetUrl: string | null;
           hasToken: boolean;
           instance: string;
-          boundInstance: string | null;
+          uid: string;
+          epoch: string;
+          boundUid: string | null;
         };
         setTargetUrl(data.targetUrl ?? "");
         setTokenInput("");
         setConfiguredInstance(data.instance);
         setInstanceName(data.instance);
-        setBoundInstance(data.boundInstance);
+        setBoundUid(data.boundUid);
         setConfigSuccess("Sync config saved");
         await loadStatus();
       } else {
@@ -451,7 +456,7 @@ export default function SyncPanel() {
   const resetSync = async () => {
     if (
       !window.confirm(
-        "Reset sync state (cursor → 0, new epoch, unlock instance)? " +
+        "Reset sync state (cursor → 0, new epoch, unlock uid)? " +
           "The next push will replay ALL local history. Use only when A already deleted this " +
           "instance's records (Sync Instances → Delete with the delete-records checkbox) or A was " +
           "rebuilt — otherwise A-side data will be duplicated. This cannot be undone."
@@ -466,7 +471,7 @@ export default function SyncPanel() {
       if (!json.success) {
         setStatusError(json.error || "Reset failed");
       }
-      setBoundInstance(null);
+      setBoundUid(null);
       await Promise.all([loadConfig(), loadStatus()]);
     } catch {
       setStatusError("Network error");
@@ -475,8 +480,6 @@ export default function SyncPanel() {
     }
   };
 
-  const instanceLocked = status?.boundInstance != null;
-  // 输入时实时校验（留空不算错）
   const urlError = validateTargetUrlInput(targetUrl);
   const tokenError = validateTokenInput(tokenInput);
   const canSaveConfig =
@@ -533,22 +536,20 @@ export default function SyncPanel() {
                 {tokenError && <p className="mt-1 text-xs text-red-600">{tokenError}</p>}
               </label>
               <label className="block">
-                <span className="mb-1 block text-xs font-medium text-gray-600">Instance name</span>
+                <span className="mb-1 block text-xs font-medium text-gray-600">Instance name (display only)</span>
                 <input
                   type="text"
                   value={instanceName}
                   onChange={(e) => setInstanceName(e.target.value)}
-                  disabled={instanceLocked}
                   placeholder="[a-z0-9-]"
-                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-400 md:text-xs"
+                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 md:text-xs"
                 />
               </label>
             </div>
-            {instanceLocked && (
-              <p className="mt-2 text-xs text-amber-600">
-                Instance name is locked by A-side binding ({status?.boundInstance}). Unbind the ingest token on A, then trigger a push to re-bind under a new name.
-              </p>
-            )}
+            <p className="mt-2 text-xs text-gray-500">
+              The instance name is a display name — renaming is safe at any time. Your stable identity is the uid
+              ({status?.uid ? status.uid.slice(0, 12) + "…" : "—"}), which never changes.
+            </p>
             <div className="mt-3 flex flex-wrap items-center gap-3">
               <button
                 type="button"
@@ -590,8 +591,11 @@ export default function SyncPanel() {
                 </p>
               </div>
               <div className="rounded border border-gray-100 bg-gray-50 p-2.5">
-                <p className="text-gray-400">Instance</p>
-                <p className="mt-0.5 font-mono font-medium">{status?.instance ?? "—"}</p>
+                <p className="text-gray-400">Instance (uid)</p>
+                <p className="mt-0.5 font-mono font-medium break-all">
+                  {status?.instance ?? "—"}
+                  <span className="ml-1 text-gray-400">{status?.uid ? `(${status.uid.slice(0, 12)}…)` : ""}</span>
+                </p>
               </div>
               <div className="rounded border border-gray-100 bg-gray-50 p-2.5">
                 <p className="text-gray-400">Cursor / Max ID</p>
@@ -611,8 +615,8 @@ export default function SyncPanel() {
                 <p className="mt-0.5 font-mono font-medium">{status?.droppedCount ?? "—"}</p>
               </div>
               <div className="rounded border border-gray-100 bg-gray-50 p-2.5">
-                <p className="text-gray-400">Bound on A</p>
-                <p className="mt-0.5 font-mono font-medium">{status?.boundInstance ?? "—"}</p>
+                <p className="text-gray-400">Bound on A (uid)</p>
+                <p className="mt-0.5 font-mono font-medium break-all">{status?.boundUid ?? "—"}</p>
               </div>
               <div className="rounded border border-gray-100 bg-gray-50 p-2.5">
                 <p className="text-gray-400">Last success</p>
@@ -670,7 +674,7 @@ export default function SyncPanel() {
             <h2 className="mb-3 text-sm font-semibold text-gray-800">Remote Ingest — other instances push into this one</h2>
             <h3 className="mb-2 text-xs font-semibold text-gray-600">Ingest Tokens</h3>
             <p className="mb-3 text-xs text-gray-500">
-              One token per B instance. The first push binds the token to that instance name (TOFU). Tokens are shown in plaintext once at creation.
+              One token per B instance. The first push binds the token to that instance&apos;s stable uid (TOFU).
             </p>
             {tokensError && <p className="mb-2 text-xs text-red-600">{tokensError}</p>}
             {tokensSuccess && <p className="mb-2 text-xs text-green-600">{tokensSuccess}</p>}
@@ -725,7 +729,7 @@ export default function SyncPanel() {
                     <th className="px-2 py-2">Name</th>
                     <th className="px-2 py-2">Key</th>
                     <th className="px-2 py-2">Enabled</th>
-                    <th className="px-2 py-2">Bound instance</th>
+                    <th className="px-2 py-2">Bound uid</th>
                     <th className="px-2 py-2">Last used</th>
                     <th className="px-2 py-2 text-right">Actions</th>
                   </tr>
@@ -772,12 +776,12 @@ export default function SyncPanel() {
                           {token.enabled ? "enabled" : "disabled"}
                         </button>
                       </td>
-                      <td className="px-2 py-2 font-mono text-xs">
-                        {token.boundInstance ?? <span className="text-gray-400">(unbound)</span>}
+                      <td className="px-2 py-2 font-mono text-xs break-all max-w-[200px]">
+                        {token.boundUid ?? <span className="text-gray-400">(unbound)</span>}
                       </td>
                       <td className="px-2 py-2 text-xs text-gray-500">{formatDate(token.lastUsedAt)}</td>
                       <td className="px-2 py-2 text-right whitespace-nowrap text-xs">
-                        {token.boundInstance && (
+                        {token.boundUid && (
                           <>
                             <button
                               type="button"
@@ -814,7 +818,7 @@ export default function SyncPanel() {
                     <div className="min-w-0">
                       <CopyableCode className="text-xs">{token.name}</CopyableCode>
                       <p className="mt-0.5 text-[11px] text-gray-400">
-                        {token.boundInstance ?? "(unbound)"} · {formatDate(token.lastUsedAt)}
+                        {token.boundUid ?? "(unbound)"} · {formatDate(token.lastUsedAt)}
                       </p>
                       {token.apiKey && (
                         <p className="mt-1 flex items-center gap-2">
@@ -846,7 +850,7 @@ export default function SyncPanel() {
                     </div>
                   </div>
                   <div className="mt-2 flex items-center gap-3 text-xs">
-                    {token.boundInstance && (
+                    {token.boundUid && (
                       <button
                         type="button"
                         onClick={() => unbindToken(token)}
@@ -867,7 +871,7 @@ export default function SyncPanel() {
             <div className="mt-5 border-t border-gray-100 pt-4">
               <h3 className="mb-2 text-xs font-semibold text-gray-600">Sync Instances (watermarks)</h3>
               <p className="mb-3 text-xs text-gray-500">
-                Dedup watermark per B instance. Deleting a row lets a new instance with the same name start clean (re-Token+push).
+                Dedup watermark per B instance (keyed by stable uid). Deleting a row lets a new instance start clean (re-Token+push).
               </p>
               {instancesError && <p className="mb-2 text-xs text-red-600">{instancesError}</p>}
               {instancesSuccess && <p className="mb-2 text-xs text-green-600">{instancesSuccess}</p>}
@@ -876,7 +880,7 @@ export default function SyncPanel() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="text-left text-xs text-gray-400">
-                    <th className="px-2 py-2">Instance</th>
+                    <th className="px-2 py-2">Instance (uid)</th>
                     <th className="px-2 py-2">Epoch</th>
                     <th className="px-2 py-2 text-right">Last record id</th>
                     <th className="px-2 py-2">Updated</th>
@@ -892,9 +896,12 @@ export default function SyncPanel() {
                     </tr>
                   )}
                   {instances.map((inst) => (
-                    <tr key={inst.instance}>
+                    <tr key={inst.uid}>
                       <td className="px-2 py-2">
-                        <CopyableCode className="text-xs">{inst.instance}</CopyableCode>
+                        {inst.instanceName && (
+                          <CopyableCode className="text-xs">{inst.instanceName}</CopyableCode>
+                        )}
+                        <div className="font-mono text-[11px] text-gray-400 break-all">{inst.uid}</div>
                       </td>
                       <td className="px-2 py-2 font-mono text-xs text-gray-500">
                         {inst.epoch.slice(0, 12)}…
@@ -921,10 +928,13 @@ export default function SyncPanel() {
                 <p className="py-4 text-center text-xs text-gray-400">No pushed instances yet.</p>
               )}
               {instances.map((inst) => (
-                <div key={inst.instance} className="border border-gray-200 rounded-lg p-3">
+                <div key={inst.uid} className="border border-gray-200 rounded-lg p-3">
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <CopyableCode className="text-xs">{inst.instance}</CopyableCode>
+                      {inst.instanceName && (
+                        <CopyableCode className="text-xs">{inst.instanceName}</CopyableCode>
+                      )}
+                      <p className="mt-0.5 font-mono text-[10px] text-gray-400 break-all">{inst.uid}</p>
                       <p className="mt-0.5 text-[11px] text-gray-400">{formatDate(inst.updatedAt)}</p>
                     </div>
                     <button type="button" onClick={() => deleteInstance(inst)} className="text-xs text-red-500">
@@ -963,8 +973,13 @@ export default function SyncPanel() {
             <div className="flex-1 overflow-y-auto p-5">
               <p className="text-sm text-gray-700">
                 Delete watermark for instance{" "}
+                {pendingDeleteInstance.instanceName && (
+                  <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">
+                    {pendingDeleteInstance.instanceName}
+                  </code>
+                )}{" "}
                 <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">
-                  {pendingDeleteInstance.instance}
+                  {pendingDeleteInstance.uid}
                 </code>
                 ? Its watermark will be lost; the next push re-binds (token binding on A still applies).
               </p>

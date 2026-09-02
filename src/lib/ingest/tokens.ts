@@ -19,7 +19,7 @@ export interface IngestTokenInfo {
   name: string;
   apiKey: string | null; // admin 列表回显明文（与 virtual_keys 同模式）；解密失败为 null
   enabled: boolean;
-  boundInstance: string | null;
+  boundUid: string | null;
   lastUsedAt: string | null;
   createdAt: string;
 }
@@ -29,12 +29,15 @@ export function generateIngestToken(): string {
 }
 
 // 全表解密比对认证（ingest 端点专用，与虚拟 key 同口径；GATEWAY_SECRET 缺失向上传播）
+// ⚠️ 必须同步执行：withSkipCache 基于 AsyncLocalStorage，await 后的 SQL 执行在微任务中
+// 会丢失 skipCache 上下文落到缓存读（读不到刚创建的 token / 读到旧绑定）。
+// better-sqlite3 驱动为同步 API，.all() 在 ALS 上下文内完成，跳过缓存直读真实库。
 export async function resolveIngestToken(
   token: string
 ): Promise<IngestTokenInfo | null> {
   await initDatabase();
-  return withSkipCache(async () => {
-    const rows = await db.select().from(ingestTokensTable);
+  return withSkipCache(() => {
+    const rows = db.select().from(ingestTokensTable).all();
     for (const row of rows) {
       try {
         const plain = decryptSecret(row.apiKeyEncrypted);
@@ -44,7 +47,7 @@ export async function resolveIngestToken(
             name: row.name,
             apiKey: null, // 认证路径不回显明文
             enabled: row.enabled === 1,
-            boundInstance: row.boundInstance ?? null,
+            boundUid: row.boundUid ?? null,
             lastUsedAt: row.lastUsedAt ?? null,
             createdAt: row.createdAt,
           };
@@ -60,8 +63,9 @@ export async function resolveIngestToken(
 
 export async function listIngestTokens(): Promise<IngestTokenInfo[]> {
   await initDatabase();
-  return withSkipCache(async () => {
-    const rows = await db.select().from(ingestTokensTable).orderBy(desc(ingestTokensTable.id));
+  // 与 resolveIngestToken 同因：同步执行保证 skipCache 上下文生效
+  return withSkipCache(() => {
+    const rows = db.select().from(ingestTokensTable).orderBy(desc(ingestTokensTable.id)).all();
     return rows.map((row: any) => {
       let apiKey: string | null = null;
       try {
@@ -75,7 +79,7 @@ export async function listIngestTokens(): Promise<IngestTokenInfo[]> {
         name: row.name,
         apiKey,
         enabled: row.enabled === 1,
-        boundInstance: row.boundInstance ?? null,
+        boundUid: row.boundUid ?? null,
         lastUsedAt: row.lastUsedAt ?? null,
         createdAt: row.createdAt,
       };
@@ -103,7 +107,7 @@ export async function createIngestToken(name: string): Promise<{
       name: result[0].name,
       apiKey: plainKey,
       enabled: true,
-      boundInstance: null,
+      boundUid: null,
       lastUsedAt: null,
       createdAt: result[0].createdAt,
     },
@@ -140,7 +144,7 @@ export async function unbindIngestToken(id: number): Promise<boolean> {
   await withSkipCache(async () => {
     const result = await db
       .update(ingestTokensTable)
-      .set({ boundInstance: null })
+      .set({ boundUid: null })
       .where(eq(ingestTokensTable.id, id));
     changed = Number(result?.changes ?? 0) > 0;
   });

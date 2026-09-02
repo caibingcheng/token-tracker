@@ -12,6 +12,8 @@ import { eq } from "drizzle-orm";
 const ORIG_DB = process.env.SQLITE_DATABASE_PATH;
 const ORIG_SECRET = process.env.GATEWAY_SECRET;
 const TOKEN_PLAIN = "it-testtoken12345678901234567890abcd";
+const UID_A = "u-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const UID_B = "u-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
 let dir: string;
 
@@ -47,6 +49,7 @@ beforeEach(async () => {
 
 function body(overrides: Record<string, unknown> = {}) {
   return {
+    instanceUid: UID_A,
     instance: "bing-mbp",
     epoch: "epoch-abc",
     records: [
@@ -88,12 +91,12 @@ async function countRecords(): Promise<number> {
   });
 }
 
-async function getWatermark(instance: string): Promise<any | null> {
+async function getWatermark(uid: string): Promise<any | null> {
   return withSkipCache(async () => {
     const rows = await db
       .select()
       .from(syncInstancesTable)
-      .where(eq(syncInstancesTable.instance, instance));
+      .where(eq(syncInstancesTable.uid, uid));
     return rows[0] ?? null;
   });
 }
@@ -152,13 +155,22 @@ describe("POST /ingest/records", () => {
     expect(res.status).toBe(400);
   });
 
-  it("writes records with prefixed provider/agent and sentinel virtual_key_id=-1, preserves createdAt", async () => {
+  it("rejects missing/invalid instanceUid with 400", async () => {
+    const { records, ...noUid } = body();
+    const res = await POST(post(noUid));
+    expect(res.status).toBe(400);
+    const res2 = await POST(post({ ...body(), instanceUid: "bad-uid" }));
+    expect(res2.status).toBe(400);
+    expect(await countRecords()).toBe(0);
+  });
+
+  it("writes records with prefixed provider/agent, sentinel virtual_key_id=-1 and remote_instance_uid, preserves createdAt", async () => {
     const res = await POST(post(body()));
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json.received).toBe(1);
     expect(json.watermark).toBe(1);
-    expect(json.boundInstance).toBe("bing-mbp");
+    expect(json.boundUid).toBe(UID_A);
 
     const row = (
       await withSkipCache(async () => db.select().from(tokenRecords))
@@ -166,6 +178,7 @@ describe("POST /ingest/records", () => {
     expect(row.provider).toBe("remote/bing-mbp/openai");
     expect(row.agent).toBe("remote/bing-mbp/claude-code");
     expect(row.virtualKeyId).toBe(-1);
+    expect(row.remoteInstanceUid).toBe(UID_A);
     expect(row.createdAt).toBe("2026-09-01T10:00:00.000Z");
     expect(row.inputTokens).toBe(10);
     expect(row.latencyMs).toBe(120);
@@ -174,24 +187,94 @@ describe("POST /ingest/records", () => {
     expect(row.userAgent).toBe("test-agent");
   });
 
-  it("TOFU: first push binds, same instance ok, different instance 403 instance_mismatch", async () => {
+  it("TOFU: first push binds by uid, same uid ok, different uid 403 instance_mismatch", async () => {
     const first = await POST(post(body()));
     expect(first.status).toBe(200);
 
     const same = await POST(post(body({ records: [{ ...body().records[0], sourceRecordId: 2 }] })));
     expect(same.status).toBe(200);
-    expect((await same.json()).boundInstance).toBe("bing-mbp");
+    expect((await same.json()).boundUid).toBe(UID_A);
 
-    const other = await POST(post(body({ instance: "other-host" })));
+    const other = await POST(post(body({ instanceUid: UID_B })));
     expect(other.status).toBe(403);
     const json = await other.json();
     expect(json.error).toBe("instance_mismatch");
-    expect(json.boundInstance).toBe("bing-mbp");
+    expect(json.boundUid).toBe(UID_A);
 
     const tokenRow = await withSkipCache(async () =>
       db.select().from(ingestTokensTable)
     );
-    expect(tokenRow[0].boundInstance).toBe("bing-mbp");
+    expect(tokenRow[0].boundUid).toBe(UID_A);
+  });
+
+  it("same name + different uid devices have independent watermarks (no interference)", async () => {
+    // 设备 A：同名 instance + uid A
+    const a = await POST(post(body()));
+    expect((await a.json()).received).toBe(1);
+
+    // 设备 B：同名 instance + 不同 uid → 403（同 token TOFU 绑定 A）
+    const b = await POST(post(body({ instanceUid: UID_B })));
+    expect(b.status).toBe(403);
+
+    // 换新 token 模拟设备 B：同名不干扰，各自水位独立推进
+    const tokenB = "it-tok-b-abcdefghijklmnopqrstuvwxyz0123";
+    await withSkipCache(async () => {
+      await db.insert(ingestTokensTable).values({
+        name: "test-token-b",
+        apiKeyEncrypted: encryptSecret(tokenB),
+        enabled: 1,
+      });
+    });
+    const b2 = await POST(post(body({ instanceUid: UID_B }), tokenB));
+    expect(b2.status).toBe(200);
+    expect((await b2.json()).received).toBe(1);
+
+    // A 继续推 id2 只影响 A 水位
+    const a2 = await POST(post(body({ records: [{ ...body().records[0], sourceRecordId: 2 }] })));
+    expect((await a2.json()).received).toBe(1);
+
+    // A 重放 id1/id2 → 全去重；B 重放 id1 → 全去重：双设备水位互不干扰
+    const a3 = await POST(post(body()));
+    expect((await a3.json()).received).toBe(0);
+    const b3 = await POST(post(body({ instanceUid: UID_B }), tokenB));
+    expect((await b3.json()).received).toBe(0);
+
+    const wmA = await getWatermark(UID_A);
+    expect(wmA.lastRecordId).toBe(2);
+    const wmB = await getWatermark(UID_B);
+    expect(wmB.lastRecordId).toBe(1);
+    // 实例名相同（展示名），uid 不同（身份键）——互不干扰
+    expect(wmA.instanceName).toBe("bing-mbp");
+    expect(wmB.instanceName).toBe("bing-mbp");
+    // A 2 条 + B 1 条：同名前缀不同 uid 的独立记录并存（不互相去重）
+    expect(await countRecords()).toBe(3);
+  });
+
+  it("same uid renamed instance: push succeeds and instance_name refreshes (rename is safe)", async () => {
+    const first = await POST(post(body()));
+    expect(first.status).toBe(200);
+
+    // 改名推送：同 uid + 新名字 + 同 epoch
+    const renamed = await POST(
+      post(body({
+        instance: "renamed-host",
+        records: [{ ...body().records[0], sourceRecordId: 2 }],
+      }))
+    );
+    expect(renamed.status).toBe(200);
+    expect((await renamed.json()).received).toBe(1);
+
+    const wm = await getWatermark(UID_A);
+    expect(wm.lastRecordId).toBe(2);
+    expect(wm.instanceName).toBe("renamed-host");
+    // 旧 name 前缀历史记录保留（改名前写入的行归属不变）
+    const rows = await withSkipCache(async () => db.select().from(tokenRecords));
+    expect(rows.map((r: any) => r.provider).sort()).toEqual([
+      "remote/bing-mbp/openai",
+      "remote/renamed-host/openai",
+    ]);
+    // 全部行 remote_instance_uid = uid（改名不改变身份归属）
+    expect(rows.every((r: any) => r.remoteInstanceUid === UID_A)).toBe(true);
   });
 
   it("dedup: same epoch + re-push of covered sourceRecordIds is skipped", async () => {
@@ -212,7 +295,7 @@ describe("POST /ingest/records", () => {
     const rebuilt = await POST(post(body({ epoch: "epoch-new" })));
     const json = await rebuilt.json();
     expect(json.watermark).toBe(1);
-    const wm = await getWatermark("bing-mbp");
+    const wm = await getWatermark(UID_A);
     expect(wm.epoch).toBe("epoch-new");
     expect(wm.lastRecordId).toBe(1);
   });
@@ -243,7 +326,7 @@ describe("POST /ingest/records", () => {
     // 两个请求都成功返回（SQLite 串行化），但合计写入不重复：一个 received=1，另一个 received=0
     expect([ja.received, jb.received].sort()).toEqual([0, 1]);
     expect(await countRecords()).toBe(1);
-    const wm = await getWatermark("bing-mbp");
+    const wm = await getWatermark(UID_A);
     expect(wm.lastRecordId).toBe(1);
   });
 
@@ -251,7 +334,7 @@ describe("POST /ingest/records", () => {
     await POST(post(body()));
     await POST(post(body({ epoch: "epoch-new", records: [] })));
     await POST(post(body({ epoch: "epoch-new", records: [{ ...body().records[0], sourceRecordId: 5 }] })));
-    const wm = await getWatermark("bing-mbp");
+    const wm = await getWatermark(UID_A);
     expect(wm.lastRecordId).toBe(5);
   });
 });

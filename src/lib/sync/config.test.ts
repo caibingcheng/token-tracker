@@ -9,7 +9,7 @@ import {
   saveSyncConfig,
   resetSyncState,
 } from "./config";
-import { isValidInstanceName } from "@/lib/ingest/validate";
+import { isValidInstanceName, isValidInstanceUid } from "@/lib/ingest/validate";
 import { initDatabase } from "@/lib/db";
 import { getSetting } from "@/lib/auth/settings";
 
@@ -88,30 +88,38 @@ describe("saveSyncConfig / loadSyncConfig", () => {
     expect(cfg.hasToken).toBe(true);
   });
 
-  it("persists cursor and droppedCount; resetSyncState zeroes them", async () => {
+  it("persists cursor and droppedCount; resetSyncState zeroes them but keeps uid", async () => {
     const { setSetting } = await import("@/lib/auth/settings");
     await setSetting("sync_cursor", "42");
     await setSetting("sync_dropped_count", "7");
     const cfg = await loadSyncConfig();
     expect(cfg.cursor).toBe(42);
     expect(cfg.droppedCount).toBe(7);
+    const uidBefore = cfg.uid;
+    expect(isValidInstanceUid(uidBefore)).toBe(true);
     await resetSyncState();
     const after = await loadSyncConfig();
     expect(after.cursor).toBe(0);
     expect(after.droppedCount).toBe(7); // 历史丢弃计数保留（可观测性）
-    expect(after.boundInstance).toBeNull();
+    expect(after.boundUid).toBeNull();
+    // uid 是稳定身份键：reset 不重置
+    expect(after.uid).toBe(uidBefore);
   });
 
-  it("generates instance and epoch automatically on first use", async () => {
+  it("generates instance, uid and epoch automatically on first use", async () => {
     const { deleteSetting } = await import("@/lib/auth/settings");
     await deleteSetting("sync_instance").catch(() => {});
+    await deleteSetting("sync_instance_uid").catch(() => {});
     await deleteSetting("sync_epoch").catch(() => {});
     const cfg = await loadSyncConfig();
     expect(isValidInstanceName(cfg.instance)).toBe(true);
+    expect(isValidInstanceUid(cfg.uid)).toBe(true);
+    expect(cfg.uid.startsWith("u-")).toBe(true);
     expect(cfg.epoch.length).toBeGreaterThan(0);
     // 持久化，再次读取一致
     const cfg2 = await loadSyncConfig();
     expect(cfg2.instance).toBe(cfg.instance);
+    expect(cfg2.uid).toBe(cfg.uid);
     expect(cfg2.epoch).toBe(cfg.epoch);
   });
 });

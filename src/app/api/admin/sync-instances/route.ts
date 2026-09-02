@@ -11,7 +11,8 @@ export const GET = withAuth(async () => {
     return NextResponse.json({
       success: true,
       data: rows.map((row: any) => ({
-        instance: row.instance,
+        uid: row.uid,
+        instanceName: row.instanceName ?? null,
         epoch: row.epoch,
         lastRecordId: Number(row.lastRecordId) || 0,
         updatedAt: row.updatedAt ?? null,

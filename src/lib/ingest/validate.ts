@@ -4,6 +4,7 @@
 // - 单条记录校验失败 → 跳过该条，其余照常写入（skippedInvalid 携带 sourceRecordId）
 
 export const INSTANCE_NAME_RE = /^[a-z0-9-]{1,32}$/;
+export const INSTANCE_UID_RE = /^u-[a-f0-9]{32}$/;
 export const MAX_RECORDS_PER_BATCH = 500;
 export const MAX_BODY_BYTES = 2 * 1024 * 1024;
 export const MAX_MODEL_LENGTH = 256;
@@ -35,7 +36,8 @@ export interface IngestRecordPayload {
 }
 
 export interface IngestPayload {
-  instance: string;
+  instanceUid: string; // B 端稳定身份键（TOFU/水位/级联删除的身份依据）
+  instance: string; // 展示名（仅展示与 provider/agent 前缀编码）
   epoch: string;
   records: IngestRecordPayload[];
 }
@@ -62,6 +64,10 @@ function isNull(value: unknown): value is null {
 
 export function isValidInstanceName(instance: string): boolean {
   return INSTANCE_NAME_RE.test(instance);
+}
+
+export function isValidInstanceUid(uid: string): boolean {
+  return INSTANCE_UID_RE.test(uid);
 }
 
 // 单条记录校验：非法返回错误信息，合法返回归一化后的记录
@@ -116,6 +122,10 @@ export function validateIngestPayload(body: unknown): ValidateIngestResult {
   }
   const b = body as Record<string, unknown>;
 
+  const instanceUid = b.instanceUid;
+  if (typeof instanceUid !== "string" || !INSTANCE_UID_RE.test(instanceUid)) {
+    return { ok: false, error: "Invalid instanceUid (expected u-[a-f0-9]{32})" };
+  }
   const instance = b.instance;
   if (typeof instance !== "string" || !INSTANCE_NAME_RE.test(instance)) {
     return { ok: false, error: "Invalid instance (expected [a-z0-9-]{1,32})" };
@@ -131,7 +141,7 @@ export function validateIngestPayload(body: unknown): ValidateIngestResult {
     return { ok: false, error: `Too many records (max ${MAX_RECORDS_PER_BATCH} per batch)` };
   }
   if (b.records.length === 0) {
-    return { ok: true, payload: { instance, epoch, records: [], skippedInvalid: [] } };
+    return { ok: true, payload: { instanceUid, instance, epoch, records: [], skippedInvalid: [] } };
   }
 
   const records: IngestRecordPayload[] = [];
@@ -148,5 +158,5 @@ export function validateIngestPayload(body: unknown): ValidateIngestResult {
     }
   }
 
-  return { ok: true, payload: { instance, epoch, records, skippedInvalid } };
+  return { ok: true, payload: { instanceUid, instance, epoch, records, skippedInvalid } };
 }

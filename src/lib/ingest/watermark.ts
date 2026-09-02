@@ -19,11 +19,12 @@ export interface IngestBatchResult {
   skipped: number; // 批内跳过（含水位去重与 invalid）
   skippedInvalid: number[]; // 校验失败（batch 内无法写入）的记录 id
   watermark: number;
-  boundInstance: string;
+  boundUid: string;
 }
 
 // 单条记录的写库映射（virtual_key_id 置哨兵 -1：远程来源标记 + 防转发级联）
 export function toStoredRecord(
+  instanceUid: string,
   instance: string,
   record: IngestRecordPayload
 ): Record<string, unknown> {
@@ -41,38 +42,39 @@ export function toStoredRecord(
     virtualKeyId: -1,
     userAgent: record.userAgent ?? null,
     requestModel: record.requestModel ?? null,
+    remoteInstanceUid: instanceUid,
     createdAt: record.createdAt,
   };
 }
 
-// 事务写入入口：token 信息（含事务前读取的 boundInstance）与 payload
+// 事务写入入口：token 信息（含事务前读取的 boundUid）与 payload
 export async function ingestRecords(
   payload: ValidatedIngestPayload,
-  token: { id: number; boundInstance: string | null }
+  token: { id: number; boundUid: string | null }
 ): Promise<IngestBatchResult> {
   await initDatabase();
   return withSkipCache(() =>
     db.transaction((tx: any) => {
       const nowIso = new Date().toISOString();
 
-      // TOFU 绑定检查（事务内重新读取，防并发竞态）
+      // TOFU 绑定检查（事务内重新读取，防并发竞态）：按 uid 绑定/比对
       const tokenRow = tx
         .select()
         .from(ingestTokensTable)
         .where(eq(ingestTokensTable.id, token.id))
         .get();
       if (!tokenRow || tokenRow.enabled !== 1) {
-        return { status: "token_disabled", received: 0, skipped: payload.records.length, skippedInvalid: [], watermark: 0, boundInstance: tokenRow?.boundInstance ?? token.boundInstance ?? "" };
+        return { status: "token_disabled", received: 0, skipped: payload.records.length, skippedInvalid: [], watermark: 0, boundUid: tokenRow?.boundUid ?? token.boundUid ?? "" };
       }
-      let boundInstance = tokenRow.boundInstance ?? null;
-      if (boundInstance === null) {
+      let boundUid = tokenRow.boundUid ?? null;
+      if (boundUid === null) {
         tx.update(ingestTokensTable)
-          .set({ boundInstance: payload.instance, lastUsedAt: nowIso })
+          .set({ boundUid: payload.instanceUid, lastUsedAt: nowIso })
           .where(eq(ingestTokensTable.id, token.id))
           .run();
-        boundInstance = payload.instance;
-      } else if (boundInstance !== payload.instance) {
-        return { status: "instance_mismatch", received: 0, skipped: payload.records.length, skippedInvalid: [], watermark: 0, boundInstance };
+        boundUid = payload.instanceUid;
+      } else if (boundUid !== payload.instanceUid) {
+        return { status: "instance_mismatch", received: 0, skipped: payload.records.length, skippedInvalid: [], watermark: 0, boundUid };
       } else {
         tx.update(ingestTokensTable)
           .set({ lastUsedAt: nowIso })
@@ -80,21 +82,21 @@ export async function ingestRecords(
           .run();
       }
 
-      // 水位行：epoch 不一致 → 重置为 0（B 重建 DB 场景）
+      // 水位行：uid 主键；epoch 不一致 → 重置为 0（B 重建 DB 场景）
       const instanceRow = tx
         .select()
         .from(syncInstancesTable)
-        .where(eq(syncInstancesTable.instance, payload.instance))
+        .where(eq(syncInstancesTable.uid, payload.instanceUid))
         .get();
       let watermark = 0;
       if (instanceRow && instanceRow.epoch === payload.epoch) {
         watermark = Number(instanceRow.lastRecordId) || 0;
       } else {
         tx.insert(syncInstancesTable)
-          .values({ instance: payload.instance, epoch: payload.epoch, lastRecordId: 0, updatedAt: nowIso })
+          .values({ uid: payload.instanceUid, instanceName: payload.instance, epoch: payload.epoch, lastRecordId: 0, updatedAt: nowIso })
           .onConflictDoUpdate({
-            target: syncInstancesTable.instance,
-            set: { epoch: payload.epoch, lastRecordId: 0, updatedAt: nowIso },
+            target: syncInstancesTable.uid,
+            set: { instanceName: payload.instance, epoch: payload.epoch, lastRecordId: 0, updatedAt: nowIso },
           })
           .run();
       }
@@ -104,7 +106,7 @@ export async function ingestRecords(
       let maxSourceRecordId = watermark;
       for (const record of payload.records) {
         if (record.sourceRecordId <= watermark) continue;
-        toWrite.push(toStoredRecord(payload.instance, record));
+        toWrite.push(toStoredRecord(payload.instanceUid, payload.instance, record));
         if (record.sourceRecordId > maxSourceRecordId) {
           maxSourceRecordId = record.sourceRecordId;
         }
@@ -114,12 +116,18 @@ export async function ingestRecords(
         tx.insert(tokenRecords).values(toWrite).run();
       }
 
+      // 每次推送顺带刷新展示名（改名即时生效，不受水位条件限制）
+      tx.update(syncInstancesTable)
+        .set({ instanceName: payload.instance })
+        .where(eq(syncInstancesTable.uid, payload.instanceUid))
+        .run();
+
       // 条件推进水位（只升不降）
       tx.update(syncInstancesTable)
         .set({ lastRecordId: maxSourceRecordId, updatedAt: nowIso })
         .where(
           and(
-            eq(syncInstancesTable.instance, payload.instance),
+            eq(syncInstancesTable.uid, payload.instanceUid),
             eq(syncInstancesTable.epoch, payload.epoch),
             sql`${syncInstancesTable.lastRecordId} < ${maxSourceRecordId}`
           )
@@ -133,7 +141,7 @@ export async function ingestRecords(
         skipped: payload.records.length + payload.skippedInvalid.length - toWrite.length,
         skippedInvalid: payload.skippedInvalid,
         watermark: maxSourceRecordId,
-        boundInstance: boundInstance ?? "",
+        boundUid: boundUid ?? "",
       };
     })
   );

@@ -14,7 +14,7 @@ import {
   getSyncToken,
   setSyncCursor,
   incrementDroppedCount,
-  setSyncBoundInstance,
+  setSyncBoundUid,
   setSyncLastSuccessAt,
   setSyncLastError,
   setSyncLastAttemptAt,
@@ -55,7 +55,7 @@ export interface SyncPushResult {
   pushedCount: number;
   skippedInvalidCount: number;
   skippedInvalidIds: number[]; // ack 返回的部分接受记录 id（lastSkippedInvalid 可观测）
-  boundInstance: string | null;
+  boundUid: string | null;
 }
 
 export interface SyncBatchOutcome {
@@ -241,14 +241,14 @@ export class SyncPusher {
     const cursor = config.cursor;
     const maxId = await scanMaxId(cursor);
     if (maxId <= cursor) {
-      return { advancedTo: cursor, obtained: { kind: "ok", message: "up to date", pushedCount: 0, skippedInvalidCount: 0, skippedInvalidIds: [], boundInstance: null }, batchSize: 0 };
+      return { advancedTo: cursor, obtained: { kind: "ok", message: "up to date", pushedCount: 0, skippedInvalidCount: 0, skippedInvalidIds: [], boundUid: null }, batchSize: 0 };
     }
 
     const rows = await fetchBatch(cursor);
     if (rows.length === 0) {
       // 区间内只有 -1 哨兵记录：不推送，直接推进游标
       await setSyncCursor(maxId);
-      return { advancedTo: maxId, obtained: { kind: "ok", message: "skipped remote records", pushedCount: 0, skippedInvalidCount: 0, skippedInvalidIds: [], boundInstance: null }, batchSize: 0 };
+      return { advancedTo: maxId, obtained: { kind: "ok", message: "skipped remote records", pushedCount: 0, skippedInvalidCount: 0, skippedInvalidIds: [], boundUid: null }, batchSize: 0 };
     }
 
     const result = await this.pushBatch(config, rows);
@@ -267,8 +267,8 @@ export class SyncPusher {
     await setSyncLastSuccessAt(new Date().toISOString());
     await setSyncLastError(null);
 
-    if (result.boundInstance) {
-      await setSyncBoundInstance(result.boundInstance);
+    if (result.boundUid) {
+      await setSyncBoundUid(result.boundUid);
     }
     if (result.skippedInvalidCount > 0) {
       await incrementDroppedCount(result.skippedInvalidCount);
@@ -284,11 +284,12 @@ export class SyncPusher {
     const token = await getSyncToken();
     const targetUrl = config.targetUrl!;
     if (!token) {
-      return { kind: "auth", message: "sync token is not configured", pushedCount: 0, skippedInvalidCount: 0, skippedInvalidIds: [], boundInstance: null };
+      return { kind: "auth", message: "sync token is not configured", pushedCount: 0, skippedInvalidCount: 0, skippedInvalidIds: [], boundUid: null };
     }
     await setSyncLastAttemptAt(new Date().toISOString());
 
     const payload = {
+      instanceUid: config.uid,
       instance: config.instance,
       epoch: config.epoch,
       records: rows.map(toPayload),
@@ -312,7 +313,7 @@ export class SyncPusher {
       const aborted = err instanceof Error && err.name === "TimeoutError";
       const message = aborted ? "fetch timeout" : err instanceof Error ? err.message.slice(0, 200) : "network error";
       await this.recordError(aborted ? "network" : "network", message);
-      return { kind: "network", message, pushedCount: 0, skippedInvalidCount: 0, skippedInvalidIds: [], boundInstance: null };
+      return { kind: "network", message, pushedCount: 0, skippedInvalidCount: 0, skippedInvalidIds: [], boundUid: null };
     }
 
     const status = response.status;
@@ -329,27 +330,27 @@ export class SyncPusher {
         Array.isArray(parsed?.skippedInvalid)
           ? (parsed.skippedInvalid as unknown[]).filter((n): n is number => typeof n === "number")
           : [];
-      const boundInstance =
-        typeof parsed?.boundInstance === "string" && parsed.boundInstance !== ""
-          ? (parsed.boundInstance as string)
-          : (parsed?.boundInstance as string | null) ?? null;
+      const boundUid =
+        typeof parsed?.boundUid === "string" && parsed.boundUid !== ""
+          ? (parsed.boundUid as string)
+          : (parsed?.boundUid as string | null) ?? null;
       return {
         kind: "ok",
         message: `ack ${status}`,
         pushedCount: rows.length,
         skippedInvalidCount: skippedInvalid.length,
         skippedInvalidIds: skippedInvalid,
-        boundInstance,
+        boundUid,
       };
     }
 
     if (status === 401 || status === 403) {
       await this.recordError("auth", `A rejected batch (HTTP ${status}${errorSuffix(parsed)})`);
-      return { kind: "auth", message: `HTTP ${status}`, pushedCount: 0, skippedInvalidCount: 0, skippedInvalidIds: [], boundInstance: null };
+      return { kind: "auth", message: `HTTP ${status}`, pushedCount: 0, skippedInvalidCount: 0, skippedInvalidIds: [], boundUid: null };
     }
     if (status === 400) {
       await this.recordError("batch_rejected", `A rejected batch (HTTP 400${errorSuffix(parsed)})`);
-      return { kind: "batch_rejected", message: `HTTP 400`, pushedCount: 0, skippedInvalidCount: 0, skippedInvalidIds: [], boundInstance: null };
+      return { kind: "batch_rejected", message: `HTTP 400`, pushedCount: 0, skippedInvalidCount: 0, skippedInvalidIds: [], boundUid: null };
     }
     // 429 / 5xx / 3xx
     await this.recordError(status >= 500 ? "server" : "network", `A returned HTTP ${status}${errorSuffix(parsed)}`);
@@ -359,7 +360,7 @@ export class SyncPusher {
       pushedCount: 0,
       skippedInvalidCount: 0,
       skippedInvalidIds: [],
-      boundInstance: null,
+      boundUid: null,
     };
   }
 

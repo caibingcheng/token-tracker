@@ -104,11 +104,20 @@ async function loadRemoteModelRows(): Promise<
   }
   await initDatabase();
   const instances = (await withSkipCache(async () =>
-    db.select({ instance: syncInstancesTable.instance }).from(syncInstancesTable)
-  )) as Array<{ instance: string }>;
+    db
+      .select({ uid: syncInstancesTable.uid, instanceName: syncInstancesTable.instanceName })
+      .from(syncInstancesTable)
+  )) as Array<{ uid: string; instanceName: string | null }>;
   const map = new Map<string, Set<string>>();
   for (const inst of instances) {
-    // 全历史推送模型（行集可发现、可补价）；近期流量由 recentActivity 单独判定
+    // 全历史推送模型（行集可发现、可补价）；近期流量由 recentActivity 单独判定。
+    // uid 等值匹配（身份键，改名后历史行仍命中）+ instanceName LIKE 前缀兜底
+    // （uid 列迁移前写入的旧行保持 NULL，OR 关系）
+    const uidCond = sql`${tokenRecords.remoteInstanceUid} = ${inst.uid}`;
+    const likeCond =
+      inst.instanceName && inst.instanceName.trim() !== ""
+        ? sql`${tokenRecords.provider} LIKE ${`remote/${inst.instanceName}/%`}`
+        : null;
     const rows = (await withSkipCache(async () =>
       db
         .selectDistinct({
@@ -116,7 +125,7 @@ async function loadRemoteModelRows(): Promise<
           provider: tokenRecords.provider,
         })
         .from(tokenRecords)
-        .where(sql`${tokenRecords.provider} LIKE ${`remote/${inst.instance}/%`}`)
+        .where(likeCond ? sql`(${uidCond} OR ${likeCond})` : uidCond)
     )) as Array<{ model: string; provider: string }>;
     for (const r of rows) {
       const set = map.get(r.model) ?? new Set<string>();
