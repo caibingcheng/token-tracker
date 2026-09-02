@@ -6,12 +6,8 @@ ENV_FILE="$DATA_DIR/.b-node-env"
 
 if [ ! -f "$ENV_FILE" ]; then
   GATEWAY_SECRET=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
-  ADMIN_API_KEY="bk-$(node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))")"
   umask 077
-  {
-    echo "GATEWAY_SECRET=$GATEWAY_SECRET"
-    echo "ADMIN_API_KEY=$ADMIN_API_KEY"
-  } > "$ENV_FILE"
+  echo "GATEWAY_SECRET=$GATEWAY_SECRET" > "$ENV_FILE"
 fi
 
 chown node:node "$DATA_DIR" "$ENV_FILE"
