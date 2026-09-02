@@ -496,8 +496,8 @@ export default function SyncPanel() {
         <>
           {/* 大卡 1：本实例本地同步（B 角色） */}
           <section className="rounded-lg border border-gray-200 bg-white p-4">
-            <h2 className="mb-3 text-sm font-semibold text-gray-800">Local Sync — push this instance to A</h2>
-            <h3 className="mb-2 text-xs font-semibold text-gray-600">Configuration</h3>
+            <h2 className="mb-3 text-sm font-semibold text-gray-800">Push to Central — send this instance&apos;s records to a central instance</h2>
+            <h3 className="mb-2 text-xs font-semibold text-gray-600">Connection</h3>
             <p className="mb-3 text-xs text-gray-500">
               Push this instance&apos;s token records to a central (A) instance. Leave empty to disable.
             </p>
@@ -506,12 +506,12 @@ export default function SyncPanel() {
             </p>
             <div className="grid gap-3 md:grid-cols-3">
               <label className="block">
-                <span className="mb-1 block text-xs font-medium text-gray-600">A ingest URL ({"/ingest/records"})</span>
+                <span className="mb-1 block text-xs font-medium text-gray-600">Central instance URL (auto-appends {"/ingest/records"})</span>
                 <input
                   type="text"
                   value={targetUrl}
                   onChange={(e) => setTargetUrl(e.target.value)}
-                  placeholder="https://tracker.example.com/ingest/records"
+                  placeholder="https://tracker.example.com"
                   className={`w-full rounded border px-3 py-2 text-sm focus:outline-none focus:ring-1 md:text-xs ${
                     urlError
                       ? "border-red-300 focus:border-red-500 focus:ring-red-500"
@@ -564,7 +564,7 @@ export default function SyncPanel() {
             </div>
 
             <div className="mt-5 border-t border-gray-100 pt-4">
-              <h3 className="mb-2 text-xs font-semibold text-gray-600">Status</h3>
+              <h3 className="mb-2 text-xs font-semibold text-gray-600">Push Status</h3>
               {status?.configured === false && (
                 <p className="mb-3 text-xs text-gray-500">
                   Not configured — this instance does not push anywhere.
@@ -671,7 +671,7 @@ export default function SyncPanel() {
 
           {/* 大卡 2：远端 ingest（A 角色） */}
           <section className="rounded-lg border border-gray-200 bg-white p-4">
-            <h2 className="mb-3 text-sm font-semibold text-gray-800">Remote Ingest — other instances push into this one</h2>
+            <h2 className="mb-3 text-sm font-semibold text-gray-800">Receive from Remotes — accept pushes from other instances</h2>
             <h3 className="mb-2 text-xs font-semibold text-gray-600">Ingest Tokens</h3>
             <p className="mb-3 text-xs text-gray-500">
               One token per B instance. The first push binds the token to that instance&apos;s stable uid (TOFU).
@@ -869,7 +869,7 @@ export default function SyncPanel() {
 
             {/* Sync Instances（并入大卡 2） */}
             <div className="mt-5 border-t border-gray-100 pt-4">
-              <h3 className="mb-2 text-xs font-semibold text-gray-600">Sync Instances (watermarks)</h3>
+              <h3 className="mb-2 text-xs font-semibold text-gray-600">Remote Instances (watermarks)</h3>
               <p className="mb-3 text-xs text-gray-500">
                 Dedup watermark per B instance (keyed by stable uid). Deleting a row lets a new instance start clean (re-Token+push).
               </p>

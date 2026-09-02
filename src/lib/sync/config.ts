@@ -50,6 +50,20 @@ export function isValidTargetUrl(url: string): boolean {
   }
 }
 
+// 归一化目标 URL：路径为空或 "/" 时自动补 A 端固定接收端点 /ingest/records；
+// 已有路径仅去尾部斜杠（保留反代子路径场景）；query/hash 无意义一并丢弃。
+export function normalizeTargetUrl(url: string): string {
+  const u = new URL(url.trim());
+  if (u.pathname === "" || u.pathname === "/") {
+    u.pathname = "/ingest/records";
+  } else {
+    u.pathname = u.pathname.replace(/\/+$/, "");
+  }
+  u.search = "";
+  u.hash = "";
+  return u.toString();
+}
+
 function parseNumber(raw: string | null): number {
   const n = Number(raw);
   return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
@@ -165,7 +179,7 @@ export async function saveSyncConfig(input: {
     if (!isValidTargetUrl(input.targetUrl)) {
       throw new Error("targetUrl must be an http(s) URL");
     }
-    await setSetting(KEY_TARGET_URL, input.targetUrl);
+    await setSetting(KEY_TARGET_URL, normalizeTargetUrl(input.targetUrl));
   }
   if (input.instance !== undefined) {
     if (!isValidInstanceName(input.instance)) {

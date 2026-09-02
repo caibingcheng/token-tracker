@@ -4,6 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import {
   isValidTargetUrl,
+  normalizeTargetUrl,
   defaultInstanceName,
   loadSyncConfig,
   saveSyncConfig,
@@ -46,6 +47,34 @@ describe("isValidTargetUrl", () => {
     expect(isValidTargetUrl("ftp://example.com")).toBe(false);
     expect(isValidTargetUrl("not-a-url")).toBe(false);
     expect(isValidTargetUrl("")).toBe(false);
+  });
+});
+
+describe("normalizeTargetUrl", () => {
+  it("auto-appends /ingest/records when path is empty or /", () => {
+    expect(normalizeTargetUrl("https://tracker.example.com")).toBe(
+      "https://tracker.example.com/ingest/records"
+    );
+    expect(normalizeTargetUrl("https://tracker.example.com/")).toBe(
+      "https://tracker.example.com/ingest/records"
+    );
+  });
+  it("keeps an existing path, stripping trailing slashes", () => {
+    expect(normalizeTargetUrl("https://a.example.com/ingest/records/")).toBe(
+      "https://a.example.com/ingest/records"
+    );
+    expect(normalizeTargetUrl("http://192.168.1.10:3000/sub/path/")).toBe(
+      "http://192.168.1.10:3000/sub/path"
+    );
+  });
+  it("drops query and hash", () => {
+    expect(normalizeTargetUrl("https://a.example.com/?x=1#f")).toBe(
+      "https://a.example.com/ingest/records"
+    );
+  });
+  it("persists the normalized url via saveSyncConfig", async () => {
+    await saveSyncConfig({ targetUrl: "https://a.example.com" });
+    expect((await loadSyncConfig()).targetUrl).toBe("https://a.example.com/ingest/records");
   });
 });
 

@@ -53,7 +53,7 @@ export const PUT = withAuth(async (request: NextRequest) => {
           { status: 400 }
         );
       }
-      input.targetUrl = body.targetUrl.trim().replace(/\/+$/, "");
+      input.targetUrl = body.targetUrl.trim(); // 落库时由 saveSyncConfig 归一化（自动补 /ingest/records）
     }
     if (body.instance !== undefined) {
       const instance = typeof body.instance === "string" ? body.instance.trim() : "";
