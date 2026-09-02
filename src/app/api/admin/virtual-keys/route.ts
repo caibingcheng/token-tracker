@@ -74,13 +74,21 @@ export const GET = withAuth(async (request: NextRequest) => {
       quotaVkIds.length > 0 ? await loadQuotaUsageBatch(quotaVkIds, new Date()) : new Map<number, never>();
 
     const data = rows.map((row: any) => {
-      const plain = decryptSecret(row.apiKeyEncrypted);
+      let plain: string | null = null;
+      let decryptFailed = false;
+      try {
+        plain = decryptSecret(row.apiKeyEncrypted);
+      } catch (err) {
+        if (err instanceof GatewaySecretMissingError) throw err;
+        decryptFailed = true;
+      }
       const usage = usageMap.get(row.id);
       const q = quotaUsageMap.get(row.id);
       return {
         id: row.id,
         name: row.name,
         apiKey: plain,
+        decryptFailed,
         enabled: row.enabled === 1,
         comment: row.comment ?? null,
         enabledModels: row.enabledModels,

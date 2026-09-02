@@ -5,6 +5,7 @@ import { join } from "path";
 import { NextRequest } from "next/server";
 import { GET } from "./route";
 import { GET as usageGET } from "./[id]/usage/route";
+import { DELETE } from "./[id]/route";
 import { db, initDatabase, virtualKeysTable, tokenRecords } from "@/lib/db";
 import { setAdminApiKey, getTokenEpoch, deleteSetting } from "@/lib/auth/settings";
 import { signSessionToken, keyFingerprint } from "@/lib/auth/session";
@@ -168,5 +169,49 @@ describe("virtual-keys admin routes - quotaUsage", () => {
     expect(data.data.quotaUsage).not.toBeNull();
     expect(data.data.quotaUsage.rpm).toBe(1);
     expect(data.data.quotaUsage.tpm).toBe(tokens(inWindow.t));
+  });
+
+  it("GET: undecryptable row is flagged and does not break the list", async () => {
+    const good = await insertVk({ name: "good-vk" });
+    await withSkipCache(async () => {
+      await db.insert(virtualKeysTable).values({
+        name: "broken-vk",
+        apiKeyEncrypted: "corrupted:not:valid:payload",
+        enabled: 1,
+        enabledModels: '["*"]',
+      });
+    });
+    const token = await makeToken();
+    const res = await GET(req("/api/admin/virtual-keys", "GET", token));
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    const goodRow = data.data.find((r: any) => r.id === good.id);
+    const brokenRow = data.data.find((r: any) => r.name === "broken-vk");
+    expect(goodRow.decryptFailed).toBe(false);
+    expect(goodRow.apiKey).toMatch(/^vk-/);
+    expect(brokenRow.decryptFailed).toBe(true);
+    expect(brokenRow.apiKey).toBeNull();
+  });
+
+  it("DELETE: undecryptable row can still be deleted", async () => {
+    await withSkipCache(async () => {
+      const row = await db
+        .insert(virtualKeysTable)
+        .values({
+          name: "broken-vk-2",
+          apiKeyEncrypted: "corrupted:not:valid:payload",
+          enabled: 1,
+          enabledModels: '["*"]',
+        })
+        .returning();
+      const token = await makeToken();
+      const res = await DELETE(req(`/api/admin/virtual-keys/${row[0].id}`, "DELETE", token), {
+        params: { id: String(row[0].id) },
+      } as any);
+      expect(res.status).toBe(200);
+      const list = await GET(req("/api/admin/virtual-keys", "GET", token));
+      const data = await list.json();
+      expect(data.data.find((r: any) => r.id === row[0].id)).toBeUndefined();
+    });
   });
 });
