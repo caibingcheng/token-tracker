@@ -5,8 +5,6 @@ import { apiFetch } from "@/lib/client/api-client";
 
 interface DisplayData {
   groups: Array<{ name: string; patterns: string[] }>;
-  envValue: string;
-  envOverridden: boolean;
 }
 
 interface StatusPageElementsData {
@@ -55,7 +53,6 @@ const STATUS_ELEMENT_LABELS: Array<{ key: keyof StatusPageElementsData; label: s
 ];
 
 export default function DisplaySettings() {
-  const [data, setData] = useState<DisplayData | null>(null);
   const [hiddenDraft, setHiddenDraft] = useState<HiddenGroupDraft[]>([]);
   const [hiddenBusy, setHiddenBusy] = useState(false);
   const [hiddenError, setHiddenError] = useState<string | null>(null);
@@ -92,7 +89,6 @@ export default function DisplaySettings() {
     const agentsJson = await agentsRes.json();
     if (json.success) {
       const d = json.data as DisplayData;
-      setData(d);
       setHiddenDraft(
         d.groups.map((g) => ({ name: g.name, patterns: g.patterns.join(", ") }))
       );
@@ -332,22 +328,8 @@ export default function DisplaySettings() {
     <div className="rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
       <h2 className="mb-1 text-lg font-semibold text-gray-900">Display</h2>
       <p className="mb-4 text-sm text-gray-500">
-        Provider anonymization (HIDDEN_PROVIDERS). Saved here overrides the{" "}
-        <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">HIDDEN_PROVIDERS</code>{" "}
-        environment variable; once saved, env is ignored.
+        Provider anonymization (hidden provider groups).
       </p>
-
-      {data?.envOverridden && (
-        <div className="mb-4 rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700">
-          env HIDDEN_PROVIDERS has been overridden by the panel.
-        </div>
-      )}
-      {data?.envValue && !data.envOverridden && (
-        <div className="mb-4 rounded border border-gray-200 bg-gray-50 p-3 text-sm text-gray-600">
-          Currently falling back to env HIDDEN_PROVIDERS. Save a value here to
-          take over.
-        </div>
-      )}
 
       <label className="mb-1 block text-sm font-medium text-gray-700">
         Hidden provider groups

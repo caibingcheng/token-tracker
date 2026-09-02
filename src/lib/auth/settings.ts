@@ -114,7 +114,7 @@ export async function clearTotp(): Promise<void> {
   await deleteSetting("totp_enabled");
 }
 
-// ---- HIDDEN_PROVIDERS：settings 优先，env 仅 fallback（纯展示配置，免重启热更新） ----
+// ---- hidden_providers：settings 表唯一来源（纯展示配置，免重启热更新） ----
 
 // 返回 settings 中的原始字符串；行不存在返回 null（调用方自行区分「已保存」与「未保存」）
 export async function getHiddenProvidersSetting(): Promise<string | null> {

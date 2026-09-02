@@ -67,7 +67,7 @@ docker compose up -d                                 # 本地运行
 | `/api/admin/routing-rules*` | CRUD | 会话 token | 手动路由规则管理（虚拟名 + protocol → upstream + target_model + priority，`UNIQUE(name, protocol, upstream_id)` 同名多目标 failover 链；PATCH 仅编辑 priority/targetModel，upstream 改动词 = 删旧建新，审计 `routing_rule_updated`） |
 | `/api/admin/audit-logs` | GET | 会话 token | 管理操作审计日志（分页查询，action/actor/target_type 过滤） |
 | `/api/admin/auth/totp` `/api/admin/auth/api-key` `/api/admin/auth/sessions` `/api/admin/auth/recovery-codes` `/api/admin/auth/recovery-codes/reminder` | CRUD | 会话 token + TOTP 动态码 | TOTP 绑定/换绑/解绑、修改登录 key、全局登出（token_epoch+1 吊销全部会话）、recovery codes 查询/重新生成/清除提醒标记 |
-| `/api/admin/settings/display` | GET/PUT | 会话 token | Display tab：HIDDEN_PROVIDERS 分组语法（面板优先） |
+| `/api/admin/settings/display` | GET/PUT | 会话 token | Display tab：hidden_providers 分组（settings 唯一来源，无 env fallback） |
 | `/api/admin/settings/hidden-sources` | GET/PUT | 会话 token | Display tab：Hidden Sources 配置（`hidden_sources`，`isValidHiddenSources` 校验；GET/PUT 均包 `withSkipCache`） |
 | `/api/admin/settings/session` `/api/admin/settings/stream` | GET/PUT | 会话 token | Security tab：会话 TTL + 流式空闲超时（分钟，settings 表，面板优先） |
 | `/api/admin/settings/status` | GET/PUT | 会话 token | Display tab：公开 Status 面板配置（status_page_config，`isValidStatusPageConfig` 校验） |
@@ -197,8 +197,8 @@ docker compose up -d                                 # 本地运行
 - **注意**：TTFT = 首个 SSE chunk 到达时间，个别上游先推空 chunk 会略微低估真实首 token 时间，对比用途足够
 
 ### Provider 匿名化
-- **数据源**：settings 表 `hidden_providers`（admin panel Display tab 编辑，面板优先）→ env `HIDDEN_PROVIDERS` fallback → 空。**面板保存后 env 被静默忽略**，UI 有提示
-- **唯一 async 入口**：`loadHiddenProviderGroups()`（settings 优先 → env 回退）；纯函数一律接收 `groups` 参数显式传参（`anonymizeProvider` / `resolveProviderFilter` / `deanonymizeProvider` / `parseHiddenProviderGroups`），不直接读 env
+- **数据源**：settings 表 `hidden_providers`（admin panel Display tab 编辑，唯一来源，未保存 → 空；无 env fallback，与 model_aliases/hidden_sources 语义一致）
+- **唯一 async 入口**：`loadHiddenProviderGroups()`（settings 单一来源）；纯函数一律接收 `groups` 参数显式传参（`anonymizeProvider` / `resolveProviderFilter` / `deanonymizeProvider` / `parseHiddenProviderGroups`），不直接读 env
 - **分组语法**：分号分组的通配匹配，如 `CustomA:vendor*`；被隐藏的 provider 在 UI 显示为 "Provider A", "Provider B"... 或自定义名称
 - **Provider 维度归并**：同一组内多个真实 provider 在 Provider 维度统计中合并为一行（Top Providers、每日堆叠图、Speed/latency 表），由 `providerGroupKey()` 计算聚合键；组名同时作为 `ProviderStat.provider` 与 `ProviderStat.providerName`，保证前端堆叠图跨日 series 连续；Model 维度仍按归一化 model 名独立聚合，不受影响
 - **缓存失效**：`setHiddenProvidersSetting` 写入时调用 `invalidateModelCache()` 清空 `normalizeModel` 的 `rawToCanonical`，面板改分组后立即生效
@@ -228,7 +228,7 @@ docker compose up -d                                 # 本地运行
 ### Model 归一化
 - **文件**：`src/lib/model-registry.ts`（纯归一化模块，不加载任何文件；`src/lib/model-utils.ts` 仅做薄封装）
 - **数据源**：settings 表 `model_aliases`（Display pane 编辑）→ `loadModelAliases()`（与 `loadHiddenProviderGroups()` 同模式，调用方先 await 再注入）；**MODEL_REGISTRY_PATH / model-registry.json 已废弃删除**
-- **规则**（按优先级依次匹配）：1. 精确匹配规则 `name` → 2. 精确匹配 `aliases` 中的 `provider/model` 别名 → 3. 若 provider 被 `HIDDEN_PROVIDERS` 隐藏，只按 `model` 部分匹配 → 4. 精确匹配 `model` 别名 → 5. 未命中保持原始名称
+- **规则**（按优先级依次匹配）：1. 精确匹配规则 `name` → 2. 精确匹配 `aliases` 中的 `provider/model` 别名 → 3. 若 provider 被 hidden_providers 隐藏，只按 `model` 部分匹配 → 4. 精确匹配 `model` 别名 → 5. 未命中保持原始名称
 - **缓存失效**：`setModelAliasesSetting` / `setHiddenProvidersSetting` 写入时调 `invalidateModelCache()` 清空 `rawToCanonical` + `invalidateQueryCache()`
 - **用途**：Dashboard Top 5 按归一化后的 model 名称聚合；Status 页只显示归一化名（alias）
 
@@ -257,8 +257,7 @@ GATEWAY_SECRET=""                   # AES-256-GCM 32 字节（hex/base64）；op
 # 可选：bootstrap（未配置且 DB 无 key 时 Web 端出现首次设置向导）
 # ADMIN_API_KEY="your-secret-key"   # 可设置多个，逗号分隔；旧名 API_KEYS 兼容（deprecated）
 
-# 可选：也可在 admin panel Display tab 配置（面板优先，env 仅 fallback）
-HIDDEN_PROVIDERS="openai,google"    # 需要匿名的 provider 列表（分组语法）
+# 可选：也可在 admin panel Security/Display tab 配置（面板优先，env 仅 fallback）
 SESSION_TOKEN_TTL_HOURS=24          # 会话 token 有效期（小时），默认 24，滑动续期；只影响新签发 token
 
 # 安全：默认 false（fail-closed）。仅当前置反代已设置 X-Real-IP 并覆盖客户端 XFF 时设为 true。
