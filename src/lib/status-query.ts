@@ -351,7 +351,7 @@ export async function queryStatusData(
     providerFilter: null as string[] | null,
     model: "all" as const,
     modelFilter: null as string[] | null,
-    agentFilter: null as string | null,
+    agentUaFilter: null,
     timezoneOffsetMinutes,
   };
 

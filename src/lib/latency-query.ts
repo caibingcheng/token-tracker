@@ -10,6 +10,7 @@ import { loadHiddenSources } from "@/lib/auth/settings";
 import { toNum } from "@/lib/number-utils";
 import { providerGroupKey, type HiddenProviderGroup } from "@/lib/provider-utils";
 import type { ModelAliasRule } from "@/lib/model-registry";
+import type { AgentUaFilter } from "@/lib/agent-utils";
 import { gte } from "drizzle-orm";
 import { withSkipCache } from "@/lib/db/cache";
 
@@ -245,7 +246,7 @@ export async function queryLatencyStats(params: {
   range: string;
   providerFilter?: string[] | null;
   modelFilter?: string[] | null;
-  agentFilter?: string | null;
+  agentUaFilter?: AgentUaFilter;
   timezoneOffsetMinutes: number;
   groups: HiddenProviderGroup[];
   aliases: ModelAliasRule[];
@@ -258,7 +259,7 @@ export async function queryLatencyStats(params: {
     range,
     providerFilter,
     modelFilter,
-    agentFilter,
+    agentUaFilter,
     timezoneOffsetMinutes,
     groups,
     aliases,
@@ -284,7 +285,7 @@ export async function queryLatencyStats(params: {
     dateFilter,
     providerFilter ?? null,
     modelFilter ?? null,
-    agentFilter ?? null,
+    agentUaFilter ?? null,
     timezoneOffsetMinutes,
     exclude
   );

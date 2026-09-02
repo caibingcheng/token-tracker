@@ -31,6 +31,7 @@ export type AuditAction =
   | "models_dev_refresh"
   | "models_dev_upload"
   | "model_aliases_updated"
+  | "agent_aliases_updated"
   | "ingest_token_created"
   | "ingest_token_updated"
   | "ingest_token_deleted"

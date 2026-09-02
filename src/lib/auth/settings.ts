@@ -333,6 +333,67 @@ export async function setModelAliasesSetting(rules: ModelAliasRule[]): Promise<v
   invalidateQueryCache();
 }
 
+// ---- Agent Aliases（Agent 维度手动映射）：settings 表 agent_aliases（JSON 明文）----
+// 结构仿 model_aliases：每条 { name: 展示的工具名, aliases: UA token 列表 }。
+// 派生规则：UA 首段 token 精确匹配 aliases（大小写不敏感）→ 归属该 name。
+
+export interface AgentAliasRule {
+  name: string;
+  aliases: string[];
+}
+
+// 解析 settings 原始字符串；非法/缺失 → 空数组
+// 使用独立的 parse 函数避免与 ModelAliasRule 的语义混淆
+
+export function parseAgentAliases(raw: string | null): AgentAliasRule[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const rules: AgentAliasRule[] = [];
+    for (const item of parsed) {
+      if (!item || typeof item !== "object") continue;
+      const r = item as Record<string, unknown>;
+      if (typeof r.name !== "string" || r.name.trim() === "") continue;
+      if (!Array.isArray(r.aliases)) continue;
+      if (!r.aliases.every((a) => typeof a === "string")) continue;
+      rules.push({ name: r.name, aliases: r.aliases as string[] });
+    }
+    return rules;
+  } catch {
+    return [];
+  }
+}
+
+export function isValidAgentAliases(config: unknown): config is AgentAliasRule[] {
+  if (!Array.isArray(config)) return false;
+  for (const rule of config) {
+    if (!rule || typeof rule !== "object") return false;
+    const r = rule as Record<string, unknown>;
+    for (const key of Object.keys(r)) {
+      if (key !== "name" && key !== "aliases") return false;
+    }
+    if (typeof r.name !== "string" || r.name.trim() === "") return false;
+    if (!Array.isArray(r.aliases)) return false;
+    for (const a of r.aliases) {
+      if (typeof a !== "string") return false;
+    }
+  }
+  return true;
+}
+
+// 唯一 async 入口：读取 + 解析（withSkipCache 无 10s 延迟）
+export async function loadAgentAliases(): Promise<AgentAliasRule[]> {
+  return parseAgentAliases(await getSetting("agent_aliases"));
+}
+
+export async function setAgentAliasesSetting(rules: AgentAliasRule[]): Promise<void> {
+  await setSetting("agent_aliases", JSON.stringify(rules));
+  // 派生结果变化无 DB 写入，需主动清空查询缓存立即生效
+  const { invalidateQueryCache } = await import("@/lib/db/cache");
+  invalidateQueryCache();
+}
+
 // ---- Hidden Sources（隐藏 vk / upstream 数据源）：settings 表 hidden_sources（JSON 明文）----
 // 语义：每个名字两个独立维度——
 //   upstreams / virtualKeys：按名字隐藏（从筛选器/榜单消失，但总计仍计入）
