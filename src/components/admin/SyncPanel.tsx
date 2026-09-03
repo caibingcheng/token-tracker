@@ -71,10 +71,16 @@ function validateTargetUrlInput(value: string): string | null {
   }
 }
 
-function validateTokenInput(value: string): string | null {
+// 输入时实时校验：空值不算错（留空 = 不修改/不配置），有输入才校验
+// hasExistingToken = true 时文案提示「留空保留已有」，避免与空值合法语义矛盾
+function validateTokenInput(value: string, hasExistingToken: boolean): string | null {
   const trimmed = value.trim();
   if (trimmed === "") return null;
-  if (!trimmed.startsWith("it-")) return "Must be non-empty and start with it-";
+  if (!trimmed.startsWith("it-")) {
+    return hasExistingToken
+      ? "Must start with it- (leave empty to keep the existing token)"
+      : "Must be non-empty and start with it-";
+  }
   return null;
 }
 
@@ -536,7 +542,7 @@ export default function SyncPanel() {
   };
 
   const urlError = validateTargetUrlInput(targetUrl);
-  const tokenError = validateTokenInput(tokenInput);
+  const tokenError = validateTokenInput(tokenInput, !!status?.hasToken);
   const canSaveConfig =
     !configBusy &&
     urlError === null &&
@@ -558,9 +564,6 @@ export default function SyncPanel() {
             </p>
             {editingConfig ? (
               <>
-                <p className="mb-3 rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-700">
-                  Saving replaces the current sync URL / token if already configured (you&apos;ll be asked to confirm). Changing the target or token affects pushes to the old A and its TOFU binding.
-                </p>
                 <div className="grid gap-3 md:grid-cols-3">
                   <label className="block">
                     <span className="mb-1 block text-xs font-medium text-gray-600">Central instance URL (auto-appends {"/ingest/records"})</span>
@@ -584,6 +587,7 @@ export default function SyncPanel() {
                       value={tokenInput}
                       onChange={(e) => setTokenInput(e.target.value)}
                       placeholder={status?.hasToken ? "•••• (already set, leave empty to keep)" : "it-…"}
+                      autoComplete="new-password"
                       className={`w-full rounded border px-3 py-2 text-sm focus:outline-none focus:ring-1 md:text-xs ${
                         tokenError
                           ? "border-red-300 focus:border-red-500 focus:ring-red-500"
