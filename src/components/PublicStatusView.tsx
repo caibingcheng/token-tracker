@@ -5,6 +5,7 @@ import StatsCards, { Stats } from "./StatsCards";
 import TodayOverview, { TodayData } from "./TodayOverview";
 import DailyUsageChart, { DailyData } from "./DailyUsageChart";
 import UsageHeatmap, { HeatmapData } from "./UsageHeatmap";
+import MobileSummary from "./MobileSummary";
 import { NumberFormatProvider } from "./NumberFormatContext";
 import { getClientTimezoneOffsetMinutes } from "@/lib/timezone-utils";
 
@@ -224,7 +225,29 @@ export default function PublicStatusView({
   return (
     <NumberFormatProvider>
       <main className="min-h-screen bg-gray-50 p-4 pb-8 md:p-8">
-        <div className="max-w-7xl mx-auto">
+        <div className="md:hidden flex min-h-[calc(100dvh-3rem)] items-center justify-center">
+          <div className="flex flex-col items-center gap-6 text-center">
+            <h1 className="text-lg font-bold text-gray-900 truncate">
+              Token Tracker
+            </h1>
+            <MobileSummary
+              stats={data?.total ?? null}
+              today={data?.today ?? null}
+              loading={loading}
+              error={error}
+            />
+            {!preview && (
+              <button
+                type="button"
+                onClick={onLoginRequest}
+                className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 active:scale-[0.98] transition-all min-h-[40px]"
+              >
+                Login
+              </button>
+            )}
+          </div>
+        </div>
+        <div className="hidden md:block max-w-7xl mx-auto">
           <div className="mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
             <div>
               <h1 className="text-xl md:text-3xl font-bold truncate">
