@@ -49,6 +49,58 @@ export function migrateTokenRecordsModelColumns(client: any): void {
   }
 }
 
+// sync_instances 专用迁移：旧 instance 主键结构（instance TEXT PRIMARY KEY）
+// → uid 主键 + instance_name 展示名结构。协议已破坏（旧行 name 无对应 uid），
+// 旧行直接丢弃（必然重绑重推）。幂等检测：缺少 uid 列 → 触发重建。
+export function migrateSyncInstancesTable(client: any): void {
+  const existing: string[] = client
+    .prepare(`PRAGMA table_info(sync_instances)`)
+    .all()
+    .map((c: any) => c.name);
+  if (existing.includes("uid")) return;
+
+  client.exec(`DROP TABLE IF EXISTS sync_instances_old`);
+  client.exec(`
+    ALTER TABLE sync_instances RENAME TO sync_instances_old;
+    CREATE TABLE sync_instances (
+      uid TEXT PRIMARY KEY,
+      instance_name TEXT,
+      epoch TEXT NOT NULL,
+      last_record_id INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT
+    );
+    DROP TABLE sync_instances_old;
+  `);
+}
+
+// ingest_tokens 专用迁移：旧 bound_instance 列 → bound_uid 列。
+// token 行全量回迁（ingest token 是用户资产，不可丢弃），仅 bound_uid 置 NULL
+// 等待重新 TOFU 绑定。幂等检测：存在 bound_instance 列 → 触发重建。
+export function migrateIngestTokensTable(client: any): void {
+  const existing: string[] = client
+    .prepare(`PRAGMA table_info(ingest_tokens)`)
+    .all()
+    .map((c: any) => c.name);
+  if (!existing.includes("bound_instance")) return;
+
+  client.exec(`DROP TABLE IF EXISTS ingest_tokens_old`);
+  client.exec(`
+    ALTER TABLE ingest_tokens RENAME TO ingest_tokens_old;
+    CREATE TABLE ingest_tokens (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      api_key_encrypted TEXT NOT NULL,
+      bound_uid TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      last_used_at TEXT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+    INSERT INTO ingest_tokens (id, name, api_key_encrypted, bound_uid, enabled, last_used_at, created_at)
+      SELECT id, name, api_key_encrypted, NULL, enabled, last_used_at, created_at FROM ingest_tokens_old;
+    DROP TABLE ingest_tokens_old;
+  `);
+}
+
 // routing_rules 专用迁移：部分旧库仍为 UNIQUE(name, protocol)（单目标）结构，
 // 需重建表支持多目标（UNIQUE(name, protocol, upstream_id)）+ priority 列。
 // SQLite 无法修改表约束，采用表重建：先检测 priority 列是否已存在（幂等），

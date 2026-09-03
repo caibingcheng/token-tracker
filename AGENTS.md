@@ -39,7 +39,7 @@ docker compose up -d                                 # 本地运行
 - **关键配置**：better-sqlite3，文本模式存储时间戳（ISO 格式）
 - **自动初始化**：`initDatabase()` 在首次 API 调用时自动建表 + 索引
 - **表结构**：
-  - `token_records`（id, model, provider, agent, input_tokens, output_tokens, cache_read, cache_write, status, latency_ms, ttft_ms, virtual_key_id, user_agent, request_model, created_at）：**`model` 列 = 发往 upstream 的真实 model 名**（手动路由场景 = targetModel）；`request_model` = 客户端原始请求名（虚拟名路由场景可追溯，仅展示不参与定价）；`latency_ms` = 整请求耗时（全部请求）；`ttft_ms` = 流式首 token 延迟（首 chunk 到达 - 请求开始，仅流式有值，非流式 NULL）
+  - `token_records`（id, model, provider, agent, input_tokens, output_tokens, cache_read, cache_write, status, latency_ms, ttft_ms, virtual_key_id, user_agent, request_model, remote_instance_uid, created_at）：**`model` 列 = 发往 upstream 的真实 model 名**（手动路由场景 = targetModel）；`request_model` = 客户端原始请求名（虚拟名路由场景可追溯，仅展示不参与定价）；**`agent` 列 = 来源 key 名（本地 vk 名 / 远程 `remote/{instance}/{vk名}`），Dashboard Agent 维度展示由 `user_agent` 查询时派生（见「Agent 维度派生」小节），历史 agent 列值仅存 Key 列展示**；`user_agent` = 客户端 UA（派生 agent 的数据源，可 NULL）；`latency_ms` = 整请求耗时（全部请求）；`ttft_ms` = 流式首 token 延迟（首 chunk 到达 - 请求开始，仅流式有值，非流式 NULL）；`remote_instance_uid` = 来源实例稳定身份键（NULL = 本地记录；非 NULL = ingest 推送来源，索引 `idx_token_records_remote_instance_uid_created_at`；存量 remote 行不回填）
   - `upstreams`（id, name, protocol, base_url, enabled_models(JSON), priority, enabled, health_check_model, health_status, health_updated_at, balance, balance_updated_at, proxy_url_encrypted, created_at）：`proxy_url_encrypted` = 可选 HTTP(S) CONNECT 代理 URL（AES-256-GCM 加密，可含 `user:pass@` 凭据，NULL = 直连；写后不可读，API 只回显脱敏 host）
   - `upstream_keys`（id, upstream_id, api_key_encrypted, enabled, last_status, created_at）
   - `upstream_model_health`（upstream_id+model 复合主键, status, expires_at, updated_at）：model 级不可用标记（持久化）
@@ -47,8 +47,9 @@ docker compose up -d                                 # 本地运行
   - `routing_rules`（id, name, protocol, upstream_id, target_model, priority, created_at）：**手动路由规则**，`name` = 客户端请求的虚拟模型名，`target_model` = 上游真实模型名；`UNIQUE(name, protocol, upstream_id)` 同名同协议可挂多个不同 upstream（多目标 failover 链，按 `priority` 升序、同 priority 按 id 升序；drizzle 用 `uniqueIndex("uq_routing_rules_name_protocol_upstream")` 对齐 raw SQL）；`migrateRoutingRulesTable()` 表重建迁移（旧 `UNIQUE(name, protocol)` 结构 → 新结构，priority 回填 0，幂等）
   - `admin_audit_logs`（id, action, actor, target_type, target_id, ip, user_agent, details, created_at）：管理操作审计日志（含网关 user-agent 记录）
   - `model_prices`（model PRIMARY KEY, input_price, output_price, cache_read_price(NULL→回退 input), cache_write_price(NULL→回退 input), source('models.dev'|'github'|'manual'), models_dev_id, updated_at）：官方价参考（USD/1M），**查询时计算**，record 不存价格；`model` = 发往 upstream 的真实名
-  - `settings`（key TEXT PRIMARY KEY, value TEXT）：`admin_api_key`（AES-256-GCM 加密）、`totp_secret`、`totp_enabled`、`token_epoch`、`hidden_providers`（明文）、`session_token_ttl_hours`（明文）、`stream_idle_timeout_minutes`（明文，Security tab 编辑）、`status_page_config`（明文 JSON：`{enabled, elements:{total,today,daily,heatmap,hourly,topModels,cost}}`，**默认 enabled=false**）、`model_aliases`（明文 JSON：`[{name, aliases[]}]` 归一化配置，Display pane 编辑）、`hidden_sources`（明文 JSON：`{upstreams: string[], virtualKeys: string[], excludedUpstreams: string[], excludedVirtualKeys: string[]}`，Display pane 编辑；hidden = 隐藏源、excluded = 从总计剔除，两维度独立，查询层过滤零删除）、`models_dev_source`（明文，快照数据源开关 `"models.dev"|"github"`，Models 面板切换；非法值回退默认，无 env fallback）、`totp_fail_count`（明文，TOTP 失败计数）、`totp_locked_until`（明文，TOTP 锁定截止时间戳）、`recovery_codes`（明文 JSON：`{hashes:[sha256...], used:[bool...]}`，只存哈希不存明文）、`recovery_code_login_reminder`（明文，recovery code 登录提醒标记）
-- **存量迁移**：`migrateColumns()` 泛化支持多表（token_records / virtual_keys / upstreams），通过 `PRAGMA table_info` 检测缺失列并 `ALTER TABLE` 补列（`CREATE TABLE IF NOT EXISTS` 不会补列）；`migrateTokenRecordsModelColumns()` 专用一次性迁移：`request_model` 回填 = model、`model` 覆盖 = `target_model`（旧 schema）、DROP `target_model`（幂等）
+  - `settings`（key TEXT PRIMARY KEY, value TEXT）：`admin_api_key`（AES-256-GCM 加密）、`totp_secret`、`totp_enabled`、`token_epoch`、`hidden_providers`（明文）、`session_token_ttl_hours`（明文）、`stream_idle_timeout_minutes`（明文，Security tab 编辑）、`status_page_config`（明文 JSON：`{enabled, elements:{total,today,daily,heatmap,hourly,topModels,cost}}`，**默认 enabled=false**）、`model_aliases`（明文 JSON：`[{name, aliases[]}]` 归一化配置，Display pane 编辑）、`agent_aliases`（明文 JSON：`[{name, aliases[]}]` Agent 维度手动映射：UA 首段 token 精确匹配 aliases（大小写不敏感）→ 归属 name；Display pane 编辑，写入时 `invalidateQueryCache()`（派生结果变化无 DB 写入）、`hidden_sources`（明文 JSON：`{upstreams: string[], virtualKeys: string[], excludedUpstreams: string[], excludedVirtualKeys: string[]}`，Display pane 编辑；hidden = 隐藏源、excluded = 从总计剔除，两维度独立，查询层过滤零删除）、`models_dev_source`（明文，快照数据源开关 `"models.dev"|"github"`，Models 面板切换；非法值回退默认，无 env fallback）、`totp_fail_count`（明文，TOTP 失败计数）、`totp_locked_until`（明文，TOTP 锁定截止时间戳）、`recovery_codes`（明文 JSON：`{hashes:[sha256...], used:[bool...]}`，只存哈希不存明文）、`recovery_code_login_reminder`（明文，recovery code 登录提醒标记）、`sync_target_url`（明文，A 端 ingest URL）、`sync_token_encrypted`（AES-256-GCM 加密，ingest token）、`sync_instance`（明文 `[a-z0-9-]{1,32}`，**纯展示名**，随时可改，默认主机名回退 `b-xxxxxxxx`）、`sync_instance_uid`（明文 `u-[a-f0-9]{32}`，**稳定身份键**：首次生成持久不变、不可编辑、reset 不重置）、`sync_epoch`（明文，DB 初始化时生成持久不变）、`sync_cursor`（明文数字，已确认推送的最大 record id）、`sync_bound_uid`（明文，A 端确认的绑定实例 uid）、`sync_dropped_count`（明文数字，累计 drop 记录数）、`sync_last_success_at` / `sync_last_attempt_at`（明文 ISO）、`sync_last_error`（明文 JSON `{type, message, firstFailedAt}`，B 端推送状态可观测）
+- **多实例同步新表**：`ingest_tokens`（id, name, api_key_encrypted(AES-256-GCM), bound_uid(TOFU 绑定 uid), enabled, last_used_at, created_at）、`sync_instances`（uid PRIMARY KEY, instance_name(展示名，每次推送刷新), epoch, last_record_id 去重水位, updated_at）。**uid = 身份键（TOFU/水位/级联删除），instance_name = 展示名（改名安全、重名无害）**
+- **存量迁移**：`migrateColumns()` 泛化支持多表（token_records / virtual_keys / upstreams），通过 `PRAGMA table_info` 检测缺失列并 `ALTER TABLE` 补列（`CREATE TABLE IF NOT EXISTS` 不会补列）；`migrateTokenRecordsModelColumns()` 专用一次性迁移：`request_model` 回填 = model、`model` 覆盖 = `target_model`（旧 schema）、DROP `target_model`（幂等）；`migrateSyncInstancesTable()` / `migrateIngestTokensTable()` 同步表重建迁移（幂等）：sync_instances 缺 `uid` 列 → 重建为 uid 主键（**旧行丢弃**，协议已破坏必然重绑重推）；ingest_tokens 存在 `bound_instance` 列 → 重建为 `bound_uid`（**token 行全量回迁**，用户资产不可丢弃，仅 bound_uid 置 NULL 等待重新 TOFU 绑定）
 
 ## API 路由与认证
 
@@ -58,7 +59,7 @@ docker compose up -d                                 # 本地运行
 | `POST /api/auth/login` | POST | 原始 API key（DB 优先，env 兜底）+ 可选第二因素（TOTP 动态码或 recovery code） | 登录换会话 token（唯一换取入口，可信 IP 限流；key 无效/缺 TOTP/TOTP 错误统一 401 同文案，无 oracle） |
 | `GET/POST /api/auth/setup` | GET/POST | 无（fail-open 闸门自校验） | 首次设置向导：GET 探测 `{setupRequired}`；POST 设置初始 admin key + 返回会话 token（仅当 DB 无 key AND env 无 key，限流 + 事务 re-check） |
 | `/api/dashboard` | GET | 会话 token（`X-API-Key` header） | 聚合统计（total + today + yesterday + daily + models + 365 天 heatmap + 24h 分布） |
-| `/api/providers` `/api/models` `/api/agents` `/api/cli` `/api/records` | GET | 会话 token | 统计/查询 API |
+| `/api/providers` `/api/models` `/api/agents` `/api/cli` `/api/records` | GET | 会话 token | 统计/查询 API —— `/api/agents` 默认返回**派生工具名**列表（按 `user_agent` 解析，NULL UA 追加 `(unknown)`），`?dimension=key` 保留旧行为（distinct `agent` 列 + hidden vk 过滤，供 DisplaySettings vk 建议列表 `?dimension=key&includeHidden=1`）；`/api/records` 行 `agent` = 派生工具名、`keyName` = `agent` 列原值（vk 名） |
 | `/api/model-pricing` | GET | 会话 token | 已定价模型行集（PriceSimulatorModal 下拉数据源，附带 models.dev 归一化索引推断的 `provider` 分组字段 + `providers` 全量列表）；`?provider=<id>` 返回该 provider 的 models.dev 全部模型（懒加载数据源）；`?search=<q>` 切换为快照全量搜索模式（`searchModelsDevModel` 全量收集 + 相关性排序再截断 50：provider 名精确命中 > modelId 精确 > 归一化精确 > 前缀 > 子串，同级按原厂优先级表，保证原厂不被聚合平台挤出）；models.dev 来源 canonicalId = `providerId/modelId`，cache 价缺失回退 input，快照缺失返回空数组；仿真只读不落库 |
 | `/api/admin/upstreams*` | CRUD | 会话 token | 上游管理（含 keys、模型拉取、连接测试、余额刷新；可配 HTTP CONNECT 代理 `proxy_url`，`validateProxyUrl` SSRF 校验，写后仅回显脱敏 host；test-connection/fetch-models 复用 SSRF 校验，私网/环回地址 400） |
 | `/api/admin/virtual-keys*` | CRUD | 会话 token | 虚拟 key 管理（创建/编辑/吊销/用量，支持 comment + enabledModels + max_rpm/max_tpm/max_daily_tokens/max_monthly_tokens 配额） |
@@ -66,16 +67,25 @@ docker compose up -d                                 # 本地运行
 | `/api/admin/routing-rules*` | CRUD | 会话 token | 手动路由规则管理（虚拟名 + protocol → upstream + target_model + priority，`UNIQUE(name, protocol, upstream_id)` 同名多目标 failover 链；PATCH 仅编辑 priority/targetModel，upstream 改动词 = 删旧建新，审计 `routing_rule_updated`） |
 | `/api/admin/audit-logs` | GET | 会话 token | 管理操作审计日志（分页查询，action/actor/target_type 过滤） |
 | `/api/admin/auth/totp` `/api/admin/auth/api-key` `/api/admin/auth/sessions` `/api/admin/auth/recovery-codes` `/api/admin/auth/recovery-codes/reminder` | CRUD | 会话 token + TOTP 动态码 | TOTP 绑定/换绑/解绑、修改登录 key、全局登出（token_epoch+1 吊销全部会话）、recovery codes 查询/重新生成/清除提醒标记 |
-| `/api/admin/settings/display` | GET/PUT | 会话 token | Display tab：HIDDEN_PROVIDERS 分组语法（面板优先） |
+| `/api/admin/settings/display` | GET/PUT | 会话 token | Display tab：hidden_providers 分组（settings 唯一来源，无 env fallback） |
 | `/api/admin/settings/hidden-sources` | GET/PUT | 会话 token | Display tab：Hidden Sources 配置（`hidden_sources`，`isValidHiddenSources` 校验；GET/PUT 均包 `withSkipCache`） |
 | `/api/admin/settings/session` `/api/admin/settings/stream` | GET/PUT | 会话 token | Security tab：会话 TTL + 流式空闲超时（分钟，settings 表，面板优先） |
 | `/api/admin/settings/status` | GET/PUT | 会话 token | Display tab：公开 Status 面板配置（status_page_config，`isValidStatusPageConfig` 校验） |
 | `/api/admin/settings/aliases` | GET/PUT | 会话 token | Display tab：Model Aliases 归一化配置（model_aliases，`isValidModelAliases` 校验） |
+| `/api/admin/settings/agent-aliases` | GET/PUT | 会话 token | Display tab：Agent Aliases 派生映射配置（agent_aliases，`isValidAgentAliases` 校验；PUT 审计 `agent_aliases_updated`） |
 | `/api/admin/settings/models-dev-source` | GET/PUT | 会话 token | Models 面板：快照数据源开关（`models_dev_source`，`isValidModelsDevSource` 校验；PUT 仅写开关**不触发拉取**，下次 Refresh/懒刷新按新源；GET 返回 `{source, snapshotSource}`——快照实际来源，过渡期可与开关不一致供 UI 提示） |
 | `/api/admin/model-prices` | GET/PUT/DELETE | 会话 token | 官方价参考管理：GET 行集 = 全部启用 upstream 非通配 enabled_models ∪ 已定价 model（附徽标：active/inactive、待确认/未匹配、有更新+diff、已下架）；PUT 手动编辑（`source='manual'`，清空 models_dev_id）；DELETE 删价（model 走 query，**不用 `[model]` 动态段**，model 名可能含 `/`） |
 | `/api/admin/model-prices/candidates?model=X` `/api/admin/model-prices/candidates?q=...` `/api/admin/model-prices/select` `/api/admin/model-prices/auto-fill` | GET/POST/POST | 会话 token | Price Picker Modal 候选列表（provider、4 价格、预选标记；`q` = 搜索模式，全量扫描快照不限匹配管线）；从候选选定落库（`source='models.dev'`，校验 modelsDevId 存在于快照即可，价格以快照为准防篡改——搜索选中的条目与自动匹配等价）；批量填充（POST body `{mode?}`：`"fill"` 缺省只填空不覆盖 / `"force"` 覆盖所有非 manual 已定价行即 Re-fill all；manual 行永不被自动流程触碰） |
 | `/api/admin/models-dev/refresh` | POST | 会话 token | 强制刷新快照（失败回退旧快照；按 `models_dev_source` 开关用 models.dev 或 Litellm 源，审计含 `source`） |
 | `/api/admin/models-dev/upload` | POST | 会话 token | 手动上传快照（**格式自动识别**：api.json 原文 / `{fetchedAt,data}` 包装 / Litellm `model_prices_and_context_window.json`——后者自动转换为 models.dev 结构并标记 `source='github'`；body ≤10MB、provider ≤1000、model ≤50k，`sanitizeModelsDevData` 丢弃结构/数值非法条目并返回 `dropped` 计数（**cost 缺失的无价条目保留**，官方 api.json 含无价模型），全非法 400；`uploadSnapshot` 更新内存缓存 + 落盘，**无需重启**；审计 `models_dev_upload` 含 `source`） |
+| `/ingest/records` | POST | **ingest token（`it-` 前缀，Bearer）** | 多实例同步接收端点（位于 /api 之外，middleware 天然不拦）：详见下方「多实例同步」小节 |
+| `/api/admin/ingest-tokens` `/api/admin/ingest-tokens/[id]` `/api/admin/ingest-tokens/[id]/unbind` | CRUD/POST | 会话 token | A 侧 ingest token 管理：列表/创建（创建返回一次明文 `it-` + 32 base64url；**列表可回显明文供随时复制**，与 virtual_keys 惯例一致）/PATCH 启停改名/DELETE 吊销/unbind 解绑（清空 bound_uid，下次推送重新 TOFU）；审计 `ingest_token_*` |
+| `/api/admin/sync-instances` `/api/admin/sync-instances/[uid]` | GET/DELETE | 会话 token | A 侧实例水位查看/删除（list 返回 `uid` + `instanceName`，重名可区分；DELETE 路由参数 = **uid**（`u-[a-f0-9]{32}`）；`?deleteRecords=1` 级联删除该实例已推送历史记录——`remote_instance_uid = uid AND virtual_key_id = -1` 等值匹配 + **OR 上 uid 为 NULL 旧行的 `provider LIKE 'remote/{instance_name}/%'` 前缀兼容兜底**（哨兵双保险防误删本地记录），默认保留，删记录后 `invalidateStatusCache()`；先查水位存在否则 404 不动记录）；审计 `sync_instance_deleted` 含 `{uid, instanceName, deleteRecords, deletedRecords}` |
+| `/api/admin/sync/config` | GET/PUT | 会话 token | B 侧同步配置：GET 脱敏回显 token + 回显 uid；PUT 校验 URL/instance 格式 + token 加密落库 + `withSkipCache`；instance 为纯展示名随时可改（**无绑定锁定**，身份键是 uid）；审计 `sync_config_updated` |
+| `/api/admin/sync/status` | GET | 会话 token | B 侧推送状态：cursor/待推送数（`[cursor+1, maxId]` 非 -1）/maxRecordId/droppedCount/uid/boundUid/lastSuccessAt/lastError/lastAttemptAt/lastSkippedInvalid——丢失可观测；GET 同时 arm 60s 兜底轮询（`syncPusher.kick()`，未配置零开销） |
+| `/api/admin/sync/trigger` | POST | 会话 token | 手动触发推送一轮（`SyncPusher.trigger()`）；审计 `sync_triggered` |
+| `/api/admin/sync/skip` | POST | 会话 token | 手动跳过：body `{upToRecordId}` 必须 > 当前游标，强制推进游标丢弃区间 + dropped_count 累计 + 审计 `sync_skip` |
+| `/api/admin/sync/reset` | POST | 会话 token | 重置同步状态：游标归零 + 重新生成 epoch + 解除本地锁定（A 重建场景，纯本地）；dropped_count 保留；审计 `sync_reset` |
 | `/status/data` | GET | **无（有意公开）** | 公开用量数据端点：详见下方「公开 Status 面板」小节 |
 
 - **认证架构（多层防漏）**：验签 middleware（第一层，WebCrypto 验 HMAC 签名 + exp，Edge runtime）→ 路由内 `withAuth`（第二层，epoch 检查 + DB key 指纹校验）→ vitest 静态扫描测试（第三层，`src/lib/auth/guard-scan.test.ts`，login + setup 白名单）→ 本文件约定（第四层）
@@ -103,6 +113,26 @@ docker compose up -d                                 # 本地运行
 - **限流**：`checkStatusRateLimit()`（status-query.ts 导出，60 req/min 固定窗口，`getRateLimitKey()` 取 key），与 setup/login 同款内存 bucket 模式
 - **⚠️ `/status/data/route.ts` 必须 `dynamic = "force-dynamic"`**：否则构建期预渲染会把 enabled/disabled 决策烘焙进产物
 - **配置**：`parseStatusPageConfig` 逐 key 与默认值合并（非法 JSON/字段回退默认，返回全新对象不污染共享默认）；PUT 校验 `isValidStatusPageConfig`（enabled + 全部 7 元素 boolean，未知 key 拒绝）
+
+## 多实例同步
+
+多级部署：A = 公网主实例（汇总），B = 本地实例（可多个），B 将自己 token_records 推送 A。核心保证：**丢失可能（可观测、有兜底），重复不可能**。
+
+- **身份语义**：**uid**（settings `sync_instance_uid`，`u-[a-f0-9]{32}`，B 首先生成、持久不变、不可编辑、reset 不重置）= 稳定身份键（TOFU/水位/级联删除均按 uid）；**instance name**（settings `sync_instance`）= 纯展示名，随时可改（改名安全、无绑定锁定），重名无害。处理同名同 token 多设备、改名不再重推/历史劈裂
+- **两端同代码库**：A/B 均为本仓库，B 仅需在 Admin Sync tab 配置 URL + token；未配置同步时 worker 完全不起动（单机零开销）
+- **推送机制**（`src/lib/sync/`）：持久化游标队列 —— settings `sync_cursor` 即队列水位，推送 payload `{instanceUid, instance, epoch, records[]}`（`SELECT id > cursor AND COALESCE(virtual_key_id,0) != -1 ORDER BY id LIMIT 200`），A ack 后推进游标；**严格串行**（拉取 → 推送 → ack → 推进），`SyncPusher` 模块级单例（`src/lib/sync/pusher.ts`）in-flight 互斥锁；onUsage 写库后 fire-and-forget `notify()` + 60s 定时兜底；**单进程假设**（一个 B = 一进程连一 SQLite，不支持同库多进程）
+  - **分级重试**：2xx 推进游标（skippedInvalid 计入 `sync_dropped_count`）；401/403 **无限退避不 drop**（1s→5min 封顶，索引 `lastError.type=auth` 红字）；400 连续 50 次自动 drop 该批（推进游标 + dropped 累计 + 审计）；5xx/网络/超时无限重试
+  - **游标推进细节**：以原始扫描（含被跳过的 -1 记录）的最大 id 推进，防停在哨兵记录前反复空扫；`stream-usage`-式批注
+  - **哨兵防级联**：`virtual_key_id = -1` 的记录（经 ingest 进入本机）**不再向外转发** —— 级联拓扑（C→B→A）B 只做末端展示，环路（A→B→A）自然断开；本地 upstream/vk 名新增校验禁止 `remote/` 前缀（保留字隔离命名空间）
+- **A 侧接收**（`src/app/ingest/records/route.ts`，/api 之外 + `runtime=nodejs` + `dynamic=force-dynamic`）：`Authorization: Bearer it-xxx` 全表解密比对（仿 `resolveVirtualKey`，**同步 `.all()` 直读 DB** —— withSkipCache 基于 AsyncLocalStorage，async 路径会丢上下文落到缓存读到旧行集）；内存限流 + body ≤2MB + 批 ≤500；TOFU 绑定（先推先绑，**按 uid**，uid 不匹配 403 `instance_mismatch`，响应回显 `boundUid`）；每次推送顺带 `UPDATE sync_instances SET instance_name = ?`（改名即时生效）；**部分接受**（单条非法跳过 + `skippedInvalid` ids，结构性错误整批 400）
+- **去重水位**（`src/lib/ingest/watermark.ts`，`BEGIN IMMEDIATE` 单事务）：`sync_instances` 每实例一行 `(uid, instance_name, epoch, last_record_id)`；**epoch 变化 → A 重置水位 0**（B 重建 DB 场景）；`UPDATE ... WHERE last_record_id < :w` 只升不降；同实例并发由 SQLite 单写者串行化（最坏整批 skip）；**同名不同 uid 双设备互不干扰**（水位按 uid 隔离）
+- **字段改写**：A 收到后 `provider`/`agent` → `remote/{instance}/{原名}`，`virtual_key_id` → **-1**（哨兵：防转发 + 三态区分本机 vk/NULL/-1），`remote_instance_uid` → **payload.instanceUid**（身份键落库），model/requestModel/created_at 等原样保留，created_at 保留 B 原始时间；**契约上拒绝价格字段**（A 是唯一定价权威）
+- **定价/统计集成**：推送 model 参与 A 的定价（原名命中 model_prices 自动匹配）+ 归一化（同名 roll up）；`/api/admin/model-prices` 行集 = 启用 upstream ∪ 已定价 ∪ **推送记录出现过的 model**（基于 sync_instances 的 **`uid` 等值匹配 `remote_instance_uid` + OR `instance_name` 前缀 LIKE 兜底**（uid NULL 旧行）有界 distinct + 内存缓存，**改名后历史行仍可发现**），upstreams 列标注 `remote/{instanceName}/{原名}` 来源
+- **活跃模型可见性（修正）**：默认可见 = active（启用 upstream）∪ **近 30 天有记录**（含推送）；inactive 且 30 天无记录自动隐藏（`ModelsPanel` 的 `showInactive` 仍可查看）；`recentActivity` 标记由 30 天窗口查询驱动；Speed 表 `loadActiveModelSet()` 同步扩展为「启用 ∪ 近 30 天有记录」
+- **Hidden Sources / 匿名化**：B 来源以 `remote/{instance}/{名字}` 出现于建议列表，按名字精确匹配可正常隐藏/剔除，无改动
+- **↔ingest 认证隔离**：ingest 端点独立于会话认证体系，token 泄露不影响 admin/API；TOFU 残余风险由 UI 展示绑定关系 + last_used_at 发现并吊销；审计覆盖 token CRUD/解绑/水位删除/skip/reset/config
+- **安全重发流程**：A 端 Sync Instances → Delete（勾选 "Also delete its pushed records" 即 `?deleteRecords=1` 级联清历史）→ B 端 Reset sync state（游标归零 + 新 epoch + 解除 uid 锁定，confirm 文案明确重复风险、按钮红系描边）→ B 端正常推送（换不换 token 均可，TOFU 按 uid 重新绑定）→ A 端得到干净全量数据无重复。唯一重复风险组合（A 删实例行但保留记录 + B 端 reset 全量重放）由该流程前端约束消除
+- **破坏性变更**（uid 改造，不向后兼容）：协议要求 payload 携带 `instanceUid`（旧 B 推新 A → 400 缺字段）；sync_instances 表重建（旧行丢弃）、ingest_tokens 表重建（行回迁 + bound_uid 置 NULL，需重新 TOFU）；`token_records` 仅补列 `remote_instance_uid`（存量不回填）。**部署顺序先升 A 后升 B**（防旧 B 连续 400 被自动 drop 丢数据）；A 端 unbind token + 删实例水位后 B 升级重推可干净过渡；dev 部署（无同步功能）零影响，迁移幂等自动跳过
 
 ## AI Gateway 代理链路（核心）
 
@@ -168,8 +198,8 @@ docker compose up -d                                 # 本地运行
 - **注意**：TTFT = 首个 SSE chunk 到达时间，个别上游先推空 chunk 会略微低估真实首 token 时间，对比用途足够
 
 ### Provider 匿名化
-- **数据源**：settings 表 `hidden_providers`（admin panel Display tab 编辑，面板优先）→ env `HIDDEN_PROVIDERS` fallback → 空。**面板保存后 env 被静默忽略**，UI 有提示
-- **唯一 async 入口**：`loadHiddenProviderGroups()`（settings 优先 → env 回退）；纯函数一律接收 `groups` 参数显式传参（`anonymizeProvider` / `resolveProviderFilter` / `deanonymizeProvider` / `parseHiddenProviderGroups`），不直接读 env
+- **数据源**：settings 表 `hidden_providers`（admin panel Display tab 编辑，唯一来源，未保存 → 空；无 env fallback，与 model_aliases/hidden_sources 语义一致）
+- **唯一 async 入口**：`loadHiddenProviderGroups()`（settings 单一来源）；纯函数一律接收 `groups` 参数显式传参（`anonymizeProvider` / `resolveProviderFilter` / `deanonymizeProvider` / `parseHiddenProviderGroups`），不直接读 env
 - **分组语法**：分号分组的通配匹配，如 `CustomA:vendor*`；被隐藏的 provider 在 UI 显示为 "Provider A", "Provider B"... 或自定义名称
 - **Provider 维度归并**：同一组内多个真实 provider 在 Provider 维度统计中合并为一行（Top Providers、每日堆叠图、Speed/latency 表），由 `providerGroupKey()` 计算聚合键；组名同时作为 `ProviderStat.provider` 与 `ProviderStat.providerName`，保证前端堆叠图跨日 series 连续；Model 维度仍按归一化 model 名独立聚合，不受影响
 - **缓存失效**：`setHiddenProvidersSetting` 写入时调用 `invalidateModelCache()` 清空 `normalizeModel` 的 `rawToCanonical`，面板改分组后立即生效
@@ -180,7 +210,7 @@ docker compose up -d                                 # 本地运行
 - **语义**：每个名字两个**独立维度**——`upstreams`/`virtualKeys` = 隐藏（从筛选器下拉、分组榜单消失但总计仍计入）；`excludedUpstreams`/`excludedVirtualKeys` = 从聚合统计（总卡片、daily、heatmap、hourly、latency、status 面板）中剔除。四态均可表达（含「剔除但没隐藏」）。数据零删除，仅查询层过滤，取消勾选立即完整恢复
 - **匹配口径**：upstream → `token_records.provider`；vk → `token_records.agent`（均为写入时名字快照）；`'unknown'` 遗留记录永远计入总计、不列入可隐藏列表（UI 占位名 `(unknown)`）
 - **查询层**：`buildWhereClause` 第 6 参数 `exclude?: {providers, agents}`（`notInArray`，空数组跳过）；`executeStatsQuery`（stats-query.ts）与 `queryLatencyStats`（latency-query.ts，⚠️ 直接调 buildWhereClause 需自行 `loadHiddenSources()`）恒以 excluded 列表传入（与隐藏状态无关）；`/api/records` 明细不受影响
-- **distinct 路由**：`/api/agents` 始终过滤隐藏 vk（不受排除状态影响，`'unknown'` 映射 `(unknown)` 显示）；`/api/providers` 在**匿名化之前**按真实名排除（`?includeHidden=1` 跳过过滤且跳过匿名化返回真实名，供管理面板建议列表）；`/api/models` 行级过滤（provider NOT IN ∪ agent NOT IN），隐藏源独有 model 一并消失；三路由均支持 `?includeHidden=1`
+- **distinct 路由**：`/api/agents` **默认返回派生工具名**（`user_agent` 解析，NULL UA 追加 `(unknown)`；hidden vk 过滤不适用）；`?dimension=key` 时按 `agent` 列（vk 名）返回并始终过滤隐藏 vk（不受排除状态影响，`'unknown'` 映射 `(unknown)` 显示，供 DisplaySettings vk 建议列表）；`/api/providers` 在**匿名化之前**按真实名排除（`?includeHidden=1` 跳过过滤且跳过匿名化返回真实名，供管理面板建议列表）；`/api/models` 行级过滤（provider NOT IN ∪ agent NOT IN），隐藏源独有 model 一并消失；三路由均支持 `?includeHidden=1`
 - **缓存**：settings 写入经 `withSkipCache` + 主动 `invalidateStatusCache()`（status 响应级缓存 key 只有 tzOffset）
 - **删除联动**：upstream/vk DELETE 接受 `?hideHistory=1`（删除确认框复选框，默认不勾），服务端追加名字进 hidden 列表（幂等去重）
 
@@ -196,10 +226,18 @@ docker compose up -d                                 # 本地运行
 - **已知限制**（litellm 源）：embedding 模型仅 input 价 → output=0；jsDelivr 缓存滞后 / 超 20MB 拒载（litellm JSON 现约 2-3MB 安全）；litellm 候选搜索噪声（bedrock/azure 变体多，由匹配管线 & Price Picker 消解）
 - **徽标判定**（`src/lib/model-prices-service.ts`）：`active`（在任一 enabled_models）/`inactive`（已定价但已移除，价格保留供历史）；`待确认`（未定价且多候选价格不一致）/`未匹配`（未定价无候选）；`有更新`（models.dev 来源且快照同 id 价格不同，带 diff）/`已下架`（models.dev 来源且快照无该 id）；行含 `sourceProvider`（models.dev 来源的 provider 显示名，快照缺失回退 providerId；manual 为 null），表格徽标显示 `models.dev · {providerName}`
 
+### Agent 维度派生（Dashboard Agent = 客户端工具名）
+
+- **语义**：`token_records.agent` 列 = **来源 key 名**（本地 vk 名 / 远程 `remote/{instance}/{vk名}`），继续承担 Hidden Sources vk 维度、同步协议与 ingest 改写（零改动）；Dashboard 的 **Agent 维度显示客户端工具名**（claude-code、opencode 等），由 `user_agent` 列**查询时派生**（不回填、不改历史数据），Records 表 Agent（派生）+ Key（`agent` 列原值）双列展示
+- **解析规则**（`src/lib/agent-utils.ts`，纯逻辑可单测）：UA 首段 token（第一个 `/` 前，lowercase）→ 手动 `agent_aliases` 精确匹配（大小写不敏感）→ 内置 `BUILTIN_AGENT_MAP`（claude-cli→claude-code、codex_cli_rs/codex→codex、geminicli→gemini-cli、aider→aider、cursor-agent→cursor 等）→ 未命中回退 token 本身；null/空 UA → `unknown`（筛选 UI 显示 `(unknown)`）
+- **注册新 agent 工具**：无需改代码——在 Display pane Agent Aliases 添加 {name, aliases[]} 即可（多 UA token 可映射同一工具名），写入 `setAgentAliasesSetting` 主动 `invalidateQueryCache()` 立即生效
+- **过滤器**：Dashboard/Records/CLI 的 `agent` 参数是**派生工具名**，服务端反找（`resolveAgentUserAgents`）映射为 UA 集合后按 `user_agent IN (...)` 过滤；`unknown` 走 `user_agent IS NULL`；未命中 → 400。`buildWhereClause` 的第 4 参数即此 UA 过滤（类型 `AgentUaFilter`），`exclude.agents`（Hidden Sources excludedVirtualKeys）仍按 `agent` 列 NOT IN 排除，两维度并行
+- **注意**：反找需 `selectDistinct(user_agent)` 全表扫描（无索引）；个人规模（日均约 1000 行）+ 10s 查询缓存可接受。远程记录（vk=-1）按自身 UA 派生，与本地同名工具合并为一个 agent；instance 区分仍靠 provider 的 `remote/{instance}/` 前缀
+
 ### Model 归一化
 - **文件**：`src/lib/model-registry.ts`（纯归一化模块，不加载任何文件；`src/lib/model-utils.ts` 仅做薄封装）
 - **数据源**：settings 表 `model_aliases`（Display pane 编辑）→ `loadModelAliases()`（与 `loadHiddenProviderGroups()` 同模式，调用方先 await 再注入）；**MODEL_REGISTRY_PATH / model-registry.json 已废弃删除**
-- **规则**（按优先级依次匹配）：1. 精确匹配规则 `name` → 2. 精确匹配 `aliases` 中的 `provider/model` 别名 → 3. 若 provider 被 `HIDDEN_PROVIDERS` 隐藏，只按 `model` 部分匹配 → 4. 精确匹配 `model` 别名 → 5. 未命中保持原始名称
+- **规则**（按优先级依次匹配）：1. 精确匹配规则 `name` → 2. 精确匹配 `aliases` 中的 `provider/model` 别名 → 3. 若 provider 被 hidden_providers 隐藏，只按 `model` 部分匹配 → 4. 精确匹配 `model` 别名 → 5. 未命中保持原始名称
 - **缓存失效**：`setModelAliasesSetting` / `setHiddenProvidersSetting` 写入时调 `invalidateModelCache()` 清空 `rawToCanonical` + `invalidateQueryCache()`
 - **用途**：Dashboard Top 5 按归一化后的 model 名称聚合；Status 页只显示归一化名（alias）
 
@@ -228,8 +266,7 @@ GATEWAY_SECRET=""                   # AES-256-GCM 32 字节（hex/base64）；op
 # 可选：bootstrap（未配置且 DB 无 key 时 Web 端出现首次设置向导）
 # ADMIN_API_KEY="your-secret-key"   # 可设置多个，逗号分隔；旧名 API_KEYS 兼容（deprecated）
 
-# 可选：也可在 admin panel Display tab 配置（面板优先，env 仅 fallback）
-HIDDEN_PROVIDERS="openai,google"    # 需要匿名的 provider 列表（分组语法）
+# 可选：也可在 admin panel Security/Display tab 配置（面板优先，env 仅 fallback）
 SESSION_TOKEN_TTL_HOURS=24          # 会话 token 有效期（小时），默认 24，滑动续期；只影响新签发 token
 
 # 安全：默认 false（fail-closed）。仅当前置反代已设置 X-Real-IP 并覆盖客户端 XFF 时设为 true。
@@ -307,7 +344,7 @@ docker compose up -d
   - `src/lib/auth/edge-verify`：WebCrypto 验签（与 node 侧签名互认）
   - `src/lib/auth/guard-scan`：静态扫描所有 /api 路由必须用 withAuth（login 除外）
   - `src/lib/gateway/balance`：deepseek/openrouter 余额解析（mock fetch）、provider 判定
-  - `src/lib/db/migrate`：存量表补列迁移（临时 SQLite 库，幂等性 + NOT NULL 默认值回填）+ `migrateTokenRecordsModelColumns`（request_model 回填、model 覆盖 target_model、DROP、幂等）
+  - `src/lib/db/migrate`：存量表补列迁移（临时 SQLite 库，幂等性 + NOT NULL 默认值回填）+ `migrateTokenRecordsModelColumns`（request_model 回填、model 覆盖 target_model、DROP、幂等）+ `migrateSyncInstancesTable`/`migrateIngestTokensTable` 表重建（旧行丢弃 / 行回迁 + bound_uid 置 NULL、幂等）+ token_records remote_instance_uid 补列（存量不回填）
   - `src/lib/models-dev/match`：三级匹配管线（精确/归一化/日期变体剥离）、多候选冲突按优先级预选、价格相同不视为冲突、`searchModelsDevModel` 搜索（子串/大小写/provider 名命中、上限截断）
   - `src/lib/models-dev/auto-fill`：fill 只填空不覆盖、manual 行不动、未匹配跳过；force 覆盖非 manual / 跳过 manual / updated 计数（fill 模式零回归）
   - `src/lib/auth/settings-models-dev-source`：合法值往返（withSkipCache 即时生效）、非法值回退默认、isValid/parse 边界
@@ -321,10 +358,12 @@ docker compose up -d
   - `src/lib/gateway/url-utils`：`joinUrlPath` 前缀去重 + `sanitizePathSegments` `..` 段净化（逃逸返回 null）
   - `src/lib/net/client-ip`：限流 IP 可信源（TRUSTED_PROXY 开关、XFF 伪造防护）
   - `src/lib/auth/totp-lock`：TOTP 失败计数 + 指数锁定（settings 表持久化，防重启清零）
-  - `src/lib/stats-query`：静态断言聚合口径（Total Input = `SUM(input_tokens) + SUM(cache_read)`；防止 totalInput 回退为纯 `SUM(input_tokens)` 或 totalInputUncached 再次减去 `cache_read`）+ 日期过滤必须直比较（sargable，防 strftime 套列导致索引失效）
+  - `src/lib/stats-query`：静态断言聚合口径（Total Input = `SUM(input_tokens) + SUM(cache_read)`；防止 totalInput 回退为纯 `SUM(input_tokens)` 或 totalInputUncached 再次减去 `cache_read`）+ 日期过滤必须直比较（sargable，防 strftime 套列导致索引失效）+ **agent 维度静态断言**（不再按 `agent` 列过滤、`user_agent IN (uas)` / `IS NULL` 条件、exclude.agents 仍按 agent 列 NOT IN）
   - `src/lib/latency-query`：percentile 线性插值、归一化 model × provider 分组、active 过滤（已删除 model 不显示）、tok/s 守卫（latency ≤ ttft 排除）、非流式行口径（不进 TTFT 统计但计入 avgLatency/count）、时区分组（getTimezoneOffset 语义：UTC+8 = -480）、排序（p50 升序 nulls 最后）
   - `src/lib/timezone-utils`：`localDateKeyToUtcStartISO` 时区换算（含互逆 round-trip）
   - `src/lib/auth/settings-status`：status_page_config 默认值合并（fail-closed、非法 JSON/字段回退、不污染共享默认）+ 合法性校验
+  - `src/lib/agent-utils` / `src/lib/auth/settings-agent-aliases`：UA token 提取、内置映射、手动 alias 优先级与大小写、unknown、反找（多 UA→一 agent、无匹配）；parse/isValid 边界、load 回退、set 后 invalidateQueryCache
+  - `src/app/api/admin/settings/agent-aliases/route.test`：401/400/往返（withSkipCache 立即可读、loadAgentAliases 同源）
   - `src/lib/status-query`：元素联动（hourly→daily）+ 按需查询断言（cost/topModels 关闭不执行 model 级查询）+ 响应裁剪（不泄露模型名）+ 响应缓存失效 + 60 req/min 限流
   - `src/lib/gateway/probe`：探活请求构造（三协议 + responses 双风格）+ 双风格回退判定 + 3xx 不跟随（redirect manual）
   - `src/lib/gateway/quota`：配额窗口计算与超限判定（rpm/tpm/daily/monthly）
@@ -346,7 +385,12 @@ docker compose up -d
   - `src/lib/gateway/proxy-dispatcher`：null/空串 → undefined、同 URL 缓存复用、上限 50 重建
   - `src/lib/gateway/url-guard`：`validateProxyUrl`（scheme 拒绝/私网 IP + DNS 拒绝/逃生开关/含凭据通过）+ `sanitizeProxyUrlForDisplay` 剥 userinfo
   - `src/lib/gateway/proxy` / `probe` / `upstream-client` / `balance`：upstream 带 proxyUrl 时 init 含 dispatcher、无 proxyUrl 时无 dispatcher key（主链 + responses 辅助链各一）
-  - `src/app/api/dashboard/route.test` / `src/app/api/records/route.test`：Dashboard/Records API 集成
+  - `src/app/api/dashboard/route.test` / `src/app/api/records/route.test`：Dashboard/Records API 集成（含 agent 参数按派生工具名反找 / unknown 走 IS NULL / 未知 agent 400 / records 行 `keyName`）
+  - `src/lib/ingest/validate.test`：payload 校验（instance 格式、结构错误 400、批量上限、部分接受 skippedInvalid、token 非负、userAgent 截断、空批）
+  - `src/app/ingest/records/route.test`：ingest 端点集成（临时 SQLite + 真实 handler + 真实 token）——401/禁用、缺 instanceUid 400、2MB、400 超限、uid TOFU 绑定与 instance_mismatch、字段改写（remote 前缀 + vk=-1 + remote_instance_uid + createdAt 保留）、同 epoch 去重重推、epoch 变化重置水位、部分接受、同实例并发串行化、**同名不同 uid 双设备水位独立**、**同 uid 改名 instance_name 刷新**
+  - `src/lib/sync/pusher.test`：推送 worker（mock fetch）——成功推进（含 -1 哨兵夹心、redirect=manual、payload 携带 instanceUid、boundUid ack 锁定）、401 不 drop、5xx/网络不 drop、400 五十次自动 drop 累计计数、skippedInvalid 计入 dropped、未配置不启动、多批推送
+  - `src/lib/sync/config.test`：URL 格式校验、token 加密往返与清除、instance/uid 校验、cursor/dropped 读写往返、reset 语义（dropped 保留、**uid 不重置**）、instance/uid/epoch 自动生成持久
+  - `src/lib/model-prices-service.test`：可见性（近期流量 30 天窗口、推送模型行集含全历史 + 来源标注、active 判定、过期推送模型默认隐藏、**uid 等值 + instance_name LIKE 兜底**、改名后历史行仍可发现）
 - 新增纯逻辑模块（如解析器、路由匹配、加密）时应同步提交单测
 
 ## Git Commit

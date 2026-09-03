@@ -30,14 +30,26 @@ export type AuditAction =
   | "model_price_auto_fill"
   | "models_dev_refresh"
   | "models_dev_upload"
-  | "model_aliases_updated";
+  | "model_aliases_updated"
+  | "agent_aliases_updated"
+  | "ingest_token_created"
+  | "ingest_token_updated"
+  | "ingest_token_deleted"
+  | "ingest_token_unbound"
+  | "sync_instance_deleted"
+  | "sync_config_updated"
+  | "sync_triggered"
+  | "sync_skip"
+  | "sync_reset";
 
 export type AuditTargetType =
   | "upstream"
   | "virtual_key"
   | "upstream_key"
   | "routing_rule"
-  | "system";
+  | "system"
+  | "ingest_token"
+  | "sync";
 
 export interface AuditLogInput {
   action: AuditAction;

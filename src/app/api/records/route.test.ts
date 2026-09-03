@@ -77,6 +77,7 @@ async function insertRecord(overrides: Partial<typeof tokenRecords.$inferInsert>
       cacheWrite: overrides.cacheWrite ?? 0,
       status: overrides.status ?? null,
       requestModel: overrides.requestModel ?? null,
+      userAgent: overrides.userAgent ?? null,
       createdAt: overrides.createdAt ?? new Date().toISOString(),
     });
   });
@@ -136,5 +137,53 @@ describe("records route", () => {
     expect(byModel.get("gpt-4o-mini").status).toBe("no_usage");
     expect(byModel.get("o1").status).toBe("client_aborted");
     expect(byModel.get("o3").status).toBe("stream_interrupted");
+  });
+
+  it("agent 列返回派生工具名（按 user_agent），vk 名移到 keyName", async () => {
+    await insertRecord({ agent: "vk-a", userAgent: "claude-cli/2.1.5 (external, cli)" });
+    await insertRecord({ agent: "vk-b", userAgent: "opencode/1.18.14" });
+    await insertRecord({ agent: "vk-c" }); // NULL UA → unknown
+
+    const token = await makeToken();
+    const res = await json(await GET(req("/api/records", "GET", undefined, token)));
+
+    expect(res.success).toBe(true);
+    expect(res.data).toHaveLength(3);
+    const byAgent = new Map(res.data.map((r: any) => [r.keyName, r]));
+    expect(byAgent.get("vk-a").agent).toBe("claude-code");
+    expect(byAgent.get("vk-b").agent).toBe("opencode");
+    expect(byAgent.get("vk-c").agent).toBe("unknown");
+    // keyName 保留原 agent 列值（vk 名）
+    for (const r of res.data) {
+      expect(r.keyName).toBeTruthy();
+    }
+  });
+
+  it("agent 参数按派生工具名反找过滤（user_agent 条件）；未知 agent 400", async () => {
+    await insertRecord({ agent: "vk-a", userAgent: "claude-cli/2.1.5 (external, cli)" });
+    await insertRecord({ agent: "vk-b", userAgent: "opencode/1.18.14" });
+    await insertRecord({ agent: "vk-c" });
+
+    const token = await makeToken();
+    const res = await json(
+      await GET(req("/api/records?agent=claude-code", "GET", undefined, token))
+    );
+    expect(res.success).toBe(true);
+    expect(res.data).toHaveLength(1);
+    expect(res.data[0].keyName).toBe("vk-a");
+    expect(res.data[0].agent).toBe("claude-code");
+
+    // unknown 反找 → IS NULL user_agent
+    const unknownRes = await json(
+      await GET(req("/api/records?agent=unknown", "GET", undefined, token))
+    );
+    expect(unknownRes.success).toBe(true);
+    expect(unknownRes.data).toHaveLength(1);
+    expect(unknownRes.data[0].keyName).toBe("vk-c");
+
+    // 未知 agent → 400
+    const badRes = await GET(req("/api/records?agent=nonexistent", "GET", undefined, token));
+    expect(badRes.status).toBe(400);
+    expect((await badRes.json()).error).toBe("Unknown agent: nonexistent");
   });
 });

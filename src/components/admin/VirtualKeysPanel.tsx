@@ -13,7 +13,8 @@ import { QuotaBar, MiniQuotaBar, type QuotaUsageData } from "./QuotaProgress";
 export interface VirtualKeyItem {
   id: number;
   name: string;
-  apiKey: string;
+  apiKey: string | null;
+  decryptFailed: boolean;
   enabled: boolean;
   comment: string | null;
   enabledModels: string;
@@ -333,6 +334,10 @@ export default function VirtualKeysPanel() {
   };
 
   const copyKey = async (key: VirtualKeyItem) => {
+    if (key.decryptFailed || !key.apiKey) {
+      setError("This key cannot be decrypted (master secret changed). Delete and recreate it.");
+      return;
+    }
     const ok = await copyText(key.apiKey);
     if (ok) {
       setCopied(key.id);
@@ -512,9 +517,18 @@ export default function VirtualKeysPanel() {
               <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
                 <span className={`h-2 w-2 rounded-full ${key.enabled ? "bg-green-500" : "bg-gray-300"}`} />
                 <span className="font-semibold text-sm">{key.name}</span>
-                <code className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-600 break-all max-w-[200px]">
-                  {maskVirtualKey(key.apiKey)}
-                </code>
+                {key.decryptFailed ? (
+                  <span
+                    className="rounded bg-red-50 px-1.5 py-0.5 text-[11px] text-red-600"
+                    title="Stored key cannot be decrypted with the current GATEWAY_SECRET. Delete and recreate it."
+                  >
+                    Decryption failed
+                  </span>
+                ) : (
+                  <code className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-600 break-all max-w-[200px]">
+                    {maskVirtualKey(key.apiKey ?? "")}
+                  </code>
+                )}
                 <span className="text-[11px] text-gray-500" title="Quota limits (rpm / tpm / daily / monthly tokens)">
                   {quotaText(key)}
                 </span>

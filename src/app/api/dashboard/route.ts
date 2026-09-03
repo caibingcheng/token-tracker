@@ -11,6 +11,7 @@ import { aggregateByNormalizedModel, type StatItem } from "@/lib/model-utils";
 import { getDisplayName, type ModelAliasRule } from "@/lib/model-registry";
 import { loadHiddenProviderGroups, type HiddenProviderGroup } from "@/lib/provider-utils";
 import { loadModelAliases } from "@/lib/auth/settings";
+import type { AgentUaFilter } from "@/lib/agent-utils";
 import { toNum } from "@/lib/number-utils";
 import {
   mergeAggregatedCosts,
@@ -270,7 +271,7 @@ async function queryDashboard(
     providerFilter: string[] | null,
     model: string,
     modelFilter: string[] | null,
-    agentFilter: string | null,
+    agentUaFilter: AgentUaFilter,
     timezoneOffsetMinutes?: number,
     groups: HiddenProviderGroup[] = [],
     aliases: ModelAliasRule[] = []
@@ -294,7 +295,7 @@ async function queryDashboard(
         providerFilter,
         model,
         modelFilter,
-        agentFilter,
+        agentUaFilter,
         timezoneOffsetMinutes,
       }),
       executeStatsQuery({
@@ -304,7 +305,7 @@ async function queryDashboard(
         providerFilter,
         model,
         modelFilter,
-        agentFilter,
+        agentUaFilter,
         limit: null,
       }),
       executeStatsQuery({
@@ -315,7 +316,7 @@ async function queryDashboard(
         providerFilter,
         model,
         modelFilter,
-        agentFilter,
+        agentUaFilter,
         timezoneOffsetMinutes,
       }),
       executeStatsQuery({
@@ -326,7 +327,7 @@ async function queryDashboard(
         providerFilter,
         model,
         modelFilter,
-        agentFilter,
+        agentUaFilter,
         timezoneOffsetMinutes,
       }),
       executeStatsQuery({
@@ -337,7 +338,7 @@ async function queryDashboard(
         providerFilter,
         model,
         modelFilter,
-        agentFilter,
+        agentUaFilter,
         timezoneOffsetMinutes,
       }),
       executeStatsQuery({
@@ -348,7 +349,7 @@ async function queryDashboard(
         providerFilter,
         model,
         modelFilter,
-        agentFilter,
+        agentUaFilter,
         timezoneOffsetMinutes,
       }),
       executeStatsQuery({
@@ -358,7 +359,7 @@ async function queryDashboard(
         providerFilter,
         model,
         modelFilter,
-        agentFilter,
+        agentUaFilter,
         timezoneOffsetMinutes,
       }),
       executeStatsQuery({
@@ -369,7 +370,7 @@ async function queryDashboard(
         providerFilter,
         model,
         modelFilter,
-        agentFilter,
+        agentUaFilter,
         timezoneOffsetMinutes,
       }),
       executeStatsQuery({
@@ -380,14 +381,14 @@ async function queryDashboard(
         providerFilter,
         model,
         modelFilter,
-        agentFilter,
+        agentUaFilter,
         timezoneOffsetMinutes,
       }),
       queryLatencyStats({
         range,
         providerFilter,
         modelFilter,
-        agentFilter,
+        agentUaFilter,
         timezoneOffsetMinutes: timezoneOffsetMinutes ?? 0,
         groups,
         aliases,
@@ -675,7 +676,7 @@ export const GET = withAuth(async (request: NextRequest) => {
       );
     }
 
-    const { providerFilter, modelFilter, agentFilter } = await resolveDashboardFilters(
+    const { providerFilter, modelFilter, agentUaFilter } = await resolveDashboardFilters(
       provider,
       model,
       agent
@@ -689,7 +690,7 @@ export const GET = withAuth(async (request: NextRequest) => {
       providerFilter?.slice().sort() ?? null,
       model,
       modelFilter?.slice().sort() ?? null,
-      agentFilter,
+      agentUaFilter,
       timezoneOffsetMinutes,
       groups,
       await loadModelAliases()

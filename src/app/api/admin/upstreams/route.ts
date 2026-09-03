@@ -13,6 +13,9 @@ import {
 import { encryptSecret, GatewaySecretMissingError } from "@/lib/gateway/crypto";
 import { healthTracker, decryptProxyUrl } from "@/lib/gateway/proxy-deps";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
+import { isReservedRemoteName, REMOTE_NAME_PREFIX } from "@/lib/ingest/validate";
+
+const REMOTE_PREFIX_LABEL = REMOTE_NAME_PREFIX.slice(0, -1);
 
 function gatewaySecretError() {
   return NextResponse.json(
@@ -79,6 +82,12 @@ export const POST = withAuth(async (request: NextRequest) => {
     if (!name || !protocol || !baseUrl) {
       return NextResponse.json(
         { success: false, error: "Missing required fields: name, protocol, baseUrl" },
+        { status: 400 }
+      );
+    }
+    if (isReservedRemoteName(name)) {
+      return NextResponse.json(
+        { success: false, error: `name cannot start with "${REMOTE_PREFIX_LABEL}"` },
         { status: 400 }
       );
     }
