@@ -32,6 +32,12 @@ interface AgentAliasRuleDraft {
   aliases: string;
 }
 
+interface ObservedAgentToken {
+  token: string;
+  name: string;
+  source: "manual" | "builtin" | "as-is";
+}
+
 interface HiddenGroupDraft {
   name: string;
   patterns: string;
@@ -71,6 +77,9 @@ export default function DisplaySettings() {
   const [aliasesError, setAliasesError] = useState<string | null>(null);
   const [aliasesSaved, setAliasesSaved] = useState(false);
   const [agentAliasesDraft, setAgentAliasesDraft] = useState<AgentAliasRuleDraft[]>([]);
+  const [observedAgents, setObservedAgents] = useState<ObservedAgentToken[]>([]);
+  const [editingObserved, setEditingObserved] = useState<string | null>(null);
+  const [editingObservedName, setEditingObservedName] = useState("");
   const [agentAliasesBusy, setAgentAliasesBusy] = useState(false);
   const [agentAliasesError, setAgentAliasesError] = useState<string | null>(null);
   const [agentAliasesSaved, setAgentAliasesSaved] = useState(false);
@@ -113,8 +122,12 @@ export default function DisplaySettings() {
       setAliasesDraft(rules.map((r) => ({ name: r.name, aliases: r.aliases.join(", ") })));
     }
     if (agentAliasesJson.success) {
-      const rules = agentAliasesJson.data as Array<{ name: string; aliases: string[] }>;
-      setAgentAliasesDraft(rules.map((r) => ({ name: r.name, aliases: r.aliases.join(", ") })));
+      const d = agentAliasesJson.data as {
+        rules: Array<{ name: string; aliases: string[] }>;
+        observed: ObservedAgentToken[];
+      };
+      setAgentAliasesDraft(d.rules.map((r) => ({ name: r.name, aliases: r.aliases.join(", ") })));
+      setObservedAgents(Array.isArray(d.observed) ? d.observed : []);
     }
     if (hsJson.success) {
       const d = hsJson.data as { config: HiddenSourcesData };
@@ -340,6 +353,40 @@ export default function DisplaySettings() {
     setAgentAliasesDraft((prev) => prev.filter((_, i) => i !== idx));
   };
 
+  // 把已观测 UA token 采纳为手动规则（built-in / as-is 行点 Edit 后应用）：
+  // token 已在某手动行 aliases 中 → 更新该行 name；同名手动行存在 → 追加 token；
+  // 否则新增一行。仍需点 "Save Agent Aliases" 才落库
+  const adoptObservedAgent = (token: string, name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    setAgentAliasesSaved(false);
+    const tokenLc = token.toLowerCase();
+    setAgentAliasesDraft((prev) => {
+      const tokenRow = prev.findIndex((r) =>
+        r.aliases
+          .split(",")
+          .map((a) => a.trim().toLowerCase())
+          .filter(Boolean)
+          .includes(tokenLc)
+      );
+      if (tokenRow >= 0) {
+        return prev.map((r, i) => (i === tokenRow ? { ...r, name: trimmed } : r));
+      }
+      const nameRow = prev.findIndex(
+        (r) => r.name.trim().toLowerCase() === trimmed.toLowerCase()
+      );
+      if (nameRow >= 0) {
+        return prev.map((r, i) =>
+          i === nameRow
+            ? { ...r, aliases: r.aliases ? `${r.aliases}, ${token}` : token }
+            : r
+        );
+      }
+      return [...prev, { name: trimmed, aliases: token }];
+    });
+    setEditingObserved(null);
+  };
+
   const handleSaveAgentAliases = async () => {
     const rules = agentAliasesDraft
       .map((r) => ({
@@ -543,12 +590,17 @@ export default function DisplaySettings() {
           the user agent, e.g.{" "}
           <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">claude-cli</code>{" "}
           from <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">claude-cli/2.1.5 (external, cli)</code>).
-          Matching is case-insensitive. Known tools ({`claude-code, codex, gemini-cli, cursor`}) are
-          mapped automatically; aliases override the built-in mapping. Records
-          with no user agent are shown as {"(unknown)"}.
+          Matching is case-insensitive and manual aliases take priority over
+          the built-in mapping. Records with no user agent are shown as{" "}
+          {"(unknown)"}.
         </p>
 
         <div className="space-y-2">
+          <div className="hidden px-1 text-xs font-medium text-gray-400 md:grid md:grid-cols-[1fr_2fr_auto] md:gap-2">
+            <span>Display name</span>
+            <span>UA tokens</span>
+            <span />
+          </div>
           {agentAliasesDraft.map((rule, idx) => (
             <div key={idx} className="grid grid-cols-1 md:grid-cols-[1fr_2fr_auto] gap-2">
               <input
@@ -583,6 +635,106 @@ export default function DisplaySettings() {
           >
             + Add row
           </button>
+        </div>
+
+        <div className="mt-6">
+          <h4 className="mb-1 text-sm font-medium text-gray-700">
+            Observed user agents
+          </h4>
+          <p className="mb-3 text-xs text-gray-400">
+            UA tokens seen in your records and how each resolves.{" "}
+            <span className="rounded bg-blue-50 px-1.5 py-0.5 text-blue-600">manual</span>{" "}
+            = matched a rule above,{" "}
+            <span className="rounded bg-gray-100 px-1.5 py-0.5 text-gray-500">built-in</span>{" "}
+            = automatic known-tool mapping,{" "}
+            <span className="rounded bg-gray-100 px-1.5 py-0.5 text-gray-400">as-is</span>{" "}
+            = shown unchanged.
+          </p>
+          <div className="space-y-1.5">
+            <div className="hidden px-1 text-xs font-medium text-gray-400 md:grid md:grid-cols-[1fr_1fr_auto] md:gap-2">
+              <span>UA token</span>
+              <span>Agent</span>
+              <span className="md:justify-self-end">Source</span>
+            </div>
+            {observedAgents.map((o) => (
+              <div
+                key={o.token}
+                className="grid grid-cols-1 items-center gap-1 rounded border border-gray-100 bg-gray-50 px-3 py-2 md:grid-cols-[1fr_1fr_auto] md:gap-2"
+              >
+                <code className="font-mono text-xs text-gray-600 break-all">{o.token}</code>
+                {editingObserved === o.token ? (
+                  <>
+                    <input
+                      value={editingObservedName}
+                      onChange={(e) => setEditingObservedName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") adoptObservedAgent(o.token, editingObservedName);
+                        if (e.key === "Escape") setEditingObserved(null);
+                      }}
+                      placeholder="Display name"
+                      autoFocus
+                      className="w-full rounded border border-blue-300 bg-white px-2 py-1.5 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                    <div className="flex gap-1 md:justify-self-end">
+                      <button
+                        type="button"
+                        onClick={() => adoptObservedAgent(o.token, editingObservedName)}
+                        disabled={!editingObservedName.trim()}
+                        className="rounded border border-blue-200 px-2 py-1 text-xs text-blue-600 hover:bg-blue-50 disabled:opacity-50 min-h-[40px] md:min-h-0"
+                      >
+                        Apply
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditingObserved(null)}
+                        className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 min-h-[40px] md:min-h-0"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <span className="text-sm text-gray-600">{o.name}</span>
+                    <div className="flex items-center gap-1 md:justify-self-end">
+                      <span
+                        className={`rounded px-1.5 py-0.5 text-xs ${
+                          o.source === "manual"
+                            ? "bg-blue-50 text-blue-600"
+                            : o.source === "builtin"
+                              ? "bg-gray-100 text-gray-500"
+                              : "bg-gray-100 text-gray-400"
+                        }`}
+                      >
+                        {o.source}
+                      </span>
+                      {o.source !== "manual" && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingObserved(o.token);
+                            setEditingObservedName(o.name);
+                          }}
+                          className="rounded border border-gray-200 px-2 py-0.5 text-xs text-gray-500 hover:bg-gray-100 min-h-[40px] md:min-h-0"
+                        >
+                          Edit
+                        </button>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+            ))}
+            {observedAgents.length === 0 && (
+              <p className="text-sm text-gray-400">
+                No user agents recorded yet.
+              </p>
+            )}
+          </div>
+          <p className="text-xs text-gray-400">
+            Editing a built-in or as-is row adds it to the manual rules above;
+            click &quot;Save Agent Aliases&quot; to apply.
+          </p>
         </div>
 
         {agentAliasesError && (

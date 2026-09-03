@@ -4,6 +4,7 @@ import {
   BUILTIN_AGENT_MAP,
   resolveAgentName,
   resolveAgentUserAgents,
+  classifyAgentToken,
   UNKNOWN_AGENT,
 } from "@/lib/agent-utils";
 
@@ -34,6 +35,42 @@ describe("BUILTIN_AGENT_MAP", () => {
     expect(BUILTIN_AGENT_MAP["geminicli"]).toBe("gemini-cli");
     expect(BUILTIN_AGENT_MAP["aider"]).toBe("aider");
     expect(BUILTIN_AGENT_MAP["cursor-agent"]).toBe("cursor");
+  });
+});
+
+describe("classifyAgentToken（已观测 UA token 归类）", () => {
+  it("手动 aliases 命中 → manual（大小写不敏感，优先级最高）", () => {
+    const aliases = [{ name: "Codex CLI", aliases: ["codex", "codex_cli_rs"] }];
+    expect(classifyAgentToken("codex", aliases)).toEqual({
+      name: "Codex CLI",
+      source: "manual",
+    });
+    expect(classifyAgentToken("claude-cli", aliases)).toEqual({
+      name: "claude-code",
+      source: "builtin",
+    });
+  });
+
+  it("内置映射命中 → builtin（含恒等映射，与 resolveAgentName 语义一致）", () => {
+    expect(classifyAgentToken("claude-cli")).toEqual({
+      name: "claude-code",
+      source: "builtin",
+    });
+    expect(classifyAgentToken("codex_cli_rs")).toEqual({
+      name: "codex",
+      source: "builtin",
+    });
+    expect(classifyAgentToken("opencode")).toEqual({
+      name: "opencode",
+      source: "builtin",
+    });
+  });
+
+  it("未命中 → token 本身 as-is", () => {
+    expect(classifyAgentToken("python-requests")).toEqual({
+      name: "python-requests",
+      source: "as-is",
+    });
   });
 });
 

@@ -69,12 +69,13 @@ describe("/api/admin/settings/agent-aliases 管理 API", () => {
     expect(putRes.status).toBe(401);
   });
 
-  it("GET 默认返回空数组", async () => {
+  it("GET 默认返回空 rules 与空 observed", async () => {
     const token = await makeToken();
     const res = await GET(req("/api/admin/settings/agent-aliases", "GET", token));
     expect(res.status).toBe(200);
     const json = await res.json();
-    expect(json.data).toEqual([]);
+    expect(json.data.rules).toEqual([]);
+    expect(json.data.observed).toEqual([]);
   });
 
   it("PUT 非法规则 400", async () => {
@@ -111,7 +112,40 @@ describe("/api/admin/settings/agent-aliases 管理 API", () => {
     expect(res.status).toBe(200);
     const getRes = await GET(req("/api/admin/settings/agent-aliases", "GET", token));
     const json = await getRes.json();
-    expect(json.data).toEqual(rules);
+    expect(json.data.rules).toEqual(rules);
     expect(await loadAgentAliases()).toEqual(rules);
+  });
+
+  it("GET observed 只包含数据库中出现过的 UA token 及其解析", async () => {
+    const token = await makeToken();
+    await withSkipCache(async () => {
+      await db.insert(tokenRecords).values([
+        { model: "m", provider: "p", inputTokens: 1, outputTokens: 1, userAgent: "claude-cli/2.1.5 (external, cli)" },
+        { model: "m", provider: "p", inputTokens: 1, outputTokens: 1, userAgent: "Claude-CLI/2.1.6" }, // 同 token 去重
+        { model: "m", provider: "p", inputTokens: 1, outputTokens: 1, userAgent: "my-tool/1.0" },
+        { model: "m", provider: "p", inputTokens: 1, outputTokens: 1, userAgent: null }, // (unknown) 不进列表
+      ]);
+    });
+
+    // 无手动规则：builtin / as-is 归类
+    const res1 = await GET(req("/api/admin/settings/agent-aliases", "GET", token));
+    const json1 = await res1.json();
+    expect(json1.data.observed).toEqual([
+      { token: "claude-cli", name: "claude-code", source: "builtin" },
+      { token: "my-tool", name: "my-tool", source: "as-is" },
+    ]);
+
+    // 手动规则优先：claude-cli → manual
+    await PUT(
+      req("/api/admin/settings/agent-aliases", "PUT", token, {
+        rules: [{ name: "Claude Code Pro", aliases: ["claude-cli"] }],
+      })
+    );
+    const res2 = await GET(req("/api/admin/settings/agent-aliases", "GET", token));
+    const json2 = await res2.json();
+    expect(json2.data.observed).toEqual([
+      { token: "claude-cli", name: "Claude Code Pro", source: "manual" },
+      { token: "my-tool", name: "my-tool", source: "as-is" },
+    ]);
   });
 });

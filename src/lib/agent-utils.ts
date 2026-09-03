@@ -49,6 +49,30 @@ export function resolveAgentName(
   return BUILTIN_AGENT_MAP[token] ?? token;
 }
 
+export type AgentTokenSource = "manual" | "builtin" | "as-is";
+
+// 单个 UA token 的解析归类（供「数据库已出现 UA」只读展示）：
+// 手动 aliases 命中 → manual；内置映射命中 → builtin；否则 token 本身（as-is）。
+// token 需已 lowercase（extractUaToken 输出）
+export function classifyAgentToken(
+  token: string,
+  aliases: AgentAliasRule[] = []
+): { name: string; source: AgentTokenSource } {
+  const rules = Array.isArray(aliases) ? aliases : [];
+  for (const rule of rules) {
+    if (
+      rule.name &&
+      rule.aliases.some((a) => a.trim().toLowerCase() === token)
+    ) {
+      return { name: rule.name, source: "manual" };
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(BUILTIN_AGENT_MAP, token)) {
+    return { name: BUILTIN_AGENT_MAP[token]!, source: "builtin" };
+  }
+  return { name: token, source: "as-is" };
+}
+
 export type AgentUaFilter = { uas: string[] } | { unknown: true } | null;
 
 // 反找：agent 名 → 命中该 agent 的 UA 集合。
