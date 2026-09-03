@@ -723,8 +723,10 @@ export default function SyncPanel() {
               <div className="rounded border border-gray-100 bg-gray-50 p-2.5">
                 <p className="text-gray-400">Pending</p>
                 <p className="mt-0.5 font-mono font-medium">
-                  {status?.pendingCount ?? "—"}
-                  {status && status.pendingCount > 0 && <span className="ml-1 text-amber-600">unpushed</span>}
+                  {status && !status.configured ? "—" : (status?.pendingCount ?? "—")}
+                  {status?.configured && status.pendingCount > 0 && (
+                    <span className="ml-1 text-amber-600">unpushed</span>
+                  )}
                 </p>
               </div>
               <div className="rounded border border-gray-100 bg-gray-50 p-2.5">
