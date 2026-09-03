@@ -25,6 +25,8 @@ import { recordAuditLog } from "@/lib/admin/audit";
 
 export const BATCH_SIZE = 200;
 export const FETCH_TIMEOUT_MS = 10_000;
+// sync_last_error.message 截断上限（读取端另有 slice(0, 500) 兜底）
+export const MAX_SYNC_ERROR_MESSAGE_CHARS = 300;
 export const RETRY_INTERVAL_MS = 60_000;
 export const MAX_BATCH_REJECTED_RETRIES = 50;
 export const BASE_BACKOFF_MS = 1_000;
@@ -310,9 +312,9 @@ export class SyncPusher {
         ...(this.dispatcher ? { dispatcher: this.dispatcher } : {}),
       });
     } catch (err) {
-      const aborted = err instanceof Error && err.name === "TimeoutError";
-      const message = aborted ? "fetch timeout" : err instanceof Error ? err.message.slice(0, 200) : "network error";
-      await this.recordError(aborted ? "network" : "network", message);
+      console.error("[sync] push failed:", err);
+      const message = describeFetchError(err);
+      await this.recordError("network", message);
       return { kind: "network", message, pushedCount: 0, skippedInvalidCount: 0, skippedInvalidIds: [], boundUid: null };
     }
 
@@ -345,12 +347,29 @@ export class SyncPusher {
     }
 
     if (status === 401 || status === 403) {
-      await this.recordError("auth", `A rejected batch (HTTP ${status}${errorSuffix(parsed)})`);
+      await this.recordError(
+        "auth",
+        `A rejected batch (HTTP ${status}${errorSuffix(parsed)}) — check ingest token / instance binding on A`
+      );
       return { kind: "auth", message: `HTTP ${status}`, pushedCount: 0, skippedInvalidCount: 0, skippedInvalidIds: [], boundUid: null };
     }
     if (status === 400) {
       await this.recordError("batch_rejected", `A rejected batch (HTTP 400${errorSuffix(parsed)})`);
       return { kind: "batch_rejected", message: `HTTP 400`, pushedCount: 0, skippedInvalidCount: 0, skippedInvalidIds: [], boundUid: null };
+    }
+    if (status === 404) {
+      await this.recordError(
+        "network",
+        `A returned HTTP 404${errorSuffix(parsed)} — check target URL path (should be .../ingest/records)`
+      );
+      return {
+        kind: "network",
+        message: "HTTP 404",
+        pushedCount: 0,
+        skippedInvalidCount: 0,
+        skippedInvalidIds: [],
+        boundUid: null,
+      };
     }
     // 429 / 5xx / 3xx
     await this.recordError(status >= 500 ? "server" : "network", `A returned HTTP ${status}${errorSuffix(parsed)}`);
@@ -395,6 +414,86 @@ function errorSuffix(parsed: Record<string, unknown> | null): string {
     return `: ${parsed.error.slice(0, 120)}`;
   }
   return "";
+}
+
+// ---- 网络错误诊断（纯函数，可单测） ----
+// undici 的通用文案（"fetch failed" / "connect ECONNREFUSED"）吞掉根因，
+// 这里沿 err.cause 链收集 code/address/port/host，映射为人类可读 + 可操作的提示。
+
+interface CauseFacts {
+  codes: string[];
+  addresses: string[]; // 已格式化的 "address:port"（去重，保持出现顺序）
+  host?: string;
+}
+
+function collectCauseFacts(err: unknown, facts: CauseFacts, depth: number): void {
+  if (depth > 6 || err === null || err === undefined) return;
+  // AggregateError：undici 对多地址目标（如 localhost → ::1 + 127.0.0.1）
+  // 会把多个失败合并为一个 AggregateError，逐个展开收集
+  if (Array.isArray(err)) {
+    for (const item of err) collectCauseFacts(item, facts, depth + 1);
+    return;
+  }
+  if (typeof err !== "object") return;
+  const rec = err as Record<string, unknown>;
+  if (typeof rec.code === "string" && rec.code.length > 0 && !facts.codes.includes(rec.code)) {
+    facts.codes.push(rec.code);
+  }
+  if (typeof rec.address === "string") {
+    const addr = (typeof rec.port === "number" || typeof rec.port === "string")
+      ? `${rec.address}:${rec.port}`
+      : rec.address;
+    if (!facts.addresses.includes(addr)) facts.addresses.push(addr);
+  }
+  if (typeof rec.hostname === "string" && facts.host === undefined) facts.host = rec.hostname;
+  if (Array.isArray(rec.errors)) {
+    for (const item of rec.errors) collectCauseFacts(item, facts, depth + 1);
+  }
+  if (rec.cause !== undefined) collectCauseFacts(rec.cause, facts, depth + 1);
+}
+
+function codeHint(code: string, facts: CauseFacts): string | null {
+  const addr = facts.addresses.length > 0 ? ` (${facts.addresses.join(", ")})` : "";
+  switch (code) {
+    case "ECONNREFUSED":
+      return (
+        `connection refused${addr} — target unreachable; check URL/port. ` +
+        "If this instance (B) runs in Docker and A is on the host, localhost/127.0.0.1 inside " +
+        "the container refers to the container itself — use host.docker.internal or the host IP"
+      );
+    case "ENOTFOUND":
+    case "EAI_AGAIN":
+      return `DNS resolution failed${facts.host ? ` for ${facts.host}` : ""} — check the target hostname`;
+    case "ETIMEDOUT":
+      return `connection timed out${addr} — target unreachable or blocked by firewall`;
+    case "ECONNRESET":
+      return `connection reset by target${addr}`;
+    default:
+      if (code.startsWith("CERT_") || code === "SELF_SIGNED_CERT_IN_CHAIN" || code === "DEPTH_ZERO_SELF_SIGNED_CERT") {
+        return `TLS certificate problem (${code}) — check the target's certificate / CA trust`;
+      }
+      return null;
+  }
+}
+
+// 从 fetch 抛出的错误对象生成带诊断信息的 message；无 cause 时回退 err.message
+export function describeFetchError(err: unknown): string {
+  const facts: CauseFacts = { codes: [], addresses: [] };
+  collectCauseFacts(err, facts, 0);
+  const hints: string[] = [];
+  for (const code of facts.codes) {
+    const hint = codeHint(code, facts);
+    if (hint && !hints.includes(hint)) hints.push(hint);
+  }
+  let message: string;
+  if (hints.length > 0) {
+    message = hints.join("; ");
+  } else if (err instanceof Error && err.name === "TimeoutError") {
+    message = `fetch timeout after ${FETCH_TIMEOUT_MS / 1000}s — target too slow or unreachable`;
+  } else {
+    message = err instanceof Error ? err.message : "network error";
+  }
+  return message.slice(0, MAX_SYNC_ERROR_MESSAGE_CHARS);
 }
 
 // 模块级单例（与 health.ts / session.ts 同范式）

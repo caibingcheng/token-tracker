@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vites
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { SyncPusher, BATCH_SIZE } from "./pusher";
+import { SyncPusher, BATCH_SIZE, describeFetchError } from "./pusher";
 import { sql } from "drizzle-orm";
 import { db, initDatabase, tokenRecords } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
@@ -235,5 +235,88 @@ describe("SyncPusher", () => {
     const all = await withSkipCache(async () => db.select().from(tokenRecords));
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect((await config()).cursor).toBe(all[all.length - 1]!.id);
+  });
+
+  it("records actionable message on ECONNREFUSED (Docker localhost hint)", async () => {
+    await insertRecord();
+    const cause = { code: "ECONNREFUSED", syscall: "connect", address: "127.0.0.1", port: 3001 };
+    const fetchMock = vi.fn(async () => {
+      throw new TypeError("fetch failed", { cause });
+    });
+    const pusher = new SyncPusher({ fetchImpl: fetchMock as typeof fetch });
+    await pusher.trigger();
+    const c = await config();
+    const err = JSON.parse(c.lastError!) as { type: string; message: string };
+    expect(err.type).toBe("network");
+    expect(err.message).toContain("connection refused (127.0.0.1:3001)");
+    expect(err.message).toContain("host.docker.internal");
+  });
+
+  it("expands AggregateError causes from multi-address targets", async () => {
+    const agg = new AggregateError(
+      [
+        Object.assign(new Error("connect ECONNREFUSED ::1:3001"), {
+          code: "ECONNREFUSED",
+          address: "::1",
+          port: 3001,
+        }),
+        Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:3001"), {
+          code: "ECONNREFUSED",
+          address: "127.0.0.1",
+          port: 3001,
+        }),
+      ],
+      "fetch failed"
+    );
+    const err = new TypeError("fetch failed", { cause: agg });
+    const message = describeFetchError(err);
+    expect(message).toContain("connection refused");
+    expect(message).toContain("127.0.0.1:3001");
+    expect(message).toContain("Docker");
+  });
+
+  it("maps ENOTFOUND to DNS hint and TimeoutError to timeout message", () => {
+    const notFound = new TypeError("fetch failed", {
+      cause: { code: "ENOTFOUND", syscall: "getaddrinfo", hostname: "a.example.com" },
+    });
+    expect(describeFetchError(notFound)).toContain("DNS resolution failed for a.example.com");
+
+    const timeout = new Error("The operation timed out.");
+    timeout.name = "TimeoutError";
+    expect(describeFetchError(timeout)).toBe("fetch timeout after 10s — target too slow or unreachable");
+  });
+
+  it("maps TLS certificate errors to a certificate hint", () => {
+    const certErr = new TypeError("fetch failed", {
+      cause: { code: "CERT_HAS_EXPIRED", host: "a.example.com" },
+    });
+    expect(describeFetchError(certErr)).toContain("TLS certificate problem (CERT_HAS_EXPIRED)");
+  });
+
+  it("falls back to err.message when no cause info is available", () => {
+    expect(describeFetchError(new TypeError("fetch failed"))).toBe("fetch failed");
+    expect(describeFetchError("weird")).toBe("network error");
+  });
+
+  it("appends ingest-token hint to 401 error message", async () => {
+    await insertRecord();
+    const fetchMock = vi.fn(async () => jsonResponse(401, { error: "Unauthorized" }));
+    const pusher = new SyncPusher({ fetchImpl: fetchMock as typeof fetch });
+    await pusher.trigger();
+    const c = await config();
+    const err = JSON.parse(c.lastError!) as { type: string; message: string };
+    expect(err.type).toBe("auth");
+    expect(err.message).toContain("check ingest token / instance binding on A");
+  });
+
+  it("appends URL-path hint to 404 error message", async () => {
+    await insertRecord();
+    const fetchMock = vi.fn(async () => jsonResponse(404, { error: "Not Found" }));
+    const pusher = new SyncPusher({ fetchImpl: fetchMock as typeof fetch });
+    await pusher.trigger();
+    const c = await config();
+    const err = JSON.parse(c.lastError!) as { type: string; message: string };
+    expect(err.type).toBe("network");
+    expect(err.message).toContain("check target URL path (should be .../ingest/records)");
   });
 });

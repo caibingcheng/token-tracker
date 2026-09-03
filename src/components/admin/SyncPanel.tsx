@@ -124,6 +124,7 @@ export default function SyncPanel() {
   const [instanceName, setInstanceName] = useState("");
   const [configuredInstance, setConfiguredInstance] = useState("");
   const [boundUid, setBoundUid] = useState<string | null>(null);
+  const [editingConfig, setEditingConfig] = useState(false); // false = 查看模式；未配置时自动进入编辑模式
   const [configBusy, setConfigBusy] = useState(false);
   const [configError, setConfigError] = useState<string | null>(null);
   const [configSuccess, setConfigSuccess] = useState<string | null>(null);
@@ -190,10 +191,8 @@ export default function SyncPanel() {
           epoch: string;
           boundUid: string | null;
         };
-        setTargetUrl(data.targetUrl ?? "");
-        setTokenInput(""); // 不回显
+        // 双态表单：查看模式下输入框不回填（token 永不回显），仅在进入编辑模式时回填
         setConfiguredInstance(data.instance);
-        setInstanceName(data.instance);
         setBoundUid(data.boundUid);
       }
     } catch {
@@ -201,18 +200,21 @@ export default function SyncPanel() {
     }
   }, []);
 
-  const loadStatus = useCallback(async () => {
+  const loadStatus = useCallback(async (): Promise<SyncStatusData | null> => {
     try {
       const res = await apiFetch("/api/admin/sync/status");
       const json = await res.json();
       if (json.success) {
-        setStatus(json.data as SyncStatusData);
+        const data = json.data as SyncStatusData;
+        setStatus(data);
+        return data;
       } else {
         setStatusError(json.error || "Failed to load sync status");
       }
     } catch {
       setStatusError("Network error");
     }
+    return null;
   }, []);
 
   const reloadAll = useCallback(async () => {
@@ -220,7 +222,9 @@ export default function SyncPanel() {
     setTokensError(null);
     setInstancesError(null);
     setStatusError(null);
-    await Promise.all([loadTokens(), loadInstances(), loadConfig(), loadStatus()]);
+    const [, , , statusData] = await Promise.all([loadTokens(), loadInstances(), loadConfig(), loadStatus()]);
+    // 未配置时无查看摘要可看，直接进入编辑模式
+    if (statusData && !statusData.configured) setEditingConfig(true);
     setLoading(false);
   }, [loadTokens, loadInstances, loadConfig, loadStatus]);
 
@@ -390,11 +394,10 @@ export default function SyncPanel() {
           epoch: string;
           boundUid: string | null;
         };
-        setTargetUrl(data.targetUrl ?? "");
         setTokenInput("");
         setConfiguredInstance(data.instance);
-        setInstanceName(data.instance);
         setBoundUid(data.boundUid);
+        setEditingConfig(false); // 保存成功回查看模式
         setConfigSuccess("Sync config saved");
         await loadStatus();
       } else {
@@ -405,6 +408,25 @@ export default function SyncPanel() {
     } finally {
       setConfigBusy(false);
     }
+  };
+
+  // 进入编辑模式：回填当前已保存值（token 永不回填，永远留空）
+  const startEditConfig = () => {
+    setConfigError(null);
+    setConfigSuccess(null);
+    setTargetUrl(status?.targetUrl ?? "");
+    setInstanceName(status?.instance ?? configuredInstance);
+    setTokenInput("");
+    setEditingConfig(true);
+  };
+
+  // 放弃修改，回查看模式
+  const cancelEditConfig = () => {
+    setConfigError(null);
+    setTargetUrl("");
+    setInstanceName(configuredInstance);
+    setTokenInput("");
+    setEditingConfig(false);
   };
 
   // ---- B 端状态操作 ----
@@ -501,67 +523,117 @@ export default function SyncPanel() {
             <p className="mb-3 text-xs text-gray-500">
               Push this instance&apos;s token records to a central (A) instance. Leave empty to disable.
             </p>
-            <p className="mb-3 rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-700">
-              Saving replaces the current sync URL / token if already configured (you&apos;ll be asked to confirm). Changing the target or token affects pushes to the old A and its TOFU binding.
-            </p>
-            <div className="grid gap-3 md:grid-cols-3">
-              <label className="block">
-                <span className="mb-1 block text-xs font-medium text-gray-600">Central instance URL (auto-appends {"/ingest/records"})</span>
-                <input
-                  type="text"
-                  value={targetUrl}
-                  onChange={(e) => setTargetUrl(e.target.value)}
-                  placeholder="https://tracker.example.com"
-                  className={`w-full rounded border px-3 py-2 text-sm focus:outline-none focus:ring-1 md:text-xs ${
-                    urlError
-                      ? "border-red-300 focus:border-red-500 focus:ring-red-500"
-                      : "border-gray-300 focus:border-blue-500 focus:ring-blue-500"
-                  }`}
-                />
-                {urlError && <p className="mt-1 text-xs text-red-600">{urlError}</p>}
-              </label>
-              <label className="block">
-                <span className="mb-1 block text-xs font-medium text-gray-600">Ingest token (it-…)</span>
-                <input
-                  type="password"
-                  value={tokenInput}
-                  onChange={(e) => setTokenInput(e.target.value)}
-                  placeholder={status?.hasToken ? "•••• (already set, leave empty to keep)" : "it-…"}
-                  className={`w-full rounded border px-3 py-2 text-sm focus:outline-none focus:ring-1 md:text-xs ${
-                    tokenError
-                      ? "border-red-300 focus:border-red-500 focus:ring-red-500"
-                      : "border-gray-300 focus:border-blue-500 focus:ring-blue-500"
-                  }`}
-                />
-                {tokenError && <p className="mt-1 text-xs text-red-600">{tokenError}</p>}
-              </label>
-              <label className="block">
-                <span className="mb-1 block text-xs font-medium text-gray-600">Instance name (display only)</span>
-                <input
-                  type="text"
-                  value={instanceName}
-                  onChange={(e) => setInstanceName(e.target.value)}
-                  placeholder="[a-z0-9-]"
-                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 md:text-xs"
-                />
-              </label>
-            </div>
-            <p className="mt-2 text-xs text-gray-500">
-              The instance name is a display name — renaming is safe at any time. Your stable identity is the uid
-              ({status?.uid ? status.uid.slice(0, 12) + "…" : "—"}), which never changes.
-            </p>
-            <div className="mt-3 flex flex-wrap items-center gap-3">
-              <button
-                type="button"
-                onClick={saveConfig}
-                disabled={!canSaveConfig}
-                className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 min-h-[40px] md:min-h-0"
-              >
-                {configBusy ? "Saving…" : "Save config"}
-              </button>
-              {configError && <span className="text-xs text-red-600">{configError}</span>}
-              {configSuccess && <span className="text-xs text-green-600">{configSuccess}</span>}
-            </div>
+            {editingConfig ? (
+              <>
+                <p className="mb-3 rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-700">
+                  Saving replaces the current sync URL / token if already configured (you&apos;ll be asked to confirm). Changing the target or token affects pushes to the old A and its TOFU binding.
+                </p>
+                <div className="grid gap-3 md:grid-cols-3">
+                  <label className="block">
+                    <span className="mb-1 block text-xs font-medium text-gray-600">Central instance URL (auto-appends {"/ingest/records"})</span>
+                    <input
+                      type="text"
+                      value={targetUrl}
+                      onChange={(e) => setTargetUrl(e.target.value)}
+                      placeholder="https://tracker.example.com"
+                      className={`w-full rounded border px-3 py-2 text-sm focus:outline-none focus:ring-1 md:text-xs ${
+                        urlError
+                          ? "border-red-300 focus:border-red-500 focus:ring-red-500"
+                          : "border-gray-300 focus:border-blue-500 focus:ring-blue-500"
+                      }`}
+                    />
+                    {urlError && <p className="mt-1 text-xs text-red-600">{urlError}</p>}
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-xs font-medium text-gray-600">Ingest token (it-…)</span>
+                    <input
+                      type="password"
+                      value={tokenInput}
+                      onChange={(e) => setTokenInput(e.target.value)}
+                      placeholder={status?.hasToken ? "•••• (already set, leave empty to keep)" : "it-…"}
+                      className={`w-full rounded border px-3 py-2 text-sm focus:outline-none focus:ring-1 md:text-xs ${
+                        tokenError
+                          ? "border-red-300 focus:border-red-500 focus:ring-red-500"
+                          : "border-gray-300 focus:border-blue-500 focus:ring-blue-500"
+                      }`}
+                    />
+                    {tokenError && <p className="mt-1 text-xs text-red-600">{tokenError}</p>}
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-xs font-medium text-gray-600">Instance name (display only)</span>
+                    <input
+                      type="text"
+                      value={instanceName}
+                      onChange={(e) => setInstanceName(e.target.value)}
+                      placeholder="[a-z0-9-]"
+                      className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 md:text-xs"
+                    />
+                  </label>
+                </div>
+                <p className="mt-2 text-xs text-gray-500">
+                  The instance name is a display name — renaming is safe at any time. Your stable identity is the uid
+                  ({status?.uid ? status.uid.slice(0, 12) + "…" : "—"}), which never changes.
+                </p>
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={saveConfig}
+                    disabled={!canSaveConfig}
+                    className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 min-h-[40px] md:min-h-0"
+                  >
+                    {configBusy ? "Saving…" : "Save"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={cancelEditConfig}
+                    disabled={configBusy}
+                    className="rounded border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50 min-h-[40px] md:min-h-0"
+                  >
+                    Cancel
+                  </button>
+                  {configError && <span className="text-xs text-red-600">{configError}</span>}
+                  {configSuccess && <span className="text-xs text-green-600">{configSuccess}</span>}
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="grid gap-3 text-xs md:grid-cols-3">
+                  <div className="rounded border border-gray-100 bg-gray-50 p-2.5">
+                    <p className="text-gray-400">Central instance URL</p>
+                    <p className="mt-0.5 font-mono font-medium break-all">{status?.targetUrl ?? "—"}</p>
+                  </div>
+                  <div className="rounded border border-gray-100 bg-gray-50 p-2.5">
+                    <p className="text-gray-400">Ingest token</p>
+                    <p className="mt-0.5">
+                      {status?.hasToken ? (
+                        <span className="inline-block rounded border border-green-200 bg-green-50 px-1.5 py-0.5 text-[10px] font-medium text-green-700">
+                          Configured ✓
+                        </span>
+                      ) : (
+                        <span className="inline-block rounded border border-gray-200 bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500">
+                          Not set
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                  <div className="rounded border border-gray-100 bg-gray-50 p-2.5">
+                    <p className="text-gray-400">Instance name</p>
+                    <p className="mt-0.5 font-medium break-all">{status?.instance ?? "—"}</p>
+                  </div>
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={startEditConfig}
+                    className="rounded border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 min-h-[40px] md:min-h-0"
+                  >
+                    Edit
+                  </button>
+                  {configError && <span className="text-xs text-red-600">{configError}</span>}
+                  {configSuccess && <span className="text-xs text-green-600">{configSuccess}</span>}
+                </div>
+              </>
+            )}
 
             <div className="mt-5 border-t border-gray-100 pt-4">
               <h3 className="mb-2 text-xs font-semibold text-gray-600">Push Status</h3>

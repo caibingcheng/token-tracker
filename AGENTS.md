@@ -122,6 +122,7 @@ docker compose up -d                                 # 本地运行
 - **两端同代码库**：A/B 均为本仓库，B 仅需在 Admin Sync tab 配置 URL + token；未配置同步时 worker 完全不起动（单机零开销）
 - **推送机制**（`src/lib/sync/`）：持久化游标队列 —— settings `sync_cursor` 即队列水位，推送 payload `{instanceUid, instance, epoch, records[]}`（`SELECT id > cursor AND COALESCE(virtual_key_id,0) != -1 ORDER BY id LIMIT 200`），A ack 后推进游标；**严格串行**（拉取 → 推送 → ack → 推进），`SyncPusher` 模块级单例（`src/lib/sync/pusher.ts`）in-flight 互斥锁；onUsage 写库后 fire-and-forget `notify()` + 60s 定时兜底；**单进程假设**（一个 B = 一进程连一 SQLite，不支持同库多进程）
   - **分级重试**：2xx 推进游标（skippedInvalid 计入 `sync_dropped_count`）；401/403 **无限退避不 drop**（1s→5min 封顶，索引 `lastError.type=auth` 红字）；400 连续 50 次自动 drop 该批（推进游标 + dropped 累计 + 审计）；5xx/网络/超时无限重试
+  - **错误信息诊断**：网络失败经 `describeFetchError(err)` 沿 `cause` 链（含 AggregateError 多地址展开）提取 code/address/port，映射为人类可读提示（ECONNREFUSED 附 Docker localhost 陷阱提示、ENOTFOUND/EAI_AGAIN → DNS、CERT_* → TLS 证书、TimeoutError → 超时），HTTP 401/403 追加 token/binding 提示、404 追加 URL path 提示；message 截断 300 字符（读取端另有 slice(0, 500) 兜底）；完整 cause 链经 `console.error("[sync] push failed:", err)` 进服务端日志
   - **游标推进细节**：以原始扫描（含被跳过的 -1 记录）的最大 id 推进，防停在哨兵记录前反复空扫；`stream-usage`-式批注
   - **哨兵防级联**：`virtual_key_id = -1` 的记录（经 ingest 进入本机）**不再向外转发** —— 级联拓扑（C→B→A）B 只做末端展示，环路（A→B→A）自然断开；本地 upstream/vk 名新增校验禁止 `remote/` 前缀（保留字隔离命名空间）
 - **A 侧接收**（`src/app/ingest/records/route.ts`，/api 之外 + `runtime=nodejs` + `dynamic=force-dynamic`）：`Authorization: Bearer it-xxx` 全表解密比对（仿 `resolveVirtualKey`，**同步 `.all()` 直读 DB** —— withSkipCache 基于 AsyncLocalStorage，async 路径会丢上下文落到缓存读到旧行集）；内存限流 + body ≤2MB + 批 ≤500；TOFU 绑定（先推先绑，**按 uid**，uid 不匹配 403 `instance_mismatch`，响应回显 `boundUid`）；每次推送顺带 `UPDATE sync_instances SET instance_name = ?`（改名即时生效）；**部分接受**（单条非法跳过 + `skippedInvalid` ids，结构性错误整批 400）
@@ -388,7 +389,7 @@ docker compose up -d
   - `src/app/api/dashboard/route.test` / `src/app/api/records/route.test`：Dashboard/Records API 集成（含 agent 参数按派生工具名反找 / unknown 走 IS NULL / 未知 agent 400 / records 行 `keyName`）
   - `src/lib/ingest/validate.test`：payload 校验（instance 格式、结构错误 400、批量上限、部分接受 skippedInvalid、token 非负、userAgent 截断、空批）
   - `src/app/ingest/records/route.test`：ingest 端点集成（临时 SQLite + 真实 handler + 真实 token）——401/禁用、缺 instanceUid 400、2MB、400 超限、uid TOFU 绑定与 instance_mismatch、字段改写（remote 前缀 + vk=-1 + remote_instance_uid + createdAt 保留）、同 epoch 去重重推、epoch 变化重置水位、部分接受、同实例并发串行化、**同名不同 uid 双设备水位独立**、**同 uid 改名 instance_name 刷新**
-  - `src/lib/sync/pusher.test`：推送 worker（mock fetch）——成功推进（含 -1 哨兵夹心、redirect=manual、payload 携带 instanceUid、boundUid ack 锁定）、401 不 drop、5xx/网络不 drop、400 五十次自动 drop 累计计数、skippedInvalid 计入 dropped、未配置不启动、多批推送
+  - `src/lib/sync/pusher.test`：推送 worker（mock fetch）——成功推进（含 -1 哨兵夹心、redirect=manual、payload 携带 instanceUid、boundUid ack 锁定）、401 不 drop、5xx/网络不 drop、400 五十次自动 drop 累计计数、skippedInvalid 计入 dropped、未配置不启动、多批推送；错误诊断 `describeFetchError`（ECONNREFUSED + Docker localhost 提示、ENOTFOUND DNS 提示、TLS 证书提示、TimeoutError、AggregateError 多地址展开、无 cause 回退 err.message）+ HTTP 401/404 提示后缀
   - `src/lib/sync/config.test`：URL 格式校验、token 加密往返与清除、instance/uid 校验、cursor/dropped 读写往返、reset 语义（dropped 保留、**uid 不重置**）、instance/uid/epoch 自动生成持久
   - `src/lib/model-prices-service.test`：可见性（近期流量 30 天窗口、推送模型行集含全历史 + 来源标注、active 判定、过期推送模型默认隐藏、**uid 等值 + instance_name LIKE 兜底**、改名后历史行仍可发现）
 - 新增纯逻辑模块（如解析器、路由匹配、加密）时应同步提交单测
