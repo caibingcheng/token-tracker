@@ -15,6 +15,7 @@ export const tokenRecords = sqliteTable("token_records", {
   virtualKeyId: integer("virtual_key_id"),
   userAgent: text("user_agent"),
   requestModel: text("request_model"), // 客户端原始请求名（虚拟名路由场景可追溯）
+  remoteInstanceUid: text("remote_instance_uid"), // 来源实例稳定身份键（NULL = 本地记录；非 NULL = ingest 推送来源）
   createdAt: text("created_at").$defaultFn(() => new Date().toISOString()),
 }, (table) => [
   index("idx_token_records_created_at").on(table.createdAt),
@@ -25,6 +26,7 @@ export const tokenRecords = sqliteTable("token_records", {
   index("idx_token_records_agent_created_at").on(table.agent, table.createdAt),
   index("idx_token_records_virtual_key_id").on(table.virtualKeyId),
   index("idx_token_records_vk_created_at").on(table.virtualKeyId, table.createdAt),
+  index("idx_token_records_remote_instance_uid_created_at").on(table.remoteInstanceUid, table.createdAt),
 ]);
 
 export type TokenRecord = typeof tokenRecords.$inferSelect;
@@ -167,3 +169,30 @@ export const modelPrices = sqliteTable("model_prices", {
 
 export type ModelPrice = typeof modelPrices.$inferSelect;
 export type NewModelPrice = typeof modelPrices.$inferInsert;
+
+// 多实例同步：A 侧 ingest token（仿 virtual_keys 模式，AES-256-GCM 加密，写后不可读）
+export const ingestTokens = sqliteTable("ingest_tokens", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  name: text("name").notNull(),
+  apiKeyEncrypted: text("api_key_encrypted").notNull(),
+  boundUid: text("bound_uid"), // TOFU 绑定目标（B 实例 uid），NULL = 未绑定
+  enabled: integer("enabled").notNull().default(1),
+  lastUsedAt: text("last_used_at"),
+  createdAt: text("created_at").$defaultFn(() => new Date().toISOString()),
+});
+
+export type IngestToken = typeof ingestTokens.$inferSelect;
+export type NewIngestToken = typeof ingestTokens.$inferInsert;
+
+// 多实例同步：A 侧去重水位表（每实例一行，uid 主键；epoch 变化 → 水位归零）
+// instance_name 为展示名（每次推送刷新），改名即时生效；重名无害
+export const syncInstances = sqliteTable("sync_instances", {
+  uid: text("uid").primaryKey(),
+  instanceName: text("instance_name"),
+  epoch: text("epoch").notNull(),
+  lastRecordId: integer("last_record_id").notNull().default(0),
+  updatedAt: text("updated_at"),
+});
+
+export type SyncInstance = typeof syncInstances.$inferSelect;
+export type NewSyncInstance = typeof syncInstances.$inferInsert;

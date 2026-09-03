@@ -2,11 +2,16 @@ import { db } from "@/lib/db";
 import { tokenRecords } from "@/lib/db";
 import { resolveProviderFilter, loadHiddenProviderGroups } from "@/lib/provider-utils";
 import { resolveNormalizedModelFilter } from "@/lib/model-utils";
+import { loadAgentAliases } from "@/lib/auth/settings";
+import {
+  resolveAgentUserAgents,
+  type AgentUaFilter,
+} from "@/lib/agent-utils";
 
 export interface DashboardFilters {
   providerFilter: string[] | null;
   modelFilter: string[] | null;
-  agentFilter: string | null;
+  agentUaFilter: AgentUaFilter;
 }
 
 export class FilterValidationError extends Error {
@@ -52,9 +57,21 @@ export async function resolveDashboardFilters(
     modelFilter = resolveNormalizedModelFilter(model, allRawModels, providerByModel, groups);
   }
 
-  const agentFilter = agent && agent !== "all" ? agent : null;
+  // Agent 维度（派生工具名）：反找 agent 名 → 命中该 agent 的 UA 集合
+  let agentUaFilter: AgentUaFilter = null;
+  if (agent && agent !== "all") {
+    const aliases = await loadAgentAliases();
+    const uaRows = await db
+      .selectDistinct({ ua: tokenRecords.userAgent })
+      .from(tokenRecords);
+    const allUas: Array<string | null> = uaRows.map((r: any) => r.ua);
+    agentUaFilter = resolveAgentUserAgents(agent, allUas, aliases);
+    if (!agentUaFilter) {
+      throw new FilterValidationError(`Unknown agent: ${agent}`);
+    }
+  }
 
-  return { providerFilter, modelFilter, agentFilter };
+  return { providerFilter, modelFilter, agentUaFilter };
 }
 
 export function validateFilterOrThrow(

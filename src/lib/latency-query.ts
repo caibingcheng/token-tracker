@@ -5,11 +5,26 @@ import {
   computeRangeStartDateKey,
 } from "@/lib/timezone-utils";
 import { normalizeModel } from "@/lib/model-utils";
-import { loadUpstreamModelRows } from "@/lib/model-prices-service";
+import { loadUpstreamModelRows, RECENT_ACTIVITY_WINDOW_MS } from "@/lib/model-prices-service";
 import { loadHiddenSources } from "@/lib/auth/settings";
 import { toNum } from "@/lib/number-utils";
 import { providerGroupKey, type HiddenProviderGroup } from "@/lib/provider-utils";
 import type { ModelAliasRule } from "@/lib/model-registry";
+import type { AgentUaFilter } from "@/lib/agent-utils";
+import { gte } from "drizzle-orm";
+import { withSkipCache } from "@/lib/db/cache";
+
+// 近 30 天有记录（本机 + 推送）模型集合（与 model_prices 面板同源）
+async function loadRecentActivityModels(): Promise<Set<string>> {
+  const cutoff = new Date(Date.now() - RECENT_ACTIVITY_WINDOW_MS).toISOString();
+  const rows = (await withSkipCache(async () =>
+    db
+      .selectDistinct({ model: tokenRecords.model })
+      .from(tokenRecords)
+      .where(gte(tokenRecords.createdAt, cutoff))
+  )) as Array<{ model: string }>;
+  return new Set(rows.map((r) => r.model));
+}
 
 // 延迟统计：TTFT（流式首 token）/ 总延迟 / 生成速度。
 // ttft_ms 仅流式请求有值（非流式为 NULL），latency_ms 为全部请求。
@@ -217,17 +232,21 @@ export function aggregateLatencyByModelByDate(
   return result;
 }
 
-// 当前启用 upstream 的非通配 enabled_models 并集（与 model_prices 的 active 判定同源）
+// 当前启用 upstream 的非通配 enabled_models 并集 ∪ 近 30 天有记录的模型
+// （与 model_prices 面板的 active/近期流量可见性同源；推送记录计入近期流量）
 export async function loadActiveModelSet(): Promise<Set<string>> {
-  const rows = await loadUpstreamModelRows();
-  return new Set(rows.map((r) => r.model));
+  const [rows, recent] = await Promise.all([
+    loadUpstreamModelRows(),
+    loadRecentActivityModels(),
+  ]);
+  return new Set([...rows.map((r) => r.model), ...Array.from(recent)]);
 }
 
 export async function queryLatencyStats(params: {
   range: string;
   providerFilter?: string[] | null;
   modelFilter?: string[] | null;
-  agentFilter?: string | null;
+  agentUaFilter?: AgentUaFilter;
   timezoneOffsetMinutes: number;
   groups: HiddenProviderGroup[];
   aliases: ModelAliasRule[];
@@ -240,7 +259,7 @@ export async function queryLatencyStats(params: {
     range,
     providerFilter,
     modelFilter,
-    agentFilter,
+    agentUaFilter,
     timezoneOffsetMinutes,
     groups,
     aliases,
@@ -266,7 +285,7 @@ export async function queryLatencyStats(params: {
     dateFilter,
     providerFilter ?? null,
     modelFilter ?? null,
-    agentFilter ?? null,
+    agentUaFilter ?? null,
     timezoneOffsetMinutes,
     exclude
   );

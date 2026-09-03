@@ -12,7 +12,6 @@ import {
 } from "@/lib/auth/settings";
 
 const ORIG_DB = process.env.SQLITE_DATABASE_PATH;
-const ORIG_HIDDEN = process.env.HIDDEN_PROVIDERS;
 const ORIG_TTL = process.env.SESSION_TOKEN_TTL_HOURS;
 
 let dir: string;
@@ -26,14 +25,11 @@ afterAll(() => {
   rmSync(dir, { recursive: true, force: true });
   if (ORIG_DB === undefined) delete process.env.SQLITE_DATABASE_PATH;
   else process.env.SQLITE_DATABASE_PATH = ORIG_DB;
-  if (ORIG_HIDDEN === undefined) delete process.env.HIDDEN_PROVIDERS;
-  else process.env.HIDDEN_PROVIDERS = ORIG_HIDDEN;
   if (ORIG_TTL === undefined) delete process.env.SESSION_TOKEN_TTL_HOURS;
   else process.env.SESSION_TOKEN_TTL_HOURS = ORIG_TTL;
 });
 
 beforeEach(async () => {
-  delete process.env.HIDDEN_PROVIDERS;
   delete process.env.SESSION_TOKEN_TTL_HOURS;
   await deleteSetting("hidden_providers").catch(() => {});
   await deleteSetting("session_token_ttl_hours").catch(() => {});

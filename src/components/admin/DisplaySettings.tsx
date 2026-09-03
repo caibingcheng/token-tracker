@@ -5,8 +5,6 @@ import { apiFetch } from "@/lib/client/api-client";
 
 interface DisplayData {
   groups: Array<{ name: string; patterns: string[] }>;
-  envValue: string;
-  envOverridden: boolean;
 }
 
 interface StatusPageElementsData {
@@ -25,6 +23,11 @@ interface StatusPageConfigData {
 }
 
 interface AliasRuleDraft {
+  name: string;
+  aliases: string;
+}
+
+interface AgentAliasRuleDraft {
   name: string;
   aliases: string;
 }
@@ -55,7 +58,6 @@ const STATUS_ELEMENT_LABELS: Array<{ key: keyof StatusPageElementsData; label: s
 ];
 
 export default function DisplaySettings() {
-  const [data, setData] = useState<DisplayData | null>(null);
   const [hiddenDraft, setHiddenDraft] = useState<HiddenGroupDraft[]>([]);
   const [hiddenBusy, setHiddenBusy] = useState(false);
   const [hiddenError, setHiddenError] = useState<string | null>(null);
@@ -68,6 +70,10 @@ export default function DisplaySettings() {
   const [aliasesBusy, setAliasesBusy] = useState(false);
   const [aliasesError, setAliasesError] = useState<string | null>(null);
   const [aliasesSaved, setAliasesSaved] = useState(false);
+  const [agentAliasesDraft, setAgentAliasesDraft] = useState<AgentAliasRuleDraft[]>([]);
+  const [agentAliasesBusy, setAgentAliasesBusy] = useState(false);
+  const [agentAliasesError, setAgentAliasesError] = useState<string | null>(null);
+  const [agentAliasesSaved, setAgentAliasesSaved] = useState(false);
   const [hiddenSources, setHiddenSources] = useState<HiddenSourcesData | null>(null);
   const [providerOptions, setProviderOptions] = useState<string[]>([]);
   const [agentOptionsRaw, setAgentOptionsRaw] = useState<string[]>([]);
@@ -76,13 +82,14 @@ export default function DisplaySettings() {
   const [hiddenSourcesSaved, setHiddenSourcesSaved] = useState(false);
 
   const load = useCallback(async () => {
-    const [res, statusRes, aliasesRes, hsRes, providersRes, agentsRes] = await Promise.all([
+    const [res, statusRes, aliasesRes, hsRes, providersRes, agentsRes, agentAliasesRes] = await Promise.all([
       apiFetch("/api/admin/settings/display"),
       apiFetch("/api/admin/settings/status"),
       apiFetch("/api/admin/settings/aliases"),
       apiFetch("/api/admin/settings/hidden-sources"),
       apiFetch("/api/providers?includeHidden=1"),
-      apiFetch("/api/agents?includeHidden=1"),
+      apiFetch("/api/agents?dimension=key&includeHidden=1"),
+      apiFetch("/api/admin/settings/agent-aliases"),
     ]);
     const json = await res.json();
     const statusJson = await statusRes.json();
@@ -90,9 +97,9 @@ export default function DisplaySettings() {
     const hsJson = await hsRes.json();
     const providersJson = await providersRes.json();
     const agentsJson = await agentsRes.json();
+    const agentAliasesJson = await agentAliasesRes.json();
     if (json.success) {
       const d = json.data as DisplayData;
-      setData(d);
       setHiddenDraft(
         d.groups.map((g) => ({ name: g.name, patterns: g.patterns.join(", ") }))
       );
@@ -104,6 +111,10 @@ export default function DisplaySettings() {
     if (aliasesJson.success) {
       const rules = aliasesJson.data as Array<{ name: string; aliases: string[] }>;
       setAliasesDraft(rules.map((r) => ({ name: r.name, aliases: r.aliases.join(", ") })));
+    }
+    if (agentAliasesJson.success) {
+      const rules = agentAliasesJson.data as Array<{ name: string; aliases: string[] }>;
+      setAgentAliasesDraft(rules.map((r) => ({ name: r.name, aliases: r.aliases.join(", ") })));
     }
     if (hsJson.success) {
       const d = hsJson.data as { config: HiddenSourcesData };
@@ -312,6 +323,56 @@ export default function DisplaySettings() {
     }
   };
 
+  const updateAgentAlias = (idx: number, patch: Partial<AgentAliasRuleDraft>) => {
+    setAgentAliasesSaved(false);
+    setAgentAliasesDraft((prev) =>
+      prev.map((r, i) => (i === idx ? { ...r, ...patch } : r))
+    );
+  };
+
+  const addAgentAliasRule = () => {
+    setAgentAliasesSaved(false);
+    setAgentAliasesDraft((prev) => [...prev, { name: "", aliases: "" }]);
+  };
+
+  const removeAgentAliasRule = (idx: number) => {
+    setAgentAliasesSaved(false);
+    setAgentAliasesDraft((prev) => prev.filter((_, i) => i !== idx));
+  };
+
+  const handleSaveAgentAliases = async () => {
+    const rules = agentAliasesDraft
+      .map((r) => ({
+        name: r.name.trim(),
+        aliases: r.aliases
+          .split(",")
+          .map((a) => a.trim())
+          .filter(Boolean),
+      }))
+      .filter((r) => r.name !== "");
+    setAgentAliasesBusy(true);
+    setAgentAliasesError(null);
+    setAgentAliasesSaved(false);
+    try {
+      const res = await apiFetch("/api/admin/settings/agent-aliases", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ rules }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        setAgentAliasesSaved(true);
+        load();
+      } else {
+        setAgentAliasesError(json.error || "Failed to save");
+      }
+    } catch {
+      setAgentAliasesError("Network error");
+    } finally {
+      setAgentAliasesBusy(false);
+    }
+  };
+
   // 选项 = 数据库现有名字 ∪ 已勾选隐藏/排除历史名字（记录删除后仍可取消）
   const upstreamOptions = (hs: HiddenSourcesData): string[] =>
     Array.from(
@@ -332,22 +393,8 @@ export default function DisplaySettings() {
     <div className="rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
       <h2 className="mb-1 text-lg font-semibold text-gray-900">Display</h2>
       <p className="mb-4 text-sm text-gray-500">
-        Provider anonymization (HIDDEN_PROVIDERS). Saved here overrides the{" "}
-        <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">HIDDEN_PROVIDERS</code>{" "}
-        environment variable; once saved, env is ignored.
+        Provider anonymization (hidden provider groups).
       </p>
-
-      {data?.envOverridden && (
-        <div className="mb-4 rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700">
-          env HIDDEN_PROVIDERS has been overridden by the panel.
-        </div>
-      )}
-      {data?.envValue && !data.envOverridden && (
-        <div className="mb-4 rounded border border-gray-200 bg-gray-50 p-3 text-sm text-gray-600">
-          Currently falling back to env HIDDEN_PROVIDERS. Save a value here to
-          take over.
-        </div>
-      )}
 
       <label className="mb-1 block text-sm font-medium text-gray-700">
         Hidden provider groups
@@ -482,6 +529,80 @@ export default function DisplaySettings() {
           className="mt-4 rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-50"
         >
           {aliasesBusy ? "Saving..." : "Save Aliases"}
+        </button>
+      </div>
+
+      <div className="mt-8 border-t border-gray-100 pt-6">
+        <h3 className="mb-1 text-base font-semibold text-gray-900">
+          Agent Aliases
+        </h3>
+        <p className="mb-4 text-sm text-gray-500">
+          Map client user-agents to a display name for the Agent dimension.
+          Each row: a display name and comma-separated UA tokens (the text
+          before the first <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">/</code> in
+          the user agent, e.g.{" "}
+          <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">claude-cli</code>{" "}
+          from <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">claude-cli/2.1.5 (external, cli)</code>).
+          Matching is case-insensitive. Known tools ({`claude-code, codex, gemini-cli, cursor`}) are
+          mapped automatically; aliases override the built-in mapping. Records
+          with no user agent are shown as {"(unknown)"}.
+        </p>
+
+        <div className="space-y-2">
+          {agentAliasesDraft.map((rule, idx) => (
+            <div key={idx} className="grid grid-cols-1 md:grid-cols-[1fr_2fr_auto] gap-2">
+              <input
+                value={rule.name}
+                onChange={(e) => updateAgentAlias(idx, { name: e.target.value })}
+                placeholder="Display name (e.g. Claude Code)"
+                className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+              <input
+                value={rule.aliases}
+                onChange={(e) => updateAgentAlias(idx, { aliases: e.target.value })}
+                placeholder="UA tokens, comma separated (e.g. claude-cli, claude-code-cli)"
+                spellCheck={false}
+                className="w-full rounded border border-gray-300 bg-white px-3 py-2 font-mono text-base md:text-xs shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+              <button
+                type="button"
+                onClick={() => removeAgentAliasRule(idx)}
+                className="rounded border border-red-200 px-3 py-2 text-sm text-red-500 hover:bg-red-50 min-h-[40px] md:min-h-0"
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+          {agentAliasesDraft.length === 0 && (
+            <p className="text-sm text-gray-400">No agent alias groups configured.</p>
+          )}
+          <button
+            type="button"
+            onClick={addAgentAliasRule}
+            className="rounded border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50"
+          >
+            + Add row
+          </button>
+        </div>
+
+        {agentAliasesError && (
+          <div className="mt-3 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-600">
+            {agentAliasesError}
+          </div>
+        )}
+        {agentAliasesSaved && (
+          <div className="mt-3 rounded border border-green-200 bg-green-50 p-3 text-sm text-green-700">
+            Saved. Agent names update immediately.
+          </div>
+        )}
+
+        <button
+          type="button"
+          onClick={handleSaveAgentAliases}
+          disabled={agentAliasesBusy}
+          className="mt-4 rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-50"
+        >
+          {agentAliasesBusy ? "Saving..." : "Save Agent Aliases"}
         </button>
       </div>
 
