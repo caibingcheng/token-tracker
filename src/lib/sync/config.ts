@@ -205,6 +205,19 @@ export async function saveSyncConfig(input: {
   invalidateQueryCache();
 }
 
+// 删除推送配置：仅清除凭证与推送状态（target_url/token/bound_uid/last_error/last_attempt），
+// 保留 cursor/dropped/epoch/uid/instance/last_success —— 重配同一 A 时从原游标恢复推送不重复；
+// 若改配其他 A 需先手动 Reset（否则 cursor 之前的历史不会补推）。幂等：未配置时为 no-op。
+export async function deleteSyncConfig(): Promise<void> {
+  await deleteSetting(KEY_TARGET_URL);
+  await deleteSetting(KEY_TOKEN);
+  await deleteSetting(KEY_BOUND);
+  await deleteSetting(KEY_LAST_ERROR);
+  await deleteSetting(KEY_LAST_ATTEMPT);
+  const { invalidateQueryCache } = await import("@/lib/db/cache");
+  invalidateQueryCache();
+}
+
 export async function getSyncToken(): Promise<string | null> {
   const encrypted = await getSetting(KEY_TOKEN);
   if (!encrypted) return null;

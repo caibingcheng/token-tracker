@@ -429,6 +429,39 @@ export default function SyncPanel() {
     setEditingConfig(false);
   };
 
+  // 删除推送配置：清凭证 + 推送状态（cursor/uid/epoch 保留），pushes 立即停止
+  const deleteConfig = async () => {
+    const pending = status?.pendingCount ?? 0;
+    const ok = window.confirm(
+      "Delete push config? Pushes will stop and the ingest token is removed. " +
+        (pending > 0 ? `${pending} record(s) not yet pushed will remain local-only. ` : "") +
+        "Your instance identity (uid) and push cursor are kept. If you later point to a DIFFERENT " +
+        "central instance, records before the cursor will not be pushed unless you first Reset sync state. " +
+        "Continue?"
+    );
+    if (!ok) return;
+    setConfigBusy(true);
+    setConfigError(null);
+    setConfigSuccess(null);
+    try {
+      const res = await apiFetch("/api/admin/sync/config", { method: "DELETE" });
+      const json = await res.json();
+      if (json.success) {
+        setTargetUrl("");
+        setTokenInput("");
+        setInstanceName(configuredInstance);
+        setConfigSuccess("Sync config deleted — pushes stopped");
+        await reloadAll(); // 未配置态：reloadAll 自动回编辑模式
+      } else {
+        setConfigError(json.error || "Failed to delete config");
+      }
+    } catch {
+      setConfigError("Network error");
+    } finally {
+      setConfigBusy(false);
+    }
+  };
+
   // ---- B 端状态操作 ----
   const triggerSync = async () => {
     setSyncing(true);
@@ -628,6 +661,14 @@ export default function SyncPanel() {
                     className="rounded border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 min-h-[40px] md:min-h-0"
                   >
                     Edit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={deleteConfig}
+                    disabled={configBusy}
+                    className="rounded border border-red-300 bg-white px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 min-h-[40px] md:min-h-0"
+                  >
+                    Delete
                   </button>
                   {configError && <span className="text-xs text-red-600">{configError}</span>}
                   {configSuccess && <span className="text-xs text-green-600">{configSuccess}</span>}

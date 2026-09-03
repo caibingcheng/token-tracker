@@ -38,6 +38,7 @@ export type AuditAction =
   | "ingest_token_unbound"
   | "sync_instance_deleted"
   | "sync_config_updated"
+  | "sync_config_deleted"
   | "sync_triggered"
   | "sync_skip"
   | "sync_reset";

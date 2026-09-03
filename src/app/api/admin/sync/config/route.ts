@@ -4,6 +4,7 @@ import { withSkipCache } from "@/lib/db/cache";
 import {
   loadSyncConfig,
   saveSyncConfig,
+  deleteSyncConfig,
   isValidTargetUrl,
 } from "@/lib/sync/config";
 import { isValidInstanceName } from "@/lib/ingest/validate";
@@ -109,6 +110,40 @@ export const PUT = withAuth(async (request: NextRequest) => {
         url: input.targetUrl !== undefined ? (input.targetUrl ?? "") : undefined,
         token: input.token !== undefined ? (input.token === null ? "cleared" : "set") : undefined,
         instance: input.instance !== undefined ? input.instance : undefined,
+      },
+    });
+
+    const config = await loadSyncConfig();
+    return NextResponse.json({
+      success: true,
+      data: {
+        targetUrl: config.targetUrl,
+        hasToken: config.hasToken,
+        instance: config.instance,
+        uid: config.uid,
+        epoch: config.epoch,
+        boundUid: config.boundUid,
+      },
+    });
+  });
+});
+
+// DELETE：清除推送配置（凭证 + 推送状态），pushes 立即停止；cursor/epoch/uid/instance 保留。幂等 no-op。
+export const DELETE = withAuth(async (request: NextRequest) => {
+  return withSkipCache(async () => {
+    const prev = await loadSyncConfig();
+    await deleteSyncConfig();
+
+    const { ip, userAgent } = extractClientInfo(request);
+    await recordAuditLog({
+      action: "sync_config_deleted",
+      targetType: "sync",
+      ip,
+      userAgent,
+      details: {
+        hadConfig: !!(prev.targetUrl || prev.hasToken),
+        cursor: prev.cursor,
+        droppedCount: prev.droppedCount,
       },
     });
 

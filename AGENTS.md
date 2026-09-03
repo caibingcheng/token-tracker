@@ -81,7 +81,7 @@ docker compose up -d                                 # 本地运行
 | `/ingest/records` | POST | **ingest token（`it-` 前缀，Bearer）** | 多实例同步接收端点（位于 /api 之外，middleware 天然不拦）：详见下方「多实例同步」小节 |
 | `/api/admin/ingest-tokens` `/api/admin/ingest-tokens/[id]` `/api/admin/ingest-tokens/[id]/unbind` | CRUD/POST | 会话 token | A 侧 ingest token 管理：列表/创建（创建返回一次明文 `it-` + 32 base64url；**列表可回显明文供随时复制**，与 virtual_keys 惯例一致）/PATCH 启停改名/DELETE 吊销/unbind 解绑（清空 bound_uid，下次推送重新 TOFU）；审计 `ingest_token_*` |
 | `/api/admin/sync-instances` `/api/admin/sync-instances/[uid]` | GET/DELETE | 会话 token | A 侧实例水位查看/删除（list 返回 `uid` + `instanceName`，重名可区分；DELETE 路由参数 = **uid**（`u-[a-f0-9]{32}`）；`?deleteRecords=1` 级联删除该实例已推送历史记录——`remote_instance_uid = uid AND virtual_key_id = -1` 等值匹配 + **OR 上 uid 为 NULL 旧行的 `provider LIKE 'remote/{instance_name}/%'` 前缀兼容兜底**（哨兵双保险防误删本地记录），默认保留，删记录后 `invalidateStatusCache()`；先查水位存在否则 404 不动记录）；审计 `sync_instance_deleted` 含 `{uid, instanceName, deleteRecords, deletedRecords}` |
-| `/api/admin/sync/config` | GET/PUT | 会话 token | B 侧同步配置：GET 脱敏回显 token + 回显 uid；PUT 校验 URL/instance 格式 + token 加密落库 + `withSkipCache`；instance 为纯展示名随时可改（**无绑定锁定**，身份键是 uid）；审计 `sync_config_updated` |
+| `/api/admin/sync/config` | GET/PUT/DELETE | 会话 token | B 侧同步配置：GET 脱敏回显 token + 回显 uid；PUT 校验 URL/instance 格式 + token 加密落库 + `withSkipCache`；instance 为纯展示名随时可改（**无绑定锁定**，身份键是 uid）；审计 `sync_config_updated`。DELETE 清除推送配置（凭证 + bound_uid + last_error/attempt，pushes 立即停止），**cursor/epoch/uid/instance/last_success 保留**（重配同 A 从原游标恢复不重复；改配其他 A 需先 Reset 否则历史缺口），幂等 no-op，审计 `sync_config_deleted` 含 cursor/droppedCount 快照 |
 | `/api/admin/sync/status` | GET | 会话 token | B 侧推送状态：cursor/待推送数（`[cursor+1, maxId]` 非 -1）/maxRecordId/droppedCount/uid/boundUid/lastSuccessAt/lastError/lastAttemptAt/lastSkippedInvalid——丢失可观测；GET 同时 arm 60s 兜底轮询（`syncPusher.kick()`，未配置零开销） |
 | `/api/admin/sync/trigger` | POST | 会话 token | 手动触发推送一轮（`SyncPusher.trigger()`）；审计 `sync_triggered` |
 | `/api/admin/sync/skip` | POST | 会话 token | 手动跳过：body `{upToRecordId}` 必须 > 当前游标，强制推进游标丢弃区间 + dropped_count 累计 + 审计 `sync_skip` |
@@ -391,6 +391,7 @@ docker compose up -d
   - `src/app/ingest/records/route.test`：ingest 端点集成（临时 SQLite + 真实 handler + 真实 token）——401/禁用、缺 instanceUid 400、2MB、400 超限、uid TOFU 绑定与 instance_mismatch、字段改写（remote 前缀 + vk=-1 + remote_instance_uid + createdAt 保留）、同 epoch 去重重推、epoch 变化重置水位、部分接受、同实例并发串行化、**同名不同 uid 双设备水位独立**、**同 uid 改名 instance_name 刷新**
   - `src/lib/sync/pusher.test`：推送 worker（mock fetch）——成功推进（含 -1 哨兵夹心、redirect=manual、payload 携带 instanceUid、boundUid ack 锁定）、401 不 drop、5xx/网络不 drop、400 五十次自动 drop 累计计数、skippedInvalid 计入 dropped、未配置不启动、多批推送；错误诊断 `describeFetchError`（ECONNREFUSED + Docker localhost 提示、ENOTFOUND DNS 提示、TLS 证书提示、TimeoutError、AggregateError 多地址展开、无 cause 回退 err.message）+ HTTP 401/404 提示后缀
   - `src/lib/sync/config.test`：URL 格式校验、token 加密往返与清除、instance/uid 校验、cursor/dropped 读写往返、reset 语义（dropped 保留、**uid 不重置**）、instance/uid/epoch 自动生成持久
+  - `src/app/api/admin/sync/config/route.test`：DELETE 集成——401、清除项（target_url/token/bound_uid/last_error/last_attempt）与保留项（cursor/dropped/epoch/uid/instance/last_success）逐项断言、幂等 no-op、审计 `sync_config_deleted` 含 cursor 快照
   - `src/lib/model-prices-service.test`：可见性（近期流量 30 天窗口、推送模型行集含全历史 + 来源标注、active 判定、过期推送模型默认隐藏、**uid 等值 + instance_name LIKE 兜底**、改名后历史行仍可发现）
 - 新增纯逻辑模块（如解析器、路由匹配、加密）时应同步提交单测
 
