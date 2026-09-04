@@ -32,25 +32,29 @@ interface StatusPageConfigData {
   elements: StatusPageElementsData;
 }
 
-interface AliasRuleDraft {
-  name: string;
-  aliases: string;
-}
-
-interface AgentAliasRuleDraft {
-  name: string;
-  aliases: string;
-}
-
 interface ObservedAgentToken {
   token: string;
   name: string;
   source: "manual" | "builtin" | "as-is";
 }
 
-interface HiddenGroupDraft {
+// 行数据 = 服务端持久态（load 即落库）；pending = 已追加但未保存的新行
+interface HiddenGroupRule {
   name: string;
   patterns: string;
+  pending?: boolean;
+}
+
+interface AliasRule {
+  name: string;
+  aliases: string;
+  pending?: boolean;
+}
+
+interface AgentAliasRule {
+  name: string;
+  aliases: string;
+  pending?: boolean;
 }
 
 interface HiddenSourcesData {
@@ -58,6 +62,11 @@ interface HiddenSourcesData {
   virtualKeys: string[];
   excludedUpstreams: string[];
   excludedVirtualKeys: string[];
+}
+
+interface PutResult {
+  ok: boolean;
+  error: string;
 }
 
 const UNKNOWN_AGENT = "unknown";
@@ -73,32 +82,166 @@ const STATUS_ELEMENT_LABELS: Array<{ key: keyof StatusPageElementsData; label: s
   { key: "cost", label: "Cost amounts", hint: "Reveals USD costs" },
 ];
 
+// 行级 Actions 桌面样式：文本链接 Edit · Delete / Save · Cancel（对齐 ModelsPanel routing rules）
+function DesktopActions({
+  editing,
+  busy,
+  canSave,
+  onSave,
+  onCancel,
+  onEdit,
+  onDelete,
+}: {
+  editing: boolean;
+  busy: boolean;
+  canSave: boolean;
+  onSave: () => void;
+  onCancel: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <AdminTd align="right" className="whitespace-nowrap">
+      {editing ? (
+        <>
+          <button
+            type="button"
+            onClick={onSave}
+            disabled={busy || !canSave}
+            className="text-xs font-medium text-blue-600 hover:text-blue-800 disabled:opacity-50"
+          >
+            {busy ? "Saving…" : "Save"}
+          </button>
+          {" · "}
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={busy}
+            className="text-xs text-gray-500 hover:text-gray-700 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+        </>
+      ) : (
+        <>
+          <button
+            type="button"
+            onClick={onEdit}
+            disabled={busy}
+            className="text-xs text-gray-600 hover:text-gray-800 disabled:opacity-50"
+          >
+            Edit
+          </button>
+          {" · "}
+          <button
+            type="button"
+            onClick={onDelete}
+            disabled={busy}
+            className="text-xs text-red-500 hover:text-red-700 disabled:opacity-50"
+          >
+            Delete
+          </button>
+        </>
+      )}
+    </AdminTd>
+  );
+}
+
+// 行级 Actions 移动端样式：border 按钮（保留 min-h-[40px] 触摸区）
+function MobileActions({
+  editing,
+  busy,
+  canSave,
+  onSave,
+  onCancel,
+  onEdit,
+  onDelete,
+}: {
+  editing: boolean;
+  busy: boolean;
+  canSave: boolean;
+  onSave: () => void;
+  onCancel: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  return editing ? (
+    <>
+      <button
+        type="button"
+        onClick={onSave}
+        disabled={busy || !canSave}
+        className="rounded border border-blue-200 bg-blue-50 px-2 py-1 text-xs text-blue-600 hover:bg-blue-100 disabled:opacity-50 min-h-[40px]"
+      >
+        {busy ? "Saving…" : "Save"}
+      </button>
+      <button
+        type="button"
+        onClick={onCancel}
+        disabled={busy}
+        className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 disabled:opacity-50 min-h-[40px]"
+      >
+        Cancel
+      </button>
+    </>
+  ) : (
+    <>
+      <button
+        type="button"
+        onClick={onEdit}
+        disabled={busy}
+        className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 disabled:opacity-50 min-h-[40px]"
+      >
+        Edit
+      </button>
+      <button
+        type="button"
+        onClick={onDelete}
+        disabled={busy}
+        className="rounded border border-red-200 px-2 py-1 text-xs text-red-500 hover:bg-red-50 disabled:opacity-50 min-h-[40px]"
+      >
+        Delete
+      </button>
+    </>
+  );
+}
+
 export default function DisplaySettings() {
-  const [hiddenDraft, setHiddenDraft] = useState<HiddenGroupDraft[]>([]);
+  const [hiddenRules, setHiddenRules] = useState<HiddenGroupRule[]>([]);
+  const [hiddenEditingIdx, setHiddenEditingIdx] = useState<number | null>(null);
+  const [hiddenEditName, setHiddenEditName] = useState("");
+  const [hiddenEditPatterns, setHiddenEditPatterns] = useState("");
   const [hiddenBusy, setHiddenBusy] = useState(false);
   const [hiddenError, setHiddenError] = useState<string | null>(null);
-  const [hiddenSaved, setHiddenSaved] = useState(false);
-  const [statusConfig, setStatusConfig] = useState<StatusPageConfigData | null>(null);
-  const [statusBusy, setStatusBusy] = useState(false);
-  const [statusError, setStatusError] = useState<string | null>(null);
-  const [statusSaved, setStatusSaved] = useState(false);
-  const [aliasesDraft, setAliasesDraft] = useState<AliasRuleDraft[]>([]);
+
+  const [aliasRules, setAliasRules] = useState<AliasRule[]>([]);
+  const [aliasesEditingIdx, setAliasesEditingIdx] = useState<number | null>(null);
+  const [aliasesEditName, setAliasesEditName] = useState("");
+  const [aliasesEditValues, setAliasesEditValues] = useState("");
   const [aliasesBusy, setAliasesBusy] = useState(false);
   const [aliasesError, setAliasesError] = useState<string | null>(null);
-  const [aliasesSaved, setAliasesSaved] = useState(false);
-  const [agentAliasesDraft, setAgentAliasesDraft] = useState<AgentAliasRuleDraft[]>([]);
+
+  const [agentRules, setAgentRules] = useState<AgentAliasRule[]>([]);
+  const [agentEditingIdx, setAgentEditingIdx] = useState<number | null>(null);
+  const [agentEditName, setAgentEditName] = useState("");
+  const [agentEditValues, setAgentEditValues] = useState("");
+  const [agentAliasesBusy, setAgentAliasesBusy] = useState(false);
+  const [agentAliasesError, setAgentAliasesError] = useState<string | null>(null);
+
   const [observedAgents, setObservedAgents] = useState<ObservedAgentToken[]>([]);
   const [editingObserved, setEditingObserved] = useState<string | null>(null);
   const [editingObservedName, setEditingObservedName] = useState("");
-  const [agentAliasesBusy, setAgentAliasesBusy] = useState(false);
-  const [agentAliasesError, setAgentAliasesError] = useState<string | null>(null);
-  const [agentAliasesSaved, setAgentAliasesSaved] = useState(false);
+
+  const [statusConfig, setStatusConfig] = useState<StatusPageConfigData | null>(null);
+  const [statusBusy, setStatusBusy] = useState(false);
+  const [statusError, setStatusError] = useState<string | null>(null);
+
   const [hiddenSources, setHiddenSources] = useState<HiddenSourcesData | null>(null);
-  const [providerOptions, setProviderOptions] = useState<string[]>([]);
-  const [agentOptionsRaw, setAgentOptionsRaw] = useState<string[]>([]);
   const [hiddenSourcesBusy, setHiddenSourcesBusy] = useState(false);
   const [hiddenSourcesError, setHiddenSourcesError] = useState<string | null>(null);
-  const [hiddenSourcesSaved, setHiddenSourcesSaved] = useState(false);
+
+  const [providerOptions, setProviderOptions] = useState<string[]>([]);
+  const [agentOptionsRaw, setAgentOptionsRaw] = useState<string[]>([]);
 
   const load = useCallback(async () => {
     const [res, statusRes, aliasesRes, hsRes, providersRes, agentsRes, agentAliasesRes] = await Promise.all([
@@ -119,7 +262,7 @@ export default function DisplaySettings() {
     const agentAliasesJson = await agentAliasesRes.json();
     if (json.success) {
       const d = json.data as DisplayData;
-      setHiddenDraft(
+      setHiddenRules(
         d.groups.map((g) => ({ name: g.name, patterns: g.patterns.join(", ") }))
       );
     }
@@ -129,14 +272,14 @@ export default function DisplaySettings() {
     }
     if (aliasesJson.success) {
       const rules = aliasesJson.data as Array<{ name: string; aliases: string[] }>;
-      setAliasesDraft(rules.map((r) => ({ name: r.name, aliases: r.aliases.join(", ") })));
+      setAliasRules(rules.map((r) => ({ name: r.name, aliases: r.aliases.join(", ") })));
     }
     if (agentAliasesJson.success) {
       const d = agentAliasesJson.data as {
         rules: Array<{ name: string; aliases: string[] }>;
         observed: ObservedAgentToken[];
       };
-      setAgentAliasesDraft(d.rules.map((r) => ({ name: r.name, aliases: r.aliases.join(", ") })));
+      setAgentRules(d.rules.map((r) => ({ name: r.name, aliases: r.aliases.join(", ") })));
       setObservedAgents(Array.isArray(d.observed) ? d.observed : []);
     }
     if (hsJson.success) {
@@ -157,25 +300,25 @@ export default function DisplaySettings() {
     load();
   }, [load]);
 
-  const updateHidden = (idx: number, patch: Partial<HiddenGroupDraft>) => {
-    setHiddenSaved(false);
-    setHiddenDraft((prev) =>
-      prev.map((r, i) => (i === idx ? { ...r, ...patch } : r))
-    );
-  };
+  const putSetting = useCallback(async (url: string, payload: object): Promise<PutResult> => {
+    try {
+      const res = await apiFetch(url, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const json = await res.json();
+      if (json.success) return { ok: true, error: "" };
+      return { ok: false, error: json.error || "Failed to save" };
+    } catch {
+      return { ok: false, error: "Network error" };
+    }
+  }, []);
 
-  const addHiddenRow = () => {
-    setHiddenSaved(false);
-    setHiddenDraft((prev) => [...prev, { name: "", patterns: "" }]);
-  };
-
-  const removeHiddenRow = (idx: number) => {
-    setHiddenSaved(false);
-    setHiddenDraft((prev) => prev.filter((_, i) => i !== idx));
-  };
-
-  const handleSaveHidden = async () => {
-    const groups = hiddenDraft
+  // ---- Hidden provider groups（行编辑）----
+  const toHiddenGroups = (rules: HiddenGroupRule[]) =>
+    rules
+      .filter((r) => !r.pending)
       .map((r) => ({
         name: r.name.trim(),
         patterns: r.patterns
@@ -184,74 +327,327 @@ export default function DisplaySettings() {
           .filter(Boolean),
       }))
       .filter((r) => r.patterns.length > 0);
-    setHiddenBusy(true);
-    setHiddenError(null);
-    setHiddenSaved(false);
-    try {
-      const res = await apiFetch("/api/admin/settings/display", {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ groups }),
-      });
-      const json = await res.json();
-      if (json.success) {
-        setHiddenSaved(true);
-        load();
-      } else {
-        setHiddenError(json.error || "Failed to save");
-      }
-    } catch {
-      setHiddenError("Network error");
-    } finally {
-      setHiddenBusy(false);
-    }
+
+  const startHiddenEdit = (idx: number) => {
+    if (hiddenBusy) return;
+    const r = hiddenRules[idx];
+    if (!r) return;
+    setHiddenEditName(r.name);
+    setHiddenEditPatterns(r.patterns);
+    setHiddenEditingIdx(idx);
   };
 
-  const handleSaveStatus = async () => {
-    if (!statusConfig) return;
+  const addHiddenRow = () => {
+    if (hiddenBusy || hiddenEditingIdx !== null) return;
+    setHiddenRules((prev) => [...prev, { name: "", patterns: "", pending: true }]);
+    setHiddenEditName("");
+    setHiddenEditPatterns("");
+    setHiddenEditingIdx(hiddenRules.length);
+  };
+
+  const cancelHiddenEdit = () => {
+    if (hiddenEditingIdx === null) return;
+    if (hiddenRules[hiddenEditingIdx]?.pending) {
+      setHiddenRules((prev) => prev.filter((_, i) => i !== hiddenEditingIdx));
+    }
+    setHiddenEditingIdx(null);
+  };
+
+  const saveHiddenRow = async () => {
+    if (hiddenEditingIdx === null || hiddenBusy) return;
+    if (!hiddenEditPatterns.trim()) return;
+    const next = hiddenRules.map((r, i) =>
+      i === hiddenEditingIdx ? { name: hiddenEditName, patterns: hiddenEditPatterns } : r
+    );
+    setHiddenBusy(true);
+    setHiddenError(null);
+    const result = await putSetting("/api/admin/settings/display", {
+      groups: toHiddenGroups(next),
+    });
+    if (result.ok) {
+      setHiddenEditingIdx(null);
+      await load();
+    } else {
+      setHiddenError(result.error);
+    }
+    setHiddenBusy(false);
+  };
+
+  const deleteHiddenRow = async (idx: number) => {
+    if (hiddenBusy) return;
+    const rule = hiddenRules[idx];
+    if (!rule) return;
+    if (!window.confirm(`Delete group "${rule.name.trim() || "(unnamed)"}"?`)) return;
+    setHiddenBusy(true);
+    setHiddenError(null);
+    const result = await putSetting("/api/admin/settings/display", {
+      groups: toHiddenGroups(hiddenRules.filter((_, i) => i !== idx)),
+    });
+    if (result.ok) {
+      setHiddenEditingIdx(null);
+      await load();
+    } else {
+      setHiddenError(result.error);
+    }
+    setHiddenBusy(false);
+  };
+
+  // ---- Model Aliases（行编辑）----
+  const toAliasRules = (rules: AliasRule[]) =>
+    rules
+      .filter((r) => !r.pending)
+      .map((r) => ({
+        name: r.name.trim(),
+        aliases: r.aliases
+          .split(",")
+          .map((a) => a.trim())
+          .filter(Boolean),
+      }))
+      .filter((r) => r.name !== "");
+
+  const startAliasEdit = (idx: number) => {
+    if (aliasesBusy) return;
+    const r = aliasRules[idx];
+    if (!r) return;
+    setAliasesEditName(r.name);
+    setAliasesEditValues(r.aliases);
+    setAliasesEditingIdx(idx);
+  };
+
+  const addAliasRow = () => {
+    if (aliasesBusy || aliasesEditingIdx !== null) return;
+    setAliasRules((prev) => [...prev, { name: "", aliases: "", pending: true }]);
+    setAliasesEditName("");
+    setAliasesEditValues("");
+    setAliasesEditingIdx(aliasRules.length);
+  };
+
+  const cancelAliasEdit = () => {
+    if (aliasesEditingIdx === null) return;
+    if (aliasRules[aliasesEditingIdx]?.pending) {
+      setAliasRules((prev) => prev.filter((_, i) => i !== aliasesEditingIdx));
+    }
+    setAliasesEditingIdx(null);
+  };
+
+  const saveAliasRow = async () => {
+    if (aliasesEditingIdx === null || aliasesBusy) return;
+    if (!aliasesEditName.trim()) return;
+    const next = aliasRules.map((r, i) =>
+      i === aliasesEditingIdx ? { name: aliasesEditName, aliases: aliasesEditValues } : r
+    );
+    setAliasesBusy(true);
+    setAliasesError(null);
+    const result = await putSetting("/api/admin/settings/aliases", {
+      rules: toAliasRules(next),
+    });
+    if (result.ok) {
+      setAliasesEditingIdx(null);
+      await load();
+    } else {
+      setAliasesError(result.error);
+    }
+    setAliasesBusy(false);
+  };
+
+  const deleteAliasRow = async (idx: number) => {
+    if (aliasesBusy) return;
+    const rule = aliasRules[idx];
+    if (!rule) return;
+    if (!window.confirm(`Delete alias group "${rule.name.trim() || "(unnamed)"}"?`)) return;
+    setAliasesBusy(true);
+    setAliasesError(null);
+    const result = await putSetting("/api/admin/settings/aliases", {
+      rules: toAliasRules(aliasRules.filter((_, i) => i !== idx)),
+    });
+    if (result.ok) {
+      setAliasesEditingIdx(null);
+      await load();
+    } else {
+      setAliasesError(result.error);
+    }
+    setAliasesBusy(false);
+  };
+
+  // ---- Agent Aliases（行编辑）----
+  const toAgentAliasRules = (rules: AgentAliasRule[]) =>
+    rules
+      .filter((r) => !r.pending)
+      .map((r) => ({
+        name: r.name.trim(),
+        aliases: r.aliases
+          .split(",")
+          .map((a) => a.trim())
+          .filter(Boolean),
+      }))
+      .filter((r) => r.name !== "");
+
+  const startAgentEdit = (idx: number) => {
+    if (agentAliasesBusy) return;
+    const r = agentRules[idx];
+    if (!r) return;
+    setAgentEditName(r.name);
+    setAgentEditValues(r.aliases);
+    setAgentEditingIdx(idx);
+  };
+
+  const addAgentRow = () => {
+    if (agentAliasesBusy || agentEditingIdx !== null) return;
+    setAgentRules((prev) => [...prev, { name: "", aliases: "", pending: true }]);
+    setAgentEditName("");
+    setAgentEditValues("");
+    setAgentEditingIdx(agentRules.length);
+  };
+
+  const cancelAgentEdit = () => {
+    if (agentEditingIdx === null) return;
+    if (agentRules[agentEditingIdx]?.pending) {
+      setAgentRules((prev) => prev.filter((_, i) => i !== agentEditingIdx));
+    }
+    setAgentEditingIdx(null);
+  };
+
+  const saveAgentRow = async () => {
+    if (agentEditingIdx === null || agentAliasesBusy) return;
+    if (!agentEditName.trim()) return;
+    const next = agentRules.map((r, i) =>
+      i === agentEditingIdx ? { name: agentEditName, aliases: agentEditValues } : r
+    );
+    setAgentAliasesBusy(true);
+    setAgentAliasesError(null);
+    const result = await putSetting("/api/admin/settings/agent-aliases", {
+      rules: toAgentAliasRules(next),
+    });
+    if (result.ok) {
+      setAgentEditingIdx(null);
+      await load();
+    } else {
+      setAgentAliasesError(result.error);
+    }
+    setAgentAliasesBusy(false);
+  };
+
+  const deleteAgentRow = async (idx: number) => {
+    if (agentAliasesBusy) return;
+    const rule = agentRules[idx];
+    if (!rule) return;
+    if (!window.confirm(`Delete agent alias group "${rule.name.trim() || "(unnamed)"}"?`)) return;
+    setAgentAliasesBusy(true);
+    setAgentAliasesError(null);
+    const result = await putSetting("/api/admin/settings/agent-aliases", {
+      rules: toAgentAliasRules(agentRules.filter((_, i) => i !== idx)),
+    });
+    if (result.ok) {
+      setAgentEditingIdx(null);
+      await load();
+    } else {
+      setAgentAliasesError(result.error);
+    }
+    setAgentAliasesBusy(false);
+  };
+
+  // 把已观测 UA token 采纳为手动规则并立即持久化（无整块 Save）：
+  // token 已在某手动行 aliases 中 → 更新该行 name；同名手动行存在 → 追加 token；
+  // 否则新增一行。PUT 成功后 load() 刷新规则与 observed 列表。
+  const adoptObservedAgent = async (token: string, name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed || agentAliasesBusy) return;
+    const base =
+      agentEditingIdx !== null
+        ? agentRules.map((r, i) =>
+            i === agentEditingIdx ? { name: agentEditName, aliases: agentEditValues } : r
+          )
+        : agentRules;
+    const tokenLc = token.toLowerCase();
+    let rules = base.map((r) => ({ ...r }));
+    const tokenRow = rules.findIndex((r) =>
+      r.aliases
+        .split(",")
+        .map((a) => a.trim().toLowerCase())
+        .filter(Boolean)
+        .includes(tokenLc)
+    );
+    if (tokenRow >= 0) {
+      rules[tokenRow] = { ...rules[tokenRow], name: trimmed };
+    } else {
+      const nameRow = rules.findIndex(
+        (r) => r.name.trim().toLowerCase() === trimmed.toLowerCase()
+      );
+      if (nameRow >= 0) {
+        rules[nameRow] = {
+          ...rules[nameRow],
+          aliases: rules[nameRow].aliases ? `${rules[nameRow].aliases}, ${token}` : token,
+        };
+      } else {
+        rules = [...rules, { name: trimmed, aliases: token }];
+      }
+    }
+    setAgentAliasesBusy(true);
+    setAgentAliasesError(null);
+    const result = await putSetting("/api/admin/settings/agent-aliases", {
+      rules: toAgentAliasRules(rules),
+    });
+    if (result.ok) {
+      setEditingObserved(null);
+      setAgentEditingIdx(null);
+      await load();
+    } else {
+      setAgentAliasesError(result.error);
+    }
+    setAgentAliasesBusy(false);
+  };
+
+  // ---- Public Status Page：勾选即保存（乐观更新 + 失败回滚 + in-flight 锁）----
+  const applyStatusConfig = async (
+    mutate: (prev: StatusPageConfigData) => StatusPageConfigData
+  ) => {
+    if (!statusConfig || statusBusy) return;
+    const prev = statusConfig;
+    const next = mutate(prev);
+    setStatusConfig(next);
     setStatusBusy(true);
     setStatusError(null);
-    setStatusSaved(false);
-    try {
-      const res = await apiFetch("/api/admin/settings/status", {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ config: statusConfig }),
-      });
-      const json = await res.json();
-      if (json.success) {
-        setStatusSaved(true);
-        load();
-      } else {
-        setStatusError(json.error || "Failed to save");
-      }
-    } catch {
-      setStatusError("Network error");
-    } finally {
-      setStatusBusy(false);
+    const result = await putSetting("/api/admin/settings/status", { config: next });
+    if (!result.ok) {
+      setStatusError(result.error);
+      setStatusConfig(prev);
     }
+    setStatusBusy(false);
+  };
+
+  const toggleStatusEnabled = () => {
+    void applyStatusConfig((prev) => ({ ...prev, enabled: !prev.enabled }));
   };
 
   const toggleStatusElement = (key: keyof StatusPageElementsData) => {
-    if (!statusConfig) return;
-    setStatusSaved(false);
-    setStatusConfig((prev) => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        elements: { ...prev.elements, [key]: !prev.elements[key] },
-      };
-    });
+    void applyStatusConfig((prev) => ({
+      ...prev,
+      elements: { ...prev.elements, [key]: !prev.elements[key] },
+    }));
+  };
+
+  // ---- Hidden Sources：勾选即保存（乐观更新 + 失败回滚 + in-flight 锁）----
+  const applyHiddenSources = async (
+    mutate: (prev: HiddenSourcesData) => HiddenSourcesData
+  ) => {
+    if (!hiddenSources || hiddenSourcesBusy) return;
+    const prev = hiddenSources;
+    const next = mutate(prev);
+    setHiddenSources(next);
+    setHiddenSourcesBusy(true);
+    setHiddenSourcesError(null);
+    const result = await putSetting("/api/admin/settings/hidden-sources", { config: next });
+    if (!result.ok) {
+      setHiddenSourcesError(result.error);
+      setHiddenSources(prev);
+    }
+    setHiddenSourcesBusy(false);
   };
 
   const toggleHiddenSource = (field: "upstreams" | "virtualKeys", name: string) => {
-    setHiddenSourcesSaved(false);
-    setHiddenSources((prev) => {
-      if (!prev) return prev;
+    void applyHiddenSources((prev) => {
       const list = prev[field];
-      const next = list.includes(name)
-        ? list.filter((n) => n !== name)
-        : [...list, name];
+      const next = list.includes(name) ? list.filter((n) => n !== name) : [...list, name];
       return { ...prev, [field]: next };
     });
   };
@@ -260,174 +656,11 @@ export default function DisplaySettings() {
     field: "excludedUpstreams" | "excludedVirtualKeys",
     name: string
   ) => {
-    setHiddenSourcesSaved(false);
-    setHiddenSources((prev) => {
-      if (!prev) return prev;
+    void applyHiddenSources((prev) => {
       const list = prev[field];
-      const next = list.includes(name)
-        ? list.filter((n) => n !== name)
-        : [...list, name];
+      const next = list.includes(name) ? list.filter((n) => n !== name) : [...list, name];
       return { ...prev, [field]: next };
     });
-  };
-
-  const handleSaveHiddenSources = async () => {
-    if (!hiddenSources) return;
-    setHiddenSourcesBusy(true);
-    setHiddenSourcesError(null);
-    setHiddenSourcesSaved(false);
-    try {
-      const res = await apiFetch("/api/admin/settings/hidden-sources", {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ config: hiddenSources }),
-      });
-      const json = await res.json();
-      if (json.success) {
-        setHiddenSourcesSaved(true);
-        load();
-      } else {
-        setHiddenSourcesError(json.error || "Failed to save");
-      }
-    } catch {
-      setHiddenSourcesError("Network error");
-    } finally {
-      setHiddenSourcesBusy(false);
-    }
-  };
-
-  const updateAlias = (idx: number, patch: Partial<AliasRuleDraft>) => {
-    setAliasesSaved(false);
-    setAliasesDraft((prev) =>
-      prev.map((r, i) => (i === idx ? { ...r, ...patch } : r))
-    );
-  };
-
-  const addAliasRule = () => {
-    setAliasesSaved(false);
-    setAliasesDraft((prev) => [...prev, { name: "", aliases: "" }]);
-  };
-
-  const removeAliasRule = (idx: number) => {
-    setAliasesSaved(false);
-    setAliasesDraft((prev) => prev.filter((_, i) => i !== idx));
-  };
-
-  const handleSaveAliases = async () => {
-    const rules = aliasesDraft
-      .map((r) => ({
-        name: r.name.trim(),
-        aliases: r.aliases
-          .split(",")
-          .map((a) => a.trim())
-          .filter(Boolean),
-      }))
-      .filter((r) => r.name !== "");
-    setAliasesBusy(true);
-    setAliasesError(null);
-    setAliasesSaved(false);
-    try {
-      const res = await apiFetch("/api/admin/settings/aliases", {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ rules }),
-      });
-      const json = await res.json();
-      if (json.success) {
-        setAliasesSaved(true);
-        load();
-      } else {
-        setAliasesError(json.error || "Failed to save");
-      }
-    } catch {
-      setAliasesError("Network error");
-    } finally {
-      setAliasesBusy(false);
-    }
-  };
-
-  const updateAgentAlias = (idx: number, patch: Partial<AgentAliasRuleDraft>) => {
-    setAgentAliasesSaved(false);
-    setAgentAliasesDraft((prev) =>
-      prev.map((r, i) => (i === idx ? { ...r, ...patch } : r))
-    );
-  };
-
-  const addAgentAliasRule = () => {
-    setAgentAliasesSaved(false);
-    setAgentAliasesDraft((prev) => [...prev, { name: "", aliases: "" }]);
-  };
-
-  const removeAgentAliasRule = (idx: number) => {
-    setAgentAliasesSaved(false);
-    setAgentAliasesDraft((prev) => prev.filter((_, i) => i !== idx));
-  };
-
-  // 把已观测 UA token 采纳为手动规则（built-in / as-is 行点 Edit 后应用）：
-  // token 已在某手动行 aliases 中 → 更新该行 name；同名手动行存在 → 追加 token；
-  // 否则新增一行。仍需点 "Save Agent Aliases" 才落库
-  const adoptObservedAgent = (token: string, name: string) => {
-    const trimmed = name.trim();
-    if (!trimmed) return;
-    setAgentAliasesSaved(false);
-    const tokenLc = token.toLowerCase();
-    setAgentAliasesDraft((prev) => {
-      const tokenRow = prev.findIndex((r) =>
-        r.aliases
-          .split(",")
-          .map((a) => a.trim().toLowerCase())
-          .filter(Boolean)
-          .includes(tokenLc)
-      );
-      if (tokenRow >= 0) {
-        return prev.map((r, i) => (i === tokenRow ? { ...r, name: trimmed } : r));
-      }
-      const nameRow = prev.findIndex(
-        (r) => r.name.trim().toLowerCase() === trimmed.toLowerCase()
-      );
-      if (nameRow >= 0) {
-        return prev.map((r, i) =>
-          i === nameRow
-            ? { ...r, aliases: r.aliases ? `${r.aliases}, ${token}` : token }
-            : r
-        );
-      }
-      return [...prev, { name: trimmed, aliases: token }];
-    });
-    setEditingObserved(null);
-  };
-
-  const handleSaveAgentAliases = async () => {
-    const rules = agentAliasesDraft
-      .map((r) => ({
-        name: r.name.trim(),
-        aliases: r.aliases
-          .split(",")
-          .map((a) => a.trim())
-          .filter(Boolean),
-      }))
-      .filter((r) => r.name !== "");
-    setAgentAliasesBusy(true);
-    setAgentAliasesError(null);
-    setAgentAliasesSaved(false);
-    try {
-      const res = await apiFetch("/api/admin/settings/agent-aliases", {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ rules }),
-      });
-      const json = await res.json();
-      if (json.success) {
-        setAgentAliasesSaved(true);
-        load();
-      } else {
-        setAgentAliasesError(json.error || "Failed to save");
-      }
-    } catch {
-      setAgentAliasesError("Network error");
-    } finally {
-      setAgentAliasesBusy(false);
-    }
   };
 
   // 选项 = 数据库现有名字 ∪ 已勾选隐藏/排除历史名字（记录删除后仍可取消）
@@ -465,74 +698,113 @@ export default function DisplaySettings() {
           ]}
         />
         <AdminTableBody>
-          {hiddenDraft.map((rule, idx) => (
-            <tr key={idx}>
-              <AdminTd>
-                <input
-                  value={rule.name}
-                  onChange={(e) => updateHidden(idx, { name: e.target.value })}
-                  placeholder="Display name (empty = Provider A, B, C...)"
-                  className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          {hiddenRules.map((rule, idx) => {
+            const editing = hiddenEditingIdx === idx;
+            return (
+              <tr key={idx}>
+                <AdminTd>
+                  {editing ? (
+                    <input
+                      value={hiddenEditName}
+                      onChange={(e) => setHiddenEditName(e.target.value)}
+                      placeholder="Display name (empty = Provider A, B, C...)"
+                      className="w-full rounded border border-gray-300 px-2 py-1 text-xs focus:border-blue-500 focus:outline-none"
+                    />
+                  ) : (
+                    <span className="text-sm text-gray-900">
+                      {rule.name || <span className="text-gray-400">(unnamed)</span>}
+                    </span>
+                  )}
+                </AdminTd>
+                <AdminTd>
+                  {editing ? (
+                    <input
+                      value={hiddenEditPatterns}
+                      onChange={(e) => setHiddenEditPatterns(e.target.value)}
+                      placeholder="patterns, comma separated (e.g. vendor*, vendor-partner)"
+                      spellCheck={false}
+                      className="w-full rounded border border-gray-300 px-2 py-1 font-mono text-xs focus:border-blue-500 focus:outline-none"
+                    />
+                  ) : (
+                    <span className="font-mono text-xs text-gray-600 break-all">{rule.patterns}</span>
+                  )}
+                </AdminTd>
+                <DesktopActions
+                  editing={editing}
+                  busy={hiddenBusy}
+                  canSave={hiddenEditPatterns.trim().length > 0}
+                  onSave={saveHiddenRow}
+                  onCancel={cancelHiddenEdit}
+                  onEdit={() => startHiddenEdit(idx)}
+                  onDelete={() => deleteHiddenRow(idx)}
                 />
-              </AdminTd>
-              <AdminTd>
-                <input
-                  value={rule.patterns}
-                  onChange={(e) => updateHidden(idx, { patterns: e.target.value })}
-                  placeholder="patterns, comma separated (e.g. vendor*, vendor-partner)"
-                  spellCheck={false}
-                  className="w-full rounded border border-gray-300 bg-white px-3 py-2 font-mono text-base md:text-xs shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
-              </AdminTd>
-              <AdminTd align="right">
-                <button
-                  type="button"
-                  onClick={() => removeHiddenRow(idx)}
-                  className="rounded border border-red-200 px-3 py-2 text-sm text-red-500 hover:bg-red-50 min-h-[40px] md:min-h-0"
-                >
-                  Remove
-                </button>
-              </AdminTd>
-            </tr>
-          ))}
-          {hiddenDraft.length === 0 && (
+              </tr>
+            );
+          })}
+          {hiddenRules.length === 0 && (
             <AdminTableEmptyRow colSpan={3}>No hidden provider groups configured.</AdminTableEmptyRow>
           )}
         </AdminTableBody>
       </AdminTable>
       <AdminMobileCards>
-        {hiddenDraft.map((rule, idx) => (
-          <AdminMobileCard key={idx}>
-            <input
-              value={rule.name}
-              onChange={(e) => updateHidden(idx, { name: e.target.value })}
-              placeholder="Display name (empty = Provider A, B, C...)"
-              className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            />
-            <input
-              value={rule.patterns}
-              onChange={(e) => updateHidden(idx, { patterns: e.target.value })}
-              placeholder="patterns, comma separated (e.g. vendor*, vendor-partner)"
-              spellCheck={false}
-              className="mt-2 w-full rounded border border-gray-300 bg-white px-3 py-2 font-mono text-base shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            />
-            <button
-              type="button"
-              onClick={() => removeHiddenRow(idx)}
-              className="mt-2 rounded border border-red-200 px-3 py-2 text-sm text-red-500 hover:bg-red-50 min-h-[40px]"
-            >
-              Remove
-            </button>
-          </AdminMobileCard>
-        ))}
-        {hiddenDraft.length === 0 && (
+        {hiddenRules.map((rule, idx) => {
+          const editing = hiddenEditingIdx === idx;
+          return (
+            <AdminMobileCard key={idx}>
+              <div className="flex justify-between items-start gap-2 mb-3">
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs text-gray-500">Group name</p>
+                  {editing ? (
+                    <input
+                      value={hiddenEditName}
+                      onChange={(e) => setHiddenEditName(e.target.value)}
+                      placeholder="Display name (empty = Provider A, B, C...)"
+                      className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 text-sm focus:border-blue-500 focus:outline-none"
+                    />
+                  ) : (
+                    <p className="mt-0.5 text-sm text-gray-900">
+                      {rule.name || <span className="text-gray-400">(unnamed)</span>}
+                    </p>
+                  )}
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <MobileActions
+                    editing={editing}
+                    busy={hiddenBusy}
+                    canSave={hiddenEditPatterns.trim().length > 0}
+                    onSave={saveHiddenRow}
+                    onCancel={cancelHiddenEdit}
+                    onEdit={() => startHiddenEdit(idx)}
+                    onDelete={() => deleteHiddenRow(idx)}
+                  />
+                </div>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500">Patterns</p>
+                {editing ? (
+                  <input
+                    value={hiddenEditPatterns}
+                    onChange={(e) => setHiddenEditPatterns(e.target.value)}
+                    placeholder="patterns, comma separated (e.g. vendor*, vendor-partner)"
+                    spellCheck={false}
+                    className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 font-mono text-sm focus:border-blue-500 focus:outline-none"
+                  />
+                ) : (
+                  <p className="mt-0.5 font-mono text-xs text-gray-600 break-all">{rule.patterns}</p>
+                )}
+              </div>
+            </AdminMobileCard>
+          );
+        })}
+        {hiddenRules.length === 0 && (
           <AdminMobileEmpty>No hidden provider groups configured.</AdminMobileEmpty>
         )}
       </AdminMobileCards>
       <button
         type="button"
         onClick={addHiddenRow}
-        className="rounded border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50"
+        disabled={hiddenEditingIdx !== null}
+        className="rounded border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-50"
       >
         + Add row
       </button>
@@ -549,20 +821,6 @@ export default function DisplaySettings() {
           {hiddenError}
         </div>
       )}
-      {hiddenSaved && (
-        <div className="mt-3 rounded border border-green-200 bg-green-50 p-3 text-sm text-green-700">
-          Saved. Changes take effect immediately.
-        </div>
-      )}
-
-      <button
-        type="button"
-        onClick={handleSaveHidden}
-        disabled={hiddenBusy}
-        className="mt-4 rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-50"
-      >
-        {hiddenBusy ? "Saving..." : "Save"}
-      </button>
 
       <div className="mt-8 border-t border-gray-100 pt-6">
         <h3 className="mb-1 text-base font-semibold text-gray-900">
@@ -584,74 +842,113 @@ export default function DisplaySettings() {
             ]}
           />
           <AdminTableBody>
-            {aliasesDraft.map((rule, idx) => (
-              <tr key={idx}>
-                <AdminTd>
-                  <input
-                    value={rule.name}
-                    onChange={(e) => updateAlias(idx, { name: e.target.value })}
-                    placeholder="Group name (e.g. Claude Sonnet 4.6)"
-                    className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            {aliasRules.map((rule, idx) => {
+              const editing = aliasesEditingIdx === idx;
+              return (
+                <tr key={idx}>
+                  <AdminTd>
+                    {editing ? (
+                      <input
+                        value={aliasesEditName}
+                        onChange={(e) => setAliasesEditName(e.target.value)}
+                        placeholder="Group name (e.g. Claude Sonnet 4.6)"
+                        className="w-full rounded border border-gray-300 px-2 py-1 text-xs focus:border-blue-500 focus:outline-none"
+                      />
+                    ) : (
+                      <span className="text-sm text-gray-900">
+                        {rule.name || <span className="text-gray-400">(unnamed)</span>}
+                      </span>
+                    )}
+                  </AdminTd>
+                  <AdminTd>
+                    {editing ? (
+                      <input
+                        value={aliasesEditValues}
+                        onChange={(e) => setAliasesEditValues(e.target.value)}
+                        placeholder="aliases, comma separated (e.g. claude-sonnet-4-6, anthropic/claude-sonnet-4-6)"
+                        spellCheck={false}
+                        className="w-full rounded border border-gray-300 px-2 py-1 font-mono text-xs focus:border-blue-500 focus:outline-none"
+                      />
+                    ) : (
+                      <span className="font-mono text-xs text-gray-600 break-all">{rule.aliases}</span>
+                    )}
+                  </AdminTd>
+                  <DesktopActions
+                    editing={editing}
+                    busy={aliasesBusy}
+                    canSave={aliasesEditName.trim().length > 0}
+                    onSave={saveAliasRow}
+                    onCancel={cancelAliasEdit}
+                    onEdit={() => startAliasEdit(idx)}
+                    onDelete={() => deleteAliasRow(idx)}
                   />
-                </AdminTd>
-                <AdminTd>
-                  <input
-                    value={rule.aliases}
-                    onChange={(e) => updateAlias(idx, { aliases: e.target.value })}
-                    placeholder="aliases, comma separated (e.g. claude-sonnet-4-6, anthropic/claude-sonnet-4-6)"
-                    spellCheck={false}
-                    className="w-full rounded border border-gray-300 bg-white px-3 py-2 font-mono text-base md:text-xs shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  />
-                </AdminTd>
-                <AdminTd align="right">
-                  <button
-                    type="button"
-                    onClick={() => removeAliasRule(idx)}
-                    className="rounded border border-red-200 px-3 py-2 text-sm text-red-500 hover:bg-red-50 min-h-[40px] md:min-h-0"
-                  >
-                    Remove
-                  </button>
-                </AdminTd>
-              </tr>
-            ))}
-            {aliasesDraft.length === 0 && (
+                </tr>
+              );
+            })}
+            {aliasRules.length === 0 && (
               <AdminTableEmptyRow colSpan={3}>No alias groups configured.</AdminTableEmptyRow>
             )}
           </AdminTableBody>
         </AdminTable>
         <AdminMobileCards>
-          {aliasesDraft.map((rule, idx) => (
-            <AdminMobileCard key={idx}>
-              <input
-                value={rule.name}
-                onChange={(e) => updateAlias(idx, { name: e.target.value })}
-                placeholder="Group name (e.g. Claude Sonnet 4.6)"
-                className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-              />
-              <input
-                value={rule.aliases}
-                onChange={(e) => updateAlias(idx, { aliases: e.target.value })}
-                placeholder="aliases, comma separated (e.g. claude-sonnet-4-6, anthropic/claude-sonnet-4-6)"
-                spellCheck={false}
-                className="mt-2 w-full rounded border border-gray-300 bg-white px-3 py-2 font-mono text-base shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-              />
-              <button
-                type="button"
-                onClick={() => removeAliasRule(idx)}
-                className="mt-2 rounded border border-red-200 px-3 py-2 text-sm text-red-500 hover:bg-red-50 min-h-[40px]"
-              >
-                Remove
-              </button>
-            </AdminMobileCard>
-          ))}
-          {aliasesDraft.length === 0 && (
+          {aliasRules.map((rule, idx) => {
+            const editing = aliasesEditingIdx === idx;
+            return (
+              <AdminMobileCard key={idx}>
+                <div className="flex justify-between items-start gap-2 mb-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs text-gray-500">Group name</p>
+                    {editing ? (
+                      <input
+                        value={aliasesEditName}
+                        onChange={(e) => setAliasesEditName(e.target.value)}
+                        placeholder="Group name (e.g. Claude Sonnet 4.6)"
+                        className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 text-sm focus:border-blue-500 focus:outline-none"
+                      />
+                    ) : (
+                      <p className="mt-0.5 text-sm text-gray-900">
+                        {rule.name || <span className="text-gray-400">(unnamed)</span>}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <MobileActions
+                      editing={editing}
+                      busy={aliasesBusy}
+                      canSave={aliasesEditName.trim().length > 0}
+                      onSave={saveAliasRow}
+                      onCancel={cancelAliasEdit}
+                      onEdit={() => startAliasEdit(idx)}
+                      onDelete={() => deleteAliasRow(idx)}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">Aliases</p>
+                  {editing ? (
+                    <input
+                      value={aliasesEditValues}
+                      onChange={(e) => setAliasesEditValues(e.target.value)}
+                      placeholder="aliases, comma separated (e.g. claude-sonnet-4-6, anthropic/claude-sonnet-4-6)"
+                      spellCheck={false}
+                      className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 font-mono text-sm focus:border-blue-500 focus:outline-none"
+                    />
+                  ) : (
+                    <p className="mt-0.5 font-mono text-xs text-gray-600 break-all">{rule.aliases}</p>
+                  )}
+                </div>
+              </AdminMobileCard>
+            );
+          })}
+          {aliasRules.length === 0 && (
             <AdminMobileEmpty>No alias groups configured.</AdminMobileEmpty>
           )}
         </AdminMobileCards>
         <button
           type="button"
-          onClick={addAliasRule}
-          className="rounded border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50"
+          onClick={addAliasRow}
+          disabled={aliasesEditingIdx !== null}
+          className="rounded border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-50"
         >
           + Add row
         </button>
@@ -661,20 +958,6 @@ export default function DisplaySettings() {
             {aliasesError}
           </div>
         )}
-        {aliasesSaved && (
-          <div className="mt-3 rounded border border-green-200 bg-green-50 p-3 text-sm text-green-700">
-            Saved. Normalized names update immediately.
-          </div>
-        )}
-
-        <button
-          type="button"
-          onClick={handleSaveAliases}
-          disabled={aliasesBusy}
-          className="mt-4 rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-50"
-        >
-          {aliasesBusy ? "Saving..." : "Save Aliases"}
-        </button>
       </div>
 
       <div className="mt-8 border-t border-gray-100 pt-6">
@@ -702,74 +985,113 @@ export default function DisplaySettings() {
             ]}
           />
           <AdminTableBody>
-            {agentAliasesDraft.map((rule, idx) => (
-              <tr key={idx}>
-                <AdminTd>
-                  <input
-                    value={rule.name}
-                    onChange={(e) => updateAgentAlias(idx, { name: e.target.value })}
-                    placeholder="Display name (e.g. Claude Code)"
-                    className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            {agentRules.map((rule, idx) => {
+              const editing = agentEditingIdx === idx;
+              return (
+                <tr key={idx}>
+                  <AdminTd>
+                    {editing ? (
+                      <input
+                        value={agentEditName}
+                        onChange={(e) => setAgentEditName(e.target.value)}
+                        placeholder="Display name (e.g. Claude Code)"
+                        className="w-full rounded border border-gray-300 px-2 py-1 text-xs focus:border-blue-500 focus:outline-none"
+                      />
+                    ) : (
+                      <span className="text-sm text-gray-900">
+                        {rule.name || <span className="text-gray-400">(unnamed)</span>}
+                      </span>
+                    )}
+                  </AdminTd>
+                  <AdminTd>
+                    {editing ? (
+                      <input
+                        value={agentEditValues}
+                        onChange={(e) => setAgentEditValues(e.target.value)}
+                        placeholder="UA tokens, comma separated (e.g. claude-cli, claude-code-cli)"
+                        spellCheck={false}
+                        className="w-full rounded border border-gray-300 px-2 py-1 font-mono text-xs focus:border-blue-500 focus:outline-none"
+                      />
+                    ) : (
+                      <span className="font-mono text-xs text-gray-600 break-all">{rule.aliases}</span>
+                    )}
+                  </AdminTd>
+                  <DesktopActions
+                    editing={editing}
+                    busy={agentAliasesBusy}
+                    canSave={agentEditName.trim().length > 0}
+                    onSave={saveAgentRow}
+                    onCancel={cancelAgentEdit}
+                    onEdit={() => startAgentEdit(idx)}
+                    onDelete={() => deleteAgentRow(idx)}
                   />
-                </AdminTd>
-                <AdminTd>
-                  <input
-                    value={rule.aliases}
-                    onChange={(e) => updateAgentAlias(idx, { aliases: e.target.value })}
-                    placeholder="UA tokens, comma separated (e.g. claude-cli, claude-code-cli)"
-                    spellCheck={false}
-                    className="w-full rounded border border-gray-300 bg-white px-3 py-2 font-mono text-base md:text-xs shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  />
-                </AdminTd>
-                <AdminTd align="right">
-                  <button
-                    type="button"
-                    onClick={() => removeAgentAliasRule(idx)}
-                    className="rounded border border-red-200 px-3 py-2 text-sm text-red-500 hover:bg-red-50 min-h-[40px] md:min-h-0"
-                  >
-                    Remove
-                  </button>
-                </AdminTd>
-              </tr>
-            ))}
-            {agentAliasesDraft.length === 0 && (
+                </tr>
+              );
+            })}
+            {agentRules.length === 0 && (
               <AdminTableEmptyRow colSpan={3}>No agent alias groups configured.</AdminTableEmptyRow>
             )}
           </AdminTableBody>
         </AdminTable>
         <AdminMobileCards>
-          {agentAliasesDraft.map((rule, idx) => (
-            <AdminMobileCard key={idx}>
-              <input
-                value={rule.name}
-                onChange={(e) => updateAgentAlias(idx, { name: e.target.value })}
-                placeholder="Display name (e.g. Claude Code)"
-                className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-              />
-              <input
-                value={rule.aliases}
-                onChange={(e) => updateAgentAlias(idx, { aliases: e.target.value })}
-                placeholder="UA tokens, comma separated (e.g. claude-cli, claude-code-cli)"
-                spellCheck={false}
-                className="mt-2 w-full rounded border border-gray-300 bg-white px-3 py-2 font-mono text-base shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-              />
-              <button
-                type="button"
-                onClick={() => removeAgentAliasRule(idx)}
-                className="mt-2 rounded border border-red-200 px-3 py-2 text-sm text-red-500 hover:bg-red-50 min-h-[40px]"
-              >
-                Remove
-              </button>
-            </AdminMobileCard>
-          ))}
-          {agentAliasesDraft.length === 0 && (
+          {agentRules.map((rule, idx) => {
+            const editing = agentEditingIdx === idx;
+            return (
+              <AdminMobileCard key={idx}>
+                <div className="flex justify-between items-start gap-2 mb-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs text-gray-500">Display name</p>
+                    {editing ? (
+                      <input
+                        value={agentEditName}
+                        onChange={(e) => setAgentEditName(e.target.value)}
+                        placeholder="Display name (e.g. Claude Code)"
+                        className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 text-sm focus:border-blue-500 focus:outline-none"
+                      />
+                    ) : (
+                      <p className="mt-0.5 text-sm text-gray-900">
+                        {rule.name || <span className="text-gray-400">(unnamed)</span>}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <MobileActions
+                      editing={editing}
+                      busy={agentAliasesBusy}
+                      canSave={agentEditName.trim().length > 0}
+                      onSave={saveAgentRow}
+                      onCancel={cancelAgentEdit}
+                      onEdit={() => startAgentEdit(idx)}
+                      onDelete={() => deleteAgentRow(idx)}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">UA tokens</p>
+                  {editing ? (
+                    <input
+                      value={agentEditValues}
+                      onChange={(e) => setAgentEditValues(e.target.value)}
+                      placeholder="UA tokens, comma separated (e.g. claude-cli, claude-code-cli)"
+                      spellCheck={false}
+                      className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 font-mono text-sm focus:border-blue-500 focus:outline-none"
+                    />
+                  ) : (
+                    <p className="mt-0.5 font-mono text-xs text-gray-600 break-all">{rule.aliases}</p>
+                  )}
+                </div>
+              </AdminMobileCard>
+            );
+          })}
+          {agentRules.length === 0 && (
             <AdminMobileEmpty>No agent alias groups configured.</AdminMobileEmpty>
           )}
         </AdminMobileCards>
         <button
           type="button"
-          onClick={addAgentAliasRule}
-          className="rounded border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50"
+          onClick={addAgentRow}
+          disabled={agentEditingIdx !== null}
+          className="rounded border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-50"
         >
           + Add row
         </button>
@@ -812,33 +1134,35 @@ export default function DisplaySettings() {
                         }}
                         placeholder="Display name"
                         autoFocus
-                        className="w-full rounded border border-blue-300 bg-white px-2 py-1.5 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        className="w-full rounded border border-gray-300 px-2 py-1 text-xs focus:border-blue-500 focus:outline-none"
                       />
                     ) : (
                       <span className="text-sm text-gray-600">{o.name}</span>
                     )}
                   </AdminTd>
-                  <AdminTd align="right">
+                  <AdminTd align="right" className="whitespace-nowrap">
                     {editingObserved === o.token ? (
-                      <div className="flex gap-1 justify-end">
+                      <>
                         <button
                           type="button"
                           onClick={() => adoptObservedAgent(o.token, editingObservedName)}
-                          disabled={!editingObservedName.trim()}
-                          className="rounded border border-blue-200 px-2 py-1 text-xs text-blue-600 hover:bg-blue-50 disabled:opacity-50 min-h-[40px] md:min-h-0"
+                          disabled={agentAliasesBusy || !editingObservedName.trim()}
+                          className="text-xs font-medium text-blue-600 hover:text-blue-800 disabled:opacity-50"
                         >
-                          Apply
+                          {agentAliasesBusy ? "Saving…" : "Apply"}
                         </button>
+                        {" · "}
                         <button
                           type="button"
                           onClick={() => setEditingObserved(null)}
-                          className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 min-h-[40px] md:min-h-0"
+                          disabled={agentAliasesBusy}
+                          className="text-xs text-gray-500 hover:text-gray-700 disabled:opacity-50"
                         >
                           Cancel
                         </button>
-                      </div>
+                      </>
                     ) : (
-                      <div className="flex items-center justify-end gap-1">
+                      <div className="flex items-center justify-end gap-2">
                         <span
                           className={`rounded px-1.5 py-0.5 text-xs ${
                             o.source === "manual"
@@ -857,7 +1181,8 @@ export default function DisplaySettings() {
                               setEditingObserved(o.token);
                               setEditingObservedName(o.name);
                             }}
-                            className="rounded border border-gray-200 px-2 py-0.5 text-xs text-gray-500 hover:bg-gray-100 min-h-[40px] md:min-h-0"
+                            disabled={agentAliasesBusy}
+                            className="text-xs text-gray-600 hover:text-gray-800 disabled:opacity-50"
                           >
                             Edit
                           </button>
@@ -886,21 +1211,22 @@ export default function DisplaySettings() {
                       }}
                       placeholder="Display name"
                       autoFocus
-                      className="w-full rounded border border-blue-300 bg-white px-2 py-1.5 text-base shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      className="w-full rounded border border-gray-300 px-2 py-1.5 text-base focus:border-blue-500 focus:outline-none"
                     />
                     <div className="mt-2 flex gap-2">
                       <button
                         type="button"
                         onClick={() => adoptObservedAgent(o.token, editingObservedName)}
-                        disabled={!editingObservedName.trim()}
-                        className="rounded border border-blue-200 px-2 py-1 text-xs text-blue-600 hover:bg-blue-50 disabled:opacity-50 min-h-[40px]"
+                        disabled={agentAliasesBusy || !editingObservedName.trim()}
+                        className="rounded border border-blue-200 bg-blue-50 px-2 py-1 text-xs text-blue-600 hover:bg-blue-100 disabled:opacity-50 min-h-[40px]"
                       >
-                        Apply
+                        {agentAliasesBusy ? "Saving…" : "Apply"}
                       </button>
                       <button
                         type="button"
                         onClick={() => setEditingObserved(null)}
-                        className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 min-h-[40px]"
+                        disabled={agentAliasesBusy}
+                        className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 disabled:opacity-50 min-h-[40px]"
                       >
                         Cancel
                       </button>
@@ -910,7 +1236,7 @@ export default function DisplaySettings() {
                   <>
                     <div className="flex items-start justify-between gap-2">
                       <code className="min-w-0 font-mono text-xs text-gray-600 break-all">{o.token}</code>
-                      <div className="flex shrink-0 items-center gap-1">
+                      <div className="flex shrink-0 items-center gap-2">
                         <span
                           className={`rounded px-1.5 py-0.5 text-xs ${
                             o.source === "manual"
@@ -929,7 +1255,8 @@ export default function DisplaySettings() {
                               setEditingObserved(o.token);
                               setEditingObservedName(o.name);
                             }}
-                            className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 min-h-[40px]"
+                            disabled={agentAliasesBusy}
+                            className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 disabled:opacity-50 min-h-[40px]"
                           >
                             Edit
                           </button>
@@ -947,7 +1274,7 @@ export default function DisplaySettings() {
           </AdminMobileCards>
           <p className="text-xs text-gray-400">
             Editing a built-in or as-is row adds it to the manual rules above;
-            click &quot;Save Agent Aliases&quot; to apply.
+            changes apply immediately.
           </p>
         </div>
 
@@ -956,20 +1283,6 @@ export default function DisplaySettings() {
             {agentAliasesError}
           </div>
         )}
-        {agentAliasesSaved && (
-          <div className="mt-3 rounded border border-green-200 bg-green-50 p-3 text-sm text-green-700">
-            Saved. Agent names update immediately.
-          </div>
-        )}
-
-        <button
-          type="button"
-          onClick={handleSaveAgentAliases}
-          disabled={agentAliasesBusy}
-          className="mt-4 rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-50"
-        >
-          {agentAliasesBusy ? "Saving..." : "Save Agent Aliases"}
-        </button>
       </div>
 
       <div className="mt-8 border-t border-gray-100 pt-6">
@@ -990,13 +1303,9 @@ export default function DisplaySettings() {
               <input
                 type="checkbox"
                 checked={statusConfig.enabled}
-                onChange={() => {
-                  setStatusSaved(false);
-                  setStatusConfig((prev) =>
-                    prev ? { ...prev, enabled: !prev.enabled } : prev
-                  );
-                }}
-                className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                onChange={toggleStatusEnabled}
+                disabled={statusBusy}
+                className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
               />
               <span className="text-sm font-medium text-gray-700">
                 Enable public status page
@@ -1032,7 +1341,8 @@ export default function DisplaySettings() {
                           type="checkbox"
                           checked={statusConfig.elements[key]}
                           onChange={() => toggleStatusElement(key)}
-                          className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          disabled={statusBusy}
+                          className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
                         />
                       </AdminTd>
                     </tr>
@@ -1057,7 +1367,8 @@ export default function DisplaySettings() {
                         type="checkbox"
                         checked={statusConfig.elements[key]}
                         onChange={() => toggleStatusElement(key)}
-                        className="h-5 w-5 shrink-0 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        disabled={statusBusy}
+                        className="h-5 w-5 shrink-0 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
                       />
                     </label>
                   </AdminMobileCard>
@@ -1075,21 +1386,6 @@ export default function DisplaySettings() {
                 {statusError}
               </div>
             )}
-            {statusSaved && (
-              <div className="rounded border border-green-200 bg-green-50 p-3 text-sm text-green-700">
-                Saved. The public page reflects the new configuration
-                immediately.
-              </div>
-            )}
-
-            <button
-              type="button"
-              onClick={handleSaveStatus}
-              disabled={statusBusy}
-              className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-50"
-            >
-              {statusBusy ? "Saving..." : "Save Status Page"}
-            </button>
           </div>
         )}
       </div>
@@ -1140,7 +1436,8 @@ export default function DisplaySettings() {
                             type="checkbox"
                             checked={hidden}
                             onChange={() => toggleHiddenSource("upstreams", name)}
-                            className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                            disabled={hiddenSourcesBusy}
+                            className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
                           />
                         </AdminTd>
                         <AdminTd align="right">
@@ -1148,7 +1445,8 @@ export default function DisplaySettings() {
                             type="checkbox"
                             checked={excluded}
                             onChange={() => toggleExcludedSource("excludedUpstreams", name)}
-                            className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                            disabled={hiddenSourcesBusy}
+                            className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
                           />
                         </AdminTd>
                       </tr>
@@ -1179,7 +1477,8 @@ export default function DisplaySettings() {
                             type="checkbox"
                             checked={hidden}
                             onChange={() => toggleHiddenSource("upstreams", name)}
-                            className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                            disabled={hiddenSourcesBusy}
+                            className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
                           />
                           <span className="text-xs text-gray-500">Hide</span>
                         </label>
@@ -1188,7 +1487,8 @@ export default function DisplaySettings() {
                             type="checkbox"
                             checked={excluded}
                             onChange={() => toggleExcludedSource("excludedUpstreams", name)}
-                            className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                            disabled={hiddenSourcesBusy}
+                            className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
                           />
                           <span className="text-xs text-gray-500">Exclude</span>
                         </label>
@@ -1233,7 +1533,8 @@ export default function DisplaySettings() {
                             type="checkbox"
                             checked={hidden}
                             onChange={() => toggleHiddenSource("virtualKeys", name)}
-                            className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                            disabled={hiddenSourcesBusy}
+                            className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
                           />
                         </AdminTd>
                         <AdminTd align="right">
@@ -1241,7 +1542,8 @@ export default function DisplaySettings() {
                             type="checkbox"
                             checked={excluded}
                             onChange={() => toggleExcludedSource("excludedVirtualKeys", name)}
-                            className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                            disabled={hiddenSourcesBusy}
+                            className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
                           />
                         </AdminTd>
                       </tr>
@@ -1272,7 +1574,8 @@ export default function DisplaySettings() {
                             type="checkbox"
                             checked={hidden}
                             onChange={() => toggleHiddenSource("virtualKeys", name)}
-                            className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                            disabled={hiddenSourcesBusy}
+                            className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
                           />
                           <span className="text-xs text-gray-500">Hide</span>
                         </label>
@@ -1281,7 +1584,8 @@ export default function DisplaySettings() {
                             type="checkbox"
                             checked={excluded}
                             onChange={() => toggleExcludedSource("excludedVirtualKeys", name)}
-                            className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                            disabled={hiddenSourcesBusy}
+                            className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
                           />
                           <span className="text-xs text-gray-500">Exclude</span>
                         </label>
@@ -1307,20 +1611,6 @@ export default function DisplaySettings() {
                 {hiddenSourcesError}
               </div>
             )}
-            {hiddenSourcesSaved && (
-              <div className="rounded border border-green-200 bg-green-50 p-3 text-sm text-green-700">
-                Saved. Filters and totals update immediately.
-              </div>
-            )}
-
-            <button
-              type="button"
-              onClick={handleSaveHiddenSources}
-              disabled={hiddenSourcesBusy}
-              className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-50"
-            >
-              {hiddenSourcesBusy ? "Saving..." : "Save Hidden Sources"}
-            </button>
           </div>
         )}
       </div>
