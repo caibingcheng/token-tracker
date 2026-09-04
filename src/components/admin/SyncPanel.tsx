@@ -5,6 +5,16 @@ import { apiFetch } from "@/lib/client/api-client";
 import { CopyableCode } from "./CopyableCode";
 import { copyText } from "@/lib/clipboard";
 import { maskVirtualKey } from "@/lib/mask-utils";
+import {
+  AdminMobileCard,
+  AdminMobileCards,
+  AdminMobileEmpty,
+  AdminTable,
+  AdminTableBody,
+  AdminTableEmptyRow,
+  AdminTableHead,
+  AdminTd,
+} from "./table";
 
 // Admin Sync tab：多实例同步管理。
 // - A 角色能力：ingest token 管理（创建/启停/解绑/删除）+ 实例水位查看/删除
@@ -841,98 +851,92 @@ export default function SyncPanel() {
             )}
 
             {/* 桌面表格 */}
-            <div className="hidden md:block overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-xs text-gray-400">
-                    <th className="px-2 py-2">Name</th>
-                    <th className="px-2 py-2">Key</th>
-                    <th className="px-2 py-2">Enabled</th>
-                    <th className="px-2 py-2">Bound uid</th>
-                    <th className="px-2 py-2">Last used</th>
-                    <th className="px-2 py-2 text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {tokens.length === 0 && (
-                    <tr>
-                      <td colSpan={6} className="px-2 py-4 text-center text-xs text-gray-400">
-                        No ingest tokens yet.
-                      </td>
-                    </tr>
-                  )}
-                  {tokens.map((token) => (
-                    <tr key={token.id}>
-                      <td className="px-2 py-2">
-                        <CopyableCode className="text-xs">{token.name}</CopyableCode>
-                      </td>
-                      <td className="px-2 py-2">
-                        <div className="flex items-center gap-2">
-                          <code className="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-[11px] text-gray-600 break-all max-w-[180px]">
-                            {token.apiKey ? maskVirtualKey(token.apiKey) : "—"}
-                          </code>
-                          {token.apiKey && (
-                            <button
-                              type="button"
-                              onClick={() => copyTokenKey(token)}
-                              className="text-xs text-gray-500 hover:text-blue-600"
-                            >
-                              {copiedToken === token.id ? "Copied!" : "Copy"}
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-2 py-2">
-                        <button
-                          type="button"
-                          onClick={() => toggleToken(token)}
-                          className={`rounded px-2 py-0.5 text-xs font-medium ${
-                            token.enabled
-                              ? "bg-green-100 text-green-700 hover:bg-green-200"
-                              : "bg-gray-100 text-gray-500 hover:bg-gray-200"
-                          }`}
-                        >
-                          {token.enabled ? "enabled" : "disabled"}
-                        </button>
-                      </td>
-                      <td className="px-2 py-2 font-mono text-xs break-all max-w-[200px]">
-                        {token.boundUid ?? <span className="text-gray-400">(unbound)</span>}
-                      </td>
-                      <td className="px-2 py-2 text-xs text-gray-500">{formatDate(token.lastUsedAt)}</td>
-                      <td className="px-2 py-2 text-right whitespace-nowrap text-xs">
-                        {token.boundUid && (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => unbindToken(token)}
-                              className="text-amber-600 hover:text-amber-800"
-                            >
-                              Unbind
-                            </button>
-                            {" · "}
-                          </>
+            <AdminTable>
+              <AdminTableHead
+                columns={[
+                  { label: "Name" },
+                  { label: "Key" },
+                  { label: "Enabled" },
+                  { label: "Bound uid" },
+                  { label: "Last used" },
+                  { label: "Actions", align: "right" },
+                ]}
+              />
+              <AdminTableBody>
+                {tokens.length === 0 && (
+                  <AdminTableEmptyRow colSpan={6}>No ingest tokens yet.</AdminTableEmptyRow>
+                )}
+                {tokens.map((token) => (
+                  <tr key={token.id}>
+                    <AdminTd>
+                      <CopyableCode className="text-xs">{token.name}</CopyableCode>
+                    </AdminTd>
+                    <AdminTd>
+                      <div className="flex items-center gap-2">
+                        <code className="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-[11px] text-gray-600 break-all max-w-[180px]">
+                          {token.apiKey ? maskVirtualKey(token.apiKey) : "—"}
+                        </code>
+                        {token.apiKey && (
+                          <button
+                            type="button"
+                            onClick={() => copyTokenKey(token)}
+                            className="text-xs text-gray-500 hover:text-blue-600"
+                          >
+                            {copiedToken === token.id ? "Copied!" : "Copy"}
+                          </button>
                         )}
-                        <button
-                          type="button"
-                          onClick={() => deleteToken(token)}
-                          className="text-red-500 hover:text-red-700"
-                        >
-                          Delete
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                      </div>
+                    </AdminTd>
+                    <AdminTd>
+                      <button
+                        type="button"
+                        onClick={() => toggleToken(token)}
+                        className={`rounded px-2 py-0.5 text-xs font-medium ${
+                          token.enabled
+                            ? "bg-green-100 text-green-700 hover:bg-green-200"
+                            : "bg-gray-100 text-gray-500 hover:bg-gray-200"
+                        }`}
+                      >
+                        {token.enabled ? "enabled" : "disabled"}
+                      </button>
+                    </AdminTd>
+                    <AdminTd mono className="break-all max-w-[200px]">
+                      {token.boundUid ?? <span className="text-gray-400">(unbound)</span>}
+                    </AdminTd>
+                    <AdminTd className="text-xs text-gray-500">{formatDate(token.lastUsedAt)}</AdminTd>
+                    <AdminTd align="right" className="whitespace-nowrap text-xs">
+                      {token.boundUid && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => unbindToken(token)}
+                            className="text-amber-600 hover:text-amber-800"
+                          >
+                            Unbind
+                          </button>
+                          {" · "}
+                        </>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => deleteToken(token)}
+                        className="text-red-500 hover:text-red-700"
+                      >
+                        Delete
+                      </button>
+                    </AdminTd>
+                  </tr>
+                ))}
+              </AdminTableBody>
+            </AdminTable>
 
             {/* 移动端卡片 */}
-            <div className="md:hidden space-y-3">
+            <AdminMobileCards>
               {tokens.length === 0 && (
-                <p className="py-4 text-center text-xs text-gray-400">No ingest tokens yet.</p>
+                <AdminMobileEmpty>No ingest tokens yet.</AdminMobileEmpty>
               )}
               {tokens.map((token) => (
-                <div key={token.id} className="border border-gray-200 rounded-lg p-3">
+                <AdminMobileCard key={token.id}>
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <CopyableCode className="text-xs">{token.name}</CopyableCode>
@@ -982,9 +986,9 @@ export default function SyncPanel() {
                       Delete
                     </button>
                   </div>
-                </div>
+                </AdminMobileCard>
               ))}
-            </div>
+            </AdminMobileCards>
 
             {/* Sync Instances（并入大卡 2） */}
             <div className="mt-5 border-t border-gray-100 pt-4">
@@ -995,59 +999,53 @@ export default function SyncPanel() {
               {instancesError && <p className="mb-2 text-xs text-red-600">{instancesError}</p>}
               {instancesSuccess && <p className="mb-2 text-xs text-green-600">{instancesSuccess}</p>}
 
-            <div className="hidden md:block overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-xs text-gray-400">
-                    <th className="px-2 py-2">Instance (uid)</th>
-                    <th className="px-2 py-2">Epoch</th>
-                    <th className="px-2 py-2 text-right">Last record id</th>
-                    <th className="px-2 py-2">Updated</th>
-                    <th className="px-2 py-2 text-right">Actions</th>
+            <AdminTable>
+              <AdminTableHead
+                columns={[
+                  { label: "Instance (uid)" },
+                  { label: "Epoch" },
+                  { label: "Last record id", align: "right" },
+                  { label: "Updated" },
+                  { label: "Actions", align: "right" },
+                ]}
+              />
+              <AdminTableBody>
+                {instances.length === 0 && (
+                  <AdminTableEmptyRow colSpan={5}>No pushed instances yet.</AdminTableEmptyRow>
+                )}
+                {instances.map((inst) => (
+                  <tr key={inst.uid}>
+                    <AdminTd>
+                      {inst.instanceName && (
+                        <CopyableCode className="text-xs">{inst.instanceName}</CopyableCode>
+                      )}
+                      <div className="font-mono text-[11px] text-gray-400 break-all">{inst.uid}</div>
+                    </AdminTd>
+                    <AdminTd mono className="text-gray-500">
+                      {inst.epoch.slice(0, 12)}…
+                    </AdminTd>
+                    <AdminTd align="right" mono>{inst.lastRecordId}</AdminTd>
+                    <AdminTd className="text-xs text-gray-500">{formatDate(inst.updatedAt)}</AdminTd>
+                    <AdminTd align="right" className="text-xs">
+                      <button
+                        type="button"
+                        onClick={() => deleteInstance(inst)}
+                        className="text-red-500 hover:text-red-700"
+                      >
+                        Delete
+                      </button>
+                    </AdminTd>
                   </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {instances.length === 0 && (
-                    <tr>
-                      <td colSpan={5} className="px-2 py-4 text-center text-xs text-gray-400">
-                        No pushed instances yet.
-                      </td>
-                    </tr>
-                  )}
-                  {instances.map((inst) => (
-                    <tr key={inst.uid}>
-                      <td className="px-2 py-2">
-                        {inst.instanceName && (
-                          <CopyableCode className="text-xs">{inst.instanceName}</CopyableCode>
-                        )}
-                        <div className="font-mono text-[11px] text-gray-400 break-all">{inst.uid}</div>
-                      </td>
-                      <td className="px-2 py-2 font-mono text-xs text-gray-500">
-                        {inst.epoch.slice(0, 12)}…
-                      </td>
-                      <td className="px-2 py-2 text-right font-mono text-xs">{inst.lastRecordId}</td>
-                      <td className="px-2 py-2 text-xs text-gray-500">{formatDate(inst.updatedAt)}</td>
-                      <td className="px-2 py-2 text-right text-xs">
-                        <button
-                          type="button"
-                          onClick={() => deleteInstance(inst)}
-                          className="text-red-500 hover:text-red-700"
-                        >
-                          Delete
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                ))}
+              </AdminTableBody>
+            </AdminTable>
 
-            <div className="md:hidden space-y-3">
+            <AdminMobileCards>
               {instances.length === 0 && (
-                <p className="py-4 text-center text-xs text-gray-400">No pushed instances yet.</p>
+                <AdminMobileEmpty>No pushed instances yet.</AdminMobileEmpty>
               )}
               {instances.map((inst) => (
-                <div key={inst.uid} className="border border-gray-200 rounded-lg p-3">
+                <AdminMobileCard key={inst.uid}>
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       {inst.instanceName && (
@@ -1068,9 +1066,9 @@ export default function SyncPanel() {
                     <span className="text-gray-400">Last record id</span>
                     <span className="font-mono">{inst.lastRecordId}</span>
                   </div>
-                </div>
+                </AdminMobileCard>
               ))}
-              </div>
+              </AdminMobileCards>
             </div>
           </section>
         </>

@@ -326,6 +326,7 @@ docker compose up -d
 - 任何 UI 改动必须同时考虑移动端（<768px）：新表格必须做「桌面 table + `md:hidden` 卡片」双轨；
   新弹窗移动端全屏（`w-full h-full md:...`）；新导航/按钮触摸区 ≥40px；input 移动端字号 ≥16px
 - 移动端专属 UI 一律 `md:hidden` 门控，桌面端 DOM 只新增不修改
+- **Admin 面板表格统一使用共享组件 `src/components/admin/table.tsx`**（`AdminTableCard` / `AdminTable` / `AdminTableHead` / `AdminTableBody` / `AdminTd` / `AdminTableEmptyRow` / `AdminMobileCards` / `AdminMobileCard` / `AdminMobileEmpty`），新增/修改 Admin 表格禁止手写 `<table>`——以 ModelsPanel 表格形式为基准：桌面 `hidden md:block overflow-x-auto`、数字列 `text-right font-mono text-xs`（`AdminTd align="right" mono`）、操作列 `text-right whitespace-nowrap`、移动端卡片 `border border-gray-200 rounded-lg p-3`（双 checkbox 行保留 `h-5 w-5`）。徽标语义各异不抽公共组件，各面板局部实现；`RecordsTable.tsx`（Dashboard）独立旧风格不受此约束
 - 复用现有范式：RecordsTable 双轨、ActionMenu、FiltersModal、PriceSimulatorModal
 - 提交前自检：375px 视口无横向溢出，桌面端视觉无回归
 

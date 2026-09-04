@@ -10,6 +10,15 @@ import {
 } from "@/lib/gateway/simulate-route";
 import { CopyableCode } from "./CopyableCode";
 import PricePickerModal from "./PricePickerModal";
+import {
+  AdminMobileCard,
+  AdminMobileCards,
+  AdminTable,
+  AdminTableBody,
+  AdminTableCard,
+  AdminTableHead,
+  AdminTd,
+} from "./table";
 
 interface UpstreamSummary {
   id: number;
@@ -773,13 +782,14 @@ export default function ModelsPanel() {
       </div>
 
       {/* 手动路由规则 */}
-      <div className="rounded-lg bg-white p-4 shadow">
-        <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <h2 className="text-base font-semibold">Manual Routing</h2>
+      <AdminTableCard
+        title={<h2 className="text-base font-semibold">Manual Routing</h2>}
+        actions={
           <p className="text-xs text-gray-400">
             Manual rules completely replace automatic routing. Multiple targets fail over by priority; all fail → 502.
           </p>
-        </div>
+        }
+      >
 
         {/* 新增行：name / protocol / provider / target model / priority */}
         <div className="grid grid-cols-1 md:grid-cols-[1fr_130px_1fr_1fr_90px_auto] gap-3">
@@ -900,118 +910,116 @@ export default function ModelsPanel() {
         {/* 规则列表 */}
         {data && data.manualRoutes.length > 0 && (
           <div className="mt-4">
-            <div className="hidden md:block overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-xs text-gray-400">
-                    <th className="px-2 py-2">Name</th>
-                    <th className="px-2 py-2">Protocol</th>
-                    <th className="px-2 py-2">Provider</th>
-                    <th className="px-2 py-2">Target Model</th>
-                    <th className="px-2 py-2">Priority</th>
-                    <th className="px-2 py-2"></th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {data.manualRoutes.map((rule) => {
-                    const editing = editingRule?.id === rule.id;
-                    return (
-                      <tr key={rule.id}>
-                        <td className="px-2 py-2">
-                          <CopyableCode className="text-xs">{rule.name}</CopyableCode>
-                        </td>
-                        <td className="px-2 py-2">
-                          <span className={`rounded border px-1.5 py-0.5 text-[10px] ${protocolBadgeClass(rule.protocol)}`}>
-                            {rule.protocol}
+            <AdminTable>
+              <AdminTableHead
+                columns={[
+                  { label: "Name" },
+                  { label: "Protocol" },
+                  { label: "Provider" },
+                  { label: "Target Model" },
+                  { label: "Priority" },
+                  { label: "", align: "right" },
+                ]}
+              />
+              <AdminTableBody>
+                {data.manualRoutes.map((rule) => {
+                  const editing = editingRule?.id === rule.id;
+                  return (
+                    <tr key={rule.id}>
+                      <AdminTd>
+                        <CopyableCode className="text-xs">{rule.name}</CopyableCode>
+                      </AdminTd>
+                      <AdminTd>
+                        <span className={`rounded border px-1.5 py-0.5 text-[10px] ${protocolBadgeClass(rule.protocol)}`}>
+                          {rule.protocol}
+                        </span>
+                      </AdminTd>
+                      <AdminTd>
+                        <span className="font-medium">{rule.upstreamName}</span>
+                        <span className={`ml-1.5 rounded border px-1.5 py-0.5 text-[10px] ${protocolBadgeClass(rule.upstreamProtocol)}`}>
+                          {rule.upstreamProtocol}
+                        </span>
+                      </AdminTd>
+                      <AdminTd>
+                        {editing ? (
+                          <input
+                            value={editingRule!.targetModel}
+                            onChange={(e) => setEditingRule({ ...editingRule!, targetModel: e.target.value })}
+                            className="w-40 rounded border border-gray-300 px-2 py-1 text-xs focus:border-blue-500 focus:outline-none"
+                          />
+                        ) : (
+                          <CopyableCode className="text-xs">{rule.targetModel}</CopyableCode>
+                        )}
+                      </AdminTd>
+                      <AdminTd>
+                        {editing ? (
+                          <input
+                            value={editingRule!.priority}
+                            onChange={(e) => setEditingRule({ ...editingRule!, priority: e.target.value })}
+                            type="number"
+                            min={0}
+                            className="w-16 rounded border border-gray-300 px-2 py-1 text-xs focus:border-blue-500 focus:outline-none"
+                          />
+                        ) : (
+                          <span className="inline-flex items-center rounded bg-gray-50 px-1.5 py-0.5 text-xs text-gray-600">
+                            p{rule.priority}
                           </span>
-                        </td>
-                        <td className="px-2 py-2">
-                          <span className="font-medium">{rule.upstreamName}</span>
-                          <span className={`ml-1.5 rounded border px-1.5 py-0.5 text-[10px] ${protocolBadgeClass(rule.upstreamProtocol)}`}>
-                            {rule.upstreamProtocol}
-                          </span>
-                        </td>
-                        <td className="px-2 py-2">
-                          {editing ? (
-                            <input
-                              value={editingRule!.targetModel}
-                              onChange={(e) => setEditingRule({ ...editingRule!, targetModel: e.target.value })}
-                              className="w-40 rounded border border-gray-300 px-2 py-1 text-xs focus:border-blue-500 focus:outline-none"
-                            />
-                          ) : (
-                            <CopyableCode className="text-xs">{rule.targetModel}</CopyableCode>
-                          )}
-                        </td>
-                        <td className="px-2 py-2">
-                          {editing ? (
-                            <input
-                              value={editingRule!.priority}
-                              onChange={(e) => setEditingRule({ ...editingRule!, priority: e.target.value })}
-                              type="number"
-                              min={0}
-                              className="w-16 rounded border border-gray-300 px-2 py-1 text-xs focus:border-blue-500 focus:outline-none"
-                            />
-                          ) : (
-                            <span className="inline-flex items-center rounded bg-gray-50 px-1.5 py-0.5 text-xs text-gray-600">
-                              p{rule.priority}
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-2 py-2 text-right whitespace-nowrap">
-                          {editing ? (
-                            <>
-                              <button
-                                type="button"
-                                onClick={updateRule}
-                                disabled={savingRule}
-                                className="text-xs font-medium text-blue-600 hover:text-blue-800 disabled:opacity-50"
-                              >
-                                {savingRule ? "Saving…" : "Save"}
-                              </button>
-                              {" · "}
-                              <button
-                                type="button"
-                                onClick={() => setEditingRule(null)}
-                                className="text-xs text-gray-500 hover:text-gray-700"
-                              >
-                                Cancel
-                              </button>
-                            </>
-                          ) : (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setEditingRule({
-                                    id: rule.id,
-                                    priority: String(rule.priority),
-                                    targetModel: rule.targetModel,
-                                  })
-                                }
-                                className="text-xs text-gray-600 hover:text-gray-800"
-                              >
-                                Edit
-                              </button>
-                              {" · "}
-                              <button
-                                type="button"
-                                onClick={() => deleteRule(rule)}
-                                className="text-xs text-red-500 hover:text-red-700"
-                              >
-                                Delete
-                              </button>
-                            </>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-            <div className="md:hidden space-y-3">
+                        )}
+                      </AdminTd>
+                      <AdminTd align="right" className="whitespace-nowrap">
+                        {editing ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={updateRule}
+                              disabled={savingRule}
+                              className="text-xs font-medium text-blue-600 hover:text-blue-800 disabled:opacity-50"
+                            >
+                              {savingRule ? "Saving…" : "Save"}
+                            </button>
+                            {" · "}
+                            <button
+                              type="button"
+                              onClick={() => setEditingRule(null)}
+                              className="text-xs text-gray-500 hover:text-gray-700"
+                            >
+                              Cancel
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setEditingRule({
+                                  id: rule.id,
+                                  priority: String(rule.priority),
+                                  targetModel: rule.targetModel,
+                                })
+                              }
+                              className="text-xs text-gray-600 hover:text-gray-800"
+                            >
+                              Edit
+                            </button>
+                            {" · "}
+                            <button
+                              type="button"
+                              onClick={() => deleteRule(rule)}
+                              className="text-xs text-red-500 hover:text-red-700"
+                            >
+                              Delete
+                            </button>
+                          </>
+                        )}
+                      </AdminTd>
+                    </tr>
+                  );
+                })}
+              </AdminTableBody>
+            </AdminTable>
+            <AdminMobileCards>
               {data.manualRoutes.map((rule) => (
-                <div key={rule.id} className="border border-gray-200 rounded-lg p-4">
+                <AdminMobileCard key={rule.id}>
                   <div className="flex justify-between items-start gap-2 mb-3">
                     <div className="min-w-0">
                       <p className="text-xs text-gray-500">Name</p>
@@ -1104,17 +1112,17 @@ export default function ModelsPanel() {
                       </div>
                     )}
                   </div>
-                </div>
+                </AdminMobileCard>
               ))}
-            </div>
+            </AdminMobileCards>
           </div>
         )}
-      </div>
+      </AdminTableCard>
 
       {/* 静态路由表 */}
-      <div className="rounded-lg bg-white p-4 shadow">
-        <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <h2 className="text-base font-semibold">Model Routing Table</h2>
+      <AdminTableCard
+        title={<h2 className="text-base font-semibold">Model Routing Table</h2>}
+        actions={
           <div className="flex overflow-x-auto overflow-y-hidden scrollbar-hide rounded-md border border-gray-300">
             {data?.protocols.map((p) => (
               <button
@@ -1131,7 +1139,8 @@ export default function ModelsPanel() {
               </button>
             ))}
           </div>
-        </div>
+        }
+      >
 
         {wildcardPatterns.length > 0 && (
           <div className="mb-3 rounded border border-purple-100 bg-purple-50/50 p-2 text-xs text-purple-700">
@@ -1151,84 +1160,83 @@ export default function ModelsPanel() {
           </div>
         ) : (
           <>
-            <div className="hidden md:block overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-xs text-gray-400">
-                    <th className="px-2 py-2">Model</th>
-                    <th className="px-2 py-2">Winner Upstream</th>
-                    <th className="px-2 py-2">Priority</th>
-                    <th className="px-2 py-2">Pattern</th>
-                    <th className="px-2 py-2">Type</th>
-                    <th className="px-2 py-2">Candidates</th>
-                    <th className="px-2 py-2"></th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {routesForProtocol.map((route) => {
-                    const key = `${route.protocol}:${route.model}`;
-                    const expanded = expandedModels.has(key);
-                    const hasConflict = route.candidates.length > 1;
-                    return (
-                      <>
-                        <tr
-                          key={key}
-                          className={`cursor-pointer hover:bg-gray-50 ${
-                            hasConflict ? "bg-amber-50/30" : ""
-                          }`}
-                          onClick={() => toggleExpanded(key)}
-                        >
-                          <td className="px-2 py-2">
-                            <CopyableCode className="text-xs">{route.model}</CopyableCode>
-                            {route.source === "auto" && route.overridden && (
-                              <span
-                                className="ml-1.5 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500"
-                                title="Overridden by a manual route with the same name; manual route fully replaces automatic routing"
-                              >
-                                overridden
-                              </span>
-                            )}
-                          </td>
-                          <td className="px-2 py-2 font-medium">
-                            {route.effective.winner ? (
-                              <>
-                                <span className="mr-1.5">{route.effective.winner.name}</span>
-                                <EffectiveBadge effective={route.effective} />
-                              </>
-                            ) : (
-                              <span className="text-gray-400">—</span>
-                            )}
-                          </td>
-                          <td className="px-2 py-2 text-xs text-gray-500">
-                            {route.effective.winner ? route.effective.winner.priority : "—"}
-                          </td>
-                          <td className="px-2 py-2">
-                            {route.effective.winner ? (
-                              <CopyableCode className="text-xs">{route.effective.winner.matchedPattern}</CopyableCode>
-                            ) : (
-                              <span className="text-gray-400">—</span>
-                            )}
-                          </td>
-                          <td className="px-2 py-2">
-                            {route.source === "manual" ? (
-                              <MatchTypeBadge type="manual" />
-                            ) : route.effective.winner ? (
-                              <MatchTypeBadge type={route.effective.winner.matchType} />
-                            ) : (
-                              "—"
-                            )}
-                          </td>
-                          <td className="px-2 py-2 text-xs text-gray-500">
-                            {route.candidates.length}
-                          </td>
-                          <td className="px-2 py-2 text-right text-xs text-gray-400">
-                            {expanded ? "▲" : "▼"}
-                          </td>
-                        </tr>
-                        {expanded && (
-                          <tr key={`${key}-detail`}>
-                            <td colSpan={7} className="px-2 py-2">
-                              <div className="rounded border border-gray-200 bg-gray-50 p-2 text-xs">
+            <AdminTable>
+              <AdminTableHead
+                columns={[
+                  { label: "Model" },
+                  { label: "Winner Upstream" },
+                  { label: "Priority" },
+                  { label: "Pattern" },
+                  { label: "Type" },
+                  { label: "Candidates" },
+                  { label: "", align: "right" },
+                ]}
+              />
+              <AdminTableBody>
+                {routesForProtocol.map((route) => {
+                  const key = `${route.protocol}:${route.model}`;
+                  const expanded = expandedModels.has(key);
+                  const hasConflict = route.candidates.length > 1;
+                  return (
+                    <>
+                      <tr
+                        key={key}
+                        className={`cursor-pointer hover:bg-gray-50 ${
+                          hasConflict ? "bg-amber-50/30" : ""
+                        }`}
+                        onClick={() => toggleExpanded(key)}
+                      >
+                        <AdminTd>
+                          <CopyableCode className="text-xs">{route.model}</CopyableCode>
+                          {route.source === "auto" && route.overridden && (
+                            <span
+                              className="ml-1.5 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500"
+                              title="Overridden by a manual route with the same name; manual route fully replaces automatic routing"
+                            >
+                              overridden
+                            </span>
+                          )}
+                        </AdminTd>
+                        <AdminTd className="font-medium">
+                          {route.effective.winner ? (
+                            <>
+                              <span className="mr-1.5">{route.effective.winner.name}</span>
+                              <EffectiveBadge effective={route.effective} />
+                            </>
+                          ) : (
+                            <span className="text-gray-400">—</span>
+                          )}
+                        </AdminTd>
+                        <AdminTd className="text-xs text-gray-500">
+                          {route.effective.winner ? route.effective.winner.priority : "—"}
+                        </AdminTd>
+                        <AdminTd>
+                          {route.effective.winner ? (
+                            <CopyableCode className="text-xs">{route.effective.winner.matchedPattern}</CopyableCode>
+                          ) : (
+                            <span className="text-gray-400">—</span>
+                          )}
+                        </AdminTd>
+                        <AdminTd>
+                          {route.source === "manual" ? (
+                            <MatchTypeBadge type="manual" />
+                          ) : route.effective.winner ? (
+                            <MatchTypeBadge type={route.effective.winner.matchType} />
+                          ) : (
+                            "—"
+                          )}
+                        </AdminTd>
+                        <AdminTd className="text-xs text-gray-500">
+                          {route.candidates.length}
+                        </AdminTd>
+                        <AdminTd align="right" className="text-xs text-gray-400">
+                          {expanded ? "▲" : "▼"}
+                        </AdminTd>
+                      </tr>
+                      {expanded && (
+                        <tr key={`${key}-detail`}>
+                          <AdminTd colSpan={7}>
+                            <div className="rounded border border-gray-200 bg-gray-50 p-2 text-xs">
                                 <div className="mb-2 font-medium text-gray-600">
                                   All matching upstreams
                                 </div>
@@ -1258,29 +1266,30 @@ export default function ModelsPanel() {
                                     );
                                   })}
                                 </div>
-                                {hasConflict && route.effective.winner && (
+{hasConflict && route.effective.winner && (
                                   <p className="mt-2 text-[11px] text-gray-500">
                                     Winner is determined by exact match first, then lowest priority number.
                                     Ties are broken by upstream order.
                                   </p>
                                 )}
                               </div>
-                            </td>
+                            </AdminTd>
                           </tr>
                         )}
                       </>
                     );
                   })}
-                </tbody>
-              </table>
-            </div>
-            <div className="md:hidden space-y-3">
+                </AdminTableBody>
+              </AdminTable>
+
+            {/* 移动端卡片 */}
+            <AdminMobileCards>
               {routesForProtocol.map((route) => {
                 const key = `${route.protocol}:${route.model}`;
                 const expanded = expandedModels.has(key);
                 const hasConflict = route.candidates.length > 1;
                 return (
-                  <div key={key} className="border border-gray-200 rounded-lg overflow-hidden">
+                  <AdminMobileCard key={key} className="overflow-hidden">
                     <button
                       type="button"
                       onClick={() => toggleExpanded(key)}
@@ -1366,17 +1375,17 @@ export default function ModelsPanel() {
                         )}
                       </div>
                     )}
-                  </div>
+                  </AdminMobileCard>
                 );
               })}
-            </div>
+            </AdminMobileCards>
           </>
         )}
-      </div>
+      </AdminTableCard>
 
       {/* 官方价参考：Models List Table */}
-      <div className="rounded-lg bg-white p-4 shadow">
-        <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+      <AdminTableCard
+        title={
           <div>
             <h2 className="text-base font-semibold">Model Pricing</h2>
             <p className="mt-0.5 text-xs text-gray-400">
@@ -1388,6 +1397,8 @@ export default function ModelsPanel() {
               </p>
             )}
           </div>
+        }
+        actions={
           <div className="flex flex-wrap items-center gap-2">
             <select
               value={modelsDevSource}
@@ -1452,7 +1463,8 @@ export default function ModelsPanel() {
               Show removed
             </label>
           </div>
-        </div>
+        }
+      >
 
         {pricesError && (
           <div className="mb-3 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-600">
@@ -1478,75 +1490,76 @@ export default function ModelsPanel() {
           }
           return (
             <>
-              <div className="hidden md:block overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-left text-xs text-gray-400">
-                      <th className="px-2 py-2">Model</th>
-                      <th className="px-2 py-2">Upstreams</th>
-                      <th className="px-2 py-2 text-right">Input</th>
-                      <th className="px-2 py-2 text-right">Output</th>
-                      <th className="px-2 py-2 text-right">Cache Rd</th>
-                      <th className="px-2 py-2 text-right">Cache Wr</th>
-                      <th className="px-2 py-2">Status</th>
-                      <th className="px-2 py-2 text-right">Actions</th>
+              <AdminTable>
+                <AdminTableHead
+                  columns={[
+                    { label: "Model" },
+                    { label: "Upstreams" },
+                    { label: "Input", align: "right" },
+                    { label: "Output", align: "right" },
+                    { label: "Cache Rd", align: "right" },
+                    { label: "Cache Wr", align: "right" },
+                    { label: "Status" },
+                    { label: "Actions", align: "right" },
+                  ]}
+                />
+                <AdminTableBody>
+                  {visibleRows.map((row) => (
+                    <tr key={row.model} className={row.status.inactive && !row.recentActivity ? "opacity-50" : ""}>
+                      <AdminTd>
+                        <CopyableCode className="text-xs">{row.model}</CopyableCode>
+                      </AdminTd>
+                      <AdminTd className="text-xs text-gray-500">
+                        {row.upstreams.length > 0 ? row.upstreams.join(", ") : "—"}
+                      </AdminTd>
+                      <AdminTd align="right" mono>
+                        {row.inputPrice === null ? "—" : `$${row.inputPrice.toFixed(4)}`}
+                      </AdminTd>
+                      <AdminTd align="right" mono>
+                        {row.outputPrice === null ? "—" : `$${row.outputPrice.toFixed(4)}`}
+                      </AdminTd>
+                      <AdminTd align="right" mono>
+                        {row.cacheReadPrice === null ? "—" : `$${row.cacheReadPrice.toFixed(4)}`}
+                      </AdminTd>
+                      <AdminTd align="right" mono>
+                        {row.cacheWritePrice === null ? "—" : `$${row.cacheWritePrice.toFixed(4)}`}
+                      </AdminTd>
+                      <AdminTd>
+                        <PriceBadges row={row} onAdopt={() => adoptUpdate(row)} onPick={() => setPricePickerModel(row.model)} />
+                      </AdminTd>
+                      <AdminTd align="right" className="whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={() => setPricePickerModel(row.model)}
+                          className="text-xs text-blue-600 hover:text-blue-800"
+                        >
+                          {row.inputPrice === null ? "Select price" : "Edit"}
+                        </button>
+                        {row.inputPrice !== null && (
+                          <>
+                            {" · "}
+                            <button
+                              type="button"
+                              onClick={() => deletePrice(row)}
+                              className="text-xs text-red-500 hover:text-red-700"
+                            >
+                              Delete
+                            </button>
+                          </>
+                        )}
+                      </AdminTd>
                     </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                    {visibleRows.map((row) => (
-                      <tr key={row.model} className={row.status.inactive && !row.recentActivity ? "opacity-50" : ""}>
-                        <td className="px-2 py-2">
-                          <CopyableCode className="text-xs">{row.model}</CopyableCode>
-                        </td>
-                        <td className="px-2 py-2 text-xs text-gray-500">
-                          {row.upstreams.length > 0 ? row.upstreams.join(", ") : "—"}
-                        </td>
-                        <td className="px-2 py-2 text-right font-mono text-xs">
-                          {row.inputPrice === null ? "—" : `$${row.inputPrice.toFixed(4)}`}
-                        </td>
-                        <td className="px-2 py-2 text-right font-mono text-xs">
-                          {row.outputPrice === null ? "—" : `$${row.outputPrice.toFixed(4)}`}
-                        </td>
-                        <td className="px-2 py-2 text-right font-mono text-xs">
-                          {row.cacheReadPrice === null ? "—" : `$${row.cacheReadPrice.toFixed(4)}`}
-                        </td>
-                        <td className="px-2 py-2 text-right font-mono text-xs">
-                          {row.cacheWritePrice === null ? "—" : `$${row.cacheWritePrice.toFixed(4)}`}
-                        </td>
-                        <td className="px-2 py-2">
-                          <PriceBadges row={row} onAdopt={() => adoptUpdate(row)} onPick={() => setPricePickerModel(row.model)} />
-                        </td>
-                        <td className="px-2 py-2 text-right whitespace-nowrap">
-                          <button
-                            type="button"
-                            onClick={() => setPricePickerModel(row.model)}
-                            className="text-xs text-blue-600 hover:text-blue-800"
-                          >
-                            {row.inputPrice === null ? "Select price" : "Edit"}
-                          </button>
-                          {row.inputPrice !== null && (
-                            <>
-                              {" · "}
-                              <button
-                                type="button"
-                                onClick={() => deletePrice(row)}
-                                className="text-xs text-red-500 hover:text-red-700"
-                              >
-                                Delete
-                              </button>
-                            </>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                  ))}
+                </AdminTableBody>
+              </AdminTable>
 
               {/* 移动端卡片 */}
-              <div className="md:hidden space-y-3">
+              <AdminMobileCards>
                 {visibleRows.map((row) => (
-                  <div key={row.model} className={`border border-gray-200 rounded-lg p-3 ${row.status.inactive && !row.recentActivity ? "opacity-50" : ""}`}>
+                  <AdminMobileCard
+                    key={row.model}
+                    className={row.status.inactive && !row.recentActivity ? "opacity-50" : ""}
+                  >
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
                         <CopyableCode className="text-xs">{row.model}</CopyableCode>
@@ -1580,13 +1593,13 @@ export default function ModelsPanel() {
                         </button>
                       )}
                     </div>
-                  </div>
+                  </AdminMobileCard>
                 ))}
-              </div>
+              </AdminMobileCards>
             </>
           );
         })()}
-      </div>
+      </AdminTableCard>
 
       <PricePickerModal
         isOpen={pricePickerModel !== null}

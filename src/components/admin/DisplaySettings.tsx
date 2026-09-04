@@ -2,6 +2,16 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { apiFetch } from "@/lib/client/api-client";
+import {
+  AdminMobileCard,
+  AdminMobileCards,
+  AdminMobileEmpty,
+  AdminTable,
+  AdminTableBody,
+  AdminTableEmptyRow,
+  AdminTableHead,
+  AdminTd,
+} from "./table";
 
 interface DisplayData {
   groups: Array<{ name: string; patterns: string[] }>;
@@ -446,42 +456,86 @@ export default function DisplaySettings() {
       <label className="mb-1 block text-sm font-medium text-gray-700">
         Hidden provider groups
       </label>
-      <div className="space-y-2">
+      <AdminTable>
+        <AdminTableHead
+          columns={[
+            { label: "Group name" },
+            { label: "Patterns" },
+            { label: "Actions", align: "right" },
+          ]}
+        />
+        <AdminTableBody>
+          {hiddenDraft.map((rule, idx) => (
+            <tr key={idx}>
+              <AdminTd>
+                <input
+                  value={rule.name}
+                  onChange={(e) => updateHidden(idx, { name: e.target.value })}
+                  placeholder="Display name (empty = Provider A, B, C...)"
+                  className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              </AdminTd>
+              <AdminTd>
+                <input
+                  value={rule.patterns}
+                  onChange={(e) => updateHidden(idx, { patterns: e.target.value })}
+                  placeholder="patterns, comma separated (e.g. vendor*, vendor-partner)"
+                  spellCheck={false}
+                  className="w-full rounded border border-gray-300 bg-white px-3 py-2 font-mono text-base md:text-xs shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              </AdminTd>
+              <AdminTd align="right">
+                <button
+                  type="button"
+                  onClick={() => removeHiddenRow(idx)}
+                  className="rounded border border-red-200 px-3 py-2 text-sm text-red-500 hover:bg-red-50 min-h-[40px] md:min-h-0"
+                >
+                  Remove
+                </button>
+              </AdminTd>
+            </tr>
+          ))}
+          {hiddenDraft.length === 0 && (
+            <AdminTableEmptyRow colSpan={3}>No hidden provider groups configured.</AdminTableEmptyRow>
+          )}
+        </AdminTableBody>
+      </AdminTable>
+      <AdminMobileCards>
         {hiddenDraft.map((rule, idx) => (
-          <div key={idx} className="grid grid-cols-1 md:grid-cols-[1fr_2fr_auto] gap-2">
+          <AdminMobileCard key={idx}>
             <input
               value={rule.name}
               onChange={(e) => updateHidden(idx, { name: e.target.value })}
               placeholder="Display name (empty = Provider A, B, C...)"
-              className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
             <input
               value={rule.patterns}
               onChange={(e) => updateHidden(idx, { patterns: e.target.value })}
               placeholder="patterns, comma separated (e.g. vendor*, vendor-partner)"
               spellCheck={false}
-              className="w-full rounded border border-gray-300 bg-white px-3 py-2 font-mono text-base md:text-xs shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="mt-2 w-full rounded border border-gray-300 bg-white px-3 py-2 font-mono text-base shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
             <button
               type="button"
               onClick={() => removeHiddenRow(idx)}
-              className="rounded border border-red-200 px-3 py-2 text-sm text-red-500 hover:bg-red-50 min-h-[40px] md:min-h-0"
+              className="mt-2 rounded border border-red-200 px-3 py-2 text-sm text-red-500 hover:bg-red-50 min-h-[40px]"
             >
               Remove
             </button>
-          </div>
+          </AdminMobileCard>
         ))}
         {hiddenDraft.length === 0 && (
-          <p className="text-sm text-gray-400">No hidden provider groups configured.</p>
+          <AdminMobileEmpty>No hidden provider groups configured.</AdminMobileEmpty>
         )}
-        <button
-          type="button"
-          onClick={addHiddenRow}
-          className="rounded border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50"
-        >
-          + Add row
-        </button>
-      </div>
+      </AdminMobileCards>
+      <button
+        type="button"
+        onClick={addHiddenRow}
+        className="rounded border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50"
+      >
+        + Add row
+      </button>
       <p className="mt-1 text-xs text-gray-400">
         Each row is one group; comma separates patterns within a group;
         <code className="rounded bg-gray-100 px-1">*</code> suffix = prefix match.
@@ -521,42 +575,86 @@ export default function DisplaySettings() {
           name; aliases only affect display roll-up.
         </p>
 
-        <div className="space-y-2">
+        <AdminTable>
+          <AdminTableHead
+            columns={[
+              { label: "Group name" },
+              { label: "Aliases" },
+              { label: "Actions", align: "right" },
+            ]}
+          />
+          <AdminTableBody>
+            {aliasesDraft.map((rule, idx) => (
+              <tr key={idx}>
+                <AdminTd>
+                  <input
+                    value={rule.name}
+                    onChange={(e) => updateAlias(idx, { name: e.target.value })}
+                    placeholder="Group name (e.g. Claude Sonnet 4.6)"
+                    className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                </AdminTd>
+                <AdminTd>
+                  <input
+                    value={rule.aliases}
+                    onChange={(e) => updateAlias(idx, { aliases: e.target.value })}
+                    placeholder="aliases, comma separated (e.g. claude-sonnet-4-6, anthropic/claude-sonnet-4-6)"
+                    spellCheck={false}
+                    className="w-full rounded border border-gray-300 bg-white px-3 py-2 font-mono text-base md:text-xs shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                </AdminTd>
+                <AdminTd align="right">
+                  <button
+                    type="button"
+                    onClick={() => removeAliasRule(idx)}
+                    className="rounded border border-red-200 px-3 py-2 text-sm text-red-500 hover:bg-red-50 min-h-[40px] md:min-h-0"
+                  >
+                    Remove
+                  </button>
+                </AdminTd>
+              </tr>
+            ))}
+            {aliasesDraft.length === 0 && (
+              <AdminTableEmptyRow colSpan={3}>No alias groups configured.</AdminTableEmptyRow>
+            )}
+          </AdminTableBody>
+        </AdminTable>
+        <AdminMobileCards>
           {aliasesDraft.map((rule, idx) => (
-            <div key={idx} className="grid grid-cols-1 md:grid-cols-[1fr_2fr_auto] gap-2">
+            <AdminMobileCard key={idx}>
               <input
                 value={rule.name}
                 onChange={(e) => updateAlias(idx, { name: e.target.value })}
                 placeholder="Group name (e.g. Claude Sonnet 4.6)"
-                className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
               />
               <input
                 value={rule.aliases}
                 onChange={(e) => updateAlias(idx, { aliases: e.target.value })}
                 placeholder="aliases, comma separated (e.g. claude-sonnet-4-6, anthropic/claude-sonnet-4-6)"
                 spellCheck={false}
-                className="w-full rounded border border-gray-300 bg-white px-3 py-2 font-mono text-base md:text-xs shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="mt-2 w-full rounded border border-gray-300 bg-white px-3 py-2 font-mono text-base shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
               />
               <button
                 type="button"
                 onClick={() => removeAliasRule(idx)}
-                className="rounded border border-red-200 px-3 py-2 text-sm text-red-500 hover:bg-red-50 min-h-[40px] md:min-h-0"
+                className="mt-2 rounded border border-red-200 px-3 py-2 text-sm text-red-500 hover:bg-red-50 min-h-[40px]"
               >
                 Remove
               </button>
-            </div>
+            </AdminMobileCard>
           ))}
           {aliasesDraft.length === 0 && (
-            <p className="text-sm text-gray-400">No alias groups configured.</p>
+            <AdminMobileEmpty>No alias groups configured.</AdminMobileEmpty>
           )}
-          <button
-            type="button"
-            onClick={addAliasRule}
-            className="rounded border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50"
-          >
-            + Add row
-          </button>
-        </div>
+        </AdminMobileCards>
+        <button
+          type="button"
+          onClick={addAliasRule}
+          className="rounded border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50"
+        >
+          + Add row
+        </button>
 
         {aliasesError && (
           <div className="mt-3 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-600">
@@ -595,47 +693,86 @@ export default function DisplaySettings() {
           {"(unknown)"}.
         </p>
 
-        <div className="space-y-2">
-          <div className="hidden px-1 text-xs font-medium text-gray-400 md:grid md:grid-cols-[1fr_2fr_auto] md:gap-2">
-            <span>Display name</span>
-            <span>UA tokens</span>
-            <span />
-          </div>
+        <AdminTable>
+          <AdminTableHead
+            columns={[
+              { label: "Display name" },
+              { label: "UA tokens" },
+              { label: "Actions", align: "right" },
+            ]}
+          />
+          <AdminTableBody>
+            {agentAliasesDraft.map((rule, idx) => (
+              <tr key={idx}>
+                <AdminTd>
+                  <input
+                    value={rule.name}
+                    onChange={(e) => updateAgentAlias(idx, { name: e.target.value })}
+                    placeholder="Display name (e.g. Claude Code)"
+                    className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                </AdminTd>
+                <AdminTd>
+                  <input
+                    value={rule.aliases}
+                    onChange={(e) => updateAgentAlias(idx, { aliases: e.target.value })}
+                    placeholder="UA tokens, comma separated (e.g. claude-cli, claude-code-cli)"
+                    spellCheck={false}
+                    className="w-full rounded border border-gray-300 bg-white px-3 py-2 font-mono text-base md:text-xs shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                </AdminTd>
+                <AdminTd align="right">
+                  <button
+                    type="button"
+                    onClick={() => removeAgentAliasRule(idx)}
+                    className="rounded border border-red-200 px-3 py-2 text-sm text-red-500 hover:bg-red-50 min-h-[40px] md:min-h-0"
+                  >
+                    Remove
+                  </button>
+                </AdminTd>
+              </tr>
+            ))}
+            {agentAliasesDraft.length === 0 && (
+              <AdminTableEmptyRow colSpan={3}>No agent alias groups configured.</AdminTableEmptyRow>
+            )}
+          </AdminTableBody>
+        </AdminTable>
+        <AdminMobileCards>
           {agentAliasesDraft.map((rule, idx) => (
-            <div key={idx} className="grid grid-cols-1 md:grid-cols-[1fr_2fr_auto] gap-2">
+            <AdminMobileCard key={idx}>
               <input
                 value={rule.name}
                 onChange={(e) => updateAgentAlias(idx, { name: e.target.value })}
                 placeholder="Display name (e.g. Claude Code)"
-                className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
               />
               <input
                 value={rule.aliases}
                 onChange={(e) => updateAgentAlias(idx, { aliases: e.target.value })}
                 placeholder="UA tokens, comma separated (e.g. claude-cli, claude-code-cli)"
                 spellCheck={false}
-                className="w-full rounded border border-gray-300 bg-white px-3 py-2 font-mono text-base md:text-xs shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="mt-2 w-full rounded border border-gray-300 bg-white px-3 py-2 font-mono text-base shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
               />
               <button
                 type="button"
                 onClick={() => removeAgentAliasRule(idx)}
-                className="rounded border border-red-200 px-3 py-2 text-sm text-red-500 hover:bg-red-50 min-h-[40px] md:min-h-0"
+                className="mt-2 rounded border border-red-200 px-3 py-2 text-sm text-red-500 hover:bg-red-50 min-h-[40px]"
               >
                 Remove
               </button>
-            </div>
+            </AdminMobileCard>
           ))}
           {agentAliasesDraft.length === 0 && (
-            <p className="text-sm text-gray-400">No agent alias groups configured.</p>
+            <AdminMobileEmpty>No agent alias groups configured.</AdminMobileEmpty>
           )}
-          <button
-            type="button"
-            onClick={addAgentAliasRule}
-            className="rounded border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50"
-          >
-            + Add row
-          </button>
-        </div>
+        </AdminMobileCards>
+        <button
+          type="button"
+          onClick={addAgentAliasRule}
+          className="rounded border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50"
+        >
+          + Add row
+        </button>
 
         <div className="mt-6">
           <h4 className="mb-1 text-sm font-medium text-gray-700">
@@ -650,18 +787,94 @@ export default function DisplaySettings() {
             <span className="rounded bg-gray-100 px-1.5 py-0.5 text-gray-400">as-is</span>{" "}
             = shown unchanged.
           </p>
-          <div className="space-y-1.5">
-            <div className="hidden px-1 text-xs font-medium text-gray-400 md:grid md:grid-cols-[1fr_1fr_auto] md:gap-2">
-              <span>UA token</span>
-              <span>Agent</span>
-              <span className="md:justify-self-end">Source</span>
-            </div>
+          <AdminTable>
+            <AdminTableHead
+              columns={[
+                { label: "UA token" },
+                { label: "Agent" },
+                { label: "Source", align: "right" },
+              ]}
+            />
+            <AdminTableBody>
+              {observedAgents.map((o) => (
+                <tr key={o.token}>
+                  <AdminTd>
+                    <code className="font-mono text-xs text-gray-600 break-all">{o.token}</code>
+                  </AdminTd>
+                  <AdminTd>
+                    {editingObserved === o.token ? (
+                      <input
+                        value={editingObservedName}
+                        onChange={(e) => setEditingObservedName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") adoptObservedAgent(o.token, editingObservedName);
+                          if (e.key === "Escape") setEditingObserved(null);
+                        }}
+                        placeholder="Display name"
+                        autoFocus
+                        className="w-full rounded border border-blue-300 bg-white px-2 py-1.5 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      />
+                    ) : (
+                      <span className="text-sm text-gray-600">{o.name}</span>
+                    )}
+                  </AdminTd>
+                  <AdminTd align="right">
+                    {editingObserved === o.token ? (
+                      <div className="flex gap-1 justify-end">
+                        <button
+                          type="button"
+                          onClick={() => adoptObservedAgent(o.token, editingObservedName)}
+                          disabled={!editingObservedName.trim()}
+                          className="rounded border border-blue-200 px-2 py-1 text-xs text-blue-600 hover:bg-blue-50 disabled:opacity-50 min-h-[40px] md:min-h-0"
+                        >
+                          Apply
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditingObserved(null)}
+                          className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 min-h-[40px] md:min-h-0"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-end gap-1">
+                        <span
+                          className={`rounded px-1.5 py-0.5 text-xs ${
+                            o.source === "manual"
+                              ? "bg-blue-50 text-blue-600"
+                              : o.source === "builtin"
+                                ? "bg-gray-100 text-gray-500"
+                                : "bg-gray-100 text-gray-400"
+                          }`}
+                        >
+                          {o.source}
+                        </span>
+                        {o.source !== "manual" && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingObserved(o.token);
+                              setEditingObservedName(o.name);
+                            }}
+                            className="rounded border border-gray-200 px-2 py-0.5 text-xs text-gray-500 hover:bg-gray-100 min-h-[40px] md:min-h-0"
+                          >
+                            Edit
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </AdminTd>
+                </tr>
+              ))}
+              {observedAgents.length === 0 && (
+                <AdminTableEmptyRow colSpan={3}>No user agents recorded yet.</AdminTableEmptyRow>
+              )}
+            </AdminTableBody>
+          </AdminTable>
+          <AdminMobileCards>
             {observedAgents.map((o) => (
-              <div
-                key={o.token}
-                className="grid grid-cols-1 items-center gap-1 rounded border border-gray-100 bg-gray-50 px-3 py-2 md:grid-cols-[1fr_1fr_auto] md:gap-2"
-              >
-                <code className="font-mono text-xs text-gray-600 break-all">{o.token}</code>
+              <AdminMobileCard key={o.token}>
                 {editingObserved === o.token ? (
                   <>
                     <input
@@ -673,21 +886,21 @@ export default function DisplaySettings() {
                       }}
                       placeholder="Display name"
                       autoFocus
-                      className="w-full rounded border border-blue-300 bg-white px-2 py-1.5 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      className="w-full rounded border border-blue-300 bg-white px-2 py-1.5 text-base shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                     />
-                    <div className="flex gap-1 md:justify-self-end">
+                    <div className="mt-2 flex gap-2">
                       <button
                         type="button"
                         onClick={() => adoptObservedAgent(o.token, editingObservedName)}
                         disabled={!editingObservedName.trim()}
-                        className="rounded border border-blue-200 px-2 py-1 text-xs text-blue-600 hover:bg-blue-50 disabled:opacity-50 min-h-[40px] md:min-h-0"
+                        className="rounded border border-blue-200 px-2 py-1 text-xs text-blue-600 hover:bg-blue-50 disabled:opacity-50 min-h-[40px]"
                       >
                         Apply
                       </button>
                       <button
                         type="button"
                         onClick={() => setEditingObserved(null)}
-                        className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 min-h-[40px] md:min-h-0"
+                        className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 min-h-[40px]"
                       >
                         Cancel
                       </button>
@@ -695,42 +908,43 @@ export default function DisplaySettings() {
                   </>
                 ) : (
                   <>
-                    <span className="text-sm text-gray-600">{o.name}</span>
-                    <div className="flex items-center gap-1 md:justify-self-end">
-                      <span
-                        className={`rounded px-1.5 py-0.5 text-xs ${
-                          o.source === "manual"
-                            ? "bg-blue-50 text-blue-600"
-                            : o.source === "builtin"
-                              ? "bg-gray-100 text-gray-500"
-                              : "bg-gray-100 text-gray-400"
-                        }`}
-                      >
-                        {o.source}
-                      </span>
-                      {o.source !== "manual" && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setEditingObserved(o.token);
-                            setEditingObservedName(o.name);
-                          }}
-                          className="rounded border border-gray-200 px-2 py-0.5 text-xs text-gray-500 hover:bg-gray-100 min-h-[40px] md:min-h-0"
+                    <div className="flex items-start justify-between gap-2">
+                      <code className="min-w-0 font-mono text-xs text-gray-600 break-all">{o.token}</code>
+                      <div className="flex shrink-0 items-center gap-1">
+                        <span
+                          className={`rounded px-1.5 py-0.5 text-xs ${
+                            o.source === "manual"
+                              ? "bg-blue-50 text-blue-600"
+                              : o.source === "builtin"
+                                ? "bg-gray-100 text-gray-500"
+                                : "bg-gray-100 text-gray-400"
+                          }`}
                         >
-                          Edit
-                        </button>
-                      )}
+                          {o.source}
+                        </span>
+                        {o.source !== "manual" && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingObserved(o.token);
+                              setEditingObservedName(o.name);
+                            }}
+                            className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 min-h-[40px]"
+                          >
+                            Edit
+                          </button>
+                        )}
+                      </div>
                     </div>
+                    <p className="mt-1 text-sm text-gray-600">{o.name}</p>
                   </>
                 )}
-              </div>
+              </AdminMobileCard>
             ))}
             {observedAgents.length === 0 && (
-              <p className="text-sm text-gray-400">
-                No user agents recorded yet.
-              </p>
+              <AdminMobileEmpty>No user agents recorded yet.</AdminMobileEmpty>
             )}
-          </div>
+          </AdminMobileCards>
           <p className="text-xs text-gray-400">
             Editing a built-in or as-is row adds it to the manual rules above;
             click &quot;Save Agent Aliases&quot; to apply.
@@ -793,31 +1007,62 @@ export default function DisplaySettings() {
               <p className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">
                 Elements
               </p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {STATUS_ELEMENT_LABELS.map(({ key, label, hint }) => (
-                  <label
-                    key={key}
-                    className="flex items-center gap-3 min-h-[40px] rounded border border-gray-200 bg-gray-50 px-3 py-2 cursor-pointer"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={statusConfig.elements[key]}
-                      onChange={() => toggleStatusElement(key)}
-                      className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                    />
-                    <span className="min-w-0">
-                      <span className="block text-sm font-medium text-gray-700">
-                        {label}
-                      </span>
-                      {hint && (
-                        <span className="block text-xs text-gray-400">
-                          {hint}
+              <AdminTable>
+                <AdminTableHead
+                  columns={[
+                    { label: "Element" },
+                    { label: "Enabled", align: "right" },
+                  ]}
+                />
+                <AdminTableBody>
+                  {STATUS_ELEMENT_LABELS.map(({ key, label, hint }) => (
+                    <tr key={key}>
+                      <AdminTd>
+                        <span className="block text-sm font-medium text-gray-700">
+                          {label}
                         </span>
-                      )}
-                    </span>
-                  </label>
+                        {hint && (
+                          <span className="block text-xs text-gray-400">
+                            {hint}
+                          </span>
+                        )}
+                      </AdminTd>
+                      <AdminTd align="right">
+                        <input
+                          type="checkbox"
+                          checked={statusConfig.elements[key]}
+                          onChange={() => toggleStatusElement(key)}
+                          className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                      </AdminTd>
+                    </tr>
+                  ))}
+                </AdminTableBody>
+              </AdminTable>
+              <AdminMobileCards>
+                {STATUS_ELEMENT_LABELS.map(({ key, label, hint }) => (
+                  <AdminMobileCard key={key}>
+                    <label className="flex items-center gap-3 min-h-[40px] cursor-pointer">
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm font-medium text-gray-700">
+                          {label}
+                        </span>
+                        {hint && (
+                          <span className="block text-xs text-gray-400">
+                            {hint}
+                          </span>
+                        )}
+                      </span>
+                      <input
+                        type="checkbox"
+                        checked={statusConfig.elements[key]}
+                        onChange={() => toggleStatusElement(key)}
+                        className="h-5 w-5 shrink-0 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      />
+                    </label>
+                  </AdminMobileCard>
                 ))}
-              </div>
+              </AdminMobileCards>
               <p className="mt-2 text-xs text-gray-400">
                 Default: Total summary, Today overview, Daily trend chart.
                 Top Models &amp; Cost reveal sensitive data — leave off unless
@@ -868,98 +1113,186 @@ export default function DisplaySettings() {
               <p className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">
                 Upstreams
               </p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {upstreamOptions(hiddenSources).map((name) => {
-                  const hidden = hiddenSources.upstreams.includes(name);
-                  const excluded = hiddenSources.excludedUpstreams.includes(name);
-                  return (
-                    <div
-                      key={name}
-                      className="flex items-center gap-3 min-h-[40px] rounded border border-gray-200 bg-gray-50 px-3 py-2"
-                    >
-                      <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-3">
-                        <input
-                          type="checkbox"
-                          checked={hidden}
-                          onChange={() => toggleHiddenSource("upstreams", name)}
-                          className="h-5 w-5 shrink-0 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                        />
-                        <span className="min-w-0">
+              <AdminTable>
+                <AdminTableHead
+                  columns={[
+                    { label: "Upstream" },
+                    { label: "Hide", align: "right" },
+                    { label: "Exclude", align: "right" },
+                  ]}
+                />
+                <AdminTableBody>
+                  {upstreamOptions(hiddenSources).map((name) => {
+                    const hidden = hiddenSources.upstreams.includes(name);
+                    const excluded = hiddenSources.excludedUpstreams.includes(name);
+                    return (
+                      <tr key={name}>
+                        <AdminTd>
                           <span className="block truncate text-sm font-medium text-gray-700" title={name}>
                             {name}
                           </span>
                           <span className="block text-xs text-gray-400">
                             {excluded ? "Excluded from totals" : "Counted in totals"}
                           </span>
-                        </span>
-                      </label>
-                      <label className="flex shrink-0 cursor-pointer items-center gap-1.5">
-                        <input
-                          type="checkbox"
-                          checked={excluded}
-                          onChange={() =>
-                            toggleExcludedSource("excludedUpstreams", name)
-                          }
-                          className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                        />
-                        <span className="text-xs text-gray-500">Exclude</span>
-                      </label>
-                    </div>
+                        </AdminTd>
+                        <AdminTd align="right">
+                          <input
+                            type="checkbox"
+                            checked={hidden}
+                            onChange={() => toggleHiddenSource("upstreams", name)}
+                            className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          />
+                        </AdminTd>
+                        <AdminTd align="right">
+                          <input
+                            type="checkbox"
+                            checked={excluded}
+                            onChange={() => toggleExcludedSource("excludedUpstreams", name)}
+                            className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          />
+                        </AdminTd>
+                      </tr>
+                    );
+                  })}
+                  {upstreamOptions(hiddenSources).length === 0 && (
+                    <AdminTableEmptyRow colSpan={3}>No providers with records yet.</AdminTableEmptyRow>
+                  )}
+                </AdminTableBody>
+              </AdminTable>
+              <AdminMobileCards>
+                {upstreamOptions(hiddenSources).map((name) => {
+                  const hidden = hiddenSources.upstreams.includes(name);
+                  const excluded = hiddenSources.excludedUpstreams.includes(name);
+                  return (
+                    <AdminMobileCard key={name}>
+                      <div className="flex items-center gap-3">
+                        <div className="min-w-0 flex-1">
+                          <span className="block truncate text-sm font-medium text-gray-700" title={name}>
+                            {name}
+                          </span>
+                          <span className="block text-xs text-gray-400">
+                            {excluded ? "Excluded from totals" : "Counted in totals"}
+                          </span>
+                        </div>
+                        <label className="flex shrink-0 cursor-pointer items-center gap-1.5">
+                          <input
+                            type="checkbox"
+                            checked={hidden}
+                            onChange={() => toggleHiddenSource("upstreams", name)}
+                            className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          />
+                          <span className="text-xs text-gray-500">Hide</span>
+                        </label>
+                        <label className="flex shrink-0 cursor-pointer items-center gap-1.5">
+                          <input
+                            type="checkbox"
+                            checked={excluded}
+                            onChange={() => toggleExcludedSource("excludedUpstreams", name)}
+                            className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          />
+                          <span className="text-xs text-gray-500">Exclude</span>
+                        </label>
+                      </div>
+                    </AdminMobileCard>
                   );
                 })}
                 {upstreamOptions(hiddenSources).length === 0 && (
-                  <p className="text-sm text-gray-400">No providers with records yet.</p>
+                  <AdminMobileEmpty>No providers with records yet.</AdminMobileEmpty>
                 )}
-              </div>
+              </AdminMobileCards>
             </div>
 
             <div>
               <p className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">
                 Virtual Keys
               </p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {agentOptions(hiddenSources).map((name) => {
-                  const hidden = hiddenSources.virtualKeys.includes(name);
-                  const excluded = hiddenSources.excludedVirtualKeys.includes(name);
-                  return (
-                    <div
-                      key={name}
-                      className="flex items-center gap-3 min-h-[40px] rounded border border-gray-200 bg-gray-50 px-3 py-2"
-                    >
-                      <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-3">
-                        <input
-                          type="checkbox"
-                          checked={hidden}
-                          onChange={() => toggleHiddenSource("virtualKeys", name)}
-                          className="h-5 w-5 shrink-0 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                        />
-                        <span className="min-w-0">
+              <AdminTable>
+                <AdminTableHead
+                  columns={[
+                    { label: "Virtual Key" },
+                    { label: "Hide", align: "right" },
+                    { label: "Exclude", align: "right" },
+                  ]}
+                />
+                <AdminTableBody>
+                  {agentOptions(hiddenSources).map((name) => {
+                    const hidden = hiddenSources.virtualKeys.includes(name);
+                    const excluded = hiddenSources.excludedVirtualKeys.includes(name);
+                    return (
+                      <tr key={name}>
+                        <AdminTd>
                           <span className="block truncate text-sm font-medium text-gray-700" title={name}>
                             {name}
                           </span>
                           <span className="block text-xs text-gray-400">
                             {excluded ? "Excluded from totals" : "Counted in totals"}
                           </span>
-                        </span>
-                      </label>
-                      <label className="flex shrink-0 cursor-pointer items-center gap-1.5">
-                        <input
-                          type="checkbox"
-                          checked={excluded}
-                          onChange={() =>
-                            toggleExcludedSource("excludedVirtualKeys", name)
-                          }
-                          className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                        />
-                        <span className="text-xs text-gray-500">Exclude</span>
-                      </label>
-                    </div>
+                        </AdminTd>
+                        <AdminTd align="right">
+                          <input
+                            type="checkbox"
+                            checked={hidden}
+                            onChange={() => toggleHiddenSource("virtualKeys", name)}
+                            className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          />
+                        </AdminTd>
+                        <AdminTd align="right">
+                          <input
+                            type="checkbox"
+                            checked={excluded}
+                            onChange={() => toggleExcludedSource("excludedVirtualKeys", name)}
+                            className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          />
+                        </AdminTd>
+                      </tr>
+                    );
+                  })}
+                  {agentOptions(hiddenSources).length === 0 && (
+                    <AdminTableEmptyRow colSpan={3}>No virtual keys with records yet.</AdminTableEmptyRow>
+                  )}
+                </AdminTableBody>
+              </AdminTable>
+              <AdminMobileCards>
+                {agentOptions(hiddenSources).map((name) => {
+                  const hidden = hiddenSources.virtualKeys.includes(name);
+                  const excluded = hiddenSources.excludedVirtualKeys.includes(name);
+                  return (
+                    <AdminMobileCard key={name}>
+                      <div className="flex items-center gap-3">
+                        <div className="min-w-0 flex-1">
+                          <span className="block truncate text-sm font-medium text-gray-700" title={name}>
+                            {name}
+                          </span>
+                          <span className="block text-xs text-gray-400">
+                            {excluded ? "Excluded from totals" : "Counted in totals"}
+                          </span>
+                        </div>
+                        <label className="flex shrink-0 cursor-pointer items-center gap-1.5">
+                          <input
+                            type="checkbox"
+                            checked={hidden}
+                            onChange={() => toggleHiddenSource("virtualKeys", name)}
+                            className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          />
+                          <span className="text-xs text-gray-500">Hide</span>
+                        </label>
+                        <label className="flex shrink-0 cursor-pointer items-center gap-1.5">
+                          <input
+                            type="checkbox"
+                            checked={excluded}
+                            onChange={() => toggleExcludedSource("excludedVirtualKeys", name)}
+                            className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          />
+                          <span className="text-xs text-gray-500">Exclude</span>
+                        </label>
+                      </div>
+                    </AdminMobileCard>
                   );
                 })}
                 {agentOptions(hiddenSources).length === 0 && (
-                  <p className="text-sm text-gray-400">No virtual keys with records yet.</p>
+                  <AdminMobileEmpty>No virtual keys with records yet.</AdminMobileEmpty>
                 )}
-              </div>
+              </AdminMobileCards>
               <p className="mt-2 text-xs text-gray-400">
                 Attributed to{" "}
                 <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">
