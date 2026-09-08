@@ -1,4 +1,4 @@
-FROM node:20-slim AS deps
+FROM node:22-slim AS deps
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY package.json package-lock.json* ./
 RUN npm ci
 
-FROM node:20-slim AS builder
+FROM node:22-slim AS builder
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -21,15 +21,18 @@ COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
-FROM node:20-slim AS runner
+FROM node:22-slim AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
-# 个人规模内存占用 <100MB，512MB 堆上限足够且可预测（防 OOM-killer / GC 尖峰）
-ENV NODE_OPTIONS=--max-old-space-size=512
+# 内存调优（实测：flags 对稳态基线影响很小，100MB 级占用来自长期运行后 V8 堆不归还 OS）：
+# - max-old-space-size=256：收紧 old space 上限，V8 的 major GC 触发阈值随上限缩放，
+#   512MB 上限下空闲后堆长期挂在高位；256MB 对 365 天聚合查询 + 32MB 请求体缓冲仍充裕
+# - expose-gc：配合 src/instrumentation.ts 每 5 分钟在 RSS 偏高时触发 full GC，空闲后主动归还内存
+ENV NODE_OPTIONS="--max-old-space-size=256 --expose-gc"
 
 RUN set -eux; \
   apt-get update; \

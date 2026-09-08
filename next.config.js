@@ -6,6 +6,10 @@ const scriptSrc = `'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ''}`;
 
 const nextConfig = {
   output: 'standalone',
+  // instrumentation hook：启动时调用 src/instrumentation.ts 的 register()（周期性内存归还）
+  experimental: {
+    instrumentationHook: true,
+  },
   async headers() {
     return [
       {

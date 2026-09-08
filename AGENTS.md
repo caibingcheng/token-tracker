@@ -13,7 +13,7 @@
 
 - **安全响应头**（`next.config.js` 全局 header，`:path*`）：`X-Frame-Options: DENY`（点击劫持）、`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、`Permissions-Policy`（禁 camera/mic/geolocation）、CSP：`default-src 'self'` + `script-src 'self' 'unsafe-inline'`（**dev 模式额外放行 `unsafe-eval`**，生产不放松；`unsafe-inline` 因 Next bootstrap/styled-jsx 需要）+ `frame-ancestors 'none'` + `object-src 'none'`
 - **PWA 可安装性**：`src/app/manifest.ts`（manifest + 图标），无 Service Worker（离线能力未启用）；移动端底栏 `MobileTabBar.tsx`（`md:hidden`）
-- **Docker 构建**：Dockerfile `output: 'standalone'` + `ENV NODE_OPTIONS=--max-old-space-size=512`（构建期内存控制）；docker-compose.example.yml 含 `TRUSTED_PROXY` 与可选 `deploy.memory` 注释
+- **Docker 构建**：Dockerfile `output: 'standalone'` + base `node:22-slim` + `ENV NODE_OPTIONS=--max-old-space-size=256 --expose-gc`（生产内存控制：收紧 old space 上限 + `src/instrumentation.ts` instrumentationHook 每 5 分钟 RSS>64MB 时 full GC 归还内存，防长期运行 RSS 膨胀）；docker-compose.example.yml 含 `TRUSTED_PROXY` 与可选 `deploy.memory` 注释
 - **TOTP 绑定二维码**：`qrcode.react`（^4.2.0）渲染 otpauth:// URI
 - **`scripts/test_gateway.py`**：手动端到端网关测试脚本（虚拟 key → 代理请求 → 校验透传/写库），不入 vitest，仅供本地联调
 
