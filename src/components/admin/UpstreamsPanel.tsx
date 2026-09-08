@@ -1132,13 +1132,30 @@ export default function UpstreamsPanel() {
                 <div className="mt-1.5 space-y-1">
                   {(keysByUpstream[u.id] || []).map((key) => (
                     <div key={key.id} className="flex flex-wrap items-center gap-2 text-xs">
-                      <span className={`h-1.5 w-1.5 rounded-full ${key.enabled ? "bg-green-500" : "bg-gray-300"}`} />
+                      <span
+                        className={`h-1.5 w-1.5 rounded-full ${key.enabled ? "bg-green-500" : "bg-gray-300"}`}
+                        title={key.enabled ? "Enabled" : "Disabled — excluded from routing"}
+                      />
                       <code className="max-w-[180px] truncate rounded bg-gray-100 px-1.5 py-0.5 text-[11px]">
                         {key.maskedKey}
                       </code>
+                      {!key.enabled && (
+                        <span
+                          className="rounded bg-amber-50 px-1 py-0.5 text-[10px] font-medium text-amber-600"
+                          title="This key is disabled and will not be used for routing or failover"
+                        >
+                          disabled
+                        </span>
+                      )}
                       {key.lastStatus && (
                         <span className="text-[11px] text-gray-400">last: {key.lastStatus}</span>
                       )}
+                      <span
+                        className="text-[11px] text-gray-400"
+                        title={`Added ${new Date(key.createdAt).toLocaleString()}`}
+                      >
+                        {new Date(key.createdAt).toLocaleDateString()}
+                      </span>
                     </div>
                   ))}
                   {keysByUpstream[u.id]?.length === 0 && (
