@@ -315,7 +315,7 @@ export default function DisplaySettings() {
     }
   }, []);
 
-  // ---- Hidden provider groups（行编辑）----
+  // ---- Provider Aliases（行编辑）----
   const toHiddenGroups = (rules: HiddenGroupRule[]) =>
     rules
       .filter((r) => !r.pending)
@@ -377,7 +377,7 @@ export default function DisplaySettings() {
     if (hiddenBusy) return;
     const rule = hiddenRules[idx];
     if (!rule) return;
-    if (!window.confirm(`Delete group "${rule.name.trim() || "(unnamed)"}"?`)) return;
+    if (!window.confirm(`Delete provider alias "${rule.name.trim() || "(unnamed)"}"?`)) return;
     setHiddenBusy(true);
     setHiddenError(null);
     const result = await putSetting("/api/admin/settings/display", {
@@ -454,7 +454,7 @@ export default function DisplaySettings() {
     if (aliasesBusy) return;
     const rule = aliasRules[idx];
     if (!rule) return;
-    if (!window.confirm(`Delete alias group "${rule.name.trim() || "(unnamed)"}"?`)) return;
+    if (!window.confirm(`Delete model alias "${rule.name.trim() || "(unnamed)"}"?`)) return;
     setAliasesBusy(true);
     setAliasesError(null);
     const result = await putSetting("/api/admin/settings/aliases", {
@@ -531,7 +531,7 @@ export default function DisplaySettings() {
     if (agentAliasesBusy) return;
     const rule = agentRules[idx];
     if (!rule) return;
-    if (!window.confirm(`Delete agent alias group "${rule.name.trim() || "(unnamed)"}"?`)) return;
+    if (!window.confirm(`Delete agent alias "${rule.name.trim() || "(unnamed)"}"?`)) return;
     setAgentAliasesBusy(true);
     setAgentAliasesError(null);
     const result = await putSetting("/api/admin/settings/agent-aliases", {
@@ -682,18 +682,23 @@ export default function DisplaySettings() {
   return (
     <div className="rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
       <h2 className="mb-1 text-lg font-semibold text-gray-900">Display</h2>
+      <h3 className="mb-1 text-base font-semibold text-gray-900">
+        Provider Aliases
+      </h3>
       <p className="mb-4 text-sm text-gray-500">
-        Provider anonymization (hidden provider groups).
+        Normalize provider names for display and anonymize them. Each row: a
+        display name and comma-separated matches (
+        <code className="rounded bg-gray-100 px-1">*</code> suffix = prefix
+        match, e.g. <code className="rounded bg-gray-100 px-1">vendor*</code>
+        ). Empty display name renders as Provider A, B, C... Providers
+        matching the same row are merged into one entry in provider-level
+        stats (Top Providers, daily stacked chart, Speed table).
       </p>
-
-      <label className="mb-1 block text-sm font-medium text-gray-700">
-        Hidden provider groups
-      </label>
       <AdminTable>
         <AdminTableHead
           columns={[
-            { label: "Group name" },
-            { label: "Patterns" },
+            { label: "Display name" },
+            { label: "Matches" },
             { label: "Actions", align: "right" },
           ]}
         />
@@ -721,7 +726,7 @@ export default function DisplaySettings() {
                     <input
                       value={hiddenEditPatterns}
                       onChange={(e) => setHiddenEditPatterns(e.target.value)}
-                      placeholder="patterns, comma separated (e.g. vendor*, vendor-partner)"
+                      placeholder="matches, comma separated (e.g. vendor*, vendor-partner)"
                       spellCheck={false}
                       className="w-full rounded border border-gray-300 px-2 py-1 font-mono text-xs focus:border-blue-500 focus:outline-none"
                     />
@@ -742,7 +747,7 @@ export default function DisplaySettings() {
             );
           })}
           {hiddenRules.length === 0 && (
-            <AdminTableEmptyRow colSpan={3}>No hidden provider groups configured.</AdminTableEmptyRow>
+            <AdminTableEmptyRow colSpan={3}>No provider aliases configured.</AdminTableEmptyRow>
           )}
         </AdminTableBody>
       </AdminTable>
@@ -753,7 +758,7 @@ export default function DisplaySettings() {
             <AdminMobileCard key={idx}>
               <div className="flex justify-between items-start gap-2 mb-3">
                 <div className="min-w-0 flex-1">
-                  <p className="text-xs text-gray-500">Group name</p>
+                  <p className="text-xs text-gray-500">Display name</p>
                   {editing ? (
                     <input
                       value={hiddenEditName}
@@ -780,12 +785,12 @@ export default function DisplaySettings() {
                 </div>
               </div>
               <div>
-                <p className="text-xs text-gray-500">Patterns</p>
+                <p className="text-xs text-gray-500">Matches</p>
                 {editing ? (
                   <input
                     value={hiddenEditPatterns}
                     onChange={(e) => setHiddenEditPatterns(e.target.value)}
-                    placeholder="patterns, comma separated (e.g. vendor*, vendor-partner)"
+                    placeholder="matches, comma separated (e.g. vendor*, vendor-partner)"
                     spellCheck={false}
                     className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 font-mono text-sm focus:border-blue-500 focus:outline-none"
                   />
@@ -797,7 +802,7 @@ export default function DisplaySettings() {
           );
         })}
         {hiddenRules.length === 0 && (
-          <AdminMobileEmpty>No hidden provider groups configured.</AdminMobileEmpty>
+          <AdminMobileEmpty>No provider aliases configured.</AdminMobileEmpty>
         )}
       </AdminMobileCards>
       <button
@@ -809,11 +814,8 @@ export default function DisplaySettings() {
         + Add row
       </button>
       <p className="mt-1 text-xs text-gray-400">
-        Each row is one group; comma separates patterns within a group;
+        Each row is one alias entry; comma separates matches;
         <code className="rounded bg-gray-100 px-1">*</code> suffix = prefix match.
-        Empty display name renders as Provider A, B, C... Multiple providers in
-        the same group are merged into one entry in provider-level stats (Top
-        Providers, daily stacked chart, Speed table).
       </p>
 
       {hiddenError && (
@@ -827,8 +829,8 @@ export default function DisplaySettings() {
           Model Aliases
         </h3>
         <p className="mb-4 text-sm text-gray-500">
-          Normalize model names across providers into a display group. Each row:
-          a group name and comma-separated aliases. Models not matching any row
+          Normalize model names across providers for display. Each row: a
+          display name and comma-separated matches. Models not matching any row
           keep their original name. Pricing is always computed on the real model
           name; aliases only affect display roll-up.
         </p>
@@ -836,8 +838,8 @@ export default function DisplaySettings() {
         <AdminTable>
           <AdminTableHead
             columns={[
-              { label: "Group name" },
-              { label: "Aliases" },
+              { label: "Display name" },
+              { label: "Matches" },
               { label: "Actions", align: "right" },
             ]}
           />
@@ -851,7 +853,7 @@ export default function DisplaySettings() {
                       <input
                         value={aliasesEditName}
                         onChange={(e) => setAliasesEditName(e.target.value)}
-                        placeholder="Group name (e.g. Claude Sonnet 4.6)"
+                        placeholder="Display name (e.g. Claude Sonnet 4.6)"
                         className="w-full rounded border border-gray-300 px-2 py-1 text-xs focus:border-blue-500 focus:outline-none"
                       />
                     ) : (
@@ -865,7 +867,7 @@ export default function DisplaySettings() {
                       <input
                         value={aliasesEditValues}
                         onChange={(e) => setAliasesEditValues(e.target.value)}
-                        placeholder="aliases, comma separated (e.g. claude-sonnet-4-6, anthropic/claude-sonnet-4-6)"
+                        placeholder="matches, comma separated (e.g. claude-sonnet-4-6, anthropic/claude-sonnet-4-6)"
                         spellCheck={false}
                         className="w-full rounded border border-gray-300 px-2 py-1 font-mono text-xs focus:border-blue-500 focus:outline-none"
                       />
@@ -886,7 +888,7 @@ export default function DisplaySettings() {
               );
             })}
             {aliasRules.length === 0 && (
-              <AdminTableEmptyRow colSpan={3}>No alias groups configured.</AdminTableEmptyRow>
+              <AdminTableEmptyRow colSpan={3}>No model aliases configured.</AdminTableEmptyRow>
             )}
           </AdminTableBody>
         </AdminTable>
@@ -897,12 +899,12 @@ export default function DisplaySettings() {
               <AdminMobileCard key={idx}>
                 <div className="flex justify-between items-start gap-2 mb-3">
                   <div className="min-w-0 flex-1">
-                    <p className="text-xs text-gray-500">Group name</p>
+                    <p className="text-xs text-gray-500">Display name</p>
                     {editing ? (
                       <input
                         value={aliasesEditName}
                         onChange={(e) => setAliasesEditName(e.target.value)}
-                        placeholder="Group name (e.g. Claude Sonnet 4.6)"
+                        placeholder="Display name (e.g. Claude Sonnet 4.6)"
                         className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 text-sm focus:border-blue-500 focus:outline-none"
                       />
                     ) : (
@@ -929,7 +931,7 @@ export default function DisplaySettings() {
                     <input
                       value={aliasesEditValues}
                       onChange={(e) => setAliasesEditValues(e.target.value)}
-                      placeholder="aliases, comma separated (e.g. claude-sonnet-4-6, anthropic/claude-sonnet-4-6)"
+                      placeholder="matches, comma separated (e.g. claude-sonnet-4-6, anthropic/claude-sonnet-4-6)"
                       spellCheck={false}
                       className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 font-mono text-sm focus:border-blue-500 focus:outline-none"
                     />
@@ -941,7 +943,7 @@ export default function DisplaySettings() {
             );
           })}
           {aliasRules.length === 0 && (
-            <AdminMobileEmpty>No alias groups configured.</AdminMobileEmpty>
+            <AdminMobileEmpty>No model aliases configured.</AdminMobileEmpty>
           )}
         </AdminMobileCards>
         <button
@@ -966,7 +968,7 @@ export default function DisplaySettings() {
         </h3>
         <p className="mb-4 text-sm text-gray-500">
           Map client user-agents to a display name for the Agent dimension.
-          Each row: a display name and comma-separated UA tokens (the text
+          Each row: a display name and comma-separated matches (UA tokens — the text
           before the first <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">/</code> in
           the user agent, e.g.{" "}
           <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">claude-cli</code>{" "}
@@ -980,7 +982,7 @@ export default function DisplaySettings() {
           <AdminTableHead
             columns={[
               { label: "Display name" },
-              { label: "UA tokens" },
+              { label: "Matches" },
               { label: "Actions", align: "right" },
             ]}
           />
@@ -1008,7 +1010,7 @@ export default function DisplaySettings() {
                       <input
                         value={agentEditValues}
                         onChange={(e) => setAgentEditValues(e.target.value)}
-                        placeholder="UA tokens, comma separated (e.g. claude-cli, claude-code-cli)"
+                        placeholder="matches, comma separated (e.g. claude-cli, claude-code-cli)"
                         spellCheck={false}
                         className="w-full rounded border border-gray-300 px-2 py-1 font-mono text-xs focus:border-blue-500 focus:outline-none"
                       />
@@ -1029,7 +1031,7 @@ export default function DisplaySettings() {
               );
             })}
             {agentRules.length === 0 && (
-              <AdminTableEmptyRow colSpan={3}>No agent alias groups configured.</AdminTableEmptyRow>
+              <AdminTableEmptyRow colSpan={3}>No agent aliases configured.</AdminTableEmptyRow>
             )}
           </AdminTableBody>
         </AdminTable>
@@ -1067,12 +1069,12 @@ export default function DisplaySettings() {
                   </div>
                 </div>
                 <div>
-                  <p className="text-xs text-gray-500">UA tokens</p>
+                  <p className="text-xs text-gray-500">Matches</p>
                   {editing ? (
                     <input
                       value={agentEditValues}
                       onChange={(e) => setAgentEditValues(e.target.value)}
-                      placeholder="UA tokens, comma separated (e.g. claude-cli, claude-code-cli)"
+                      placeholder="matches, comma separated (e.g. claude-cli, claude-code-cli)"
                       spellCheck={false}
                       className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 font-mono text-sm focus:border-blue-500 focus:outline-none"
                     />
@@ -1084,7 +1086,7 @@ export default function DisplaySettings() {
             );
           })}
           {agentRules.length === 0 && (
-            <AdminMobileEmpty>No agent alias groups configured.</AdminMobileEmpty>
+            <AdminMobileEmpty>No agent aliases configured.</AdminMobileEmpty>
           )}
         </AdminMobileCards>
         <button
@@ -1112,17 +1114,14 @@ export default function DisplaySettings() {
           <AdminTable>
             <AdminTableHead
               columns={[
-                { label: "UA token" },
                 { label: "Agent" },
+                { label: "UA token" },
                 { label: "Source", align: "right" },
               ]}
             />
             <AdminTableBody>
               {observedAgents.map((o) => (
                 <tr key={o.token}>
-                  <AdminTd>
-                    <code className="font-mono text-xs text-gray-600 break-all">{o.token}</code>
-                  </AdminTd>
                   <AdminTd>
                     {editingObserved === o.token ? (
                       <input
@@ -1139,6 +1138,9 @@ export default function DisplaySettings() {
                     ) : (
                       <span className="text-sm text-gray-600">{o.name}</span>
                     )}
+                  </AdminTd>
+                  <AdminTd>
+                    <code className="font-mono text-xs text-gray-600 break-all">{o.token}</code>
                   </AdminTd>
                   <AdminTd align="right" className="whitespace-nowrap">
                     {editingObserved === o.token ? (
@@ -1235,7 +1237,7 @@ export default function DisplaySettings() {
                 ) : (
                   <>
                     <div className="flex items-start justify-between gap-2">
-                      <code className="min-w-0 font-mono text-xs text-gray-600 break-all">{o.token}</code>
+                      <p className="min-w-0 text-sm text-gray-600">{o.name}</p>
                       <div className="flex shrink-0 items-center gap-2">
                         <span
                           className={`rounded px-1.5 py-0.5 text-xs ${
@@ -1263,7 +1265,7 @@ export default function DisplaySettings() {
                         )}
                       </div>
                     </div>
-                    <p className="mt-1 text-sm text-gray-600">{o.name}</p>
+                    <code className="mt-1 block font-mono text-xs text-gray-600 break-all">{o.token}</code>
                   </>
                 )}
               </AdminMobileCard>
