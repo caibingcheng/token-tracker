@@ -12,6 +12,7 @@ import {
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 import { hasQuotaLimits } from "@/lib/gateway/quota";
 import { loadQuotaUsageBatch } from "@/lib/gateway/quota-db";
+import { isReservedRemoteName, REMOTE_NAME_PREFIX } from "@/lib/ingest/validate";
 
 function gatewaySecretError() {
   return NextResponse.json(
@@ -73,13 +74,21 @@ export const GET = withAuth(async (request: NextRequest) => {
       quotaVkIds.length > 0 ? await loadQuotaUsageBatch(quotaVkIds, new Date()) : new Map<number, never>();
 
     const data = rows.map((row: any) => {
-      const plain = decryptSecret(row.apiKeyEncrypted);
+      let plain: string | null = null;
+      let decryptFailed = false;
+      try {
+        plain = decryptSecret(row.apiKeyEncrypted);
+      } catch (err) {
+        if (err instanceof GatewaySecretMissingError) throw err;
+        decryptFailed = true;
+      }
       const usage = usageMap.get(row.id);
       const q = quotaUsageMap.get(row.id);
       return {
         id: row.id,
         name: row.name,
         apiKey: plain,
+        decryptFailed,
         enabled: row.enabled === 1,
         comment: row.comment ?? null,
         enabledModels: row.enabledModels,
@@ -126,6 +135,12 @@ export const POST = withAuth(async (request: NextRequest) => {
     const name = typeof body.name === "string" ? body.name.trim() : "";
     if (!name) {
       return NextResponse.json({ success: false, error: "Missing required field: name" }, { status: 400 });
+    }
+    if (isReservedRemoteName(name)) {
+      return NextResponse.json(
+        { success: false, error: "name cannot start with \"" + REMOTE_NAME_PREFIX + "\"" },
+        { status: 400 }
+      );
     }
 
     const comment = typeof body.comment === "string" ? body.comment.trim() : "";

@@ -90,6 +90,7 @@ interface RecordInput {
   createdAt?: string;
   ttftMs?: number | null;
   latencyMs?: number | null;
+  userAgent?: string | null;
 }
 
 async function insertRecord(r: RecordInput): Promise<void> {
@@ -104,6 +105,7 @@ async function insertRecord(r: RecordInput): Promise<void> {
       cacheWrite: 0,
       ttftMs: r.ttftMs ?? null,
       latencyMs: r.latencyMs ?? null,
+      userAgent: r.userAgent ?? null,
       createdAt: r.createdAt ?? new Date().toISOString(),
     });
   });
@@ -217,7 +219,7 @@ describe("stats-query 剔除（excluded 独立列表）", () => {
       range: "all",
       provider: "all",
       model: "all",
-      agentFilter: null,
+      agentUaFilter: null,
     })) as Array<{ count: number; totalInput: number }>;
     expect(data[0]!.count).toBe(3);
     expect(data[0]!.totalInput).toBe(600);
@@ -233,7 +235,7 @@ describe("stats-query 剔除（excluded 独立列表）", () => {
       range: "all",
       provider: "all",
       model: "all",
-      agentFilter: null,
+      agentUaFilter: null,
     })) as Array<{ count: number; totalInput: number }>;
     // 只剩 deepseek/agent-b 一行；openai 全部行被 provider 条件剔除
     expect(data[0]!.count).toBe(1);
@@ -247,7 +249,7 @@ describe("stats-query 剔除（excluded 独立列表）", () => {
       range: "all",
       provider: "all",
       model: "all",
-      agentFilter: null,
+      agentUaFilter: null,
     })) as Array<{ count: number; totalInput: number }>;
     // openai/unknown + deepseek/agent-b 保留
     expect(data[0]!.count).toBe(2);
@@ -261,7 +263,7 @@ describe("stats-query 剔除（excluded 独立列表）", () => {
       range: "all",
       provider: "all",
       model: "all",
-      agentFilter: null,
+      agentUaFilter: null,
     })) as Array<{ count: number }>;
     expect(data[0]!.count).toBe(3);
   });
@@ -273,7 +275,7 @@ describe("stats-query 剔除（excluded 独立列表）", () => {
       range: "all",
       provider: "all",
       model: "all",
-      agentFilter: null,
+      agentUaFilter: null,
     })) as Array<{ count: number }>;
     // openai 的两行被剔除，只剩 deepseek/agent-b
     expect(data[0]!.count).toBe(1);
@@ -286,7 +288,7 @@ describe("stats-query 剔除（excluded 独立列表）", () => {
       range: "all",
       provider: "all",
       model: "all",
-      agentFilter: null,
+      agentUaFilter: null,
       granularity: "day",
     })) as Array<{ model: string }>;
     expect(data).toHaveLength(1);
@@ -319,7 +321,7 @@ describe("latency-query 剔除", () => {
       range: "30d",
       providerFilter: null,
       modelFilter: null,
-      agentFilter: null,
+      agentUaFilter: null,
       timezoneOffsetMinutes: 0,
       groups: [],
       aliases: [],
@@ -342,17 +344,40 @@ describe("latency-query 剔除", () => {
   });
 });
 
-describe("agents/providers/models 过滤 + includeHidden", () => {
+describe("agents dimension（默认派生工具名）/ providers / models 过滤 + includeHidden", () => {
   beforeEach(async () => {
-    await insertRecord({ model: "gpt-4o", provider: "openai", agent: "agent-a" });
+    await insertRecord({
+      model: "gpt-4o",
+      provider: "openai",
+      agent: "agent-a",
+      userAgent: "claude-cli/2.1.5 (external, cli)",
+    });
     await insertRecord({ model: "gpt-4o", provider: "openai", agent: "unknown" });
-    await insertRecord({ model: "deepseek-chat", provider: "deepseek", agent: "agent-b" });
+    await insertRecord({
+      model: "deepseek-chat",
+      provider: "deepseek",
+      agent: "agent-b",
+      userAgent: "opencode/1.18.14",
+    });
   });
 
-  it("/api/agents 始终过滤隐藏 vk（与排除状态无关）；'unknown' 显示 (unknown)", async () => {
-    await saveConfig({ virtualKeys: ["agent-a"], excludedVirtualKeys: ["agent-a"] });
+  it("/api/agents 默认返回派生工具名；NULL UA → (unknown)", async () => {
     const token = await makeToken();
     const res = await agentsGET(req("/api/agents", "GET", token));
+    const json = await res.json();
+    const names = json.data.map((a: { id: string }) => a.id);
+    expect(names).toContain("claude-code");
+    expect(names).toContain("opencode");
+    expect(names).not.toContain("agent-a");
+    expect(names).not.toContain("agent-b");
+    const unknown = json.data.find((a: { id: string }) => a.id === "unknown");
+    expect(unknown.name).toBe("(unknown)");
+  });
+
+  it("/api/agents?dimension=key 保留旧行为：distinct agent 列 + 隐藏 vk 过滤；'unknown' 显示 (unknown)", async () => {
+    await saveConfig({ virtualKeys: ["agent-a"], excludedVirtualKeys: ["agent-a"] });
+    const token = await makeToken();
+    const res = await agentsGET(req("/api/agents?dimension=key", "GET", token));
     const json = await res.json();
     const names = json.data.map((a: { id: string; name: string }) => a.id);
     expect(names).not.toContain("agent-a");
@@ -361,10 +386,12 @@ describe("agents/providers/models 过滤 + includeHidden", () => {
     expect(unknown.name).toBe("(unknown)");
   });
 
-  it("/api/agents?includeHidden=1 返回全部（含隐藏 vk）", async () => {
+  it("/api/agents?dimension=key&includeHidden=1 返回全部 vk（含隐藏）", async () => {
     await saveConfig({ virtualKeys: ["agent-a"] });
     const token = await makeToken();
-    const res = await agentsGET(req("/api/agents?includeHidden=1", "GET", token));
+    const res = await agentsGET(
+      req("/api/agents?dimension=key&includeHidden=1", "GET", token)
+    );
     const json = await res.json();
     const names = json.data.map((a: { id: string }) => a.id);
     expect(names).toContain("agent-a");

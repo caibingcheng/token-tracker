@@ -1,4 +1,17 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { NextRequest } from "next/server";
+import { GET as dashboardGET } from "./route";
+import { db, initDatabase, tokenRecords } from "@/lib/db";
+import {
+  setAdminApiKey,
+  getTokenEpoch,
+  deleteSetting,
+} from "@/lib/auth/settings";
+import { signSessionToken, keyFingerprint } from "@/lib/auth/session";
+import { withSkipCache } from "@/lib/db/cache";
 import { aggregateProviders } from "@/lib/provider-stats";
 import { emptyAggregatedCost, type AggregatedCost } from "@/lib/cost-utils";
 import type { HiddenProviderGroup } from "@/lib/provider-utils";
@@ -139,5 +152,105 @@ describe("aggregateProviders", () => {
 
   it("空输入返回空数组", () => {
     expect(aggregateProviders([], [])).toEqual([]);
+  });
+});
+
+const ORIG_DB = process.env.SQLITE_DATABASE_PATH;
+const ORIG_SECRET = process.env.GATEWAY_SECRET;
+const ADMIN_KEY = "test-admin-key-123456";
+
+let dir: string;
+
+beforeAll(() => {
+  dir = mkdtempSync(join(tmpdir(), "tt-dashboard-route-"));
+  process.env.SQLITE_DATABASE_PATH = join(dir, "test.db");
+  process.env.GATEWAY_SECRET = "0123456789abcdef0123456789abcdef";
+});
+
+afterAll(() => {
+  rmSync(dir, { recursive: true, force: true });
+  if (ORIG_DB === undefined) delete process.env.SQLITE_DATABASE_PATH;
+  else process.env.SQLITE_DATABASE_PATH = ORIG_DB;
+  if (ORIG_SECRET === undefined) delete process.env.GATEWAY_SECRET;
+  else process.env.GATEWAY_SECRET = ORIG_SECRET;
+});
+
+beforeEach(async () => {
+  await initDatabase();
+  await withSkipCache(async () => {
+    await db.delete(tokenRecords);
+  });
+  await deleteSetting("token_epoch").catch(() => {});
+  await deleteSetting("agent_aliases").catch(() => {});
+  await setAdminApiKey(ADMIN_KEY);
+});
+
+async function makeToken(): Promise<string> {
+  const epoch = await getTokenEpoch();
+  return signSessionToken(epoch, keyFingerprint(ADMIN_KEY), 60_000);
+}
+
+function req(url: string, token?: string): NextRequest {
+  return new NextRequest(`http://localhost${url}`, {
+    method: "GET",
+    headers: { "x-api-key": token ?? "" },
+  });
+}
+
+async function insertRecord(overrides: Partial<typeof tokenRecords.$inferInsert> = {}) {
+  await withSkipCache(async () => {
+    await db.insert(tokenRecords).values({
+      model: overrides.model ?? "gpt-4o",
+      provider: overrides.provider ?? "openai",
+      agent: overrides.agent ?? "test-agent",
+      inputTokens: overrides.inputTokens ?? 100,
+      outputTokens: overrides.outputTokens ?? 50,
+      cacheRead: overrides.cacheRead ?? 0,
+      cacheWrite: overrides.cacheWrite ?? 0,
+      userAgent: overrides.userAgent ?? null,
+      createdAt: overrides.createdAt ?? new Date().toISOString(),
+    });
+  });
+}
+
+describe("dashboard route agent filter（UA 反找）", () => {
+  it("未认证 401", async () => {
+    const res = await dashboardGET(req("/api/dashboard"));
+    expect(res.status).toBe(401);
+  });
+
+  it("agent 参数按派生工具名反找：只统计对应 UA 的记录", async () => {
+    await insertRecord({ agent: "vk-a", userAgent: "claude-cli/2.1.5 (external, cli)", inputTokens: 100 });
+    await insertRecord({ agent: "vk-b", userAgent: "opencode/1.18.14", inputTokens: 300 });
+    await insertRecord({ agent: "vk-c", userAgent: null, inputTokens: 500 });
+
+    const token = await makeToken();
+    const res = await dashboardGET(req("/api/dashboard?range=30d&agent=claude-code", token));
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.success).toBe(true);
+    expect(json.data.total[0].totalInput).toBe(100);
+    expect(json.data.total[0].count).toBe(1);
+  });
+
+  it("agent=unknown 走 IS NULL user_agent 条件", async () => {
+    await insertRecord({ agent: "vk-a", userAgent: "claude-cli/2.1.5 (external, cli)" });
+    await insertRecord({ agent: "vk-c", userAgent: null, inputTokens: 500 });
+
+    const token = await makeToken();
+    const res = await dashboardGET(req("/api/dashboard?range=30d&agent=unknown", token));
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.data.total[0].totalInput).toBe(500);
+    expect(json.data.total[0].count).toBe(1);
+  });
+
+  it("未知 agent → 400", async () => {
+    await insertRecord({ agent: "vk-a", userAgent: "claude-cli/2.1.5 (external, cli)" });
+    const token = await makeToken();
+    const res = await dashboardGET(req("/api/dashboard?range=30d&agent=nonexistent", token));
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json.error).toBe("Unknown agent: nonexistent");
   });
 });

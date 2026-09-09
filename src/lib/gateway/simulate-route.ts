@@ -67,7 +67,8 @@ function computeEffective(
   if (healthyFirst.length > 0) {
     return {
       winner: healthyFirst[0],
-      failover: healthyFirst[0].upstreamId !== candidates[0]?.upstreamId,
+      // 引用比较：同 upstream 可挂多个不同 targetModel（链内对象按引用区分 hop）
+      failover: healthyFirst[0] !== candidates[0],
       allUnhealthy: false,
     };
   }

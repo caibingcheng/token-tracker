@@ -3,6 +3,14 @@
 import { useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/client/api-client";
 import { CopyableCode } from "./CopyableCode";
+import {
+  AdminMobileCard,
+  AdminMobileCards,
+  AdminTable,
+  AdminTableBody,
+  AdminTableHead,
+  AdminTd,
+} from "./table";
 
 // Price Picker Modal：为指定 model 选择官方价来源（models.dev 候选 / 手动输入）
 
@@ -234,63 +242,61 @@ export default function PricePickerModal({
                 : "No models.dev candidates found for this model."}
             </div>
           ) : (
-            <div className="hidden md:block overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-xs text-gray-400">
-                    <th className="px-2 py-2">Provider</th>
-                    <th className="px-2 py-2">Model</th>
-                    <th className="px-2 py-2 text-right">Input</th>
-                    <th className="px-2 py-2 text-right">Output</th>
-                    <th className="px-2 py-2 text-right">Cache Read</th>
-                    <th className="px-2 py-2 text-right">Cache Write</th>
-                    <th className="px-2 py-2"></th>
+            <AdminTable>
+              <AdminTableHead
+                columns={[
+                  { label: "Provider" },
+                  { label: "Model" },
+                  { label: "Input", align: "right" },
+                  { label: "Output", align: "right" },
+                  { label: "Cache Read", align: "right" },
+                  { label: "Cache Write", align: "right" },
+                  { label: "", align: "right" },
+                ]}
+              />
+              <AdminTableBody>
+                {candidates.map((c) => (
+                  <tr key={c.modelsDevId} className={c.preferred ? "bg-green-50/40" : ""}>
+                    <AdminTd>
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-medium">{c.providerName}</span>
+                        {c.preferred && (
+                          <span className="rounded bg-green-100 px-1 py-0.5 text-[10px] font-medium text-green-700">
+                            preferred
+                          </span>
+                        )}
+                      </div>
+                    </AdminTd>
+                    <AdminTd>
+                      <CopyableCode className="text-xs">{c.modelId}</CopyableCode>
+                    </AdminTd>
+                    <AdminTd align="right" mono>{fmtPrice(c.inputPrice)}</AdminTd>
+                    <AdminTd align="right" mono>{fmtPrice(c.outputPrice)}</AdminTd>
+                    <AdminTd align="right" mono>{fmtPrice(c.cacheReadPrice)}</AdminTd>
+                    <AdminTd align="right" mono>{fmtPrice(c.cacheWritePrice)}</AdminTd>
+                    <AdminTd align="right">
+                      <button
+                        type="button"
+                        disabled={saving !== null}
+                        onClick={() => pick(c)}
+                        className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50 min-h-[36px] md:min-h-0"
+                      >
+                        {saving === c.modelsDevId ? "Saving…" : "Use"}
+                      </button>
+                    </AdminTd>
                   </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {candidates.map((c) => (
-                    <tr key={c.modelsDevId} className={c.preferred ? "bg-green-50/40" : ""}>
-                      <td className="px-2 py-2">
-                        <div className="flex items-center gap-1.5">
-                          <span className="font-medium">{c.providerName}</span>
-                          {c.preferred && (
-                            <span className="rounded bg-green-100 px-1 py-0.5 text-[10px] font-medium text-green-700">
-                              preferred
-                            </span>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-2 py-2">
-                        <CopyableCode className="text-xs">{c.modelId}</CopyableCode>
-                      </td>
-                      <td className="px-2 py-2 text-right font-mono text-xs">{fmtPrice(c.inputPrice)}</td>
-                      <td className="px-2 py-2 text-right font-mono text-xs">{fmtPrice(c.outputPrice)}</td>
-                      <td className="px-2 py-2 text-right font-mono text-xs">{fmtPrice(c.cacheReadPrice)}</td>
-                      <td className="px-2 py-2 text-right font-mono text-xs">{fmtPrice(c.cacheWritePrice)}</td>
-                      <td className="px-2 py-2 text-right">
-                        <button
-                          type="button"
-                          disabled={saving !== null}
-                          onClick={() => pick(c)}
-                          className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50 min-h-[36px] md:min-h-0"
-                        >
-                          {saving === c.modelsDevId ? "Saving…" : "Use"}
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                ))}
+              </AdminTableBody>
+            </AdminTable>
           )}
 
           {/* 移动端候选卡片 */}
           {!loading && !searching && candidates.length > 0 && (
-            <div className="md:hidden space-y-3">
+            <AdminMobileCards>
               {candidates.map((c) => (
-                <div
+                <AdminMobileCard
                   key={c.modelsDevId}
-                  className={`border rounded-lg p-3 ${c.preferred ? "border-green-200 bg-green-50/40" : "border-gray-200"}`}
+                  className={c.preferred ? "border-green-200 bg-green-50/40" : ""}
                 >
                   <div className="flex items-center justify-between gap-2">
                     <div className="min-w-0">
@@ -317,9 +323,9 @@ export default function PricePickerModal({
                   >
                     {saving === c.modelsDevId ? "Saving…" : "Use this price"}
                   </button>
-                </div>
+                </AdminMobileCard>
               ))}
-            </div>
+            </AdminMobileCards>
           )}
 
           {/* 手动输入折叠区 */}

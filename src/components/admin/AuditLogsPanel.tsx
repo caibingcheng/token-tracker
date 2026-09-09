@@ -2,6 +2,17 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { apiFetch } from "@/lib/client/api-client";
+import {
+  AdminMobileCard,
+  AdminMobileCards,
+  AdminMobileEmpty,
+  AdminTable,
+  AdminTableBody,
+  AdminTableCard,
+  AdminTableEmptyRow,
+  AdminTableHead,
+  AdminTd,
+} from "./table";
 
 interface AuditLogItem {
   id: number;
@@ -92,24 +103,24 @@ export default function AuditLogsPanel() {
         <div className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-600">{error}</div>
       )}
 
-      <div className="hidden md:block overflow-x-auto rounded-lg bg-white shadow">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-left text-xs text-gray-400">
-              <th className="px-3 py-2">Time</th>
-              <th className="px-3 py-2">Action</th>
-              <th className="px-3 py-2">Actor</th>
-              <th className="px-3 py-2">Target</th>
-              <th className="px-3 py-2">IP</th>
-              <th className="px-3 py-2">User-Agent</th>
-              <th className="px-3 py-2">Details</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100">
+      <AdminTableCard>
+        <AdminTable>
+          <AdminTableHead
+            columns={[
+              { label: "Time" },
+              { label: "Action" },
+              { label: "Actor" },
+              { label: "Target" },
+              { label: "IP" },
+              { label: "User-Agent" },
+              { label: "Details" },
+            ]}
+          />
+          <AdminTableBody>
             {data?.items.map((item) => (
               <tr key={item.id}>
-                <td className="px-3 py-2 whitespace-nowrap">{new Date(item.createdAt).toLocaleString()}</td>
-                <td className="px-3 py-2">
+                <AdminTd className="whitespace-nowrap">{new Date(item.createdAt).toLocaleString()}</AdminTd>
+                <AdminTd>
                   <span
                     className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
                       ACTION_COLORS[item.action] ?? "bg-gray-50 text-gray-600"
@@ -117,9 +128,9 @@ export default function AuditLogsPanel() {
                   >
                     {item.action}
                   </span>
-                </td>
-                <td className="px-3 py-2">{item.actor ?? "—"}</td>
-                <td className="px-3 py-2">
+                </AdminTd>
+                <AdminTd>{item.actor ?? "—"}</AdminTd>
+                <AdminTd>
                   {item.targetType ? (
                     <span className="text-gray-700">
                       {item.targetType}
@@ -128,12 +139,12 @@ export default function AuditLogsPanel() {
                   ) : (
                     <span className="text-gray-300">—</span>
                   )}
-                </td>
-                <td className="px-3 py-2">{item.ip ?? "—"}</td>
-                <td className="px-3 py-2 max-w-[200px] truncate" title={item.userAgent ?? undefined}>
+                </AdminTd>
+                <AdminTd>{item.ip ?? "—"}</AdminTd>
+                <AdminTd className="max-w-[200px] truncate" title={item.userAgent ?? undefined}>
                   {item.userAgent ?? <span className="text-gray-300">—</span>}
-                </td>
-                <td className="px-3 py-2">
+                </AdminTd>
+                <AdminTd>
                   {item.details != null ? (
                     <button
                       type="button"
@@ -147,25 +158,21 @@ export default function AuditLogsPanel() {
                   ) : (
                     <span className="text-gray-300">—</span>
                   )}
-                </td>
+                </AdminTd>
               </tr>
             ))}
             {(!data || data.items.length === 0) && !loading && (
-              <tr>
-                <td colSpan={7} className="px-3 py-6 text-center text-gray-400">
-                  No audit records yet.
-                </td>
-              </tr>
+              <AdminTableEmptyRow colSpan={7}>No audit records yet.</AdminTableEmptyRow>
             )}
-          </tbody>
-        </table>
-      </div>
+          </AdminTableBody>
+        </AdminTable>
+      </AdminTableCard>
 
-      <div className="md:hidden space-y-3">
+      <AdminMobileCards>
         {data?.items.map((item) => {
           const hasDetails = item.details != null;
           return (
-            <div key={item.id} className="rounded-lg bg-white shadow p-4">
+            <AdminMobileCard key={item.id} className="bg-white shadow">
               <div className="flex justify-between items-start gap-2 mb-2">
                 <span
                   className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium ${
@@ -218,15 +225,13 @@ export default function AuditLogsPanel() {
                     : JSON.stringify(item.details)}
                 </button>
               )}
-            </div>
+            </AdminMobileCard>
           );
         })}
         {(!data || data.items.length === 0) && !loading && (
-          <div className="rounded-lg bg-white shadow py-6 text-center text-sm text-gray-400">
-            No audit records yet.
-          </div>
+          <AdminMobileEmpty>No audit records yet.</AdminMobileEmpty>
         )}
-      </div>
+      </AdminMobileCards>
 
       {data && data.totalPages > 1 && (
         <div className="flex items-center justify-center gap-3 text-sm text-gray-600">

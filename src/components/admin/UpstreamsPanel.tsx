@@ -6,6 +6,7 @@ import { PROVIDER_PRESETS } from "@/lib/provider-presets";
 import UpstreamModelsManager from "./UpstreamModelsManager";
 import { CopyableCode } from "./CopyableCode";
 import ActionMenu from "./ActionMenu";
+import type { HeaderTransform } from "@/lib/gateway/header-transforms";
 
 export interface UpstreamItem {
   id: number;
@@ -23,6 +24,7 @@ export interface UpstreamItem {
   balanceUpdatedAt: string | null;
   hasProxy: boolean;
   proxyDisplay: string | null;
+  headerTransforms: HeaderTransform[];
   createdAt: string;
 }
 
@@ -84,6 +86,7 @@ export default function UpstreamsPanel() {
 
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [formKeys, setFormKeys] = useState<string[]>([""]);
+  const [formTransforms, setFormTransforms] = useState<HeaderTransform[]>([]);
   const [formKeyTests, setFormKeyTests] = useState<Record<number, FormKeyTestResult | null>>({});
   const [formKeyShown, setFormKeyShown] = useState<Record<number, boolean>>({});
   const [modelPicker, setModelPicker] = useState<ModelPickerState | null>(null);
@@ -102,6 +105,8 @@ export default function UpstreamsPanel() {
   const [testingAll, setTestingAll] = useState<Record<number, boolean>>({});
   const [pendingDelete, setPendingDelete] = useState<UpstreamItem | null>(null);
   const [hideHistory, setHideHistory] = useState(false);
+  // 编辑表单中 key 启停的本地暂存（点击 Save 后才提交生效）
+  const [pendingKeyEnabled, setPendingKeyEnabled] = useState<Record<number, boolean>>({});
 
   // 当前编辑项已配置的代理展示（仅脱敏 host，供表单提示；无法回显明文）
   const editingProxy = editingId ? upstreams.find((u) => u.id === editingId) : null;
@@ -167,6 +172,8 @@ export default function UpstreamsPanel() {
     } else if (editingId && clearProxy) {
       payload.proxyUrl = null;
     }
+    // header transforms 全量替换（前端数组操作后整体提交）
+    payload.headerTransforms = formTransforms;
     const newKeys = formKeys.map((k) => k.trim()).filter(Boolean);
     try {
       const res = editingId
@@ -186,6 +193,14 @@ export default function UpstreamsPanel() {
         return;
       }
       const upstreamId = editingId ?? (json.data as { id: number }).id;
+      // 提交编辑期间暂存的 key 启停变更
+      for (const [keyId, enabled] of Object.entries(pendingKeyEnabled)) {
+        await apiFetch(`/api/admin/upstreams/${upstreamId}/keys/${keyId}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ enabled }),
+        });
+      }
       for (const apiKey of newKeys) {
         const keyRes = await apiFetch(`/api/admin/upstreams/${upstreamId}/keys`, {
           method: "POST",
@@ -200,10 +215,12 @@ export default function UpstreamsPanel() {
       }
       setForm(EMPTY_FORM);
       setFormKeys([""]);
+      setFormTransforms([]);
       setFormKeyTests({});
       setFormKeyShown({});
       setEditingId(null);
       setClearProxy(false);
+      setPendingKeyEnabled({});
       loadUpstreams();
     } catch {
       setError("Network error");
@@ -225,8 +242,11 @@ export default function UpstreamsPanel() {
     });
     setClearProxy(false);
     setFormKeys([""]);
+    // 浅拷贝数组 + 展开条目，避免直接改列表缓存
+    setFormTransforms(u.headerTransforms.map((t) => ({ ...t })));
     setFormKeyTests({});
     setFormKeyShown({});
+    setPendingKeyEnabled({});
     setModelPicker(null);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -255,13 +275,8 @@ export default function UpstreamsPanel() {
     loadUpstreams();
   };
 
-  const handleToggleKey = async (key: UpstreamKeyItem) => {
-    await apiFetch(`/api/admin/upstreams/${key.upstreamId}/keys/${key.id}`, {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ enabled: !key.enabled }),
-    });
-    loadKeys(key.upstreamId);
+  const toggleKeyPending = (key: UpstreamKeyItem) => {
+    setPendingKeyEnabled((prev) => ({ ...prev, [key.id]: !(prev[key.id] ?? key.enabled) }));
   };
 
   const handleDeleteKey = async (key: UpstreamKeyItem) => {
@@ -368,6 +383,27 @@ export default function UpstreamsPanel() {
     setFormKeys((prev) => [...prev, ""]);
   };
 
+  // Header transforms：只操作前端内存数组，随 upstream 保存整体提交
+  const addTransformRow = () => {
+    setFormTransforms((prev) => [
+      ...prev,
+      {
+        id: "ht-" + crypto.randomUUID().slice(0, 8),
+        header: "",
+        value: "",
+        mode: "fill",
+        enabled: true,
+      },
+    ]);
+  };
+
+  const removeTransformRow = (index: number) => {
+    setFormTransforms((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const updateTransformRow = (index: number, patch: Partial<HeaderTransform>) => {
+    setFormTransforms((prev) => prev.map((t, i) => (i === index ? { ...t, ...patch } : t)));
+  };
   const removeFormKeyRow = (index: number) => {
     setFormKeys((prev) => prev.filter((_, i) => i !== index));
     setFormKeyTests((prev) => {
@@ -634,21 +670,23 @@ export default function UpstreamsPanel() {
             </label>
             {editingId && (keysByUpstream[editingId] ?? []).length > 0 && (
               <div className="mb-2 flex flex-wrap gap-1.5">
-                {(keysByUpstream[editingId] ?? []).map((k) => (
+                {(keysByUpstream[editingId] ?? []).map((k) => {
+                  const effectiveEnabled = pendingKeyEnabled[k.id] ?? k.enabled;
+                  return (
                   <span
                     key={k.id}
-                    title={`${k.enabled ? "Enabled" : "Disabled"}${k.lastStatus ? ` · last: ${k.lastStatus}` : ""}`}
+                    title={`${effectiveEnabled ? "Enabled" : "Disabled"}${pendingKeyEnabled[k.id] !== undefined ? " (pending save)" : ""}${k.lastStatus ? ` · last: ${k.lastStatus}` : ""}`}
                     className="flex items-center gap-1.5 rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-600"
                   >
-                    <span className={`h-1.5 w-1.5 rounded-full ${k.enabled ? "bg-green-500" : "bg-gray-300"}`} />
+                    <span className={`h-1.5 w-1.5 rounded-full ${effectiveEnabled ? "bg-green-500" : "bg-gray-300"}`} />
                     <code>{k.maskedKey}</code>
                     <button
                       type="button"
-                      onClick={() => handleToggleKey(k)}
-                      title={k.enabled ? "Disable key" : "Enable key"}
+                      onClick={() => toggleKeyPending(k)}
+                      title={effectiveEnabled ? "Disable key (applied on Save)" : "Enable key (applied on Save)"}
                       className="ml-0.5 text-gray-400 hover:text-blue-600"
                     >
-                      {k.enabled ? "Disable" : "Enable"}
+                      {effectiveEnabled ? "Disable" : "Enable"}
                     </button>
                     <button
                       type="button"
@@ -659,7 +697,8 @@ export default function UpstreamsPanel() {
                       ×
                     </button>
                   </span>
-                ))}
+                  );
+                })}
               </div>
             )}
             <div className="space-y-2">
@@ -725,6 +764,77 @@ export default function UpstreamsPanel() {
             </button>
           </div>
           <div className="md:col-span-3">
+            <label className="mb-1 block text-xs text-gray-600">
+              Header Transforms{" "}
+              <span className="text-gray-400">
+                (optional outbound headers; saved with this upstream)
+              </span>
+            </label>
+            <div className="space-y-2">
+              {formTransforms.map((t, index) => (
+                <div key={t.id} className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="text"
+                    value={t.header}
+                    onChange={(e) => updateTransformRow(index, { header: e.target.value })}
+                    placeholder="header name"
+                    autoComplete="off"
+                    className="min-w-0 w-40 flex-none rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                  <input
+                    type="text"
+                    value={t.value}
+                    onChange={(e) => updateTransformRow(index, { value: e.target.value })}
+                    placeholder="value, e.g. tt-${var.sessionId}"
+                    autoComplete="off"
+                    className="min-w-0 flex-1 rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                  <label className="flex shrink-0 cursor-pointer items-center gap-1.5 text-xs text-gray-500">
+                    <input
+                      type="checkbox"
+                      checked={t.mode === "override"}
+                      onChange={(e) =>
+                        updateTransformRow(index, { mode: e.target.checked ? "override" : "fill" })
+                      }
+                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    Override if client sends this header
+                  </label>
+                  <label className="flex shrink-0 cursor-pointer items-center gap-1.5 text-xs text-gray-500">
+                    <input
+                      type="checkbox"
+                      checked={t.enabled}
+                      onChange={(e) => updateTransformRow(index, { enabled: e.target.checked })}
+                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    Enabled
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => removeTransformRow(index)}
+                    className="shrink-0 rounded border border-gray-300 px-3 py-2 text-xs text-gray-600 hover:bg-gray-50"
+                    title="Remove header transform"
+                  >
+                    −
+                  </button>
+                </div>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={addTransformRow}
+              className="mt-2 rounded border border-dashed border-gray-300 px-3 py-1.5 text-xs text-gray-500 hover:bg-gray-50"
+            >
+              + Add header transform
+            </button>
+            <p className="mt-1 text-[10px] text-gray-400">
+              Variables: {"${var.sessionId}"} (per-conversation), {"${var.model}"},{" "}
+              {"${var.keyName}"}, {"${var.upstream}"}. Without &quot;Override&quot;, a header sent by
+              the client is kept as-is (fill mode). Values are stored and returned in
+              plain text — avoid putting credentials here.
+            </p>
+          </div>
+          <div className="md:col-span-3">
             <div className="mb-1 flex items-center justify-between gap-2">
               <label className="min-w-0 text-xs text-gray-600">
                 Enabled Models{" "}
@@ -775,8 +885,10 @@ export default function UpstreamsPanel() {
                   setEditingId(null);
                   setForm(EMPTY_FORM);
                   setFormKeys([""]);
+                  setFormTransforms([]);
                   setFormKeyTests({});
                   setClearProxy(false);
+                  setPendingKeyEnabled({});
                 }}
                 className="rounded border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50"
               >
@@ -892,6 +1004,8 @@ export default function UpstreamsPanel() {
                 <span className="text-xs text-gray-400 truncate max-w-[200px]">{u.baseUrl}</span>
                 <span className="text-xs text-gray-400">
                   {u.enabledModels.length} models · {u.keyCount} keys · p{u.priority}
+                  {u.headerTransforms.length > 0 &&
+                    ` · ${u.headerTransforms.filter((t) => t.enabled).length}/${u.headerTransforms.length} header transforms`}
                 </span>
                 {u.unhealthy && (
                   <span
@@ -1132,13 +1246,30 @@ export default function UpstreamsPanel() {
                 <div className="mt-1.5 space-y-1">
                   {(keysByUpstream[u.id] || []).map((key) => (
                     <div key={key.id} className="flex flex-wrap items-center gap-2 text-xs">
-                      <span className={`h-1.5 w-1.5 rounded-full ${key.enabled ? "bg-green-500" : "bg-gray-300"}`} />
+                      <span
+                        className={`h-1.5 w-1.5 rounded-full ${key.enabled ? "bg-green-500" : "bg-gray-300"}`}
+                        title={key.enabled ? "Enabled" : "Disabled — excluded from routing"}
+                      />
                       <code className="max-w-[180px] truncate rounded bg-gray-100 px-1.5 py-0.5 text-[11px]">
                         {key.maskedKey}
                       </code>
+                      {!key.enabled && (
+                        <span
+                          className="rounded bg-amber-50 px-1 py-0.5 text-[10px] font-medium text-amber-600"
+                          title="This key is disabled and will not be used for routing or failover"
+                        >
+                          disabled
+                        </span>
+                      )}
                       {key.lastStatus && (
                         <span className="text-[11px] text-gray-400">last: {key.lastStatus}</span>
                       )}
+                      <span
+                        className="text-[11px] text-gray-400"
+                        title={`Added ${new Date(key.createdAt).toLocaleString()}`}
+                      >
+                        {new Date(key.createdAt).toLocaleDateString()}
+                      </span>
                     </div>
                   ))}
                   {keysByUpstream[u.id]?.length === 0 && (

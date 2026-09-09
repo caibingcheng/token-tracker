@@ -49,17 +49,101 @@ export function migrateTokenRecordsModelColumns(client: any): void {
   }
 }
 
-// routing_rules 专用迁移：部分旧库仍为 UNIQUE(name, protocol)（单目标）结构，
-// 需重建表支持多目标（UNIQUE(name, protocol, upstream_id)）+ priority 列。
-// SQLite 无法修改表约束，采用表重建：先检测 priority 列是否已存在（幂等），
-// 存在即跳过；否则 RENAME → 建新表 → 回迁（priority 回填 0）→ DROP 旧表。
-// routing_rules 为管理面小表，重建零风险。旧约束是新约束的超集，回迁必定不冲突。
+// sync_instances 专用迁移：旧 instance 主键结构（instance TEXT PRIMARY KEY）
+// → uid 主键 + instance_name 展示名结构。协议已破坏（旧行 name 无对应 uid），
+// 旧行直接丢弃（必然重绑重推）。幂等检测：缺少 uid 列 → 触发重建。
+export function migrateSyncInstancesTable(client: any): void {
+  const existing: string[] = client
+    .prepare(`PRAGMA table_info(sync_instances)`)
+    .all()
+    .map((c: any) => c.name);
+  if (existing.includes("uid")) return;
+
+  client.exec(`DROP TABLE IF EXISTS sync_instances_old`);
+  client.exec(`
+    ALTER TABLE sync_instances RENAME TO sync_instances_old;
+    CREATE TABLE sync_instances (
+      uid TEXT PRIMARY KEY,
+      instance_name TEXT,
+      epoch TEXT NOT NULL,
+      last_record_id INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT
+    );
+    DROP TABLE sync_instances_old;
+  `);
+}
+
+// ingest_tokens 专用迁移：旧 bound_instance 列 → bound_uid 列。
+// token 行全量回迁（ingest token 是用户资产，不可丢弃），仅 bound_uid 置 NULL
+// 等待重新 TOFU 绑定。幂等检测：存在 bound_instance 列 → 触发重建。
+export function migrateIngestTokensTable(client: any): void {
+  const existing: string[] = client
+    .prepare(`PRAGMA table_info(ingest_tokens)`)
+    .all()
+    .map((c: any) => c.name);
+  if (!existing.includes("bound_instance")) return;
+
+  client.exec(`DROP TABLE IF EXISTS ingest_tokens_old`);
+  client.exec(`
+    ALTER TABLE ingest_tokens RENAME TO ingest_tokens_old;
+    CREATE TABLE ingest_tokens (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      api_key_encrypted TEXT NOT NULL,
+      bound_uid TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      last_used_at TEXT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+    INSERT INTO ingest_tokens (id, name, api_key_encrypted, bound_uid, enabled, last_used_at, created_at)
+      SELECT id, name, api_key_encrypted, NULL, enabled, last_used_at, created_at FROM ingest_tokens_old;
+    DROP TABLE ingest_tokens_old;
+  `);
+}
+
+// routing_rules 专用迁移（两段式，均幂等）：
+// 1. 部分旧库仍为 UNIQUE(name, protocol)（单目标）结构，需重建表支持多目标
+//    （UNIQUE(name, protocol, upstream_id)）+ priority 列。检测 priority 列是否存在，
+//    缺失则 RENAME → 建新表 → 回迁（priority 回填 0）→ DROP 旧表。
+// 2. 第二阶段放宽约束为 UNIQUE(name, protocol, upstream_id, target_model)，
+//    允许同 upstream 挂多个不同 targetModel。检测新唯一索引名是否存在，缺失则表重建回迁。
+// SQLite 无法修改表约束，统一采用表重建。routing_rules 为管理面小表，重建零风险。
+// 各阶段旧约束都是新约束的超集，回迁必定不冲突。
 export function migrateRoutingRulesTable(client: any): void {
   const existing: string[] = client
     .prepare(`PRAGMA table_info(routing_rules)`)
     .all()
     .map((c: any) => c.name);
-  if (existing.includes("priority")) return;
+  if (!existing.includes("priority")) {
+    client.exec(`DROP TABLE IF EXISTS routing_rules_old`);
+    client.exec(`
+      ALTER TABLE routing_rules RENAME TO routing_rules_old;
+      CREATE TABLE routing_rules (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        protocol TEXT NOT NULL,
+        upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
+        target_model TEXT NOT NULL,
+        priority INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        UNIQUE(name, protocol, upstream_id)
+      );
+      INSERT INTO routing_rules (id, name, protocol, upstream_id, target_model, priority, created_at)
+        SELECT id, name, protocol, upstream_id, target_model, 0, created_at FROM routing_rules_old;
+      DROP TABLE routing_rules_old;
+      CREATE INDEX IF NOT EXISTS idx_routing_rules_protocol_name ON routing_rules(protocol, name);
+    `);
+  }
+
+  // 第二阶段：UNIQUE(name, protocol, upstream_id) → UNIQUE(name, protocol, upstream_id, target_model)，
+  // 允许同 upstream 挂多个不同 targetModel（链内 model 级 failover）。
+  // 检测新唯一索引是否存在（幂等）；不存在则表重建回迁。
+  // 旧约束是新约束的超集，回迁必定不冲突。显式命名索引保证重建后可被幂等检测。
+  const indexes: string[] = client
+    .prepare(`PRAGMA index_list(routing_rules)`)
+    .all()
+    .map((i: any) => i.name);
+  if (indexes.includes("uq_routing_rules_name_protocol_upstream_model")) return;
 
   client.exec(`DROP TABLE IF EXISTS routing_rules_old`);
   client.exec(`
@@ -71,12 +155,13 @@ export function migrateRoutingRulesTable(client: any): void {
       upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
       target_model TEXT NOT NULL,
       priority INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-      UNIQUE(name, protocol, upstream_id)
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     );
     INSERT INTO routing_rules (id, name, protocol, upstream_id, target_model, priority, created_at)
-      SELECT id, name, protocol, upstream_id, target_model, 0, created_at FROM routing_rules_old;
+      SELECT id, name, protocol, upstream_id, target_model, priority, created_at FROM routing_rules_old;
     DROP TABLE routing_rules_old;
+    CREATE UNIQUE INDEX uq_routing_rules_name_protocol_upstream_model
+      ON routing_rules(name, protocol, upstream_id, target_model);
     CREATE INDEX IF NOT EXISTS idx_routing_rules_protocol_name ON routing_rules(protocol, name);
   `);
 }

@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db, initDatabase } from "@/lib/db";
 import { tokenRecords } from "@/lib/db";
-import { sql, desc, eq, and, gte, lte, inArray, SQL } from "drizzle-orm";
+import { sql, desc, eq, and, gte, lte, inArray, isNull, SQL } from "drizzle-orm";
 import { resolveProviderFilter, loadHiddenProviderGroups, anonymizeProvider } from "@/lib/provider-utils";
 import { normalizeModel, resolveNormalizedModelFilter } from "@/lib/model-utils";
 import { getDisplayName } from "@/lib/model-registry";
-import { loadModelAliases } from "@/lib/auth/settings";
+import { loadModelAliases, loadAgentAliases } from "@/lib/auth/settings";
+import { resolveAgentName, resolveAgentUserAgents } from "@/lib/agent-utils";
 import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";
 
@@ -17,6 +18,7 @@ export const GET = withAuth(async (request: NextRequest) => {
     try {
       const groups = await loadHiddenProviderGroups();
       const aliases = await loadModelAliases();
+      const agentAliases = await loadAgentAliases();
       const { searchParams } = new URL(request.url);
 
       // 分页参数
@@ -87,7 +89,22 @@ export const GET = withAuth(async (request: NextRequest) => {
       const conditions: SQL[] = [];
 
       if (agent) {
-        conditions.push(eq(tokenRecords.agent, agent));
+        const uaRows = await db
+          .selectDistinct({ ua: tokenRecords.userAgent })
+          .from(tokenRecords);
+        const allUas: Array<string | null> = uaRows.map((r: any) => r.ua);
+        const uaFilter = resolveAgentUserAgents(agent, allUas, agentAliases);
+        if (!uaFilter) {
+          return NextResponse.json(
+            { success: false, error: `Unknown agent: ${agent}` },
+            { status: 400 }
+          );
+        }
+        if ("unknown" in uaFilter) {
+          conditions.push(isNull(tokenRecords.userAgent));
+        } else {
+          conditions.push(inArray(tokenRecords.userAgent, uaFilter.uas));
+        }
       }
 
       if (modelFilter) {
@@ -124,6 +141,7 @@ export const GET = withAuth(async (request: NextRequest) => {
           model: tokenRecords.model,
           provider: tokenRecords.provider,
           agent: tokenRecords.agent,
+          userAgent: tokenRecords.userAgent,
           inputTokens: tokenRecords.inputTokens,
           outputTokens: tokenRecords.outputTokens,
           cacheRead: tokenRecords.cacheRead,
@@ -142,7 +160,8 @@ export const GET = withAuth(async (request: NextRequest) => {
       const data = rawData.map((record: any) => ({
         id: record.id,
         model: record.model,
-        agent: record.agent,
+        agent: resolveAgentName(record.userAgent, agentAliases),
+        keyName: record.agent,
         inputTokens: record.inputTokens,
         outputTokens: record.outputTokens,
         cacheRead: record.cacheRead,

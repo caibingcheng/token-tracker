@@ -11,8 +11,17 @@ import {
   sanitizeProxyUrlForDisplay,
 } from "@/lib/gateway/url-guard";
 import { encryptSecret, GatewaySecretMissingError } from "@/lib/gateway/crypto";
+import {
+  isValidHeaderTransforms,
+  normalizeHeaderTransforms,
+  parseHeaderTransforms,
+} from "@/lib/gateway/header-transforms";
+import type { HeaderTransform } from "@/lib/gateway/header-transforms";
 import { healthTracker, decryptProxyUrl } from "@/lib/gateway/proxy-deps";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
+import { isReservedRemoteName, REMOTE_NAME_PREFIX } from "@/lib/ingest/validate";
+
+const REMOTE_PREFIX_LABEL = REMOTE_NAME_PREFIX.slice(0, -1);
 
 function gatewaySecretError() {
   return NextResponse.json(
@@ -54,6 +63,7 @@ export const GET = withAuth(async () => {
         balanceUpdatedAt: row.balanceUpdatedAt ?? null,
         hasProxy: proxyUrl !== null,
         proxyDisplay: proxyUrl ? sanitizeProxyUrlForDisplay(proxyUrl) : null,
+        headerTransforms: parseHeaderTransforms(row.headerTransforms),
         createdAt: row.createdAt,
       });
     }
@@ -79,6 +89,12 @@ export const POST = withAuth(async (request: NextRequest) => {
     if (!name || !protocol || !baseUrl) {
       return NextResponse.json(
         { success: false, error: "Missing required fields: name, protocol, baseUrl" },
+        { status: 400 }
+      );
+    }
+    if (isReservedRemoteName(name)) {
+      return NextResponse.json(
+        { success: false, error: `name cannot start with "${REMOTE_PREFIX_LABEL}"` },
         { status: 400 }
       );
     }
@@ -118,6 +134,18 @@ export const POST = withAuth(async (request: NextRequest) => {
       proxyUrlEncrypted = encryptSecret(body.proxyUrl);
     }
 
+    // 出站 header 变换：全量替换（省略 = []），仅格式校验（无语义黑名单）
+    let headerTransforms: HeaderTransform[] = [];
+    if (body.headerTransforms !== undefined) {
+      if (!isValidHeaderTransforms(body.headerTransforms)) {
+        return NextResponse.json(
+          { success: false, error: "Invalid headerTransforms" },
+          { status: 400 }
+        );
+      }
+      headerTransforms = body.headerTransforms;
+    }
+
     try {
       const result = await db
         .insert(upstreamsTable)
@@ -130,6 +158,7 @@ export const POST = withAuth(async (request: NextRequest) => {
           enabled: enabled ? 1 : 0,
           healthCheckModel,
           proxyUrlEncrypted,
+          headerTransforms: JSON.stringify(normalizeHeaderTransforms(headerTransforms)),
         })
         .returning();
       const { ip, userAgent } = extractClientInfo(request);

@@ -11,8 +11,14 @@ import {
   sanitizeProxyUrlForDisplay,
 } from "@/lib/gateway/url-guard";
 import { encryptSecret } from "@/lib/gateway/crypto";
+import {
+  isValidHeaderTransforms,
+  normalizeHeaderTransforms,
+  parseHeaderTransforms,
+} from "@/lib/gateway/header-transforms";
 import { decryptProxyUrl } from "@/lib/gateway/proxy-deps";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
+import { isReservedRemoteName, REMOTE_NAME_PREFIX } from "@/lib/ingest/validate";
 
 interface Params {
   params: { id: string };
@@ -29,7 +35,7 @@ async function withKeys(upstream: any) {
     .from(upstreamKeysTable)
     .where(eq(upstreamKeysTable.upstreamId, upstream.id));
   const proxyUrl = decryptProxyUrl(upstream.proxyUrlEncrypted);
-  const { proxyUrlEncrypted: _proxyUrlEncrypted, ...rest } = upstream;
+  const { proxyUrlEncrypted: _proxyUrlEncrypted, headerTransforms: _raw, ...rest } = upstream;
   return {
     ...rest,
     enabled: upstream.enabled === 1,
@@ -38,6 +44,7 @@ async function withKeys(upstream: any) {
     balanceUpdatedAt: upstream.balanceUpdatedAt ?? null,
     hasProxy: proxyUrl !== null,
     proxyDisplay: proxyUrl ? sanitizeProxyUrlForDisplay(proxyUrl) : null,
+    headerTransforms: parseHeaderTransforms(upstream.headerTransforms),
     keys: keyRows.map((k: any) => ({
       id: k.id,
       enabled: k.enabled === 1,
@@ -82,6 +89,12 @@ export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
       const name = body.name.trim();
       if (!name) {
         return NextResponse.json({ success: false, error: "name cannot be empty" }, { status: 400 });
+      }
+      if (isReservedRemoteName(name)) {
+        return NextResponse.json(
+          { success: false, error: "name cannot start with \"" + REMOTE_NAME_PREFIX + "\"" },
+          { status: 400 }
+        );
       }
       values.name = name;
     }
@@ -158,6 +171,18 @@ export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
         );
       }
       // 空字符串：视为省略（保持现状，不写库）
+    }
+    // 出站 header 变换：全量替换（随 upstream 保存整体提交）
+    if (body.headerTransforms !== undefined) {
+      if (!isValidHeaderTransforms(body.headerTransforms)) {
+        return NextResponse.json(
+          { success: false, error: "Invalid headerTransforms" },
+          { status: 400 }
+        );
+      }
+      values.headerTransforms = JSON.stringify(
+        normalizeHeaderTransforms(body.headerTransforms)
+      );
     }
 
     if (Object.keys(values).length === 0) {

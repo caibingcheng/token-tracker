@@ -153,7 +153,6 @@ The SQLite database is created automatically on the first request (with incremen
 | `SQLITE_DATABASE_PATH` | Yes | Path to the SQLite database file |
 | `ADMIN_API_KEY` | Suggested | Admin API keys, comma-separated; if unset and the DB has no key, a first-run setup wizard appears (legacy name `API_KEYS` deprecated) |
 | `GATEWAY_SECRET` | Yes | Gateway master key (AES-256-GCM), generate with `openssl rand -hex 32`; if missing, the proxy and admin APIs return 503 |
-| `HIDDEN_PROVIDERS` | No | Providers to anonymize; group syntax `name:p1,p2` (multiple groups separated by `;`) |
 | `SESSION_TOKEN_TTL_HOURS` | No | Session token lifetime (hours, default 24, sliding renewal) |
 | `TRUSTED_PROXY` | No | Set to true when a reverse proxy sets `X-Real-IP`, restoring precise IP rate limiting |
 | `API_CACHE_TTL_MS` | No | SELECT cache TTL (ms, default 10000) |

@@ -42,7 +42,7 @@ function isProviderHidden(
 }
 
 // 清空 normalizeModel 的 rawToCanonical 缓存：
-// 当 HIDDEN_PROVIDERS（settings 表）或 model_aliases 被修改后必须调用，
+// 当 hidden_providers（settings 表）或 model_aliases 被修改后必须调用，
 // 否则旧匿名/归一化映射长期残留
 export function invalidateModelCache(): void {
   const reg = registry;

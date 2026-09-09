@@ -46,7 +46,8 @@ interface ResolvedRoute {
   winner: CandidateInfo | null;
   candidates: CandidateInfo[];
   effective: EffectiveRoute;
-  overridden?: boolean; // 自动路由行：同名手动规则已存在（手动完全替代，仅展示溯源）
+  overridden?: boolean; // 同名自动路由被手动规则覆盖（合并行：手动链生效，自动候选见 shadowedCandidates）
+  shadowedCandidates?: CandidateInfo[]; // 被手动路由覆盖的自动候选（仅同名合并行存在）
 }
 
 interface ManualRouteInfo {
@@ -152,7 +153,8 @@ export const GET = withAuth(async () => {
     if (healthyFirst.length > 0) {
       return {
         winner: healthyFirst[0],
-        failover: healthyFirst[0].upstreamId !== candidates[0]?.upstreamId,
+        // 引用比较：同 upstream 可挂多个不同 targetModel（链内对象按引用区分 hop）
+        failover: healthyFirst[0] !== candidates[0],
         allUnhealthy: false,
       };
     }
@@ -231,8 +233,26 @@ export const GET = withAuth(async () => {
     for (const model of sortedModels) {
       const manualList = manualByKey.get(`${protocol}:${model}`);
       if (manualList) {
-        // 手动路由行排在自动行之前：多目标 failover 链（按 rule priority 排序，含健康标记）
-        resolvedRoutes.push(buildManualRoute(manualList));
+        // 同名手动路由复用自动行（不另起一行）：单行展示手动 failover 链（实际生效路由），
+        // 被覆盖的自动候选保留在 shadowedCandidates 供展开详情溯源
+        const { candidates: shadowed } = routeModelByProtocol(model, protocol, upstreamRoutes);
+        resolvedRoutes.push({
+          ...buildManualRoute(manualList),
+          shadowedCandidates: shadowed.map((c) =>
+            toCandidate(
+              {
+                upstreamId: c.upstream.id,
+                name: c.upstream.name,
+                priority: c.upstream.priority,
+                matchedPattern: c.matchedPattern,
+                matchType: c.matchType,
+              },
+              model
+            )
+          ),
+          overridden: true,
+        });
+        continue;
       }
       const { winner, candidates } = routeModelByProtocol(model, protocol, upstreamRoutes);
       const candidateInfos = candidates.map((c) =>
@@ -265,7 +285,6 @@ export const GET = withAuth(async () => {
           : null,
         candidates: candidateInfos,
         effective: computeEffective(candidateInfos, (c) => isCandidateHealthy(c.upstreamId, model)),
-        overridden: manualList ? true : undefined,
       });
     }
     // 未配置在任何 upstream 的纯手动路由名（如仅用于手动转发的虚拟名）；

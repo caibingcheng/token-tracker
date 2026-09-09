@@ -25,6 +25,10 @@ import { loadModelAliases } from "@/lib/auth/settings";
 
 // /status/data 公开端点的查询与响应裁剪逻辑（不依赖 Next.js 运行时，可单测）。
 // 数据面最小化原则：仅执行启用元素所需的查询，响应不含未启用元素的数据。
+// 隐私边界（公开端点专属裁剪，Dashboard /api/dashboard 不受影响）：
+// 1. total 不下发 firstActiveAt/lastActiveAt —— 实时活跃信号（精确时间戳），公开页前端未使用
+// 2. 单价类 costPerMillion* 一律不下发 —— 属定价表信息（手动配置的内部/折扣价会泄露），
+//    只保留 totalCost；totalDays 等服务端派生值仍正常计算
 
 const STATUS_DAILY_RANGE = "30d";
 
@@ -103,22 +107,12 @@ export interface DayData {
   totalCacheWrite: number;
   count: number;
   totalCost: number;
-  costPerMillionTokens: number;
-  costPerMillionInput: number;
-  costPerMillionCacheRead: number;
-  costPerMillionCacheWrite: number;
-  costPerMillionOutput: number;
 }
 
 export interface ModelStat extends StatItem {
   canonicalId: string;
   displayName: string;
   totalCost: number;
-  costPerMillionTokens: number;
-  costPerMillionInput: number;
-  costPerMillionCacheRead: number;
-  costPerMillionCacheWrite: number;
-  costPerMillionOutput: number;
 }
 
 export interface StatusTotalStat {
@@ -129,14 +123,7 @@ export interface StatusTotalStat {
   totalInputUncached: number;
   totalCacheWrite: number;
   count: number;
-  firstActiveAt?: string;
-  lastActiveAt?: string;
   totalCost: number;
-  costPerMillionTokens: number;
-  costPerMillionInput: number;
-  costPerMillionCacheRead: number;
-  costPerMillionCacheWrite: number;
-  costPerMillionOutput: number;
 }
 
 export interface StatusData {
@@ -243,23 +230,21 @@ function emptyCost(): AggregatedCost {
 function buildDayData(
   key: string,
   costMap: Map<string, AggregatedCost> | null,
-  countMap: Map<string, number>
+  countMap: Map<string, number>,
+  // cost/topModels 关闭时 costMap 为 null，回退到 date 查询行的真实 token 汇总（否则 Today 全 0）
+  sumMap?: Map<string, StatItem>
 ): DayData | null {
   if (!costMap) {
+    const row = sumMap?.get(key);
     return {
       group: key,
-      totalInput: 0,
-      totalInputCached: 0,
-      totalInputUncached: 0,
-      totalOutput: 0,
-      totalCacheWrite: 0,
+      totalInput: row ? toNum(row.totalInput) : 0,
+      totalInputCached: row ? toNum(row.totalInputCached) : 0,
+      totalInputUncached: row ? toNum(row.totalInputUncached) : 0,
+      totalOutput: row ? toNum(row.totalOutput) : 0,
+      totalCacheWrite: row ? toNum(row.totalCacheWrite) : 0,
       count: countMap.get(key) ?? 0,
       totalCost: 0,
-      costPerMillionTokens: 0,
-      costPerMillionInput: 0,
-      costPerMillionCacheRead: 0,
-      costPerMillionCacheWrite: 0,
-      costPerMillionOutput: 0,
     };
   }
 
@@ -275,25 +260,22 @@ function buildDayData(
     totalCacheWrite: aggregate.cacheWriteTokens,
     count: countMap.get(key) ?? 0,
     totalCost: aggregate.totalCost,
-    costPerMillionTokens: aggregate.costPerMillionTokens,
-    costPerMillionInput: aggregate.costPerMillionInput,
-    costPerMillionCacheRead: aggregate.costPerMillionCacheRead,
-    costPerMillionCacheWrite: aggregate.costPerMillionCacheWrite,
-    costPerMillionOutput: aggregate.costPerMillionOutput,
   };
 }
 
+// 显式重建（不展开 item）：item.cost 为完整 AggregatedCost（内嵌单价），不得进入公开响应
 function buildModelStat(item: StatItem, aliases: ModelAliasRule[] = []): ModelStat {
   return {
-    ...item,
+    group: item.group,
+    totalInput: toNum(item.totalInput),
+    totalOutput: toNum(item.totalOutput),
+    totalInputCached: toNum(item.totalInputCached),
+    totalInputUncached: toNum(item.totalInputUncached),
+    totalCacheWrite: toNum(item.totalCacheWrite),
+    count: toNum(item.count),
     canonicalId: item.group,
     displayName: getDisplayName(item.group, aliases),
     totalCost: item.cost?.totalCost ?? 0,
-    costPerMillionTokens: item.cost?.costPerMillionTokens ?? 0,
-    costPerMillionInput: item.cost?.costPerMillionInput ?? 0,
-    costPerMillionCacheRead: item.cost?.costPerMillionCacheRead ?? 0,
-    costPerMillionCacheWrite: item.cost?.costPerMillionCacheWrite ?? 0,
-    costPerMillionOutput: item.cost?.costPerMillionOutput ?? 0,
   };
 }
 
@@ -351,7 +333,7 @@ export async function queryStatusData(
     providerFilter: null as string[] | null,
     model: "all" as const,
     modelFilter: null as string[] | null,
-    agentFilter: null as string | null,
+    agentUaFilter: null,
     timezoneOffsetMinutes,
   };
 
@@ -407,41 +389,35 @@ export async function queryStatusData(
     totalDays = getTotalDays(first.firstActiveAt, timezoneOffsetMinutes);
 
     let totalCost = 0;
-    let costPerMillionTokens = 0;
-    let costPerMillionInput = 0;
-    let costPerMillionCacheRead = 0;
-    let costPerMillionCacheWrite = 0;
-    let costPerMillionOutput = 0;
 
     if (needsModelData) {
       const totalModelRaw = totalModelResult ?? [];
       const totalModelsArr = isStatItemsWithGroup(totalModelRaw) ? totalModelRaw : [];
-      const aggregate = mergeAggregatedCosts(totalModelsArr.map(toCost));
-      totalCost = aggregate.totalCost;
-      costPerMillionTokens = aggregate.costPerMillionTokens;
-      costPerMillionInput = aggregate.costPerMillionInput;
-      costPerMillionCacheRead = aggregate.costPerMillionCacheRead;
-      costPerMillionCacheWrite = aggregate.costPerMillionCacheWrite;
-      costPerMillionOutput = aggregate.costPerMillionOutput;
+      totalCost = mergeAggregatedCosts(totalModelsArr.map(toCost)).totalCost;
     }
 
+    // 显式重建（不展开 first）：firstActiveAt/lastActiveAt 属实时活跃信号，不下发
     total = {
-      ...first,
+      group: String(first.group),
+      totalInput: toNum(first.totalInput),
+      totalOutput: toNum(first.totalOutput),
+      totalInputCached: toNum(first.totalInputCached),
+      totalInputUncached: toNum(first.totalInputUncached),
+      totalCacheWrite: toNum(first.totalCacheWrite),
+      count: toNum(first.count),
       totalCost,
-      costPerMillionTokens,
-      costPerMillionInput,
-      costPerMillionCacheRead,
-      costPerMillionCacheWrite,
-      costPerMillionOutput,
     };
   }
 
   // Today / Yesterday
   const countMapAll = new Map<string, number>();
+  const sumMap2d = new Map<string, StatItem>();
   const date2dRaw = date2dResult ?? [];
   const date2dArr = isStatItemsWithGroup(date2dRaw) ? date2dRaw : [];
   for (const row of date2dArr) {
-    countMapAll.set(String(row.group), toNum(row.count));
+    const key = String(row.group);
+    countMapAll.set(key, toNum(row.count));
+    sumMap2d.set(key, row);
   }
 
   const todayKey = formatDateKey(new Date(), timezoneOffsetMinutes);
@@ -457,8 +433,8 @@ export async function queryStatusData(
   let today: DayData | null = null;
   let yesterday: DayData | null = null;
   if (elements.today) {
-    today = buildDayData(todayKey, costMap2d, countMapAll);
-    yesterday = buildDayData(yesterdayKey, costMap2d, countMapAll);
+    today = buildDayData(todayKey, costMap2d, countMapAll, sumMap2d);
+    yesterday = buildDayData(yesterdayKey, costMap2d, countMapAll, sumMap2d);
   }
 
   // Daily（30d）
@@ -483,11 +459,6 @@ export async function queryStatusData(
           totalCacheWrite: toNum(item.totalCacheWrite),
           count: toNum(item.count),
           totalCost: 0,
-          costPerMillionTokens: 0,
-          costPerMillionInput: 0,
-          costPerMillionCacheRead: 0,
-          costPerMillionCacheWrite: 0,
-          costPerMillionOutput: 0,
         };
       }
       return {
@@ -499,11 +470,6 @@ export async function queryStatusData(
         totalCacheWrite: aggregate.cacheWriteTokens,
         count: toNum(item.count),
         totalCost: aggregate.totalCost,
-        costPerMillionTokens: aggregate.costPerMillionTokens,
-        costPerMillionInput: aggregate.costPerMillionInput,
-        costPerMillionCacheRead: aggregate.costPerMillionCacheRead,
-        costPerMillionCacheWrite: aggregate.costPerMillionCacheWrite,
-        costPerMillionOutput: aggregate.costPerMillionOutput,
       };
     });
   }
@@ -521,11 +487,6 @@ export async function queryStatusData(
       totalCacheWrite: toNum(row.totalCacheWrite),
       count: toNum(row.count),
       totalCost: 0,
-      costPerMillionTokens: 0,
-      costPerMillionInput: 0,
-      costPerMillionCacheRead: 0,
-      costPerMillionCacheWrite: 0,
-      costPerMillionOutput: 0,
     }));
   }
 
@@ -542,11 +503,6 @@ export async function queryStatusData(
       totalCacheWrite: toNum(row.totalCacheWrite),
       count: toNum(row.count),
       totalCost: 0,
-      costPerMillionTokens: 0,
-      costPerMillionInput: 0,
-      costPerMillionCacheRead: 0,
-      costPerMillionCacheWrite: 0,
-      costPerMillionOutput: 0,
     }));
   }
 

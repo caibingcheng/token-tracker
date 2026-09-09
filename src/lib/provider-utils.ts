@@ -2,23 +2,24 @@
  * Provider Anonymization Utilities
  *
  * 数据源由调用方显式传入（`loadHiddenProviderGroups()` 唯一 async 入口：
- * settings 表优先 → env HIDDEN_PROVIDERS 回退 → 空），纯函数不再直接读 env。
+ * settings 表 `hidden_providers` 单一来源，未保存 → 空数组），纯函数不再直接读 env。
  *
- * 支持三种格式（均由 parseHiddenProviderGroups 解析为统一的分组结构）：
+ * 支持三种格式（均由 parseHiddenProviderGroups 解析为统一的分组结构，
+ * 用于 settings 旧字符串存储值的懒迁移）：
  *
  * 1. Legacy format (no semicolons or colons): comma-separated exact matches
- *    HIDDEN_PROVIDERS="openai,anthropic"
+ *    "openai,anthropic"
  *    → 每个 pattern 独立成组，按原始顺序映射 "Provider A" / "Provider B"。
  *
  * 2. Anonymous grouped format (with semicolons): semicolon-separated groups,
  *    each group contains comma-separated patterns (exact or wildcard with *)
- *    HIDDEN_PROVIDERS="name1*,name2*;name3,name4*"
+ *    "name1*,name2*;name3,name4*"
  *    → Group 1 → "Provider A", Group 2 → "Provider B", etc.
  *    → Multiple real providers can match the same group (many-to-one mapping).
  *
  * 3. Named grouped format (with colons): each group can specify a custom
  *    display name followed by a colon
- *    HIDDEN_PROVIDERS="CustomA:vendor,vendor-partner;CustomB:vendor-platform"
+ *    "CustomA:vendor,vendor-partner;CustomB:vendor-platform"
  *    → Group 1 → "CustomA", Group 2 → "CustomB"
  */
 
@@ -33,7 +34,7 @@ function isGroupedFormat(raw: string): boolean {
 }
 
 /**
- * 纯函数：解析 HIDDEN_PROVIDERS 原始字符串为分组数组。不读 env。
+ * 纯函数：解析分组语法原始字符串（settings 旧字符串存储值懒迁移用）。不读 env。
  *
  * - 空/纯空白 → []
  * - 分组格式（含 ; 或 :）：分号分组，冒号取名，逗号取 patterns
@@ -166,16 +167,16 @@ export function isValidHiddenProviderGroups(
 }
 
 /**
- * 唯一 async 入口：settings 表 hidden_providers 优先 → env HIDDEN_PROVIDERS
- * 回退 → 空数组。纯函数一律接收解析后的 groups 参数，不直接读 env。
+ * 唯一 async 入口：settings 表 hidden_providers 单一来源，未保存 → 空数组。
+ * 纯函数一律接收解析后的 groups 参数，不直接读 env。
  */
 export async function loadHiddenProviderGroups(): Promise<HiddenProviderGroup[]> {
   const { getHiddenProvidersSetting } = await import("@/lib/auth/settings");
   const stored = await getHiddenProvidersSetting();
-  if (stored !== null) {
-    return parseStoredHiddenProviderGroups(stored);
+  if (stored === null) {
+    return [];
   }
-  return parseHiddenProviderGroups(process.env.HIDDEN_PROVIDERS ?? "");
+  return parseStoredHiddenProviderGroups(stored);
 }
 
 /**

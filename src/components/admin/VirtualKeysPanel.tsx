@@ -9,11 +9,22 @@ import { CopyableCode } from "./CopyableCode";
 import ActionMenu from "./ActionMenu";
 import { copyText } from "@/lib/clipboard";
 import { QuotaBar, MiniQuotaBar, type QuotaUsageData } from "./QuotaProgress";
+import {
+  AdminMobileCard,
+  AdminMobileCards,
+  AdminMobileEmpty,
+  AdminTable,
+  AdminTableBody,
+  AdminTableEmptyRow,
+  AdminTableHead,
+  AdminTd,
+} from "./table";
 
 export interface VirtualKeyItem {
   id: number;
   name: string;
-  apiKey: string;
+  apiKey: string | null;
+  decryptFailed: boolean;
   enabled: boolean;
   comment: string | null;
   enabledModels: string;
@@ -333,6 +344,10 @@ export default function VirtualKeysPanel() {
   };
 
   const copyKey = async (key: VirtualKeyItem) => {
+    if (key.decryptFailed || !key.apiKey) {
+      setError("This key cannot be decrypted (master secret changed). Delete and recreate it.");
+      return;
+    }
     const ok = await copyText(key.apiKey);
     if (ok) {
       setCopied(key.id);
@@ -512,9 +527,18 @@ export default function VirtualKeysPanel() {
               <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
                 <span className={`h-2 w-2 rounded-full ${key.enabled ? "bg-green-500" : "bg-gray-300"}`} />
                 <span className="font-semibold text-sm">{key.name}</span>
-                <code className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-600 break-all max-w-[200px]">
-                  {maskVirtualKey(key.apiKey)}
-                </code>
+                {key.decryptFailed ? (
+                  <span
+                    className="rounded bg-red-50 px-1.5 py-0.5 text-[11px] text-red-600"
+                    title="Stored key cannot be decrypted with the current GATEWAY_SECRET. Delete and recreate it."
+                  >
+                    Decryption failed
+                  </span>
+                ) : (
+                  <code className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-600 break-all max-w-[200px]">
+                    {maskVirtualKey(key.apiKey ?? "")}
+                  </code>
+                )}
                 <span className="text-[11px] text-gray-500" title="Quota limits (rpm / tpm / daily / monthly tokens)">
                   {quotaText(key)}
                 </span>
@@ -726,56 +750,50 @@ export default function VirtualKeysPanel() {
                   />
                 </div>
 
-                <div className="hidden md:block overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="text-left text-xs text-gray-400">
-                        <th className="px-2 py-1">Date</th>
-                        <th className="px-2 py-1">Model</th>
-                        <th className="px-2 py-1">Provider</th>
-                        <th className="px-2 py-1">User-Agent</th>
-                        <th className="px-2 py-1 text-right">In</th>
-                        <th className="px-2 py-1 text-right">Out</th>
-                        <th className="px-2 py-1 text-right">Cache</th>
-                        <th className="px-2 py-1">Status</th>
+                <AdminTable>
+                  <AdminTableHead
+                    columns={[
+                      { label: "Date" },
+                      { label: "Model" },
+                      { label: "Provider" },
+                      { label: "User-Agent" },
+                      { label: "In", align: "right" },
+                      { label: "Out", align: "right" },
+                      { label: "Cache", align: "right" },
+                      { label: "Status" },
+                    ]}
+                  />
+                  <AdminTableBody>
+                    {usageDetail.recent.map((r) => (
+                      <tr key={r.id}>
+                        <AdminTd className="whitespace-nowrap">{new Date(r.createdAt).toLocaleString()}</AdminTd>
+                        <AdminTd className="max-w-[180px] truncate" title={r.model}>{r.model}</AdminTd>
+                        <AdminTd>{r.provider}</AdminTd>
+                        <AdminTd className="max-w-[200px] truncate" title={r.userAgent ?? undefined}>
+                          {r.userAgent ?? <span className="text-gray-300">—</span>}
+                        </AdminTd>
+                        <AdminTd align="right">{formatNumber(r.inputTokens, true)}</AdminTd>
+                        <AdminTd align="right">{formatNumber(r.outputTokens, true)}</AdminTd>
+                        <AdminTd align="right">{formatNumber(r.cacheRead, true)}</AdminTd>
+                        <AdminTd>
+                          {r.status ? (
+                            <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-600">
+                              {r.status}
+                            </span>
+                          ) : (
+                            <span className="text-gray-300">—</span>
+                          )}
+                        </AdminTd>
                       </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-100">
-                      {usageDetail.recent.map((r) => (
-                        <tr key={r.id}>
-                          <td className="px-2 py-1 whitespace-nowrap">{new Date(r.createdAt).toLocaleString()}</td>
-                          <td className="px-2 py-1 max-w-[180px] truncate" title={r.model}>{r.model}</td>
-                          <td className="px-2 py-1">{r.provider}</td>
-                          <td className="px-2 py-1 max-w-[200px] truncate" title={r.userAgent ?? undefined}>
-                            {r.userAgent ?? <span className="text-gray-300">—</span>}
-                          </td>
-                          <td className="px-2 py-1 text-right">{formatNumber(r.inputTokens, true)}</td>
-                          <td className="px-2 py-1 text-right">{formatNumber(r.outputTokens, true)}</td>
-                          <td className="px-2 py-1 text-right">{formatNumber(r.cacheRead, true)}</td>
-                          <td className="px-2 py-1">
-                            {r.status ? (
-                              <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-600">
-                                {r.status}
-                              </span>
-                            ) : (
-                              <span className="text-gray-300">—</span>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                      {usageDetail.recent.length === 0 && (
-                        <tr>
-                          <td colSpan={8} className="px-2 py-4 text-center text-gray-400">
-                            No records yet.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-                <div className="md:hidden space-y-3">
+                    ))}
+                    {usageDetail.recent.length === 0 && (
+                      <AdminTableEmptyRow colSpan={8}>No records yet.</AdminTableEmptyRow>
+                    )}
+                  </AdminTableBody>
+                </AdminTable>
+                <AdminMobileCards>
                   {usageDetail.recent.map((r) => (
-                    <div key={r.id} className="rounded-lg border border-gray-200 p-3">
+                    <AdminMobileCard key={r.id}>
                       <div className="flex justify-between items-start gap-2 mb-2">
                         <div className="min-w-0">
                           <p className="text-sm font-medium text-gray-900 truncate" title={r.model}>{r.model}</p>
@@ -807,12 +825,12 @@ export default function VirtualKeysPanel() {
                           <p className="font-semibold text-gray-900">{formatNumber(r.cacheRead, true)}</p>
                         </div>
                       </div>
-                    </div>
+                    </AdminMobileCard>
                   ))}
                   {usageDetail.recent.length === 0 && (
-                    <div className="py-4 text-center text-gray-400">No records yet.</div>
+                    <AdminMobileEmpty>No records yet.</AdminMobileEmpty>
                   )}
-                </div>
+                </AdminMobileCards>
               </div>
             )}
           </div>

@@ -5,7 +5,11 @@ import { withAuth } from "@/lib/auth/guard";
 import { executeStatsQuery, type StatsQueryResult } from "@/lib/stats-query";
 import { resolveProviderFilter, loadHiddenProviderGroups } from "@/lib/provider-utils";
 import { getDisplayName } from "@/lib/model-registry";
-import { loadModelAliases } from "@/lib/auth/settings";
+import { loadModelAliases, loadAgentAliases } from "@/lib/auth/settings";
+import {
+  resolveAgentUserAgents,
+  type AgentUaFilter,
+} from "@/lib/agent-utils";
 import {
   calculateCostPerMillion,
 } from "@/lib/cost-utils";
@@ -97,21 +101,21 @@ function isTotalStatItems(data: StatsQueryResult): data is Array<StatItem & { gr
   return Array.isArray(data) && (data.length === 0 || "lastActiveAt" in data[0]);
 }
 
-async function queryCliData(range: string, provider: string, providerFilter: string[] | null, agentFilter: string | null) {
+async function queryCliData(range: string, provider: string, providerFilter: string[] | null, agentUaFilter: AgentUaFilter) {
   const [total, totalModels, daily, models] = await Promise.all([
     executeStatsQuery({
       groupBy: "none",
       range: "all",
       provider,
       providerFilter,
-      agentFilter,
+      agentUaFilter,
     }),
     executeStatsQuery({
       groupBy: "model",
       range: "all",
       provider,
       providerFilter,
-      agentFilter,
+      agentUaFilter,
       limit: null,
     }),
     executeStatsQuery({
@@ -120,14 +124,14 @@ async function queryCliData(range: string, provider: string, providerFilter: str
       provider,
       granularity: "day",
       providerFilter,
-      agentFilter,
+      agentUaFilter,
     }),
     executeStatsQuery({
       groupBy: "model",
       range,
       provider,
       providerFilter,
-      agentFilter,
+      agentUaFilter,
     }),
   ]);
   return { total, totalModels, daily, models };
@@ -184,10 +188,25 @@ export const GET = withAuth(async (request: NextRequest) => {
       }
     }
 
-    const agentFilter = agent !== "all" ? agent : null;
+    // Agent 维度（派生工具名）：反找 agent 名 → 命中该 agent 的 UA 集合
+    let agentUaFilter: AgentUaFilter = null;
+    if (agent !== "all") {
+      const agentAliases = await loadAgentAliases();
+      const uaRows = await db
+        .selectDistinct({ ua: tokenRecords.userAgent })
+        .from(tokenRecords);
+      const allUas: Array<string | null> = uaRows.map((r: any) => r.ua);
+      agentUaFilter = resolveAgentUserAgents(agent, allUas, agentAliases);
+      if (!agentUaFilter) {
+        return new NextResponse(
+          `Error: Unknown agent: ${agent}\n`,
+          { status: 400, headers: { "Content-Type": "text/plain; charset=utf-8" } }
+        );
+      }
+    }
 
     // Query data
-    const { total, totalModels, daily, models } = await queryCliData(range, provider, providerFilter, agentFilter);
+    const { total, totalModels, daily, models } = await queryCliData(range, provider, providerFilter, agentUaFilter);
 
     // Build output
     const lines: string[] = [];

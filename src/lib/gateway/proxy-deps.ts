@@ -16,6 +16,7 @@ import type { UpstreamRoute, RoutingRule } from "./model-router";
 import { parseEnabledModels } from "./model-router";
 import type { Protocol } from "./model-router";
 import { SessionStore } from "./session";
+import { parseHeaderTransforms } from "./header-transforms";
 import { HealthTracker } from "./health";
 import type { HealthPersistence } from "./health";
 import { probeModel } from "./probe";
@@ -241,6 +242,7 @@ export function createProxyDeps(): ProxyDeps {
             enabled: true,
             enabledModels: row.enabledModels,
             proxyUrl: decryptProxyUrl(row.proxyUrlEncrypted),
+            headerTransforms: parseHeaderTransforms(row.headerTransforms),
           })
         );
       });
@@ -274,6 +276,9 @@ export function createProxyDeps(): ProxyDeps {
           userAgent: usage.userAgent ?? null,
           requestModel: usage.requestModel ?? null,
         });
+        // fire-and-forget 通知推送 worker（未配置同步时零开销）
+        const { syncPusher } = await import("@/lib/sync/pusher");
+        syncPusher.notify();
       });
     },
 

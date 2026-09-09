@@ -6,6 +6,12 @@ const scriptSrc = `'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ''}`;
 
 const nextConfig = {
   output: 'standalone',
+  // 不暴露框架身份（x-powered-by: Next.js 属信息泄露）
+  poweredByHeader: false,
+  // instrumentation hook：启动时调用 src/instrumentation.ts 的 register()（周期性内存归还）
+  experimental: {
+    instrumentationHook: true,
+  },
   async headers() {
     return [
       {

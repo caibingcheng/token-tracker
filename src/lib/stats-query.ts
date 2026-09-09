@@ -1,5 +1,5 @@
 import { db, tokenRecords, getDateGroupExpr } from "@/lib/db";
-import { sql, and, eq, inArray, notInArray } from "drizzle-orm";
+import { sql, and, eq, inArray, notInArray, isNull } from "drizzle-orm";
 import {
   localDateKeyToUtcStartISO,
   computeRangeStartDateKey,
@@ -13,6 +13,7 @@ import {
 } from "@/lib/model-utils";
 import { resolveProviderFilter, loadHiddenProviderGroups } from "@/lib/provider-utils";
 import { loadModelAliases, loadHiddenSources } from "@/lib/auth/settings";
+import type { AgentUaFilter } from "@/lib/agent-utils";
 import { toNum } from "@/lib/number-utils";
 import { loadPriceMap, computeModelCost } from "@/lib/pricing";
 
@@ -37,11 +38,14 @@ export type StatsQueryResult =
   | StatItem[];
 
 // Helper to build combined WHERE clause
+// agentUaFilter：Agent 维度（派生工具名）按 UA 反找后的集合——unknown → IS NULL
+// （user_agent 列可空）；否则 user_agent IN (uas)。exclude.agents（Hidden Sources
+// excludedVirtualKeys）仍按 agent 列（来源 key 名）NOT IN 排除，语义不变。
 export function buildWhereClause(
   dateFilter: Date | string | null,
   providerFilter: string[] | null,
   modelFilter: string[] | null,
-  agentFilter: string | null,
+  agentUaFilter: AgentUaFilter,
   timezoneOffsetMinutes?: number,
   exclude?: { providers: string[]; agents: string[] }
 ) {
@@ -75,8 +79,12 @@ export function buildWhereClause(
     }
   }
 
-  if (agentFilter) {
-    conditions.push(eq(tokenRecords.agent, agentFilter));
+  if (agentUaFilter) {
+    if ("unknown" in agentUaFilter) {
+      conditions.push(isNull(tokenRecords.userAgent));
+    } else if (agentUaFilter.uas.length > 0) {
+      conditions.push(inArray(tokenRecords.userAgent, agentUaFilter.uas));
+    }
   }
 
   // 独立排除的隐藏数据源（excluded 列表，与隐藏状态无关）：provider/agent 列均 notNull，
@@ -101,7 +109,7 @@ export async function executeStatsQuery(params: {
   providerFilter?: string[] | null;
   model?: string;
   modelFilter?: string[] | null;
-  agentFilter: string | null;
+  agentUaFilter: AgentUaFilter;
   limit?: number | null;
   timezoneOffsetMinutes?: number;
 }): Promise<StatsQueryResult> {
@@ -121,7 +129,7 @@ export async function executeStatsQuery(params: {
     providerFilter: precomputedProviderFilter,
     model,
     modelFilter: precomputedModelFilter,
-    agentFilter,
+    agentUaFilter,
     limit,
     timezoneOffsetMinutes,
   } = params;
@@ -214,7 +222,7 @@ export async function executeStatsQuery(params: {
       dateFilter,
       providerFilter,
       modelFilter,
-      agentFilter,
+      agentUaFilter,
       timezoneOffsetMinutes,
       exclude
     );
@@ -247,7 +255,7 @@ export async function executeStatsQuery(params: {
       dateFilter,
       providerFilter,
       modelFilter,
-      agentFilter,
+      agentUaFilter,
       timezoneOffsetMinutes,
       exclude
     );
@@ -284,7 +292,7 @@ export async function executeStatsQuery(params: {
       dateFilter,
       providerFilter,
       modelFilter,
-      agentFilter,
+      agentUaFilter,
       timezoneOffsetMinutes,
       exclude
     );
@@ -304,7 +312,7 @@ export async function executeStatsQuery(params: {
       dateFilter,
       providerFilter,
       modelFilter,
-      agentFilter,
+      agentUaFilter,
       timezoneOffsetMinutes,
       exclude
     );
@@ -391,7 +399,7 @@ export async function executeStatsQuery(params: {
       dateFilter,
       providerFilter,
       modelFilter,
-      agentFilter,
+      agentUaFilter,
       timezoneOffsetMinutes,
       exclude
     );

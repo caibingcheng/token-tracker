@@ -114,7 +114,7 @@ export async function clearTotp(): Promise<void> {
   await deleteSetting("totp_enabled");
 }
 
-// ---- HIDDEN_PROVIDERS：settings 优先，env 仅 fallback（纯展示配置，免重启热更新） ----
+// ---- hidden_providers：settings 表唯一来源（纯展示配置，免重启热更新） ----
 
 // 返回 settings 中的原始字符串；行不存在返回 null（调用方自行区分「已保存」与「未保存」）
 export async function getHiddenProvidersSetting(): Promise<string | null> {
@@ -329,6 +329,67 @@ export async function setModelAliasesSetting(rules: ModelAliasRule[]): Promise<v
   // 清空 normalizeModel 缓存 + 查询缓存：改归一化配置后立即生效
   const { invalidateModelCache } = await import("@/lib/model-registry");
   invalidateModelCache();
+  const { invalidateQueryCache } = await import("@/lib/db/cache");
+  invalidateQueryCache();
+}
+
+// ---- Agent Aliases（Agent 维度手动映射）：settings 表 agent_aliases（JSON 明文）----
+// 结构仿 model_aliases：每条 { name: 展示的工具名, aliases: UA token 列表 }。
+// 派生规则：UA 首段 token 精确匹配 aliases（大小写不敏感）→ 归属该 name。
+
+export interface AgentAliasRule {
+  name: string;
+  aliases: string[];
+}
+
+// 解析 settings 原始字符串；非法/缺失 → 空数组
+// 使用独立的 parse 函数避免与 ModelAliasRule 的语义混淆
+
+export function parseAgentAliases(raw: string | null): AgentAliasRule[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const rules: AgentAliasRule[] = [];
+    for (const item of parsed) {
+      if (!item || typeof item !== "object") continue;
+      const r = item as Record<string, unknown>;
+      if (typeof r.name !== "string" || r.name.trim() === "") continue;
+      if (!Array.isArray(r.aliases)) continue;
+      if (!r.aliases.every((a) => typeof a === "string")) continue;
+      rules.push({ name: r.name, aliases: r.aliases as string[] });
+    }
+    return rules;
+  } catch {
+    return [];
+  }
+}
+
+export function isValidAgentAliases(config: unknown): config is AgentAliasRule[] {
+  if (!Array.isArray(config)) return false;
+  for (const rule of config) {
+    if (!rule || typeof rule !== "object") return false;
+    const r = rule as Record<string, unknown>;
+    for (const key of Object.keys(r)) {
+      if (key !== "name" && key !== "aliases") return false;
+    }
+    if (typeof r.name !== "string" || r.name.trim() === "") return false;
+    if (!Array.isArray(r.aliases)) return false;
+    for (const a of r.aliases) {
+      if (typeof a !== "string") return false;
+    }
+  }
+  return true;
+}
+
+// 唯一 async 入口：读取 + 解析（withSkipCache 无 10s 延迟）
+export async function loadAgentAliases(): Promise<AgentAliasRule[]> {
+  return parseAgentAliases(await getSetting("agent_aliases"));
+}
+
+export async function setAgentAliasesSetting(rules: AgentAliasRule[]): Promise<void> {
+  await setSetting("agent_aliases", JSON.stringify(rules));
+  // 派生结果变化无 DB 写入，需主动清空查询缓存立即生效
   const { invalidateQueryCache } = await import("@/lib/db/cache");
   invalidateQueryCache();
 }

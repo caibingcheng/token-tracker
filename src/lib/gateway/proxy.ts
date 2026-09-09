@@ -25,6 +25,8 @@ import { checkQuota, hasQuotaLimits } from "./quota";
 import type { QuotaUsage } from "./quota";
 import { rewriteModelNonStreaming, createSseModelRewriter } from "./response-rewriter";
 import { getProxyDispatcher } from "./proxy-dispatcher";
+import { applyHeaderTransforms } from "./header-transforms";
+import type { HeaderTransform, HeaderTransformContext } from "./header-transforms";
 
 export const MAX_RETRY = 2; // 每个 key 内最多尝试次数
 const NON_STREAMING_TIMEOUT_MS = 60_000;
@@ -157,11 +159,14 @@ export function extractVirtualKeyToken(
   return null;
 }
 
-// 构造发往上游的请求头：剔除客户端认证/传输头，按协议注入真实 key
+// 构造发往上游的请求头：剔除客户端认证/传输头，按协议注入真实 key，
+// 最后一棒应用 upstream header transforms（fill/override 自定义出站 header）
 export function buildUpstreamHeaders(
   clientHeaders: Headers,
   protocol: Protocol,
-  apiKey: string
+  apiKey: string,
+  transforms?: HeaderTransform[],
+  transformContext?: HeaderTransformContext
 ): Headers {
   const headers = new Headers();
   const SKIP = new Set([
@@ -200,6 +205,9 @@ export function buildUpstreamHeaders(
   headers.set("accept-encoding", "identity");
   for (const [key, value] of Object.entries(buildAuthHeaders(protocol, apiKey))) {
     headers.set(key, value);
+  }
+  if (transforms && transforms.length > 0 && transformContext) {
+    applyHeaderTransforms(headers, transforms, transformContext);
   }
   return headers;
 }
@@ -340,7 +348,10 @@ export async function handleProxyRequest(
   // 手动路由短路：命中即走多目标 failover 链（完全替代自动路由，不回退）；
   // 规则组内每个目标独立 resolve，禁用/不存在的目标跳过并记日志；
   // 无有效目标 → 502 manual_route_unavailable
-  let manualRoute: { virtualName: string; targetModelByUpstream: Map<number, string> } | null = null;
+  // hop 目标配对按链内 upstream 对象引用（非 upstream id）：同名规则允许同 upstream 挂多个
+  // 不同 targetModel（UNIQUE 含 targetModel），链内同一 upstream 可多次出现，
+  // 健康重排 / session 重排均保持对象引用不变，引用级 Map 天然对齐
+  let manualRoute: { virtualName: string; hopTargetModel: Map<UpstreamRoute, string> } | null = null;
   let chain: UpstreamRoute[] = [];
   // 健康过滤时被跳过的不健康候选（兜底成功时自愈清除标记，手动/自动统一）
   const degradedUpstreams = new Set<number>();
@@ -348,15 +359,8 @@ export async function handleProxyRequest(
     const rules = await deps.loadRoutingRules();
     const matched = findRoutingRules(model, protocol, rules);
     if (matched.length > 0) {
-      const targetModelByUpstream = new Map<number, string>();
+      const hopTargetModel = new Map<UpstreamRoute, string>();
       for (const rule of matched) {
-        if (targetModelByUpstream.has(rule.upstreamId)) {
-          // 同 upstream 重复规则（不应出现，UNIQUE 已禁止），跳过防止链重复
-          deps.log?.(
-            `[gateway] manual route duplicate target for upstream (id=${rule.upstreamId}) skipped`
-          );
-          continue;
-        }
         const target = upstreams.find((u) => u.id === rule.upstreamId);
         if (!target) {
           deps.log?.(
@@ -364,10 +368,10 @@ export async function handleProxyRequest(
           );
           continue;
         }
-        targetModelByUpstream.set(rule.upstreamId, rule.targetModel);
+        hopTargetModel.set(target, rule.targetModel);
         chain.push(target);
       }
-      if (targetModelByUpstream.size === 0 || chain.length === 0) {
+      if (hopTargetModel.size === 0 || chain.length === 0) {
         return proxyError(
           502,
           "Manual route target unavailable: no valid upstream targets",
@@ -379,7 +383,7 @@ export async function handleProxyRequest(
       const healthyChain: UpstreamRoute[] = [];
       const fallbackChain: UpstreamRoute[] = [];
       for (const target of chain) {
-        const targetModel = targetModelByUpstream.get(target.id)!;
+        const targetModel = hopTargetModel.get(target)!;
         const upDown = deps.health && !(await deps.health.isHealthy(target.id));
         const modelDown =
           deps.health?.isModelHealthy &&
@@ -392,7 +396,7 @@ export async function handleProxyRequest(
         }
       }
       chain = [...healthyChain, ...fallbackChain];
-      manualRoute = { virtualName: model, targetModelByUpstream };
+      manualRoute = { virtualName: model, hopTargetModel };
     }
   }
 
@@ -489,7 +493,7 @@ export async function handleProxyRequest(
     // per-hop 改写：手动路由多目标各自 targetModel 不同，
     // body / path 改写按当跳 upstream 计算，改用真实 model 名（与自动路由路径一致）
     const hopModel = manualRoute
-      ? manualRoute.targetModelByUpstream.get(upstream.id) ?? model
+      ? manualRoute.hopTargetModel.get(upstream) ?? model
       : model;
     let hopPath = path;
     let hopBodyBuffer = bodyBuffer;
@@ -530,7 +534,20 @@ export async function handleProxyRequest(
 
           upstreamResponse = await fetch(targetUrl, {
             method: request.method,
-            headers: buildUpstreamHeaders(request.headers, protocol, apiKey),
+            headers: buildUpstreamHeaders(
+              request.headers,
+              protocol,
+              apiKey,
+              upstream.headerTransforms,
+              {
+                // 会话指纹与 session 粘性同源；单候选链 sessionId 未预计算，懒计算
+                sessionId: () =>
+                  sessionId ?? buildSessionId(bodyJson, model, virtualKey.id, protocol),
+                model: hopModel,
+                keyName: virtualKey.name,
+                upstream: upstream.name,
+              }
+            ),
             body: hopBodyBuffer.length > 0 ? hopBodyBuffer : null,
             duplex: "half",
             redirect: "manual",
@@ -654,7 +671,7 @@ export async function handleProxyRequest(
     if (fallbackBusinessResponse) {
       const meta: RecordUsageMeta = {
         model: manualRoute
-          ? manualRoute.targetModelByUpstream.get(defaultUpstream.id) ?? model
+          ? manualRoute.hopTargetModel.get(defaultUpstream) ?? model
           : model,
         provider: defaultUpstream.name,
         agent: virtualKey.name,
@@ -718,7 +735,7 @@ export async function handleProxyRequest(
   const successModel = successUpstream ?? defaultUpstream;
   const meta: RecordUsageMeta = {
     model: manualRoute
-      ? manualRoute.targetModelByUpstream.get(successModel.id) ?? model
+      ? manualRoute.hopTargetModel.get(successModel) ?? model
       : model,
     provider: successModel.name,
     agent: virtualKey.name,
@@ -835,7 +852,19 @@ async function handleSubresourcePassthrough(
 
           upstreamResponse = await fetch(targetUrl, {
             method: request.method,
-            headers: buildUpstreamHeaders(request.headers, "openai", apiKey),
+            headers: buildUpstreamHeaders(
+              request.headers,
+              "openai",
+              apiKey,
+              upstream.headerTransforms,
+              {
+                // 辅助端点无请求体 model：会话指纹退化为 path（response id 语义，稳定即可）
+                sessionId: () => buildSessionId(null, path, virtualKey.id, "openai"),
+                model: path,
+                keyName: virtualKey.name,
+                upstream: upstream.name,
+              }
+            ),
             body: bodyBuffer.length > 0 ? bodyBuffer : null,
             duplex: "half",
             redirect: "manual",

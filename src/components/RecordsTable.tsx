@@ -11,6 +11,7 @@ export interface Record {
   normalizedModel: string;
   providerName?: string | null;
   agent: string;
+  keyName: string;
   inputTokens: number;
   outputTokens: number;
   cacheRead: number;
@@ -226,6 +227,7 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Model</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Provider</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Agent</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Key</th>
               <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Input (Uncached)</th>
               <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Input (Cached)</th>
               <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Output</th>
@@ -260,6 +262,9 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                   {record.agent}
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                  {record.keyName || "-"}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
                   {formatNumber(record.inputTokens, compact)}
@@ -311,6 +316,7 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
                 )}
                 <p className="text-xs text-gray-400 mt-0.5">{record.providerName || "-"}</p>
                 <p className="text-xs text-gray-400 mt-1">{record.agent}</p>
+                <p className="text-xs text-gray-400 mt-0.5">Key: {record.keyName || "-"}</p>
               </div>
             </div>
             <div className="grid grid-cols-2 gap-3">

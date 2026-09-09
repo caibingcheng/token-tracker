@@ -34,6 +34,8 @@ interface TodayOverviewProps {
   loading: boolean;
   topModels?: TopModel[];
   showCost?: boolean;
+  // 单价明细开关：公开状态页传 false（服务端不下发单价），Dashboard 默认 true
+  costDetail?: boolean;
   showTopModels?: boolean;
 }
 
@@ -77,12 +79,13 @@ interface TodayItem {
   breakdown?: { label: string; value: number; isCost?: boolean; isRatio?: boolean }[];
 }
 
-export default function TodayOverview({ today, yesterday, loading, topModels, showCost = true, showTopModels = true }: TodayOverviewProps) {
+export default function TodayOverview({ today, yesterday, loading, topModels, showCost = true, costDetail = true, showTopModels = true }: TodayOverviewProps) {
   const { compact } = useNumberFormat();
   const animatedInput = useAnimatedNumber(today?.totalInput || 0, 600);
   const animatedOutput = useAnimatedNumber(today?.totalOutput || 0, 600);
   const animatedCount = useAnimatedNumber(today?.count || 0, 600);
   const animatedCostPerMillion = useAnimatedNumber(today?.costPerMillionTokens || 0, 600);
+  const animatedTotalCost = useAnimatedNumber(today?.totalCost || 0, 600);
 
   const outputRatio =
     today && today.totalInput + today.totalOutput > 0
@@ -136,19 +139,30 @@ export default function TodayOverview({ today, yesterday, loading, topModels, sh
       ],
     },
     ...(showCost
-      ? [{
-          label: "Avg cost / 1M tokens",
-          value: animatedCostPerMillion,
-          isCost: true,
-          today: today?.costPerMillionTokens || 0,
-          yesterday: yesterday?.costPerMillionTokens || 0,
-          breakdown: [
-            { label: "Input / 1M", value: today?.costPerMillionInput || 0, isCost: true },
-            { label: "Cache read / 1M", value: today?.costPerMillionCacheRead || 0, isCost: true },
-            { label: "Output / 1M", value: today?.costPerMillionOutput || 0, isCost: true },
-            { label: "Total Cost", value: today?.totalCost || 0, isCost: true },
-          ],
-        }]
+      ? [costDetail
+          ? {
+              label: "Avg cost / 1M tokens",
+              value: animatedCostPerMillion,
+              isCost: true,
+              today: today?.costPerMillionTokens || 0,
+              yesterday: yesterday?.costPerMillionTokens || 0,
+              breakdown: [
+                { label: "Input / 1M", value: today?.costPerMillionInput || 0, isCost: true },
+                { label: "Cache read / 1M", value: today?.costPerMillionCacheRead || 0, isCost: true },
+                { label: "Output / 1M", value: today?.costPerMillionOutput || 0, isCost: true },
+                { label: "Total Cost", value: today?.totalCost || 0, isCost: true },
+              ],
+            }
+          : {
+              label: "Total Cost",
+              value: animatedTotalCost,
+              isCost: true,
+              today: today?.totalCost || 0,
+              yesterday: yesterday?.totalCost || 0,
+              breakdown: [
+                { label: "Avg cost / req", value: avgCostPerReq, isCost: true },
+              ],
+            }]
       : []),
   ];
 

@@ -13,7 +13,6 @@ import { setHiddenProvidersSetting, deleteSetting } from "@/lib/auth/settings";
 import { invalidateModelCache, getRegistry } from "@/lib/model-registry";
 
 const ORIG_DB = process.env.SQLITE_DATABASE_PATH;
-const ORIG_HIDDEN = process.env.HIDDEN_PROVIDERS;
 
 let dir: string;
 
@@ -26,12 +25,9 @@ afterAll(() => {
   rmSync(dir, { recursive: true, force: true });
   if (ORIG_DB === undefined) delete process.env.SQLITE_DATABASE_PATH;
   else process.env.SQLITE_DATABASE_PATH = ORIG_DB;
-  if (ORIG_HIDDEN === undefined) delete process.env.HIDDEN_PROVIDERS;
-  else process.env.HIDDEN_PROVIDERS = ORIG_HIDDEN;
 });
 
 beforeEach(async () => {
-  delete process.env.HIDDEN_PROVIDERS;
   await deleteSetting("hidden_providers").catch(() => {});
 });
 
@@ -77,9 +73,8 @@ describe("parseHiddenProviderGroups 纯函数", () => {
   });
 });
 
-describe("loadHiddenProviderGroups 优先级", () => {
-  it("settings 已保存 → settings 优先（忽略 env）", async () => {
-    process.env.HIDDEN_PROVIDERS = "envA:env*";
+describe("loadHiddenProviderGroups 数据源", () => {
+  it("settings 已保存 → settings 生效", async () => {
     await setHiddenProvidersSetting([{ name: "panelA", patterns: ["panel*"] }]);
     const groups = await loadHiddenProviderGroups();
     expect(groups).toHaveLength(1);
@@ -87,19 +82,12 @@ describe("loadHiddenProviderGroups 优先级", () => {
     expect(groups[0].patterns).toEqual(["panel*"]);
   });
 
-  it("settings 未保存 → env 回退", async () => {
-    process.env.HIDDEN_PROVIDERS = "envA:env*";
-    const groups = await loadHiddenProviderGroups();
-    expect(groups[0].name).toBe("envA");
-  });
-
-  it("settings 未保存且 env 空 → 空数组", async () => {
+  it("settings 未保存 → 空数组", async () => {
     expect(await loadHiddenProviderGroups()).toEqual([]);
   });
 
-  it("settings 保存空数组 → 空数组（面板主动清空，env 被忽略）", async () => {
+  it("settings 保存空数组 → 空数组（面板主动清空）", async () => {
     await setHiddenProvidersSetting([]);
-    process.env.HIDDEN_PROVIDERS = "envA:env*";
     expect(await loadHiddenProviderGroups()).toEqual([]);
   });
 });
@@ -177,9 +165,8 @@ describe("parseStoredHiddenProviderGroups JSON 化 + 兼容", () => {
 });
 
 describe("显式传参的纯函数", () => {
-  it("anonymizeProvider 使用传入 groups 而非 env", () => {
+  it("anonymizeProvider 使用传入 groups", () => {
     const groups = parseHiddenProviderGroups("CustomA:vendor*");
-    process.env.HIDDEN_PROVIDERS = "other";
     expect(anonymizeProvider("vendor-x", [], groups)).toBe("CustomA");
     expect(anonymizeProvider("google", [], groups)).toBe("google");
     expect(anonymizeProvider("vendor-x", [], [])).toBe("vendor-x");

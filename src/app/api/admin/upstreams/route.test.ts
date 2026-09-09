@@ -295,3 +295,170 @@ describe("/api/admin/upstreams - proxy_url", () => {
     expect(res2.status).toBe(401);
   });
 });
+
+describe("/api/admin/upstreams - header transforms", () => {
+  const TRANSFORMS = [
+    {
+      id: "ht-aaaa0001",
+      header: "x-opencode-session",
+      value: "tt-${var.sessionId}",
+      mode: "fill",
+      enabled: true,
+    },
+    {
+      id: "ht-aaaa0002",
+      header: "x-opencode-client",
+      value: "pi",
+      mode: "override",
+      enabled: false,
+    },
+  ];
+
+  it("POST 带 headerTransforms 落库并 GET 列表返回解析数组", async () => {
+    const token = await makeToken();
+    const res = await LIST_POST(
+      req("/api/admin/upstreams", "POST", token, {
+        name: "up-ht",
+        protocol: "openai",
+        baseUrl: "https://8.8.8.8",
+        headerTransforms: TRANSFORMS,
+      }), { params: {} });
+    expect(res.status).toBe(201);
+
+    const list = await LIST_GET(req("/api/admin/upstreams", "GET", token), { params: {} });
+    const json = await list.json();
+    const row = json.data.find((u: { name: string }) => u.name === "up-ht");
+    expect(row.headerTransforms).toEqual(TRANSFORMS);
+  });
+
+  it("POST header 名大写时落库归一为小写", async () => {
+    const token = await makeToken();
+    await LIST_POST(
+      req("/api/admin/upstreams", "POST", token, {
+        name: "up-ht2",
+        protocol: "openai",
+        baseUrl: "https://8.8.8.8",
+        headerTransforms: [
+          { id: "ht-bbbb0001", header: "X-Custom-Header", value: "v", mode: "fill", enabled: true },
+        ],
+      }), { params: {} });
+    const rows = await withSkipCache(async () =>
+      db.select().from(upstreamsTable).where(eq(upstreamsTable.name, "up-ht2"))
+    );
+    const stored = JSON.parse(rows[0]!.headerTransforms as string);
+    expect(stored[0].header).toBe("x-custom-header");
+  });
+
+  it("POST 非法 headerTransforms 400（坏 header 名 / CRLF / 非法 mode）", async () => {
+    const token = await makeToken();
+    for (const bad of [
+      [{ id: "ht-x", header: "bad header", value: "v", mode: "fill", enabled: true }],
+      [{ id: "ht-x", header: "x-a", value: "a\r\nb", mode: "fill", enabled: true }],
+      [{ id: "ht-x", header: "x-a", value: "v", mode: "set", enabled: true }],
+      "not-an-array",
+    ]) {
+      const res = await LIST_POST(
+        req("/api/admin/upstreams", "POST", token, {
+          name: `up-bad-${Math.random().toString(36).slice(2, 8)}`,
+          protocol: "openai",
+          baseUrl: "https://8.8.8.8",
+          headerTransforms: bad,
+        }),
+        { params: {} }
+      );
+      expect(res.status).toBe(400);
+    }
+  });
+
+  it("PATCH 全量替换 headerTransforms，GET 单项返回新值", async () => {
+    const token = await makeToken();
+    await LIST_POST(
+      req("/api/admin/upstreams", "POST", token, {
+        name: "up-ht3",
+        protocol: "openai",
+        baseUrl: "https://8.8.8.8",
+        headerTransforms: TRANSFORMS,
+      }), { params: {} });
+    const rows = await withSkipCache(async () =>
+      db.select().from(upstreamsTable).where(eq(upstreamsTable.name, "up-ht3"))
+    );
+    const id = rows[0]!.id;
+
+    const next = [
+      { id: "ht-cccc0001", header: "x-new", value: "n", mode: "override", enabled: true },
+    ];
+    const patch = await PATCH(
+      req(`/api/admin/upstreams/${id}`, "PATCH", token, { headerTransforms: next }),
+      { params: { id: String(id) } }
+    );
+    expect(patch.status).toBe(200);
+
+    const get = await ITEM_GET(req(`/api/admin/upstreams/${id}`, "GET", token), {
+      params: { id: String(id) },
+    });
+    const json = await get.json();
+    expect(json.data.headerTransforms).toEqual(next);
+    expect(json.data.headerTransforms).toHaveLength(1);
+  });
+
+  it("PATCH 省略 headerTransforms 时保持不变", async () => {
+    const token = await makeToken();
+    await LIST_POST(
+      req("/api/admin/upstreams", "POST", token, {
+        name: "up-ht4",
+        protocol: "openai",
+        baseUrl: "https://8.8.8.8",
+        headerTransforms: TRANSFORMS,
+      }), { params: {} });
+    const rows = await withSkipCache(async () =>
+      db.select().from(upstreamsTable).where(eq(upstreamsTable.name, "up-ht4"))
+    );
+    const id = rows[0]!.id;
+
+    await PATCH(
+      req(`/api/admin/upstreams/${id}`, "PATCH", token, { priority: 5 }),
+      { params: { id: String(id) } }
+    );
+    const get = await ITEM_GET(req(`/api/admin/upstreams/${id}`, "GET", token), {
+      params: { id: String(id) },
+    });
+    const json = await get.json();
+    expect(json.data.headerTransforms).toEqual(TRANSFORMS);
+  });
+
+  it("PATCH 非法 headerTransforms 400", async () => {
+    const token = await makeToken();
+    await LIST_POST(
+      req("/api/admin/upstreams", "POST", token, {
+        name: "up-ht5",
+        protocol: "openai",
+        baseUrl: "https://8.8.8.8",
+      }), { params: {} });
+    const rows = await withSkipCache(async () =>
+      db.select().from(upstreamsTable).where(eq(upstreamsTable.name, "up-ht5"))
+    );
+    const id = rows[0]!.id;
+
+    const res = await PATCH(
+      req(`/api/admin/upstreams/${id}`, "PATCH", token, {
+        headerTransforms: [{ id: "ht-x", header: "bad header", value: "v", mode: "fill", enabled: true }],
+      }),
+      { params: { id: String(id) } }
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("POST 省略 headerTransforms 时默认空数组", async () => {
+    const token = await makeToken();
+    await LIST_POST(
+      req("/api/admin/upstreams", "POST", token, {
+        name: "up-ht6",
+        protocol: "openai",
+        baseUrl: "https://8.8.8.8",
+      }), { params: {} });
+    const rows = await withSkipCache(async () =>
+      db.select().from(upstreamsTable).where(eq(upstreamsTable.name, "up-ht6"))
+    );
+    expect(JSON.parse(rows[0]!.headerTransforms as string)).toEqual([]);
+  });
+});

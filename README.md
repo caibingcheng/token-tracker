@@ -153,7 +153,6 @@ SQLite 数据库在首次请求时自动建表 + 增量迁移，无需手动操�
 | `SQLITE_DATABASE_PATH` | 是 | SQLite 数据库文件路径 |
 | `ADMIN_API_KEY` | 建议 | 管理面用 API key，逗号分隔多个；未设置且 DB 无 key 时出现首次设置向导（旧名 `API_KEYS` 已废弃） |
 | `GATEWAY_SECRET` | 是 | 网关主密钥（AES-256-GCM），`openssl rand -hex 32` 生成；缺失时代理与管理 API 返回 503 |
-| `HIDDEN_PROVIDERS` | 否 | 需匿名化的 provider 列表（分组语法 `name:p1,p2`，分号分隔多组） |
 | `SESSION_TOKEN_TTL_HOURS` | 否 | 会话 token 有效期（小时，默认 24，滑动续期） |
 | `TRUSTED_PROXY` | 否 | 前置反代已设置 `X-Real-IP` 时设为 true，恢复精确 IP 限流 |
 | `API_CACHE_TTL_MS` | 否 | SELECT 缓存 TTL（毫秒，默认 10000） |
