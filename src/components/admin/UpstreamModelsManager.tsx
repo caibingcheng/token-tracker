@@ -23,22 +23,56 @@ export default function UpstreamModelsManager({
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
+  // 本次会话是否已成功拉取上游列表（拉取成功后才具备「已下架」判断基准）
+  const [fetchedOk, setFetchedOk] = useState(false);
   const selectAllRef = useRef<HTMLInputElement>(null);
+  const missingAllRef = useRef<HTMLInputElement>(null);
 
-  const allModels = Array.from(
-    new Set([...(data?.manual ?? []), ...(data?.available ?? [])])
+  const manual = data?.manual ?? [];
+  const available = data?.available ?? [];
+
+  // 通配规则（gpt-*）：上游列表只返回具体模型名，无条目可对比 → 不进入可勾选列表、不落入「已下架」区段，
+  // 由 save() 无条件保留（对齐表单 Fetch Models 弹窗的 patterns 逻辑），此处仅作说明展示
+  const wildcardRules = manual.filter((m) => m.endsWith("*"));
+  const concreteManual = manual.filter((m) => !m.endsWith("*"));
+
+  // 成功拉取后：主列表 = 上游现有模型；否则（未拉取/拉取失败）= 手动配置 ∪ 已拉到的并集
+  // 拷贝后再排序，避免原地 .sort() 突变 React state
+  const mainModels = (fetchedOk
+    ? [...available]
+    : Array.from(new Set([...concreteManual, ...available]))
   ).sort();
-  const someSelected = selected.size > 0 && !allModels.every((m) => selected.has(m));
+  // 「原本勾选但上游已不存在」的具体模型：仅拉取成功后才有意义，去重后保持手动配置原顺序置底
+  const missingModels = fetchedOk
+    ? Array.from(new Set(concreteManual.filter((m) => !available.includes(m))))
+    : [];
+  const hasModels =
+    mainModels.length > 0 || missingModels.length > 0 || wildcardRules.length > 0;
+
+  const allMainSelected = mainModels.length > 0 && mainModels.every((m) => selected.has(m));
+  const someMainSelected =
+    mainModels.some((m) => selected.has(m)) && !allMainSelected;
+  const allMissingSelected =
+    missingModels.length > 0 && missingModels.every((m) => selected.has(m));
+  const someMissingSelected =
+    missingModels.some((m) => selected.has(m)) && !allMissingSelected;
 
   useEffect(() => {
     if (selectAllRef.current) {
-      selectAllRef.current.indeterminate = someSelected;
+      selectAllRef.current.indeterminate = someMainSelected;
     }
-  }, [someSelected]);
+  }, [someMainSelected]);
+
+  useEffect(() => {
+    if (missingAllRef.current) {
+      missingAllRef.current.indeterminate = someMissingSelected;
+    }
+  }, [someMissingSelected]);
 
   // 打开 modal 直接用 upstream.enabledModels 渲染；仅点 "↻ Pull from upstream" 才调用上游接口
   const openModal = () => {
     setData({ manual: upstream.enabledModels, available: [], merged: upstream.enabledModels });
+    setFetchedOk(false);
     setSelected(new Set(upstream.enabledModels));
     setOpen(true);
   };
@@ -51,8 +85,19 @@ export default function UpstreamModelsManager({
       if (json.success) {
         const d = json.data as ModelsData;
         setData(d);
-        // 新拉取的模型不默认选中，只保留原有手动配置的
-        setSelected(new Set(d.manual ?? []));
+        const ok = !d.error && Array.isArray(d.available);
+        // 只有拿到真实上游列表（无错误）才算成功拉取
+        setFetchedOk(ok);
+        // 新拉取的模型不默认选中，只保留原有手动配置的；拉取失败时保留用户当前勾选
+        if (ok) setSelected(new Set(d.manual ?? []));
+      } else {
+        // 请求层失败（HTTP/网络/无 key）：给出可见错误，且不动当前勾选
+        setData((prev) => ({
+          manual: prev?.manual ?? [],
+          available: prev?.available ?? [],
+          merged: prev?.merged ?? [],
+          error: json.error || "Failed to fetch models",
+        }));
       }
     } finally {
       setLoading(false);
@@ -74,10 +119,14 @@ export default function UpstreamModelsManager({
   const save = async () => {
     setSaving(true);
     try {
+      // 通配模式（如 gpt-*）不参与「已下架」判定也无具体可勾选项，无条件原样保留
+      // （对齐表单 Fetch Models 弹窗的 patterns 保留逻辑，防误删配置）
+      const patterns = manual.filter((m) => m.endsWith("*"));
+      const enabled = Array.from(new Set([...patterns, ...Array.from(selected)]));
       const res = await apiFetch(`/api/admin/upstreams/${upstream.id}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ enabledModels: Array.from(selected) }),
+        body: JSON.stringify({ enabledModels: enabled }),
       });
       const json = await res.json();
       if (json.success) {
@@ -101,15 +150,39 @@ export default function UpstreamModelsManager({
     );
   }
 
-  const allSelected = allModels.length > 0 && allModels.every((m) => selected.has(m));
-
+  // 主列表「全部勾选/取消」只作用于上游现有模型，不动下方已下架区段
   const toggleSelectAll = () => {
-    if (allSelected) {
-      setSelected(new Set());
-    } else {
-      setSelected(new Set(allModels));
-    }
+    setSelected((prev) => {
+      const next = new Set(prev);
+      for (const m of mainModels) {
+        if (allMainSelected) {
+          next.delete(m);
+        } else {
+          next.add(m);
+        }
+      }
+      return next;
+    });
   };
+
+  // 已下架区段「全部勾选/取消」
+  const toggleMissingAll = () => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      for (const m of missingModels) {
+        if (allMissingSelected) {
+          next.delete(m);
+        } else {
+          next.add(m);
+        }
+      }
+      return next;
+    });
+  };
+
+  const mainSelectLabel = missingModels.length > 0
+    ? allMainSelected ? "Unselect all available" : "Select all available"
+    : allMainSelected ? "Unselect all" : "Select all";
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
@@ -139,43 +212,99 @@ export default function UpstreamModelsManager({
         <div className="flex-1 overflow-y-auto p-5">
           {loading ? (
             <div className="py-10 text-center text-gray-400">Fetching models...</div>
-          ) : allModels.length === 0 ? (
+          ) : !hasModels ? (
             <div className="py-10 text-center text-gray-400">
               No models found. Pull models from upstream or add them manually in the upstream form.
             </div>
           ) : (
             <div>
-              <label className="mb-2 flex items-center gap-2 rounded border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-600">
-                <input
-                  ref={selectAllRef}
-                  type="checkbox"
-                  checked={allSelected}
-                  onChange={toggleSelectAll}
-                  className="rounded border-gray-300"
-                />
-                {allSelected ? "Unselect all" : "Select all"}
-              </label>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
-                {allModels.map((model) => (
-                  <label
-                    key={model}
-                    className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-gray-50"
-                  >
+              {mainModels.length > 0 && (
+                <div>
+                  <label className="mb-2 flex items-center gap-2 rounded border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-600">
                     <input
+                      ref={selectAllRef}
                       type="checkbox"
-                      checked={selected.has(model)}
-                      onChange={() => toggleModel(model)}
+                      checked={allMainSelected}
+                      onChange={toggleSelectAll}
                       className="rounded border-gray-300"
                     />
-                    <code className="truncate" title={model}>{model}</code>
-                    {data?.available.includes(model) && !data?.manual.includes(model) && (
-                      <span className="ml-auto shrink-0 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] text-blue-600">
-                        pulled
-                      </span>
-                    )}
+                    {mainSelectLabel}
                   </label>
-                ))}
-              </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
+                    {mainModels.map((model) => (
+                      <label
+                        key={model}
+                        className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-gray-50"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selected.has(model)}
+                          onChange={() => toggleModel(model)}
+                          className="rounded border-gray-300"
+                        />
+                        <code className="truncate" title={model}>{model}</code>
+                        {available.includes(model) && !manual.includes(model) && (
+                          <span className="ml-auto shrink-0 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] text-blue-600">
+                            pulled
+                          </span>
+                        )}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {missingModels.length > 0 && (
+                <div className="mt-5 border-t border-gray-200 pt-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <h4 className="text-xs font-medium text-gray-500">
+                      Removed from upstream ({missingModels.length})
+                    </h4>
+                    <label className="flex cursor-pointer items-center gap-1.5 text-xs text-gray-500 hover:text-gray-700">
+                      <input
+                        ref={missingAllRef}
+                        type="checkbox"
+                        checked={allMissingSelected}
+                        onChange={toggleMissingAll}
+                        className="rounded border-gray-300"
+                      />
+                      {allMissingSelected ? "Unselect all" : "Select all"}
+                    </label>
+                  </div>
+                  <p className="mb-2 mt-1 text-xs text-gray-400">
+                    These previously enabled models were not returned by the upstream list. Keep
+                    them selected to retain, or clear the section to drop them.
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
+                    {missingModels.map((model) => (
+                      <label
+                        key={model}
+                        title="No longer available on this upstream"
+                        className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-gray-50"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selected.has(model)}
+                          onChange={() => toggleModel(model)}
+                          className="rounded border-gray-300"
+                        />
+                        <code className="truncate text-gray-400">{model}</code>
+                        <span className="ml-auto shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-400">
+                          removed
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {wildcardRules.length > 0 && (
+                <p className="mt-4 border-t border-gray-200 pt-3 text-xs text-gray-400">
+                  Kept wildcard rules: <code className="text-gray-500">{wildcardRules.join(", ")}</code>{" "}
+                  — the upstream list only returns concrete model names; wildcard patterns are always
+                  preserved when saving.
+                </p>
+              )}
             </div>
           )}
         </div>
