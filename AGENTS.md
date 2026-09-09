@@ -11,7 +11,7 @@
 
 ## Web 前端安全与 PWA
 
-- **安全响应头**（`next.config.js` 全局 header，`:path*`）：`X-Frame-Options: DENY`（点击劫持）、`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、`Permissions-Policy`（禁 camera/mic/geolocation）、CSP：`default-src 'self'` + `script-src 'self' 'unsafe-inline'`（**dev 模式额外放行 `unsafe-eval`**，生产不放松；`unsafe-inline` 因 Next bootstrap/styled-jsx 需要）+ `frame-ancestors 'none'` + `object-src 'none'`
+- **安全响应头**（`next.config.js` 全局 header，`:path*`）：`X-Frame-Options: DENY`（点击劫持）、`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、`Permissions-Policy`（禁 camera/mic/geolocation）、CSP：`default-src 'self'` + `script-src 'self' 'unsafe-inline'`（**dev 模式额外放行 `unsafe-eval`**，生产不放松；`unsafe-inline` 因 Next bootstrap/styled-jsx 需要）+ `frame-ancestors 'none'` + `object-src 'none'`；`poweredByHeader: false`（不暴露 x-powered-by 框架身份）
 - **PWA 可安装性**：`src/app/manifest.ts`（manifest + 图标），无 Service Worker（离线能力未启用）；移动端底栏 `MobileTabBar.tsx`（`md:hidden`）
 - **Docker 构建**：Dockerfile `output: 'standalone'` + base `node:22-slim` + `ENV NODE_OPTIONS=--max-old-space-size=256 --expose-gc`（生产内存控制：收紧 old space 上限 + `src/instrumentation.ts` instrumentationHook 每 5 分钟 RSS>64MB 时 full GC 归还内存，防长期运行 RSS 膨胀）；docker-compose.example.yml 含 `TRUSTED_PROXY` 与可选 `deploy.memory` 注释
 - **TOTP 绑定二维码**：`qrcode.react`（^4.2.0）渲染 otpauth:// URI
@@ -108,6 +108,7 @@ docker compose up -d                                 # 本地运行
 - **唯一有意公开的用量端点**：`/status/data` 位于 `/status` 下（**不是 `/api` 下**），middleware matcher（`/api/*`）天然不匹配，auth 四层防漏零改动；guard-scan 扫描范围外
 - **fail-closed**：`status_page_config.enabled` 默认 false（未保存 = 关闭），`/status/data` 返回 404，前端探测到 404 渲染纯登录门；必须 admin panel Display tab 显式开启
 - **数据面最小化**（`src/lib/status-query.ts`）：只接受 `tzOffset`（-720..720），无任何过滤参数；按启用元素**按需查询**（`executeStatsQuery` 固定参数），cost/topModels 关闭时**跳过全部 model 级查询**，响应不含模型名/provider 名/成本数据；topModels 开启时复用 hidden_providers 匿名化
+- **隐私裁剪**（公开端点专属，`/api/dashboard` 不受影响）：total 不下发 `firstActiveAt`/`lastActiveAt`（实时活跃信号，公开页前端零引用）；单价类 `costPerMillion*` 一律不下发（防定价表泄露——注意查询层 `StatItem.cost` 是完整 `AggregatedCost`，展开 spread 会把内嵌单价带进响应，`buildModelStat`/total 组装必须**显式重建**），只保留 `totalCost`；前端共享组件（StatsCards/TodayOverview/DailyUsageChart）新增 `costDetail` prop（默认 true），公开页传 `false` 隐藏单价明细（价格线 / 1M 列 / Input·Cache·Output Cost 列），Dashboard 行为不变
 - **元素联动**：hourly 依赖 daily，hourly 开启时 `resolveStatusElements` 强制 daily=true；topModels 开启时隐式返回成本字段（TopModelsCards 组件固定显示 cost）
 - **60s 响应级 LRU 缓存**（key=tzOffset，max 50）：整包缓存不感知写库，故 60s 滞后可接受；`setStatusPageConfig()` 主动调 `invalidateStatusCache()` 立即失效
 - **限流**：`checkStatusRateLimit()`（status-query.ts 导出，60 req/min 固定窗口，`getRateLimitKey()` 取 key），与 setup/login 同款内存 bucket 模式
@@ -366,7 +367,7 @@ docker compose up -d
   - `src/lib/auth/settings-status`：status_page_config 默认值合并（fail-closed、非法 JSON/字段回退、不污染共享默认）+ 合法性校验
   - `src/lib/agent-utils` / `src/lib/auth/settings-agent-aliases`：UA token 提取、内置映射、手动 alias 优先级与大小写、unknown、反找（多 UA→一 agent、无匹配）；parse/isValid 边界、load 回退、set 后 invalidateQueryCache
   - `src/app/api/admin/settings/agent-aliases/route.test`：401/400/往返（withSkipCache 立即可读、loadAgentAliases 同源）
-  - `src/lib/status-query`：元素联动（hourly→daily）+ 按需查询断言（cost/topModels 关闭不执行 model 级查询）+ 响应裁剪（不泄露模型名）+ 响应缓存失效 + 60 req/min 限流
+  - `src/lib/status-query`：元素联动（hourly→daily）+ 按需查询断言（cost/topModels 关闭不执行 model 级查询）+ 响应裁剪（不泄露模型名）+ 隐私裁剪断言（无 firstActiveAt/lastActiveAt、无 costPerMillion*、无嵌套 cost 对象，保留 totalCost）+ 响应缓存失效 + 60 req/min 限流
   - `src/lib/gateway/probe`：探活请求构造（三协议 + responses 双风格）+ 双风格回退判定 + 3xx 不跟随（redirect manual）
   - `src/lib/gateway/quota`：配额窗口计算与超限判定（rpm/tpm/daily/monthly）
   - `src/lib/gateway/upstream-client`：模型列表拉取 + 3xx 不跟随（redirect manual，防 key 跨源泄露）

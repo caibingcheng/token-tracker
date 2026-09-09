@@ -304,6 +304,7 @@ export default function PublicStatusView({
                     loading={loading}
                     error={error}
                     showCost={showCost}
+                    costDetail={false}
                     showTopModels={showTopModels}
                     topModels={showTopModels ? data.totalTopModels : undefined}
                   />
@@ -317,6 +318,7 @@ export default function PublicStatusView({
                     yesterday={data.yesterday}
                     loading={loading}
                     showCost={showCost}
+                    costDetail={false}
                     showTopModels={showTopModels}
                     topModels={showTopModels ? data.todayModels : undefined}
                   />
@@ -325,12 +327,16 @@ export default function PublicStatusView({
 
               {elements?.daily && (
                 <section>
+                  <div className="mb-4">
+                    <h2 className="text-lg font-semibold">Last 30 Daily Usage</h2>
+                  </div>
                   <DailyUsageChart
                     rawData={data.daily}
                     loading={loading}
                     error={error}
                     range={30}
                     showCost={showCost}
+                    costDetail={false}
                     showHourly={!!elements.hourly}
                     showTopModels={showTopModels}
                     topModels={showTopModels ? data.topModels : undefined}

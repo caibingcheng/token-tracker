@@ -159,6 +159,8 @@ interface DailyUsageChartProps {
   showCost?: boolean;
   showHourly?: boolean;
   showTopModels?: boolean;
+  // 单价明细（价格线 / 1M 列 / Input·Cache·Output Cost 列）开关：公开状态页传 false（服务端不下发单价），Dashboard 默认 true
+  costDetail?: boolean;
 }
 
 const COLORS = {
@@ -406,6 +408,7 @@ function SummarySection({
   timezoneOffsetMinutes,
   showCost = true,
   showHourly = true,
+  costDetail = true,
 }: {
   summary: {
     totalInput: number;
@@ -424,11 +427,13 @@ function SummarySection({
   timezoneOffsetMinutes?: number;
   showCost?: boolean;
   showHourly?: boolean;
+  costDetail?: boolean;
 }) {
   const { compact } = useNumberFormat();
   const animatedTotalInput = useAnimatedNumber(summary.totalInput, 600);
   const animatedTotalOutput = useAnimatedNumber(summary.totalOutput, 600);
   const animatedTotalRequests = useAnimatedNumber(summary.totalRequests, 600);
+  const animatedTotalCost = useAnimatedNumber(summary.totalCost, 600);
   const animatedCostPerMillion = useAnimatedNumber(summary.costPerMillionTokens, 600);
   const animatedCostPerMillionInput = useAnimatedNumber(summary.costPerMillionInput, 600);
   const animatedCostPerMillionCacheRead = useAnimatedNumber(summary.costPerMillionCacheRead, 600);
@@ -482,17 +487,26 @@ function SummarySection({
       ],
     },
     ...(showCost
-      ? [{
-          label: "Avg cost / 1M tokens",
-          value: animatedCostPerMillion,
-          isCost: true,
-          breakdown: [
-            { label: "In", value: animatedCostPerMillionInput, isCost: true },
-            { label: "Cache", value: animatedCostPerMillionCacheRead, isCost: true },
-            { label: "Out", value: animatedCostPerMillionOutput, isCost: true },
-            { label: "Total Cost", value: summary.totalCost, isCost: true },
-          ],
-        }]
+      ? [costDetail
+          ? {
+              label: "Avg cost / 1M tokens",
+              value: animatedCostPerMillion,
+              isCost: true,
+              breakdown: [
+                { label: "In", value: animatedCostPerMillionInput, isCost: true },
+                { label: "Cache", value: animatedCostPerMillionCacheRead, isCost: true },
+                { label: "Out", value: animatedCostPerMillionOutput, isCost: true },
+                { label: "Total Cost", value: summary.totalCost, isCost: true },
+              ],
+            }
+          : {
+              label: "Total Cost",
+              value: animatedTotalCost,
+              isCost: true,
+              breakdown: [
+                { label: "Avg cost / req", value: avgCostPerReq, isCost: true },
+              ],
+            }]
       : []),
   ];
 
@@ -944,6 +958,7 @@ export default function DailyUsageChart({
   showCost = true,
   showHourly = true,
   showTopModels = true,
+  costDetail = true,
 }: DailyUsageChartProps) {
   const { compact } = useNumberFormat();
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
@@ -1318,9 +1333,10 @@ export default function DailyUsageChart({
     const totalCacheWrite = data.reduce((s, d) => s + d.totalCacheWrite, 0);
     const effectiveTokens = totalInput + totalCacheWrite + totalOutput;
 
-    const totalInputCost = data.reduce((s, d) => s + d.totalInputUncached * (d.costPerMillionInput / 1_000_000), 0);
-    const totalCacheReadCost = data.reduce((s, d) => s + d.totalInputCached * (d.costPerMillionCacheRead / 1_000_000), 0);
-    const totalOutputCost = data.reduce((s, d) => s + d.totalOutput * (d.costPerMillionOutput / 1_000_000), 0);
+    // 公开状态页数据源不含 costPerMillion* 字段（|| 0 防 NaN；Dashboard 数据源不受影响）
+    const totalInputCost = data.reduce((s, d) => s + d.totalInputUncached * ((d.costPerMillionInput || 0) / 1_000_000), 0);
+    const totalCacheReadCost = data.reduce((s, d) => s + d.totalInputCached * ((d.costPerMillionCacheRead || 0) / 1_000_000), 0);
+    const totalOutputCost = data.reduce((s, d) => s + d.totalOutput * ((d.costPerMillionOutput || 0) / 1_000_000), 0);
 
     return {
       totalInput,
@@ -1358,6 +1374,7 @@ export default function DailyUsageChart({
               timezoneOffsetMinutes={timezoneOffsetMinutes}
               showCost={showCost}
               showHourly={showHourly}
+              costDetail={costDetail}
             />
           )}
 
@@ -1861,7 +1878,9 @@ export default function DailyUsageChart({
                             },
                           ]
                         : []),
-                      { color: COLORS.price, label: "Avg cost / 1M" },
+                      ...(costDetail
+                        ? [{ color: COLORS.price, label: "Avg cost / 1M" }]
+                        : []),
                     ]}
                   />
                   <div className="h-[240px]">
@@ -1903,14 +1922,16 @@ export default function DailyUsageChart({
                           tickFormatter={(v: number) => formatPriceAxis(v)}
                           domain={modelCostDomain}
                         />
-                        <YAxis
-                          yAxisId="right"
-                          orientation="right"
-                          tick={{ fontSize: 11, fill: COLORS.price }}
-                          width={45}
-                          tickFormatter={(v: number) => formatPriceAxis(v)}
-                          domain={priceDomain}
-                        />
+                        {costDetail && (
+                          <YAxis
+                            yAxisId="right"
+                            orientation="right"
+                            tick={{ fontSize: 11, fill: COLORS.price }}
+                            width={45}
+                            tickFormatter={(v: number) => formatPriceAxis(v)}
+                            domain={priceDomain}
+                          />
+                        )}
                         <Tooltip content={<RatioCostTooltip />} cursor={false} />
                         {(costTopModels ?? []).map((m, i) => (
                           <Bar
@@ -1931,16 +1952,18 @@ export default function DailyUsageChart({
                             name="Others"
                           />
                         )}
-                        <Line
-                          yAxisId="right"
-                          type="monotone"
-                          dataKey="costPerMillionTokens"
-                          stroke={COLORS.price}
-                          strokeWidth={2}
-                          dot={false}
-                          activeDot={{ r: 4, fill: COLORS.price, stroke: "#fff", strokeWidth: 1 }}
-                          name="Avg cost / 1M"
-                        />
+                        {costDetail && (
+                          <Line
+                            yAxisId="right"
+                            type="monotone"
+                            dataKey="costPerMillionTokens"
+                            stroke={COLORS.price}
+                            strokeWidth={2}
+                            dot={false}
+                            activeDot={{ r: 4, fill: COLORS.price, stroke: "#fff", strokeWidth: 1 }}
+                            name="Avg cost / 1M"
+                          />
+                        )}
                       </ComposedChart>
                     </ResponsiveContainer>
                   </div>
@@ -1959,10 +1982,14 @@ export default function DailyUsageChart({
                             <tr>
                               <th className="w-[20%] px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase overflow-hidden">Model</th>
                               <SortHeader className="w-[12%]" field="totalCost" sortBy={costSortBy} sortOrder={costSortOrder} onSort={handleCostSort}>Total Cost</SortHeader>
-                              <SortHeader className="w-[12%]" field="costPerMillionTokens" sortBy={costSortBy} sortOrder={costSortOrder} onSort={handleCostSort}>Avg cost / 1M</SortHeader>
-                              <SortHeader className="w-[12%]" field="inputCost" sortBy={costSortBy} sortOrder={costSortOrder} onSort={handleCostSort}>Input Cost</SortHeader>
-                              <SortHeader className="w-[12%]" field="cacheCost" sortBy={costSortBy} sortOrder={costSortOrder} onSort={handleCostSort}>Cache Cost</SortHeader>
-                              <SortHeader className="w-[12%]" field="outputCost" sortBy={costSortBy} sortOrder={costSortOrder} onSort={handleCostSort}>Output Cost</SortHeader>
+                              {costDetail && (
+                                <>
+                                  <SortHeader className="w-[12%]" field="costPerMillionTokens" sortBy={costSortBy} sortOrder={costSortOrder} onSort={handleCostSort}>Avg cost / 1M</SortHeader>
+                                  <SortHeader className="w-[12%]" field="inputCost" sortBy={costSortBy} sortOrder={costSortOrder} onSort={handleCostSort}>Input Cost</SortHeader>
+                                  <SortHeader className="w-[12%]" field="cacheCost" sortBy={costSortBy} sortOrder={costSortOrder} onSort={handleCostSort}>Cache Cost</SortHeader>
+                                  <SortHeader className="w-[12%]" field="outputCost" sortBy={costSortBy} sortOrder={costSortOrder} onSort={handleCostSort}>Output Cost</SortHeader>
+                                </>
+                              )}
                               <SortHeader className="w-[10%]" field="count" sortBy={costSortBy} sortOrder={costSortOrder} onSort={handleCostSort}>Requests</SortHeader>
                               <SortHeader className="w-[10%]" field="avgCostPerReq" sortBy={costSortBy} sortOrder={costSortOrder} onSort={handleCostSort}>Avg cost / req</SortHeader>
                             </tr>
@@ -1985,10 +2012,14 @@ export default function DailyUsageChart({
                                 >
                                   <td className="px-4 py-3 text-sm font-medium text-gray-900 overflow-hidden">{model.displayName}</td>
                                   <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden">{formatCost(model.totalCost)}</td>
-                                  <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden">{formatCost(model.costPerMillionTokens)}</td>
-                                  <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden">{formatCost(inputCost)}</td>
-                                  <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden">{formatCost(cacheCost)}</td>
-                                  <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden">{formatCost(outputCost)}</td>
+                                  {costDetail && (
+                                    <>
+                                      <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden">{formatCost(model.costPerMillionTokens)}</td>
+                                      <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden">{formatCost(inputCost)}</td>
+                                      <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden">{formatCost(cacheCost)}</td>
+                                      <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden">{formatCost(outputCost)}</td>
+                                    </>
+                                  )}
                                   <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden"><AnimatedCell value={model.count} /></td>
                                   <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden">{formatCost(avgCostPerReq)}</td>
                                 </tr>
@@ -2004,10 +2035,14 @@ export default function DailyUsageChart({
                           className="text-xs border border-gray-200 rounded px-2 py-1.5 bg-white text-gray-700 w-full"
                         >
                           <option value="totalCost">Total Cost</option>
-                          <option value="costPerMillionTokens">Avg Cost / 1M</option>
-                          <option value="inputCost">Input Cost</option>
-                          <option value="cacheCost">Cache Cost</option>
-                          <option value="outputCost">Output Cost</option>
+                          {costDetail && (
+                            <>
+                              <option value="costPerMillionTokens">Avg Cost / 1M</option>
+                              <option value="inputCost">Input Cost</option>
+                              <option value="cacheCost">Cache Cost</option>
+                              <option value="outputCost">Output Cost</option>
+                            </>
+                          )}
                           <option value="count">Requests</option>
                           <option value="avgCostPerReq">Avg Cost / Req</option>
                         </select>
@@ -2038,22 +2073,26 @@ export default function DailyUsageChart({
                                     <p className="text-xs text-gray-500">Total Cost</p>
                                     <p className="text-sm font-semibold text-gray-900">{formatCost(model.totalCost)}</p>
                                   </div>
-                                  <div>
-                                    <p className="text-xs text-gray-500">Avg cost / 1M</p>
-                                    <p className="text-sm font-semibold text-gray-900">{formatCost(model.costPerMillionTokens)}</p>
-                                  </div>
-                                  <div>
-                                    <p className="text-xs text-gray-500">Input Cost</p>
-                                    <p className="text-sm font-semibold text-gray-900">{formatCost(inputCost)}</p>
-                                  </div>
-                                  <div>
-                                    <p className="text-xs text-gray-500">Cache Cost</p>
-                                    <p className="text-sm font-semibold text-gray-900">{formatCost(cacheCost)}</p>
-                                  </div>
-                                  <div>
-                                    <p className="text-xs text-gray-500">Output Cost</p>
-                                    <p className="text-sm font-semibold text-gray-900">{formatCost(outputCost)}</p>
-                                  </div>
+                                  {costDetail && (
+                                    <>
+                                      <div>
+                                        <p className="text-xs text-gray-500">Avg cost / 1M</p>
+                                        <p className="text-sm font-semibold text-gray-900">{formatCost(model.costPerMillionTokens)}</p>
+                                      </div>
+                                      <div>
+                                        <p className="text-xs text-gray-500">Input Cost</p>
+                                        <p className="text-sm font-semibold text-gray-900">{formatCost(inputCost)}</p>
+                                      </div>
+                                      <div>
+                                        <p className="text-xs text-gray-500">Cache Cost</p>
+                                        <p className="text-sm font-semibold text-gray-900">{formatCost(cacheCost)}</p>
+                                      </div>
+                                      <div>
+                                        <p className="text-xs text-gray-500">Output Cost</p>
+                                        <p className="text-sm font-semibold text-gray-900">{formatCost(outputCost)}</p>
+                                      </div>
+                                    </>
+                                  )}
                                   <div>
                                     <p className="text-xs text-gray-500">Requests</p>
                                     <p className="text-sm font-semibold text-gray-900">{formatNumber(model.count, compact)}</p>
