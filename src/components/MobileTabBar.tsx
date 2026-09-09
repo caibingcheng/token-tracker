@@ -2,12 +2,15 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
 
 interface MobileTabBarProps {
   onLogout: () => void;
   previewActive: boolean;
   onPreviewToggle: () => void;
 }
+
+const LOGOUT_CONFIRM_MS = 3000;
 
 export default function MobileTabBar({
   onLogout,
@@ -16,6 +19,31 @@ export default function MobileTabBar({
 }: MobileTabBarProps) {
   const pathname = usePathname();
   const isAdmin = pathname?.startsWith("/admin") ?? false;
+  // Logout 二次确认：首次点击进入确认态，3 秒内再点才退出，超时自动复位
+  const [confirmingLogout, setConfirmingLogout] = useState(false);
+  const logoutTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (logoutTimeoutRef.current) {
+        clearTimeout(logoutTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  const handleLogoutTap = () => {
+    if (confirmingLogout) {
+      onLogout();
+      return;
+    }
+    setConfirmingLogout(true);
+    if (logoutTimeoutRef.current) {
+      clearTimeout(logoutTimeoutRef.current);
+    }
+    logoutTimeoutRef.current = setTimeout(() => {
+      setConfirmingLogout(false);
+    }, LOGOUT_CONFIRM_MS);
+  };
 
   const tabs = [
     {
@@ -63,18 +91,6 @@ export default function MobileTabBar({
           {tabs[0]!.icon}
           {tabs[0]!.label}
         </Link>
-        <button
-          type="button"
-          onClick={previewActive ? undefined : onPreviewToggle}
-          className={tabClass(previewActive)}
-          aria-current={previewActive ? "location" : undefined}
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" />
-            <circle cx="12" cy="12" r="3" />
-          </svg>
-          Public View
-        </button>
         <Link
           href={tabs[1]!.href}
           onClick={previewActive ? onPreviewToggle : undefined}
@@ -85,15 +101,18 @@ export default function MobileTabBar({
         </Link>
         <button
           type="button"
-          onClick={onLogout}
-          className="flex min-h-[56px] flex-1 flex-col items-center justify-center gap-1 text-xs font-medium text-gray-500 hover:text-red-600 transition-colors"
+          onClick={handleLogoutTap}
+          aria-label={confirmingLogout ? "Confirm logout" : "Logout"}
+          className={`flex min-h-[56px] flex-1 flex-col items-center justify-center gap-1 text-xs font-medium transition-colors ${
+            confirmingLogout ? "text-red-600" : "text-gray-500 hover:text-red-600"
+          }`}
         >
           <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
             <polyline points="16 17 21 12 16 7" />
             <line x1="21" y1="12" x2="9" y2="12" />
           </svg>
-          Logout
+          {confirmingLogout ? "Confirm?" : "Logout"}
         </button>
       </div>
     </nav>
