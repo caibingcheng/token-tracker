@@ -1,6 +1,14 @@
 "use client";
 
-import { createContext, useContext, ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useNumberFormat } from "./NumberFormatContext";
@@ -73,6 +81,177 @@ interface AppSidebarProps {
   onPreviewToggle: () => void;
 }
 
+interface SectionNavItem {
+  id: string;
+  label: string;
+  children?: SectionNavItem[];
+}
+
+// Dashboard 页内容锚点（子菜单）：仅 / 路由时在 Dashboard 导航项下展开。
+// 锚点元素由 Dashboard 内容区提供（section/卡片 id 保留），本组件只做滚动监听与点击滚动。
+const DASHBOARD_SECTIONS: SectionNavItem[] = [
+  { id: "heatmap-section", label: "Heatmap" },
+  { id: "stats-section", label: "Stats" },
+  { id: "today-section", label: "Today" },
+  {
+    id: "trends-section",
+    label: "Trends",
+    children: [
+      { id: "trends-token", label: "Token" },
+      { id: "trends-cost", label: "Cost" },
+      { id: "trends-latency", label: "Latency" },
+    ],
+  },
+  { id: "records-section", label: "Records" },
+];
+
+function DashboardSectionsNav() {
+  const [activeId, setActiveId] = useState<string | null>(
+    DASHBOARD_SECTIONS[0]?.id ?? null
+  );
+  const [activeChildId, setActiveChildId] = useState<string | null>(null);
+  const isClickScrollingRef = useRef(false);
+  const clickTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const rafRef = useRef<number | null>(null);
+
+  const updateActiveFromScroll = useCallback(() => {
+    if (isClickScrollingRef.current) return;
+
+    // 以 viewport 顶部往下 25% 处作为当前栏目判定线
+    const scrollOffset = window.innerHeight * 0.25;
+    let currentId = DASHBOARD_SECTIONS[0]?.id ?? null;
+    for (const { id } of DASHBOARD_SECTIONS) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      const rect = el.getBoundingClientRect();
+      if (rect.top <= scrollOffset) {
+        currentId = id;
+      } else {
+        break;
+      }
+    }
+    setActiveId(currentId);
+
+    // Trends 内部子锚点判定（卡片条件渲染，可能不存在）
+    let currentChildId: string | null = null;
+    if (currentId === "trends-section") {
+      const trends = DASHBOARD_SECTIONS.find((s) => s.id === currentId);
+      for (const child of trends?.children ?? []) {
+        const el = document.getElementById(child.id);
+        if (!el) continue;
+        const rect = el.getBoundingClientRect();
+        if (rect.top <= scrollOffset) {
+          currentChildId = child.id;
+        } else {
+          break;
+        }
+      }
+    }
+    setActiveChildId(currentChildId);
+  }, []);
+
+  useEffect(() => {
+    const handleScroll = () => {
+      if (rafRef.current) return;
+      rafRef.current = requestAnimationFrame(() => {
+        updateActiveFromScroll();
+        rafRef.current = null;
+      });
+    };
+
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    updateActiveFromScroll();
+
+    return () => {
+      window.removeEventListener("scroll", handleScroll);
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+      }
+    };
+  }, [updateActiveFromScroll]);
+
+  useEffect(() => {
+    return () => {
+      if (clickTimeoutRef.current) {
+        clearTimeout(clickTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  const scrollTo = (id: string) => {
+    const isChild = DASHBOARD_SECTIONS.some((s) =>
+      (s.children ?? []).some((c) => c.id === id)
+    );
+    const parentId = isChild ? "trends-section" : id;
+
+    setActiveId(parentId);
+    setActiveChildId(isChild ? id : null);
+    isClickScrollingRef.current = true;
+    if (clickTimeoutRef.current) {
+      clearTimeout(clickTimeoutRef.current);
+    }
+    clickTimeoutRef.current = setTimeout(() => {
+      isClickScrollingRef.current = false;
+      updateActiveFromScroll();
+    }, 600);
+
+    // 子锚点对应卡片可能未渲染（条件显示），回退滚动到 Trends section
+    const target =
+      document.getElementById(id) ??
+      (isChild ? document.getElementById("trends-section") : null);
+    if (target) {
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  };
+
+  return (
+    <div className="ml-4 mt-1 space-y-0.5 border-l border-gray-200 pl-3 pb-1">
+      {DASHBOARD_SECTIONS.map(({ id, label, children }) => {
+        const isActive = activeId === id;
+        return (
+          <div key={id} className="flex flex-col">
+            <button
+              type="button"
+              onClick={() => scrollTo(id)}
+              className={`block w-full rounded px-3 py-1.5 text-left text-sm transition-colors ${
+                isActive
+                  ? "bg-blue-50 font-medium text-blue-700"
+                  : "text-gray-500 hover:bg-gray-50 hover:text-gray-900"
+              }`}
+              aria-current={isActive ? "location" : undefined}
+            >
+              {label}
+            </button>
+            {children && (
+              <div className="ml-3 mt-0.5 space-y-0.5 border-l border-gray-200 pl-2.5">
+                {children.map((child) => {
+                  const isChildActive =
+                    isActive && activeChildId === child.id;
+                  return (
+                    <button
+                      key={child.id}
+                      type="button"
+                      onClick={() => scrollTo(child.id)}
+                      className={`block w-full rounded px-2.5 py-1 text-left text-xs transition-colors ${
+                        isChildActive
+                          ? "bg-blue-50 font-medium text-blue-700"
+                          : "text-gray-400 hover:bg-gray-50 hover:text-gray-600"
+                      }`}
+                      aria-current={isChildActive ? "location" : undefined}
+                    >
+                      {child.label}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function AppSidebar({
   actions,
   onPreviewToggle,
@@ -109,6 +288,7 @@ export default function AppSidebar({
           </svg>
           Dashboard
         </Link>
+        {!isAdmin && <DashboardSectionsNav />}
         <Link
           href="/admin"
           className={navItemClass(isAdmin)}

@@ -23,10 +23,6 @@ export default function AdminLayout({
   return (
     <main className="min-h-screen bg-gray-50 p-4 pb-20 md:p-8 md:pb-8">
       <div className="max-w-7xl mx-auto">
-        <div className="mb-4">
-          <h1 className="text-xl md:text-3xl font-bold">Gateway Admin</h1>
-        </div>
-
         {/* 移动端横向 tab；桌面端导航在左侧 AppSidebar（/admin 下展开子导航） */}
         <div className="md:hidden flex flex-wrap rounded-md border border-gray-300 bg-white mb-6">
           {TABS.map(([id, label]) => {

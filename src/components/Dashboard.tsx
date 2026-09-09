@@ -637,18 +637,13 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
         </div>
         <div className="hidden md:block max-w-7xl mx-auto">
           <div className="mb-6">
-            <div className="min-w-0">
-              <h1 className="text-xl md:text-3xl font-bold truncate">
-                Token Tracker Dashboard
-              </h1>
-              {lastActiveAt && (
-                <p className="text-xs text-gray-400 mt-1">
-                  Last active token at {lastActiveAt.toLocaleString()}
-                </p>
-              )}
-            </div>
+            {lastActiveAt && (
+              <p className="text-xs text-gray-400 mb-3">
+                Last active token at {lastActiveAt.toLocaleString()}
+              </p>
+            )}
 
-            <div className="mt-3 flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <select
                 value={selectedAgent}
                 onChange={handleAgentChange}
