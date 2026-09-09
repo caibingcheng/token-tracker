@@ -69,11 +69,12 @@ export const routingRules = sqliteTable(
     createdAt: text("created_at").$defaultFn(() => new Date().toISOString()),
   },
   (table) => [
-    // 同名同协议允许挂多个不同 upstream；同 upstream 重复禁止
-    uniqueIndex("uq_routing_rules_name_protocol_upstream").on(
+    // 同名同协议允许挂多个不同 upstream；同 upstream 允许挂多个不同 targetModel（链内 model 级 failover）
+    uniqueIndex("uq_routing_rules_name_protocol_upstream_model").on(
       table.name,
       table.protocol,
-      table.upstreamId
+      table.upstreamId,
+      table.targetModel
     ),
     index("idx_routing_rules_protocol_name").on(table.protocol, table.name),
   ]

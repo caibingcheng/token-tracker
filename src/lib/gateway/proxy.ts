@@ -340,7 +340,10 @@ export async function handleProxyRequest(
   // 手动路由短路：命中即走多目标 failover 链（完全替代自动路由，不回退）；
   // 规则组内每个目标独立 resolve，禁用/不存在的目标跳过并记日志；
   // 无有效目标 → 502 manual_route_unavailable
-  let manualRoute: { virtualName: string; targetModelByUpstream: Map<number, string> } | null = null;
+  // hop 目标配对按链内 upstream 对象引用（非 upstream id）：同名规则允许同 upstream 挂多个
+  // 不同 targetModel（UNIQUE 含 targetModel），链内同一 upstream 可多次出现，
+  // 健康重排 / session 重排均保持对象引用不变，引用级 Map 天然对齐
+  let manualRoute: { virtualName: string; hopTargetModel: Map<UpstreamRoute, string> } | null = null;
   let chain: UpstreamRoute[] = [];
   // 健康过滤时被跳过的不健康候选（兜底成功时自愈清除标记，手动/自动统一）
   const degradedUpstreams = new Set<number>();
@@ -348,15 +351,8 @@ export async function handleProxyRequest(
     const rules = await deps.loadRoutingRules();
     const matched = findRoutingRules(model, protocol, rules);
     if (matched.length > 0) {
-      const targetModelByUpstream = new Map<number, string>();
+      const hopTargetModel = new Map<UpstreamRoute, string>();
       for (const rule of matched) {
-        if (targetModelByUpstream.has(rule.upstreamId)) {
-          // 同 upstream 重复规则（不应出现，UNIQUE 已禁止），跳过防止链重复
-          deps.log?.(
-            `[gateway] manual route duplicate target for upstream (id=${rule.upstreamId}) skipped`
-          );
-          continue;
-        }
         const target = upstreams.find((u) => u.id === rule.upstreamId);
         if (!target) {
           deps.log?.(
@@ -364,10 +360,10 @@ export async function handleProxyRequest(
           );
           continue;
         }
-        targetModelByUpstream.set(rule.upstreamId, rule.targetModel);
+        hopTargetModel.set(target, rule.targetModel);
         chain.push(target);
       }
-      if (targetModelByUpstream.size === 0 || chain.length === 0) {
+      if (hopTargetModel.size === 0 || chain.length === 0) {
         return proxyError(
           502,
           "Manual route target unavailable: no valid upstream targets",
@@ -379,7 +375,7 @@ export async function handleProxyRequest(
       const healthyChain: UpstreamRoute[] = [];
       const fallbackChain: UpstreamRoute[] = [];
       for (const target of chain) {
-        const targetModel = targetModelByUpstream.get(target.id)!;
+        const targetModel = hopTargetModel.get(target)!;
         const upDown = deps.health && !(await deps.health.isHealthy(target.id));
         const modelDown =
           deps.health?.isModelHealthy &&
@@ -392,7 +388,7 @@ export async function handleProxyRequest(
         }
       }
       chain = [...healthyChain, ...fallbackChain];
-      manualRoute = { virtualName: model, targetModelByUpstream };
+      manualRoute = { virtualName: model, hopTargetModel };
     }
   }
 
@@ -489,7 +485,7 @@ export async function handleProxyRequest(
     // per-hop 改写：手动路由多目标各自 targetModel 不同，
     // body / path 改写按当跳 upstream 计算，改用真实 model 名（与自动路由路径一致）
     const hopModel = manualRoute
-      ? manualRoute.targetModelByUpstream.get(upstream.id) ?? model
+      ? manualRoute.hopTargetModel.get(upstream) ?? model
       : model;
     let hopPath = path;
     let hopBodyBuffer = bodyBuffer;
@@ -654,7 +650,7 @@ export async function handleProxyRequest(
     if (fallbackBusinessResponse) {
       const meta: RecordUsageMeta = {
         model: manualRoute
-          ? manualRoute.targetModelByUpstream.get(defaultUpstream.id) ?? model
+          ? manualRoute.hopTargetModel.get(defaultUpstream) ?? model
           : model,
         provider: defaultUpstream.name,
         agent: virtualKey.name,
@@ -718,7 +714,7 @@ export async function handleProxyRequest(
   const successModel = successUpstream ?? defaultUpstream;
   const meta: RecordUsageMeta = {
     model: manualRoute
-      ? manualRoute.targetModelByUpstream.get(successModel.id) ?? model
+      ? manualRoute.hopTargetModel.get(successModel) ?? model
       : model,
     provider: successModel.name,
     agent: virtualKey.name,

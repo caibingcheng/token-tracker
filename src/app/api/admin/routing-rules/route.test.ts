@@ -132,7 +132,7 @@ describe("routing-rules admin routes - priority & multi-target", () => {
     expect(res2.status).toBe(400);
   });
 
-  it("POST: same name+protocol with different upstream allowed; same upstream → 409", async () => {
+  it("POST: same upstream allowed with different targetModel; identical 4-tuple → 409", async () => {
     const upA = await insertUpstream({ name: "up-a" });
     const upB = await insertUpstream({ name: "up-b" });
     const token = await makeToken();
@@ -157,7 +157,8 @@ describe("routing-rules admin routes - priority & multi-target", () => {
     );
     expect(second.status).toBe(201);
 
-    const dup = await POST(
+    // 同 upstream + 不同 targetModel：允许（UNIQUE 含 targetModel，链内 model 级 failover）
+    const sameUpstreamOtherModel = await POST(
       req("/api/admin/routing-rules", "POST", token, {
         name: "my-alias",
         protocol: "openai",
@@ -165,9 +166,21 @@ describe("routing-rules admin routes - priority & multi-target", () => {
         targetModel: "gpt-4o-c",
       })
     );
+    expect(sameUpstreamOtherModel.status).toBe(201);
+
+    // 完全相同四元组 (name, protocol, upstream, targetModel) → 409
+    const dup = await POST(
+      req("/api/admin/routing-rules", "POST", token, {
+        name: "my-alias",
+        protocol: "openai",
+        upstreamId: upA.id,
+        targetModel: "gpt-4o-a",
+      })
+    );
     expect(dup.status).toBe(409);
     const dupJson = await dup.json();
     expect(dupJson.error).toContain(`upstream ${upA.id}`);
+    expect(dupJson.error).toContain("gpt-4o-a");
   });
 
   it("GET: returns rules sorted by name, protocol, priority", async () => {

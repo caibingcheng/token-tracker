@@ -136,7 +136,7 @@ export const POST = withAuth(async (request: NextRequest) => {
         return NextResponse.json(
           {
             success: false,
-            error: `Routing rule already exists for "${name}" (${protocol}, upstream ${upstreamId})`,
+            error: `Routing rule already exists for "${name}" (${protocol}, upstream ${upstreamId}, model ${targetModel})`,
           },
           { status: 409 }
         );

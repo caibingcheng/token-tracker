@@ -56,6 +56,7 @@ interface ResolvedRoute {
   candidates: CandidateInfo[];
   effective: EffectiveRoute;
   overridden?: boolean;
+  shadowedCandidates?: CandidateInfo[];
 }
 
 interface ManualRouteInfo {
@@ -266,10 +267,12 @@ function RouteSimulationResult({ result, model }: { result: SimRouteResult; mode
           </div>
           <div className="space-y-1">
             {result.candidates.map((c) => {
-              const isWinner = c.upstreamId === result.effective.winner?.upstreamId;
+              const w = result.effective.winner;
+              const isWinner =
+                c.upstreamId === w?.upstreamId && c.matchedPattern === w?.matchedPattern;
               return (
                 <div
-                  key={c.upstreamId}
+                  key={`${c.upstreamId}:${c.matchedPattern}`}
                   className={`flex flex-wrap items-center gap-2 rounded border px-2 py-1.5 text-sm ${
                     isWinner
                       ? "border-green-200 bg-green-50"
@@ -1188,10 +1191,10 @@ export default function ModelsPanel() {
                       >
                         <AdminTd>
                           <CopyableCode className="text-xs">{route.model}</CopyableCode>
-                          {route.source === "auto" && route.overridden && (
+                          {route.overridden && (
                             <span
                               className="ml-1.5 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500"
-                              title="Overridden by a manual route with the same name; manual route fully replaces automatic routing"
+                              title="Automatic routing is shadowed by a manual route with the same name; manual route fully replaces automatic routing"
                             >
                               overridden
                             </span>
@@ -1242,10 +1245,12 @@ export default function ModelsPanel() {
                                 </div>
                                 <div className="space-y-1">
                                   {route.candidates.map((c) => {
-                                    const isWinner = c.upstreamId === route.effective.winner?.upstreamId;
+                                    const w = route.effective.winner;
+                                    const isWinner =
+                                      c.upstreamId === w?.upstreamId && c.matchedPattern === w?.matchedPattern;
                                     return (
                                       <div
-                                        key={c.upstreamId}
+                                        key={`${c.upstreamId}:${c.matchedPattern}`}
                                         className={`flex flex-wrap items-center gap-2 rounded border px-2 py-1 ${
                                           isWinner
                                             ? "border-green-200 bg-green-50"
@@ -1266,6 +1271,30 @@ export default function ModelsPanel() {
                                     );
                                   })}
                                 </div>
+                                {route.shadowedCandidates && route.shadowedCandidates.length > 0 && (
+                                  <div className="mt-2">
+                                    <div className="mb-1 font-medium text-gray-500">
+                                      Shadowed automatic routing
+                                    </div>
+                                    <div className="space-y-1 opacity-70">
+                                      {route.shadowedCandidates.map((c) => (
+                                        <div
+                                          key={`${c.upstreamId}:${c.matchedPattern}`}
+                                          className="flex flex-wrap items-center gap-2 rounded border border-gray-200 bg-white px-2 py-1"
+                                        >
+                                          <span>{c.name}</span>
+                                          <span className="text-gray-500">priority {c.priority}</span>
+                                          <CopyableCode className="rounded bg-gray-100 px-1 py-0.5">{c.matchedPattern}</CopyableCode>
+                                          <MatchTypeBadge type={c.matchType} />
+                                          <HealthBadges candidate={c} />
+                                        </div>
+                                      ))}
+                                    </div>
+                                    <p className="mt-1 text-[11px] text-gray-500">
+                                      Manual route fully replaces automatic routing for this model name.
+                                    </p>
+                                  </div>
+                                )}
 {hasConflict && route.effective.winner && (
                                   <p className="mt-2 text-[11px] text-gray-500">
                                     Winner is determined by exact match first, then lowest priority number.
@@ -1298,10 +1327,10 @@ export default function ModelsPanel() {
                       <div className="flex items-center justify-between gap-2">
                         <div className="min-w-0">
                           <CopyableCode className="text-xs">{route.model}</CopyableCode>
-                          {route.source === "auto" && route.overridden && (
+                          {route.overridden && (
                             <span
                               className="ml-1.5 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500"
-                              title="Overridden by a manual route with the same name; manual route fully replaces automatic routing"
+                              title="Automatic routing is shadowed by a manual route with the same name; manual route fully replaces automatic routing"
                             >
                               overridden
                             </span>
@@ -1343,10 +1372,12 @@ export default function ModelsPanel() {
                         </div>
                         <div className="space-y-1">
                           {route.candidates.map((c) => {
-                            const isWinner = c.upstreamId === route.effective.winner?.upstreamId;
+                            const w = route.effective.winner;
+                            const isWinner =
+                              c.upstreamId === w?.upstreamId && c.matchedPattern === w?.matchedPattern;
                             return (
                               <div
-                                key={c.upstreamId}
+                                key={`${c.upstreamId}:${c.matchedPattern}`}
                                 className={`flex flex-wrap items-center gap-2 rounded border px-2 py-1 ${
                                   isWinner
                                     ? "border-green-200 bg-green-50"
@@ -1367,6 +1398,30 @@ export default function ModelsPanel() {
                             );
                           })}
                         </div>
+                        {route.shadowedCandidates && route.shadowedCandidates.length > 0 && (
+                          <div className="mt-2">
+                            <div className="mb-1 font-medium text-gray-500">
+                              Shadowed automatic routing
+                            </div>
+                            <div className="space-y-1 opacity-70">
+                              {route.shadowedCandidates.map((c) => (
+                                <div
+                                  key={`${c.upstreamId}:${c.matchedPattern}`}
+                                  className="flex flex-wrap items-center gap-2 rounded border border-gray-200 bg-white px-2 py-1"
+                                >
+                                  <span>{c.name}</span>
+                                  <span className="text-gray-500">priority {c.priority}</span>
+                                  <CopyableCode className="rounded bg-gray-100 px-1 py-0.5">{c.matchedPattern}</CopyableCode>
+                                  <MatchTypeBadge type={c.matchType} />
+                                  <HealthBadges candidate={c} />
+                                </div>
+                              ))}
+                            </div>
+                            <p className="mt-1 text-[11px] text-gray-500">
+                              Manual route fully replaces automatic routing for this model name.
+                            </p>
+                          </div>
+                        )}
                         {hasConflict && route.effective.winner && (
                           <p className="mt-2 text-[11px] text-gray-500">
                             Winner is determined by exact match first, then lowest priority number.

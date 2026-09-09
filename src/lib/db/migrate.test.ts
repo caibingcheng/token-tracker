@@ -266,7 +266,7 @@ describe("migrateRoutingRulesTable", () => {
       { name: "other-alias", protocol: "openai", upstream_id: 2, target_model: "deepseek-chat", priority: 0 },
     ]);
 
-    // 旧约束已换成新约束：同名同协议不同 upstream 允许插入（旧 UNIQUE 下会失败）
+    // 新约束：同名同协议不同 upstream 允许插入
     db3.exec(
       `INSERT INTO routing_rules (name, protocol, upstream_id, target_model, priority) VALUES ('my-alias', 'openai', 2, 'gpt-4o-other', 1)`
     );
@@ -275,10 +275,19 @@ describe("migrateRoutingRulesTable", () => {
       .get();
     expect(inserted).toEqual({ upstream_id: 2, priority: 1 });
 
-    // 同 name+protocol+upstream 重复 → 约束拒绝
+    // 同 upstream + 不同 targetModel 允许（链内 model 级 failover）
+    db3.exec(
+      `INSERT INTO routing_rules (name, protocol, upstream_id, target_model, priority) VALUES ('my-alias', 'openai', 1, 'gpt-4o-alt', 1)`
+    );
+    const insertedAlt: any = db3
+      .prepare(`SELECT target_model, priority FROM routing_rules WHERE name = 'my-alias' AND upstream_id = 1 AND target_model = 'gpt-4o-alt'`)
+      .get();
+    expect(insertedAlt).toEqual({ target_model: 'gpt-4o-alt', priority: 1 });
+
+    // 完全相同四元组 (name, protocol, upstream, target_model) → 约束拒绝
     expect(() =>
       db3.exec(
-        `INSERT INTO routing_rules (name, protocol, upstream_id, target_model) VALUES ('my-alias', 'openai', 1, 'dup')`
+        `INSERT INTO routing_rules (name, protocol, upstream_id, target_model) VALUES ('my-alias', 'openai', 1, 'gpt-4o-real')`
       )
     ).toThrow(/UNIQUE/i);
   });
@@ -287,10 +296,63 @@ describe("migrateRoutingRulesTable", () => {
     migrateRoutingRulesTable(db3);
     migrateRoutingRulesTable(db3);
     const count: any = db3.prepare(`SELECT COUNT(*) AS c FROM routing_rules`).get();
-    expect(count.c).toBe(3); // 2 条旧数据 + 1 条迁移后插入
+    expect(count.c).toBe(4); // 2 条旧数据 + 2 条迁移后插入
     expect(db3.prepare(`PRAGMA table_info(routing_rules)`).all().map((c: any) => c.name)).toEqual(
       expect.arrayContaining(["priority"])
     );
+  });
+
+  it("migrates a current-version DB (old named unique index) to the 4-column constraint", () => {
+    // 模拟 drizzle 建的当前版本库：priority 已存在，但唯一索引仍是旧的 3 列命名索引
+    const dir = mkdtempSync(join(tmpdir(), "tt-migrate-rr2-"));
+    const db = new Database(join(dir, "test.db"));
+    db.exec(`
+      CREATE TABLE upstreams (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        protocol TEXT NOT NULL,
+        base_url TEXT NOT NULL,
+        priority INTEGER NOT NULL DEFAULT 0,
+        enabled INTEGER NOT NULL DEFAULT 1
+      );
+      INSERT INTO upstreams (name, protocol, base_url) VALUES ('up-a', 'openai', 'https://a.example');
+      CREATE TABLE routing_rules (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        protocol TEXT NOT NULL,
+        upstream_id INTEGER NOT NULL,
+        target_model TEXT NOT NULL,
+        priority INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      );
+      CREATE UNIQUE INDEX uq_routing_rules_name_protocol_upstream
+        ON routing_rules(name, protocol, upstream_id);
+      INSERT INTO routing_rules (name, protocol, upstream_id, target_model, priority) VALUES
+        ('my-alias', 'openai', 1, 'gpt-4o-real', 0);
+    `);
+
+    migrateRoutingRulesTable(db);
+
+    // 新 4 列唯一索引已建立，旧命名索引已随表重建消失
+    const indexNames: string[] = db.prepare(`PRAGMA index_list(routing_rules)`).all().map((i: any) => i.name);
+    expect(indexNames).toContain("uq_routing_rules_name_protocol_upstream_model");
+    expect(indexNames).not.toContain("uq_routing_rules_name_protocol_upstream");
+
+    // 数据保留；同 upstream 不同 targetModel 允许；四元组重复拒绝
+    const row: any = db.prepare(`SELECT target_model, priority FROM routing_rules WHERE name = 'my-alias'`).get();
+    expect(row).toEqual({ target_model: "gpt-4o-real", priority: 0 });
+    db.exec(`INSERT INTO routing_rules (name, protocol, upstream_id, target_model, priority) VALUES ('my-alias', 'openai', 1, 'gpt-4o-alt', 1)`);
+    expect(() =>
+      db.exec(`INSERT INTO routing_rules (name, protocol, upstream_id, target_model) VALUES ('my-alias', 'openai', 1, 'gpt-4o-real')`)
+    ).toThrow(/UNIQUE/i);
+
+    // 幂等：再次运行不重建、不丢数据
+    migrateRoutingRulesTable(db);
+    const count: any = db.prepare(`SELECT COUNT(*) AS c FROM routing_rules`).get();
+    expect(count.c).toBe(2);
+
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
   });
 });
 
