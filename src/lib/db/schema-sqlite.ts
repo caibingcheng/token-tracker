@@ -46,6 +46,7 @@ export const upstreams = sqliteTable("upstreams", {
   balance: text("balance"),
   balanceUpdatedAt: text("balance_updated_at"),
   proxyUrlEncrypted: text("proxy_url_encrypted"), // AES-256-GCM，NULL = 直连
+  headerTransforms: text("header_transforms"), // JSON: HeaderTransform[]，出站 header 变换（最后一棒）
   createdAt: text("created_at").$defaultFn(() => new Date().toISOString()),
 });
 

@@ -2835,3 +2835,137 @@ describe("handleProxyRequest - responses create (POST /v1/responses)", () => {
     expect(markModelUnhealthy).toHaveBeenCalledWith(1, "gpt-4o");
   });
 });
+
+describe("handleProxyRequest - header transforms", () => {
+  const fetchMock = vi.fn();
+
+  const okResponse = () =>
+    new Response(JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+
+  beforeEach(() => {
+    vi.stubGlobal("fetch", fetchMock);
+    // 每次调用新建 Response（同一 body 被多次消费会 locked）
+    fetchMock.mockImplementation(() => Promise.resolve(okResponse()));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    fetchMock.mockReset();
+  });
+
+  const upstreamWithTransforms = (transforms: unknown) =>
+    mkUpstream({
+      id: 1,
+      name: "zen",
+      baseUrl: "https://zen.example",
+      headerTransforms: transforms as never,
+    });
+
+  async function send(body: unknown, clientHeaders: Record<string, string> = {}) {
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good", ...clientHeaders },
+        body,
+      }),
+      mkDeps({
+        loadUpstreams: vi.fn(async () => [upstreamWithTransforms(TRANSFORMS)]),
+        resolveUpstreamKeys: vi.fn(async () => ["key-1"]),
+      })
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    const calls = fetchMock.mock.calls;
+    const [, init] = calls[calls.length - 1] as [string, RequestInit];
+    return new Headers(init.headers);
+  }
+
+  const TRANSFORMS = [
+    {
+      id: "ht-aaaa0001",
+      header: "x-opencode-session",
+      value: "tt-${var.sessionId}",
+      mode: "fill",
+      enabled: true,
+    },
+    {
+      id: "ht-aaaa0002",
+      header: "x-opencode-client",
+      value: "pi-${var.model}-${var.keyName}-${var.upstream}",
+      mode: "override",
+      enabled: true,
+    },
+    {
+      id: "ht-aaaa0003",
+      header: "x-disabled",
+      value: "nope",
+      mode: "override",
+      enabled: false,
+    },
+  ];
+
+  it("applies fill/override transforms and expands variables per hop", async () => {
+    const headers = await send({
+      model: "gpt-4o",
+      messages: [{ role: "user", content: "hi" }],
+    });
+    expect(headers.get("x-opencode-client")).toBe("pi-gpt-4o-claude-code-zen");
+    // sessionId 懒计算：与 session 模块指纹同源（同 body/model/vk/protocol）
+    const expectedSession = buildSessionId(
+      { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+      "gpt-4o",
+      1,
+      "openai"
+    );
+    expect(headers.get("x-opencode-session")).toBe(`tt-${expectedSession}`);
+    expect(headers.get("x-disabled")).toBeNull();
+    // 真实 key 照常注入
+    expect(headers.get("authorization")).toBe("Bearer key-1");
+  });
+
+  it("fill keeps client-sent header, override replaces it", async () => {
+    const headers = await send(
+      { model: "gpt-4o", messages: [] },
+      { "x-opencode-session": "client-sess", "x-opencode-client": "client-cli" }
+    );
+    expect(headers.get("x-opencode-session")).toBe("client-sess");
+    expect(headers.get("x-opencode-client")).toBe("pi-gpt-4o-claude-code-zen");
+  });
+
+  it("sessionId is stable for same conversation and changes with first user message", async () => {
+    const body1 = { model: "gpt-4o", messages: [{ role: "user", content: "q1" }] };
+    const h1 = await send(body1);
+    const h2 = await send(body1);
+    expect(h1.get("x-opencode-session")).toBe(h2.get("x-opencode-session"));
+
+    const h3 = await send({
+      model: "gpt-4o",
+      messages: [{ role: "user", content: "q2" }],
+    });
+    expect(h3.get("x-opencode-session")).not.toBe(h1.get("x-opencode-session"));
+  });
+
+  it("does not set transform headers when upstream has none", async () => {
+    fetchMock.mockReset();
+    fetchMock.mockImplementation(() => Promise.resolve(okResponse()));
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", messages: [] },
+      }),
+      mkDeps({
+        loadUpstreams: vi.fn(async () => [
+          mkUpstream({ id: 1, name: "plain", baseUrl: "https://plain.example" }),
+        ]),
+        resolveUpstreamKeys: vi.fn(async () => ["key-1"]),
+      })
+    );
+    await res.text();
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const headers = new Headers(init.headers);
+    expect(headers.get("x-opencode-session")).toBeNull();
+    expect(headers.get("x-opencode-client")).toBeNull();
+  });
+});

@@ -6,6 +6,7 @@ import { PROVIDER_PRESETS } from "@/lib/provider-presets";
 import UpstreamModelsManager from "./UpstreamModelsManager";
 import { CopyableCode } from "./CopyableCode";
 import ActionMenu from "./ActionMenu";
+import type { HeaderTransform } from "@/lib/gateway/header-transforms";
 
 export interface UpstreamItem {
   id: number;
@@ -23,6 +24,7 @@ export interface UpstreamItem {
   balanceUpdatedAt: string | null;
   hasProxy: boolean;
   proxyDisplay: string | null;
+  headerTransforms: HeaderTransform[];
   createdAt: string;
 }
 
@@ -84,6 +86,7 @@ export default function UpstreamsPanel() {
 
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [formKeys, setFormKeys] = useState<string[]>([""]);
+  const [formTransforms, setFormTransforms] = useState<HeaderTransform[]>([]);
   const [formKeyTests, setFormKeyTests] = useState<Record<number, FormKeyTestResult | null>>({});
   const [formKeyShown, setFormKeyShown] = useState<Record<number, boolean>>({});
   const [modelPicker, setModelPicker] = useState<ModelPickerState | null>(null);
@@ -169,6 +172,8 @@ export default function UpstreamsPanel() {
     } else if (editingId && clearProxy) {
       payload.proxyUrl = null;
     }
+    // header transforms 全量替换（前端数组操作后整体提交）
+    payload.headerTransforms = formTransforms;
     const newKeys = formKeys.map((k) => k.trim()).filter(Boolean);
     try {
       const res = editingId
@@ -210,6 +215,7 @@ export default function UpstreamsPanel() {
       }
       setForm(EMPTY_FORM);
       setFormKeys([""]);
+      setFormTransforms([]);
       setFormKeyTests({});
       setFormKeyShown({});
       setEditingId(null);
@@ -236,6 +242,8 @@ export default function UpstreamsPanel() {
     });
     setClearProxy(false);
     setFormKeys([""]);
+    // 浅拷贝数组 + 展开条目，避免直接改列表缓存
+    setFormTransforms(u.headerTransforms.map((t) => ({ ...t })));
     setFormKeyTests({});
     setFormKeyShown({});
     setPendingKeyEnabled({});
@@ -375,6 +383,27 @@ export default function UpstreamsPanel() {
     setFormKeys((prev) => [...prev, ""]);
   };
 
+  // Header transforms：只操作前端内存数组，随 upstream 保存整体提交
+  const addTransformRow = () => {
+    setFormTransforms((prev) => [
+      ...prev,
+      {
+        id: "ht-" + crypto.randomUUID().slice(0, 8),
+        header: "",
+        value: "",
+        mode: "fill",
+        enabled: true,
+      },
+    ]);
+  };
+
+  const removeTransformRow = (index: number) => {
+    setFormTransforms((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const updateTransformRow = (index: number, patch: Partial<HeaderTransform>) => {
+    setFormTransforms((prev) => prev.map((t, i) => (i === index ? { ...t, ...patch } : t)));
+  };
   const removeFormKeyRow = (index: number) => {
     setFormKeys((prev) => prev.filter((_, i) => i !== index));
     setFormKeyTests((prev) => {
@@ -735,6 +764,77 @@ export default function UpstreamsPanel() {
             </button>
           </div>
           <div className="md:col-span-3">
+            <label className="mb-1 block text-xs text-gray-600">
+              Header Transforms{" "}
+              <span className="text-gray-400">
+                (optional outbound headers; saved with this upstream)
+              </span>
+            </label>
+            <div className="space-y-2">
+              {formTransforms.map((t, index) => (
+                <div key={t.id} className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="text"
+                    value={t.header}
+                    onChange={(e) => updateTransformRow(index, { header: e.target.value })}
+                    placeholder="header name"
+                    autoComplete="off"
+                    className="min-w-0 w-40 flex-none rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                  <input
+                    type="text"
+                    value={t.value}
+                    onChange={(e) => updateTransformRow(index, { value: e.target.value })}
+                    placeholder="value, e.g. tt-${var.sessionId}"
+                    autoComplete="off"
+                    className="min-w-0 flex-1 rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                  <label className="flex shrink-0 cursor-pointer items-center gap-1.5 text-xs text-gray-500">
+                    <input
+                      type="checkbox"
+                      checked={t.mode === "override"}
+                      onChange={(e) =>
+                        updateTransformRow(index, { mode: e.target.checked ? "override" : "fill" })
+                      }
+                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    Override if client sends this header
+                  </label>
+                  <label className="flex shrink-0 cursor-pointer items-center gap-1.5 text-xs text-gray-500">
+                    <input
+                      type="checkbox"
+                      checked={t.enabled}
+                      onChange={(e) => updateTransformRow(index, { enabled: e.target.checked })}
+                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    Enabled
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => removeTransformRow(index)}
+                    className="shrink-0 rounded border border-gray-300 px-3 py-2 text-xs text-gray-600 hover:bg-gray-50"
+                    title="Remove header transform"
+                  >
+                    −
+                  </button>
+                </div>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={addTransformRow}
+              className="mt-2 rounded border border-dashed border-gray-300 px-3 py-1.5 text-xs text-gray-500 hover:bg-gray-50"
+            >
+              + Add header transform
+            </button>
+            <p className="mt-1 text-[10px] text-gray-400">
+              Variables: {"${var.sessionId}"} (per-conversation), {"${var.model}"},{" "}
+              {"${var.keyName}"}, {"${var.upstream}"}. Without &quot;Override&quot;, a header sent by
+              the client is kept as-is (fill mode). Values are stored and returned in
+              plain text — avoid putting credentials here.
+            </p>
+          </div>
+          <div className="md:col-span-3">
             <div className="mb-1 flex items-center justify-between gap-2">
               <label className="min-w-0 text-xs text-gray-600">
                 Enabled Models{" "}
@@ -785,6 +885,7 @@ export default function UpstreamsPanel() {
                   setEditingId(null);
                   setForm(EMPTY_FORM);
                   setFormKeys([""]);
+                  setFormTransforms([]);
                   setFormKeyTests({});
                   setClearProxy(false);
                   setPendingKeyEnabled({});
@@ -903,6 +1004,8 @@ export default function UpstreamsPanel() {
                 <span className="text-xs text-gray-400 truncate max-w-[200px]">{u.baseUrl}</span>
                 <span className="text-xs text-gray-400">
                   {u.enabledModels.length} models · {u.keyCount} keys · p{u.priority}
+                  {u.headerTransforms.length > 0 &&
+                    ` · ${u.headerTransforms.filter((t) => t.enabled).length}/${u.headerTransforms.length} header transforms`}
                 </span>
                 {u.unhealthy && (
                   <span

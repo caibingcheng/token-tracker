@@ -16,6 +16,7 @@ import type { UpstreamRoute, RoutingRule } from "./model-router";
 import { parseEnabledModels } from "./model-router";
 import type { Protocol } from "./model-router";
 import { SessionStore } from "./session";
+import { parseHeaderTransforms } from "./header-transforms";
 import { HealthTracker } from "./health";
 import type { HealthPersistence } from "./health";
 import { probeModel } from "./probe";
@@ -241,6 +242,7 @@ export function createProxyDeps(): ProxyDeps {
             enabled: true,
             enabledModels: row.enabledModels,
             proxyUrl: decryptProxyUrl(row.proxyUrlEncrypted),
+            headerTransforms: parseHeaderTransforms(row.headerTransforms),
           })
         );
       });

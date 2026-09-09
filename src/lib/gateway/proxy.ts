@@ -25,6 +25,8 @@ import { checkQuota, hasQuotaLimits } from "./quota";
 import type { QuotaUsage } from "./quota";
 import { rewriteModelNonStreaming, createSseModelRewriter } from "./response-rewriter";
 import { getProxyDispatcher } from "./proxy-dispatcher";
+import { applyHeaderTransforms } from "./header-transforms";
+import type { HeaderTransform, HeaderTransformContext } from "./header-transforms";
 
 export const MAX_RETRY = 2; // 每个 key 内最多尝试次数
 const NON_STREAMING_TIMEOUT_MS = 60_000;
@@ -157,11 +159,14 @@ export function extractVirtualKeyToken(
   return null;
 }
 
-// 构造发往上游的请求头：剔除客户端认证/传输头，按协议注入真实 key
+// 构造发往上游的请求头：剔除客户端认证/传输头，按协议注入真实 key，
+// 最后一棒应用 upstream header transforms（fill/override 自定义出站 header）
 export function buildUpstreamHeaders(
   clientHeaders: Headers,
   protocol: Protocol,
-  apiKey: string
+  apiKey: string,
+  transforms?: HeaderTransform[],
+  transformContext?: HeaderTransformContext
 ): Headers {
   const headers = new Headers();
   const SKIP = new Set([
@@ -200,6 +205,9 @@ export function buildUpstreamHeaders(
   headers.set("accept-encoding", "identity");
   for (const [key, value] of Object.entries(buildAuthHeaders(protocol, apiKey))) {
     headers.set(key, value);
+  }
+  if (transforms && transforms.length > 0 && transformContext) {
+    applyHeaderTransforms(headers, transforms, transformContext);
   }
   return headers;
 }
@@ -526,7 +534,20 @@ export async function handleProxyRequest(
 
           upstreamResponse = await fetch(targetUrl, {
             method: request.method,
-            headers: buildUpstreamHeaders(request.headers, protocol, apiKey),
+            headers: buildUpstreamHeaders(
+              request.headers,
+              protocol,
+              apiKey,
+              upstream.headerTransforms,
+              {
+                // 会话指纹与 session 粘性同源；单候选链 sessionId 未预计算，懒计算
+                sessionId: () =>
+                  sessionId ?? buildSessionId(bodyJson, model, virtualKey.id, protocol),
+                model: hopModel,
+                keyName: virtualKey.name,
+                upstream: upstream.name,
+              }
+            ),
             body: hopBodyBuffer.length > 0 ? hopBodyBuffer : null,
             duplex: "half",
             redirect: "manual",
@@ -831,7 +852,19 @@ async function handleSubresourcePassthrough(
 
           upstreamResponse = await fetch(targetUrl, {
             method: request.method,
-            headers: buildUpstreamHeaders(request.headers, "openai", apiKey),
+            headers: buildUpstreamHeaders(
+              request.headers,
+              "openai",
+              apiKey,
+              upstream.headerTransforms,
+              {
+                // 辅助端点无请求体 model：会话指纹退化为 path（response id 语义，稳定即可）
+                sessionId: () => buildSessionId(null, path, virtualKey.id, "openai"),
+                model: path,
+                keyName: virtualKey.name,
+                upstream: upstream.name,
+              }
+            ),
             body: bodyBuffer.length > 0 ? bodyBuffer : null,
             duplex: "half",
             redirect: "manual",
