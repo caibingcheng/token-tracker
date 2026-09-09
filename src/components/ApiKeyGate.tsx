@@ -1,6 +1,14 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   getApiKey,
   clearApiKey,
@@ -9,8 +17,10 @@ import {
   apiSetup,
   apiSetupSubmit,
 } from "@/lib/client/api-client";
+import AppSidebar, { SidebarActionsContext } from "./AppSidebar";
 import MobileTabBar from "./MobileTabBar";
 import PublicStatusView from "./PublicStatusView";
+import { NumberFormatProvider } from "./NumberFormatContext";
 
 // 登录后预览公开 Status 面板的切换开关（Dashboard / MobileTabBar 消费）
 interface PublicPreviewContextValue {
@@ -45,6 +55,8 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
   const [statusEnabled, setStatusEnabled] = useState(true);
   // 登录后预览公开面板（替代 children 渲染 PublicStatusView）
   const [previewPublic, setPreviewPublic] = useState(false);
+  // Dashboard 注册到桌面侧栏底部的操作组节点（仅 Dashboard 页存在）
+  const [sidebarActions, setSidebarActions] = useState<ReactNode>(null);
 
   const previewContextValue = useMemo(
     () => ({
@@ -272,31 +284,42 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
   }
 
   return (
-    <PublicPreviewContext.Provider value={previewContextValue}>
-      {/* children 用 display:none 隐藏而非卸载：切换预览时 Dashboard/AdminPanel
+    <NumberFormatProvider>
+      <PublicPreviewContext.Provider value={previewContextValue}>
+        <SidebarActionsContext.Provider value={{ setSidebarActions }}>
+          {/* children 用 display:none 隐藏而非卸载：切换预览时 Dashboard/AdminPanel
           不重新挂载，数据、当前 admin tab、表单状态全部保留，点击即切换 */}
-      <div className={previewPublic ? "hidden" : undefined}>{children}</div>
-      {previewPublic && (
-        <PublicStatusView
-          preview
-          onExit={() => setPreviewPublic(false)}
-          onDisabled={() => setGateView("login")}
-          onLoginRequest={() => setGateView("login")}
-        />
-      )}
-      <MobileTabBar
-        onLogout={handleLogout}
-        previewActive={previewPublic}
-        onPreviewToggle={() => setPreviewPublic((v) => !v)}
-      />
-      <button
-        type="button"
-        onClick={handleLogout}
-        className="hidden md:block fixed bottom-4 right-4 z-50 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs text-gray-500 shadow-sm hover:bg-gray-50 hover:text-red-600 transition-colors"
-        title="Logout"
-      >
-        Logout
-      </button>
-    </PublicPreviewContext.Provider>
+          {/* 桌面端内容区左移让出侧栏宽度；preview 激活时 children 隐藏，无偏移冲突 */}
+          <div className={previewPublic ? "hidden" : "md:pl-56"}>{children}</div>
+          {previewPublic && (
+            <PublicStatusView
+              preview
+              onExit={() => setPreviewPublic(false)}
+              onDisabled={() => setGateView("login")}
+              onLoginRequest={() => setGateView("login")}
+            />
+          )}
+          {!previewPublic && (
+            <AppSidebar
+              actions={sidebarActions}
+              onPreviewToggle={() => setPreviewPublic((v) => !v)}
+            />
+          )}
+          <MobileTabBar
+            onLogout={handleLogout}
+            previewActive={previewPublic}
+            onPreviewToggle={() => setPreviewPublic((v) => !v)}
+          />
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="hidden md:block fixed bottom-4 right-4 z-50 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs text-gray-500 shadow-sm hover:bg-gray-50 hover:text-red-600 transition-colors"
+            title="Logout"
+          >
+            Logout
+          </button>
+        </SidebarActionsContext.Provider>
+      </PublicPreviewContext.Provider>
+    </NumberFormatProvider>
   );
 }

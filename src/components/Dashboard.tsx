@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
-import Link from "next/link";
 import StatsCards, { Stats } from "./StatsCards";
 import RecordsTable from "./RecordsTable";
 import DailyUsageChart, {
@@ -15,13 +14,9 @@ import TodayOverview, { TodayData } from "./TodayOverview";
 import MobileSummary from "./MobileSummary";
 import PriceSimulatorModal from "./PriceSimulatorModal";
 import UsageHeatmap, { HeatmapData } from "./UsageHeatmap";
-import {
-  NumberFormatProvider,
-  useNumberFormat,
-} from "./NumberFormatContext";
 import { getClientTimezoneOffsetMinutes } from "@/lib/timezone-utils";
 import { apiFetch } from "@/lib/client/api-client";
-import { usePublicPreview } from "./ApiKeyGate";
+import { useSidebarActions, NumberFormatToggle } from "./AppSidebar";
 
 interface ModelStat {
   group: string;
@@ -57,245 +52,8 @@ interface DashboardProps {
   priceUpdateTime?: React.ReactNode;
 }
 
-interface SectionNavItem {
-  id: string;
-  label: string;
-  children?: SectionNavItem[];
-}
-
-const SECTIONS: SectionNavItem[] = [
-  { id: "heatmap-section", label: "Heatmap" },
-  { id: "stats-section", label: "Stats" },
-  { id: "today-section", label: "Today" },
-  {
-    id: "trends-section",
-    label: "Trends",
-    children: [
-      { id: "trends-token", label: "Token" },
-      { id: "trends-cost", label: "Cost" },
-      { id: "trends-latency", label: "Latency" },
-    ],
-  },
-  { id: "records-section", label: "Records" },
-];
-
-function SectionNav() {
-  const [activeId, setActiveId] = useState<string | null>(SECTIONS[0]?.id ?? null);
-  const [activeChildId, setActiveChildId] = useState<string | null>(null);
-  const isClickScrollingRef = useRef(false);
-  const clickTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const rafRef = useRef<number | null>(null);
-
-  const updateActiveFromScroll = useCallback(() => {
-    if (isClickScrollingRef.current) return;
-
-    // 以 viewport 顶部往下 25% 处作为当前栏目判定线
-    const scrollOffset = window.innerHeight * 0.25;
-    let currentId = SECTIONS[0]?.id ?? null;
-    for (const { id } of SECTIONS) {
-      const el = document.getElementById(id);
-      if (!el) continue;
-      const rect = el.getBoundingClientRect();
-      if (rect.top <= scrollOffset) {
-        currentId = id;
-      } else {
-        break;
-      }
-    }
-    setActiveId(currentId);
-
-    // Trends 内部子锚点判定（卡片条件渲染，可能不存在）
-    let currentChildId: string | null = null;
-    if (currentId === "trends-section") {
-      const trends = SECTIONS.find((s) => s.id === currentId);
-      for (const child of trends?.children ?? []) {
-        const el = document.getElementById(child.id);
-        if (!el) continue;
-        const rect = el.getBoundingClientRect();
-        if (rect.top <= scrollOffset) {
-          currentChildId = child.id;
-        } else {
-          break;
-        }
-      }
-    }
-    setActiveChildId(currentChildId);
-  }, []);
-
-  useEffect(() => {
-    const handleScroll = () => {
-      if (rafRef.current) return;
-      rafRef.current = requestAnimationFrame(() => {
-        updateActiveFromScroll();
-        rafRef.current = null;
-      });
-    };
-
-    window.addEventListener("scroll", handleScroll, { passive: true });
-    updateActiveFromScroll();
-
-    return () => {
-      window.removeEventListener("scroll", handleScroll);
-      if (rafRef.current) {
-        cancelAnimationFrame(rafRef.current);
-      }
-    };
-  }, [updateActiveFromScroll]);
-
-  useEffect(() => {
-    return () => {
-      if (clickTimeoutRef.current) {
-        clearTimeout(clickTimeoutRef.current);
-      }
-    };
-  }, []);
-
-  const scrollTo = (id: string) => {
-    const isChild = SECTIONS.some((s) =>
-      (s.children ?? []).some((c) => c.id === id)
-    );
-    const parentId = isChild ? "trends-section" : id;
-
-    setActiveId(parentId);
-    setActiveChildId(isChild ? id : null);
-    isClickScrollingRef.current = true;
-    if (clickTimeoutRef.current) {
-      clearTimeout(clickTimeoutRef.current);
-    }
-    clickTimeoutRef.current = setTimeout(() => {
-      isClickScrollingRef.current = false;
-      updateActiveFromScroll();
-    }, 600);
-
-    // 子锚点对应卡片可能未渲染（条件显示），回退滚动到 Trends section
-    const target =
-      document.getElementById(id) ??
-      (isChild ? document.getElementById("trends-section") : null);
-    if (target) {
-      target.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
-  };
-
-  return (
-    <nav
-      className="hidden md:flex fixed left-6 top-1/2 -translate-y-1/2 z-40 flex-col gap-4"
-      aria-label="Section navigation"
-    >
-      {SECTIONS.map(({ id, label, children }) => {
-        const isActive = activeId === id;
-        return (
-          <div key={id} className="flex flex-col">
-            <button
-              type="button"
-              onClick={() => scrollTo(id)}
-              className="group flex items-center gap-3 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50 rounded-md"
-              aria-current={isActive ? "location" : undefined}
-            >
-              <span
-                className={`
-                  inline-flex h-2 w-2 rounded-full transition-all duration-300 ease-out
-                  ${isActive
-                    ? "bg-blue-600 scale-125"
-                    : "bg-gray-300 group-hover:bg-blue-500 group-hover:scale-110"
-                  }
-                `}
-              />
-              <span
-                className={`
-                  text-sm transition-all duration-300 ease-out
-                  ${isActive
-                    ? "translate-x-0 scale-105 font-medium text-gray-900"
-                    : "text-gray-400 group-hover:text-gray-700 group-hover:translate-x-0.5 group-hover:scale-105"
-                  }
-                `}
-              >
-                {label}
-              </span>
-            </button>
-            {children && (
-              <div className="ml-5 mt-1 space-y-0.5 border-l border-gray-200 pl-3">
-                {children.map((child) => {
-                  const isChildActive =
-                    isActive && activeChildId === child.id;
-                  return (
-                    <button
-                      key={child.id}
-                      type="button"
-                      onClick={() => scrollTo(child.id)}
-                      className="group flex items-center gap-2 rounded-md py-0.5 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50"
-                      aria-current={isChildActive ? "location" : undefined}
-                    >
-                      <span
-                        className={`
-                          inline-flex h-1.5 w-1.5 rounded-full transition-all duration-300 ease-out
-                          ${isChildActive
-                            ? "bg-blue-500"
-                            : "bg-gray-300 group-hover:bg-blue-400"
-                          }
-                        `}
-                      />
-                      <span
-                        className={`
-                          text-xs transition-all duration-300 ease-out
-                          ${isChildActive
-                            ? "font-medium text-blue-700"
-                            : "text-gray-400 group-hover:text-gray-600"
-                          }
-                        `}
-                      >
-                        {child.label}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        );
-      })}
-    </nav>
-  );
-}
-
-function NumberFormatToggle() {
-  const { compact, setCompact } = useNumberFormat();
-
-  return (
-    <div
-      className="inline-flex items-center rounded-md overflow-hidden border border-gray-300 bg-white"
-      role="group"
-      aria-label="Number format"
-    >
-      <button
-        type="button"
-        onClick={() => setCompact(false)}
-        aria-pressed={!compact}
-        className={`px-3 py-1.5 text-xs font-medium transition-colors ${
-          !compact
-            ? "bg-blue-600 text-white"
-            : "text-gray-600 hover:bg-gray-50"
-        }`}
-      >
-        123
-      </button>
-      <button
-        type="button"
-        onClick={() => setCompact(true)}
-        aria-pressed={compact}
-        className={`px-3 py-1.5 text-xs font-medium transition-colors ${
-          compact
-            ? "bg-blue-600 text-white"
-            : "text-gray-600 hover:bg-gray-50"
-        }`}
-      >
-        K/M/B
-      </button>
-    </div>
-  );
-}
-
 export default function Dashboard({ priceUpdateTime }: DashboardProps) {
-  const { togglePreview } = usePublicPreview();
+  const { setSidebarActions } = useSidebarActions();
   const [stats, setStats] = useState<Stats | null>(null);
   const [topModels, setTopModels] = useState<ModelStat[]>([]);
   const [totalTopModels, setTotalTopModels] = useState<ModelStat[]>([]);
@@ -346,6 +104,28 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
 
   const [recordsVisible, setRecordsVisible] = useState(false);
   const [isSimulatorOpen, setIsSimulatorOpen] = useState(false);
+
+  // 桌面侧栏底部操作组：仅 Dashboard 页注册，Admin 页不挂载自动消失
+  const dashboardActions = useMemo(
+    () => (
+      <div className="flex flex-col gap-2">
+        <NumberFormatToggle />
+        <button
+          type="button"
+          onClick={() => setIsSimulatorOpen(true)}
+          className="inline-flex items-center justify-center gap-2 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50"
+        >
+          Price Simulation
+        </button>
+      </div>
+    ),
+    []
+  );
+
+  useEffect(() => {
+    setSidebarActions(dashboardActions);
+    return () => setSidebarActions(null);
+  }, [setSidebarActions, dashboardActions]);
 
   const isMobile = useMemo(
     () =>
@@ -841,10 +621,8 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
   );
 
   return (
-    <NumberFormatProvider>
-      <main className="min-h-screen bg-gray-50 p-4 pb-20 md:p-8 md:pb-8">
-        <SectionNav />
-        <div className="md:hidden flex min-h-[calc(100dvh-6rem)] items-center justify-center">
+    <main className="min-h-screen bg-gray-50 p-4 pb-20 md:p-8 md:pb-8">
+      <div className="md:hidden flex min-h-[calc(100dvh-6rem)] items-center justify-center">
           <div className="flex flex-col items-center gap-6 text-center">
             <h1 className="text-lg font-bold text-gray-900 truncate">
               Token Tracker
@@ -858,29 +636,14 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
           </div>
         </div>
         <div className="hidden md:block max-w-7xl mx-auto">
-          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-2">
-            <div className="flex min-w-0 flex-1 items-start justify-between gap-2 w-full sm:w-auto">
-              <div className="min-w-0">
-                <h1 className="text-xl md:text-3xl font-bold truncate">
-                  Token Tracker Dashboard
-                </h1>
-                {lastActiveAt && (
-                  <p className="text-xs text-gray-400 mt-1">
-                    Last active token at {lastActiveAt.toLocaleString()}
-                  </p>
-                )}
-              </div>
-            </div>
+          <div className="mb-6">
+            {lastActiveAt && (
+              <p className="text-xs text-gray-400 mb-3">
+                Last active token at {lastActiveAt.toLocaleString()}
+              </p>
+            )}
 
-            <div className="hidden sm:flex flex-row items-center gap-3">
-              <NumberFormatToggle />
-              <button
-                type="button"
-                onClick={() => setIsSimulatorOpen(true)}
-                className="inline-flex items-center gap-2 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50"
-              >
-                Price Simulation
-              </button>
+            <div className="flex flex-wrap items-center gap-2">
               <select
                 value={selectedAgent}
                 onChange={handleAgentChange}
@@ -917,20 +680,6 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
                   </option>
                 ))}
               </select>
-              <button
-                type="button"
-                onClick={togglePreview}
-                className="inline-flex items-center gap-2 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50"
-                title="Preview the public status page"
-              >
-                Public View
-              </button>
-              <Link
-                href="/admin"
-                className="text-sm text-gray-400 hover:text-blue-600 transition-colors"
-              >
-                Admin →
-              </Link>
             </div>
           </div>
 
@@ -1049,6 +798,5 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
         />
       </div>
     </main>
-  </NumberFormatProvider>
-);
+  );
 }

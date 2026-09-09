@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiFetch } from "@/lib/client/api-client";
 import { PROVIDER_PRESETS } from "@/lib/provider-presets";
 import UpstreamModelsManager from "./UpstreamModelsManager";
@@ -75,8 +75,9 @@ interface ModelTestResult {
 interface ModelPickerState {
   models: string[];
   selected: Set<string>;
+  /** 原本配置但上游列表已不存在的模型（底部灰色区段） */
+  missing: string[];
   error?: string;
-  missingCount?: number;
 }
 
 export default function UpstreamsPanel() {
@@ -477,40 +478,51 @@ export default function UpstreamsPanel() {
       });
       const json = await res.json();
       if (json.success && json.data) {
-        const models = json.data.models as string[];
+        // 拷贝后排序以对齐行内弹窗主列表展示；成员判断用 Set 避免 O(n·m)
+        const rawModels = json.data.models as unknown;
+        const models = Array.isArray(rawModels) ? ([...rawModels].sort() as string[]) : [];
+        const modelSet = new Set(models);
         const current = form.enabledModels
           .split(",")
           .map((m) => m.trim())
           .filter(Boolean);
         const selected = new Set<string>();
-        let missingCount = 0;
+        const missing: string[] = [];
         for (const name of current) {
           if (name.endsWith("*")) {
             const prefix = name.slice(0, -1);
             for (const m of models) {
               if (m.startsWith(prefix)) selected.add(m);
             }
-          } else if (models.includes(name)) {
+          } else if (modelSet.has(name)) {
             selected.add(name);
-          } else {
-            missingCount += 1;
+          } else if (!missing.includes(name)) {
+            // 原本勾选但上游列表已不存在：置底灰色区段并默认保持勾选（去重）
+            missing.push(name);
           }
         }
+        for (const name of missing) selected.add(name);
         setModelPicker({
           models,
           selected,
+          missing,
           error: json.data.error || undefined,
-          missingCount,
         });
       } else {
         setModelPicker({
           models: [],
           selected: new Set<string>(),
+          missing: [],
           error: json.error || "Failed to fetch models",
         });
       }
     } catch {
-      setModelPicker({ models: [], selected: new Set<string>(), error: "Network error" });
+      setModelPicker({
+        models: [],
+        selected: new Set<string>(),
+        missing: [],
+        error: "Network error",
+      });
     } finally {
       setFetchingModels(false);
     }
@@ -529,13 +541,46 @@ export default function UpstreamsPanel() {
     });
   };
 
+  // 底部「已下架」区段的组级全选/取消
+  const pickerMissing = modelPicker?.missing ?? [];
+  const allPickerMissingSelected =
+    pickerMissing.length > 0 && pickerMissing.every((m) => modelPicker?.selected.has(m) ?? false);
+  const somePickerMissingSelected =
+    pickerMissing.length > 0 &&
+    pickerMissing.some((m) => modelPicker?.selected.has(m) ?? false) &&
+    !allPickerMissingSelected;
+  const pickerMissingAllRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (pickerMissingAllRef.current) {
+      pickerMissingAllRef.current.indeterminate = somePickerMissingSelected;
+    }
+  }, [somePickerMissingSelected]);
+
+  const togglePickerMissingAll = () => {
+    setModelPicker((prev) => {
+      if (!prev) return prev;
+      const next = new Set(prev.selected);
+      for (const m of pickerMissing) {
+        if (allPickerMissingSelected) {
+          next.delete(m);
+        } else {
+          next.add(m);
+        }
+      }
+      return { ...prev, selected: next };
+    });
+  };
+
   const confirmModelPicker = () => {
     if (!modelPicker) return;
     const current = form.enabledModels
       .split(",")
       .map((m) => m.trim())
       .filter(Boolean);
-    const merged = Array.from(new Set([...current, ...Array.from(modelPicker.selected)]));
+    // 通配模式（如 gpt-*）无具体模型可勾选，原样保留；具体模型一律以勾选结果为准
+    // （缺失模型默认已勾选，取消勾选即从 enabled models 移除）
+    const patterns = current.filter((n) => n.endsWith("*"));
+    const merged = Array.from(new Set([...patterns, ...Array.from(modelPicker.selected)]));
     setForm({ ...form, enabledModels: merged.join(", ") });
     setModelPicker(null);
   };
@@ -924,35 +969,78 @@ export default function UpstreamsPanel() {
               </div>
             )}
 
-            {!modelPicker.error && modelPicker.missingCount !== undefined && modelPicker.missingCount > 0 && (
-              <div className="mx-5 mt-3 rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700">
-                {modelPicker.missingCount} configured model(s) are not in the upstream model list and will be kept:
-              </div>
-            )}
-
             <div className="flex-1 overflow-y-auto p-5">
-              {modelPicker.models.length === 0 && !modelPicker.error ? (
-                <div className="py-10 text-center text-gray-400">
-                  No models found. Close this dialog and add models manually.
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
-                  {modelPicker.models.map((model) => (
-                    <label
-                      key={model}
-                      className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-gray-50"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={modelPicker.selected.has(model)}
-                        onChange={() => togglePickerModel(model)}
-                        className="rounded border-gray-300"
-                      />
-                      <code className="truncate" title={model}>{model}</code>
-                    </label>
-                  ))}
-                </div>
-              )}
+              {modelPicker.error ? null :
+                modelPicker.models.length === 0 && pickerMissing.length === 0 ? (
+                  <div className="py-10 text-center text-gray-400">
+                    No models found. Close this dialog and add models manually.
+                  </div>
+                ) : (
+                  <div>
+                    {modelPicker.models.length > 0 && (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
+                        {modelPicker.models.map((model) => (
+                          <label
+                            key={model}
+                            className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-gray-50"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={modelPicker.selected.has(model)}
+                              onChange={() => togglePickerModel(model)}
+                              className="rounded border-gray-300"
+                            />
+                            <code className="truncate" title={model}>{model}</code>
+                          </label>
+                        ))}
+                      </div>
+                    )}
+
+                    {pickerMissing.length > 0 && (
+                      <div className="mt-5 border-t border-gray-200 pt-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <h4 className="text-xs font-medium text-gray-500">
+                            Removed from upstream ({pickerMissing.length})
+                          </h4>
+                          <label className="flex cursor-pointer items-center gap-1.5 text-xs text-gray-500 hover:text-gray-700">
+                            <input
+                              ref={pickerMissingAllRef}
+                              type="checkbox"
+                              checked={allPickerMissingSelected}
+                              onChange={togglePickerMissingAll}
+                              className="rounded border-gray-300"
+                            />
+                            {allPickerMissingSelected ? "Unselect all" : "Select all"}
+                          </label>
+                        </div>
+                        <p className="mb-2 mt-1 text-xs text-gray-400">
+                          These previously enabled models were not returned by the upstream list.
+                          Keep them selected to retain, or clear the section to drop them.
+                        </p>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
+                          {pickerMissing.map((model) => (
+                            <label
+                              key={model}
+                              title="No longer available on this upstream"
+                              className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-gray-50"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={modelPicker.selected.has(model)}
+                                onChange={() => togglePickerModel(model)}
+                                className="rounded border-gray-300"
+                              />
+                              <code className="truncate text-gray-400">{model}</code>
+                              <span className="ml-auto shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-400">
+                                removed
+                              </span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
             </div>
 
             <div className="flex items-center justify-end border-t px-5 py-3 gap-2">
@@ -966,7 +1054,7 @@ export default function UpstreamsPanel() {
               <button
                 type="button"
                 onClick={confirmModelPicker}
-                disabled={modelPicker.models.length === 0}
+                disabled={modelPicker.models.length === 0 && pickerMissing.length === 0}
                 className="rounded bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
               >
                 Apply ({modelPicker.selected.size})
