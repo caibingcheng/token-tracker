@@ -2,7 +2,9 @@ name: Build and Push Docker Image
 
 on:
   push:
-    branches: [main, dev]
+    tags:
+      - 'v*.*.*'        # 正式版：v1.3.0
+      - 'v*.*.*-dev*'   # 开发版：v1.3.0-dev.1
   workflow_dispatch:
 
 env:
@@ -34,8 +36,8 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
+            type=ref,event=tag
+            type=raw,value=dev,enable=${{ contains(github.ref_name, '-dev') }}
             type=sha,format=short
 
       - name: Build and push

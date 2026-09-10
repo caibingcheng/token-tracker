@@ -316,11 +316,11 @@ docker compose up -d
 
 ### GitHub Container Registry
 
-| 分支 | 镜像标签 | 用途 |
-|------|---------|------|
-| `master` | `ghcr.io/caibingcheng/token-tracker:latest` | 生产 |
-| `dev` | `ghcr.io/caibingcheng/token-tracker:dev` | 测试 |
-| 任意 | `ghcr.io/caibingcheng/token-tracker:<sha>` | 指定版本 |
+| 触发条件 | 镜像标签 | 用途 |
+|---------|---------|------|
+| tag `v*.*.*`（如 `v1.3.0`） | `ghcr.io/caibingcheng/token-tracker:vX.Y.Z` + `:<short-sha>` | 生产发布 |
+| tag `v*.*.*-dev*`（如 `v1.3.0-dev.1`） | 同上 + `:dev` | 开发版发布 |
+| `workflow_dispatch` | 同上 | 手动重建 |
 
 ## 移动端适配约定
 
