@@ -636,13 +636,13 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
           </div>
         </div>
         <div className="hidden md:block max-w-7xl mx-auto">
-          <div className="mb-6">
-            {lastActiveAt && (
-              <p className="text-xs text-gray-400 mb-3">
-                Last active token at {lastActiveAt.toLocaleString()}
-              </p>
-            )}
+          {lastActiveAt && (
+            <p className="text-xs text-gray-400 mb-3">
+              Last active token at {lastActiveAt.toLocaleString()}
+            </p>
+          )}
 
+          <div className="sticky top-0 z-20 -mx-8 bg-gray-50 px-8 py-3 mb-6">
             <div className="flex flex-wrap items-center gap-2">
               <select
                 value={selectedAgent}
