@@ -112,6 +112,56 @@ function getCostMetricValue(m: TopModel, field: CostSortField): number {
   }
 }
 
+type LatencySortField = 'p50TtftMs' | 'avgTtftMs' | 'avgLatencyMs' | 'outputTokensPerSec';
+
+function getLatencyMetricValue(m: LatencyModelStat, field: LatencySortField): number | null {
+  switch (field) {
+    case 'p50TtftMs': return m.p50TtftMs;
+    case 'avgTtftMs': return m.avgTtftMs;
+    case 'avgLatencyMs': return m.avgLatencyMs;
+    case 'outputTokensPerSec': return m.outputTokensPerSec;
+  }
+}
+
+type ProviderSortField = 'totalInput' | 'totalInputCached' | 'cacheHitRate' | 'totalOutput' | 'totalCost' | 'count';
+
+function getProviderMetricValue(p: ProviderStat, field: ProviderSortField): number {
+  switch (field) {
+    case 'cacheHitRate': return p.totalInput > 0 ? p.totalInputCached / p.totalInput : 0;
+    case 'totalInput': return p.totalInput;
+    case 'totalInputCached': return p.totalInputCached;
+    case 'totalOutput': return p.totalOutput;
+    case 'totalCost': return p.totalCost;
+    case 'count': return p.count;
+  }
+}
+
+// 降序/升序排序，无样本（null）始终排最后
+function sortByMetric<T>(rows: T[], metric: (row: T) => number | null, order: 'desc' | 'asc'): T[] {
+  return [...rows].sort((a, b) => {
+    const aVal = metric(a);
+    const bVal = metric(b);
+    if (aVal === null && bVal === null) return 0;
+    if (aVal === null) return 1;
+    if (bVal === null) return -1;
+    return order === 'desc' ? bVal - aVal : aVal - bVal;
+  });
+}
+
+function useSort<T extends string>(initial: T) {
+  const [sortBy, setSortBy] = useState<T>(initial);
+  const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
+  const handleSort = useCallback((field: T) => {
+    if (field !== sortBy) {
+      setSortBy(field);
+      setSortOrder('desc');
+    } else {
+      setSortOrder(o => (o === 'desc' ? 'asc' : 'desc'));
+    }
+  }, [sortBy]);
+  return { sortBy, sortOrder, handleSort };
+}
+
 function SortHeader({
   field, sortBy, sortOrder, onSort, children, className,
 }: {
@@ -726,7 +776,12 @@ function TopProvidersTable({
   selectedDate: string | null;
 }) {
   const { compact } = useNumberFormat();
+  const { sortBy, sortOrder, handleSort } = useSort<ProviderSortField>('totalInput');
   const totalInputSum = providers.reduce((sum, p) => sum + p.totalInput, 0);
+  const sortedProviders = useMemo(
+    () => sortByMetric(providers, (p) => getProviderMetricValue(p, sortBy), sortOrder),
+    [providers, sortBy, sortOrder]
+  );
 
   return (
     <div>
@@ -736,21 +791,35 @@ function TopProvidersTable({
         </p>
       ) : (
         <>
+          <div className="md:hidden mb-3">
+            <select
+              value={sortBy}
+              onChange={(e) => handleSort(e.target.value as ProviderSortField)}
+              className="text-xs border border-gray-200 rounded px-2 py-1.5 bg-white text-gray-700 w-full"
+            >
+              <option value="totalInput">Total Input</option>
+              <option value="totalInputCached">Cache Read</option>
+              <option value="cacheHitRate">Cache Hit Rate</option>
+              <option value="totalOutput">Total Output</option>
+              <option value="totalCost">Total Cost</option>
+              <option value="count">Requests</option>
+            </select>
+          </div>
           <div className="hidden md:block overflow-x-auto">
             <table className="w-full" style={{ tableLayout: "fixed" }}>
               <thead className="bg-gray-50">
                 <tr>
                   <th className="w-[22%] px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase overflow-hidden">Provider</th>
-                  <th className="w-[17%] px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase overflow-hidden">Total Input</th>
-                  <th className="w-[14%] px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase overflow-hidden">Cache Read</th>
-                  <th className="w-[12%] px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase overflow-hidden">Cache Hit Rate</th>
-                  <th className="w-[15%] px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase overflow-hidden">Total Output</th>
-                  <th className="w-[12%] px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase overflow-hidden">Total Cost</th>
-                  <th className="w-[8%] px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase overflow-hidden">Requests</th>
+                  <SortHeader className="w-[17%]" field="totalInput" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort}>Total Input</SortHeader>
+                  <SortHeader className="w-[14%]" field="totalInputCached" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort}>Cache Read</SortHeader>
+                  <SortHeader className="w-[12%]" field="cacheHitRate" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort}>Cache Hit Rate</SortHeader>
+                  <SortHeader className="w-[15%]" field="totalOutput" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort}>Total Output</SortHeader>
+                  <SortHeader className="w-[12%]" field="totalCost" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort}>Total Cost</SortHeader>
+                  <SortHeader className="w-[8%]" field="count" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort}>Requests</SortHeader>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
-                {providers.map((p) => {
+                {sortedProviders.map((p) => {
                   const percentage =
                     totalInputSum > 0 ? (p.totalInput / totalInputSum) * 100 : 0;
                   const cacheHitRate = p.totalInput > 0
@@ -778,7 +847,7 @@ function TopProvidersTable({
           </div>
 
           <div className="md:hidden space-y-3">
-            {providers.map((p) => {
+            {sortedProviders.map((p) => {
               const percentage =
                 totalInputSum > 0 ? (p.totalInput / totalInputSum) * 100 : 0;
               return (
@@ -831,6 +900,21 @@ function TopProvidersTable({
 }
 
 function SpeedTable({ byModel }: { byModel: LatencyModelStat[] }) {
+  const { sortBy, sortOrder, handleSort } = useSort<LatencySortField>('outputTokensPerSec');
+  const sortedModels = useMemo(
+    () => sortByMetric(byModel, (m) => getLatencyMetricValue(m, sortBy), sortOrder),
+    [byModel, sortBy, sortOrder]
+  );
+  // tok/s 背景条：以当前表中最大吞吐为满格（TTFT / Latency 为耗时类指标，不做占比填色）
+  const maxTokensPerSec = useMemo(
+    () => byModel.reduce((max, m) => Math.max(max, m.outputTokensPerSec ?? 0), 0),
+    [byModel]
+  );
+  const tpsPercentage = (m: LatencyModelStat) =>
+    maxTokensPerSec > 0 && m.outputTokensPerSec
+      ? (m.outputTokensPerSec / maxTokensPerSec) * 100
+      : 0;
+
   return (
     <div>
       <div className="hidden md:block overflow-x-auto">
@@ -839,22 +923,27 @@ function SpeedTable({ byModel }: { byModel: LatencyModelStat[] }) {
             <tr>
               <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Model</th>
               <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Provider</th>
-              <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">p50 TTFT</th>
-              <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Avg TTFT</th>
-              <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Avg Total</th>
-              <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">tok/s</th>
+              <SortHeader field="p50TtftMs" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort}>p50 TTFT</SortHeader>
+              <SortHeader field="avgTtftMs" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort}>Avg TTFT</SortHeader>
+              <SortHeader field="avgLatencyMs" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort}>Avg Total</SortHeader>
+              <SortHeader field="outputTokensPerSec" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort}>tok/s</SortHeader>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200">
-            {byModel.length === 0 && (
+            {sortedModels.length === 0 && (
               <tr>
                 <td colSpan={6} className="px-4 py-6 text-center text-sm text-gray-400">
                   No streaming requests in this period
                 </td>
               </tr>
             )}
-            {byModel.map((m) => (
-              <tr key={`${m.provider}\u0000${m.model}`}>
+            {sortedModels.map((m) => (
+              <tr
+                key={`${m.provider}\u0000${m.model}`}
+                style={{
+                  background: `linear-gradient(to right, rgb(239 246 255) ${tpsPercentage(m)}%, transparent ${tpsPercentage(m)}%)`,
+                }}
+              >
                 <td className="px-4 py-3 text-sm font-medium text-gray-900 whitespace-nowrap">
                   {m.displayName}
                 </td>
@@ -879,16 +968,34 @@ function SpeedTable({ byModel }: { byModel: LatencyModelStat[] }) {
         </table>
       </div>
 
+      {sortedModels.length > 0 && (
+        <div className="md:hidden mb-3">
+          <select
+            value={sortBy}
+            onChange={(e) => handleSort(e.target.value as LatencySortField)}
+            className="text-xs border border-gray-200 rounded px-2 py-1.5 bg-white text-gray-700 w-full"
+          >
+            <option value="outputTokensPerSec">tok/s</option>
+            <option value="p50TtftMs">p50 TTFT</option>
+            <option value="avgTtftMs">Avg TTFT</option>
+            <option value="avgLatencyMs">Avg Total</option>
+          </select>
+        </div>
+      )}
+
       <div className="md:hidden space-y-3">
-        {byModel.length === 0 && (
+        {sortedModels.length === 0 && (
           <p className="text-center text-sm text-gray-400 py-4">
             No streaming requests in this period
           </p>
         )}
-        {byModel.map((m) => (
+        {sortedModels.map((m) => (
           <div
             key={`${m.provider}\u0000${m.model}`}
             className="border border-gray-200 rounded-lg p-4"
+            style={{
+              background: `linear-gradient(to right, rgb(239 246 255) ${tpsPercentage(m)}%, transparent ${tpsPercentage(m)}%)`,
+            }}
           >
             <div className="flex justify-between items-start mb-3">
               <div>
