@@ -15,6 +15,15 @@ import { loadModelsDevSource } from "@/lib/auth/settings-models-dev-source";
 // model_prices 管理服务层：行集 = 全部 upstream enabled_models（非通配，去重）
 // ∪ 已定价 model ∪ 近期推送记录出现过的 model（可被发现、可补价），
 // 附徽标状态判定（active/inactive/待确认/未匹配/有更新/已下架）+ 近期流量可见性。
+//
+// 口径约定：
+// - inactive（UI 灰 removed）= 已定价但不在任一启用 upstream 的 enabled_models，
+//   且近 30 天无任何流量 → 与 UI 默认可见性（active ∪ recentActivity）严格互补：
+//   默认视图不出现该徽标行（remote 推送来源同样按流量窗口判定，不永久 active）。
+// - removed（UI 红 removed）= 快照同 id 已不可用；仅在「快照源 == 价格行来源」时判定
+//   （models.dev 与 LiteLLM 命名体系不同，跨源比较必然误报）；快照 id 仍在但为无价条目
+//   （cost 缺失，litellm/models.dev 均会保留）不算下架。
+// - 排序：inactive / removed 行统一排到末尾，组内按 model 名 A→Z。
 
 // 近期流量窗口：近 30 天有记录（含推送）→ 默认可见；过期自动隐藏
 export const RECENT_ACTIVITY_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
@@ -33,11 +42,11 @@ export interface ModelPriceRow {
   recentActivity: boolean; // 近 30 天有记录（含推送）→ 默认可见
   status: {
     active: boolean;
-    inactive: boolean;
+    inactive: boolean; // 已定价且 !active 且 30 天无流量（默认隐藏）
     pending: boolean; // 未定价且候选 >1 且价格不一致
     unmatched: boolean; // 未定价且无候选
-    hasUpdate: boolean; // source=models.dev/github 且快照同 id 价格不同
-    removed: boolean; // source=models.dev/github 且快照无该 id
+    hasUpdate: boolean; // 同源快照同 id 价格不同（跨源不比较）
+    removed: boolean; // 同源快照无该 id（跨源不比较）
     diff: {
       inputPrice: number;
       outputPrice: number;
@@ -161,23 +170,34 @@ interface SnapshotPrice {
   cacheWritePrice: number | null;
 }
 
-function snapshotPriceFor(
+// 快照 id 查找结果三态：not_found（id 已不在快照 → 下架）/ no_price（id 仍在但无价条目，
+// litellm 与 models.dev 均会保留 cost 缺失的条目 → 不得误判为下架）/ priced（有官方价）
+type SnapshotLookup =
+  | { kind: "not_found" }
+  | { kind: "no_price" }
+  | { kind: "priced"; price: SnapshotPrice };
+
+function lookupSnapshotPrice(
   snapshot: ModelsDevSnapshot | null,
   modelsDevId: string
-): SnapshotPrice | null {
-  if (!snapshot) return null;
+): SnapshotLookup {
+  if (!snapshot) return { kind: "not_found" };
   const slash = modelsDevId.indexOf("/");
-  if (slash <= 0) return null;
+  if (slash <= 0) return { kind: "not_found" };
   const providerId = modelsDevId.slice(0, slash);
   const modelId = modelsDevId.slice(slash + 1);
   const model = snapshot.data[providerId]?.models[modelId];
-  if (!model?.cost) return null;
+  if (!model) return { kind: "not_found" };
+  if (!model.cost) return { kind: "no_price" };
   const cost = model.cost;
   return {
-    inputPrice: typeof cost.input === "number" ? cost.input : 0,
-    outputPrice: typeof cost.output === "number" ? cost.output : 0,
-    cacheReadPrice: typeof cost.cache_read === "number" ? cost.cache_read : null,
-    cacheWritePrice: typeof cost.cache_write === "number" ? cost.cache_write : null,
+    kind: "priced",
+    price: {
+      inputPrice: typeof cost.input === "number" ? cost.input : 0,
+      outputPrice: typeof cost.output === "number" ? cost.output : 0,
+      cacheReadPrice: typeof cost.cache_read === "number" ? cost.cache_read : null,
+      cacheWritePrice: typeof cost.cache_write === "number" ? cost.cache_write : null,
+    },
   };
 }
 
@@ -225,7 +245,7 @@ export async function getModelPricesList(): Promise<ModelPriceRow[]> {
   ]);
   const rows: ModelPriceRow[] = [];
 
-  for (const model of Array.from(models).sort((a, b) => a.localeCompare(b))) {
+  for (const model of Array.from(models)) {
     const price = pricedByModel.get(model);
     const upstreams = upstreamByModel.get(model) ?? [];
     const remoteProviders = remoteByModel.get(model) ?? [];
@@ -244,7 +264,7 @@ export async function getModelPricesList(): Promise<ModelPriceRow[]> {
 
     let status: ModelPriceRow["status"] = {
       active,
-      inactive: !!price && !active,
+      inactive: !!price && !active && !hasRecentActivity,
       pending: false,
       unmatched: false,
       hasUpdate: false,
@@ -253,9 +273,18 @@ export async function getModelPricesList(): Promise<ModelPriceRow[]> {
     };
 
     if (price) {
-      if ((price.source === "models.dev" || price.source === "github") && price.modelsDevId) {
-        const snapshotPrice = snapshotPriceFor(snapshot, price.modelsDevId);
-        if (snapshotPrice) {
+      // 有更新 / 已下架只在同源快照下判定：models.dev 与 LiteLLM 的 provider/model
+      // 命名体系不同，用当前快照校验另一来源的行必然查不到 → 切源即全表误报
+      const sameSourceSnapshot =
+        !!snapshot &&
+        snapshot.source === price.source &&
+        (price.source === "models.dev" || price.source === "github");
+      if (sameSourceSnapshot && price.modelsDevId) {
+        const lookup = lookupSnapshotPrice(snapshot, price.modelsDevId);
+        if (lookup.kind === "not_found") {
+          status.removed = true;
+        } else if (lookup.kind === "priced") {
+          const snapshotPrice = lookup.price;
           const current: SnapshotPrice = {
             inputPrice: price.inputPrice,
             outputPrice: price.outputPrice,
@@ -271,9 +300,8 @@ export async function getModelPricesList(): Promise<ModelPriceRow[]> {
               cacheWritePrice: snapshotPrice.cacheWritePrice,
             };
           }
-        } else {
-          status.removed = true;
         }
+        // kind === "no_price"：快照 id 仍在但无官方价 → 保留旧价，既不标下架也不标有更新
       }
     } else {
       // 未定价：匹配候选判定待确认/未匹配
@@ -302,7 +330,7 @@ export async function getModelPricesList(): Promise<ModelPriceRow[]> {
       outputPrice: price?.outputPrice ?? null,
       cacheReadPrice: price?.cacheReadPrice ?? null,
       cacheWritePrice: price?.cacheWritePrice ?? null,
-      source: (price?.source as "models.dev" | "manual") ?? null,
+      source: (price?.source ?? null) as ModelPriceRow["source"],
       modelsDevId: price?.modelsDevId ?? null,
       sourceProvider,
       updatedAt: price?.updatedAt ?? null,
@@ -310,6 +338,13 @@ export async function getModelPricesList(): Promise<ModelPriceRow[]> {
       status,
     });
   }
+
+  // inactive（默认隐藏的失效行）/ removed（快照同 id 失效）统一排到末尾，组内按名 A→Z
+  rows.sort((a, b) => {
+    const aGone = a.status.inactive || a.status.removed ? 1 : 0;
+    const bGone = b.status.inactive || b.status.removed ? 1 : 0;
+    return aGone - bGone || a.model.localeCompare(b.model);
+  });
 
   return rows;
 }
