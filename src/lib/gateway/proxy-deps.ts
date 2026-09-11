@@ -82,6 +82,8 @@ async function probeUpstream(upstreamId: number): Promise<boolean> {
       protocol: upstream.protocol as Protocol,
       baseUrl: upstream.baseUrl,
       proxyUrl: decryptProxyUrl(upstream.proxyUrlEncrypted),
+      headerTransforms: parseHeaderTransforms(upstream.headerTransforms),
+      upstreamName: upstream.name,
     },
     model,
     keys[0]
