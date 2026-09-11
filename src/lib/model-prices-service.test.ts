@@ -17,8 +17,15 @@ beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), "tt-visi-"));
   process.env.SQLITE_DATABASE_PATH = join(dir, "test.db");
   process.env.GATEWAY_SECRET = "0123456789abcdef0123456789abcdef";
-  // 空快照：避免 getSnapshot 拉网络
-  writeFileSync(join(dir, "snapshot.json"), JSON.stringify({ fetchedAt: new Date().toISOString(), data: {} }));
+  // 空快照：避免 getSnapshot 拉网络（路径必须与 resolveSnapshotPath 一致，数据需结构合法）
+  writeFileSync(
+    join(dir, "models-dev-cache.json"),
+    JSON.stringify({
+      fetchedAt: new Date().toISOString(),
+      source: "models.dev",
+      data: { p1: { id: "p1", models: {} } },
+    })
+  );
 });
 
 afterAll(() => {

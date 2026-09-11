@@ -4,6 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import {
   sanitizeModelsDevData,
+  slimModelsDevData,
   uploadSnapshot,
   getSnapshot,
   refreshSnapshot,
@@ -18,7 +19,9 @@ import {
   LITELLM_MODEL_PRICES_URL,
   LITELLM_MODEL_PRICES_FALLBACK_URL,
   type ModelsDevData,
+  type ModelsDevModel,
 } from "./snapshot";
+import { matchModelsDevModel, searchModelsDevModel, listProviderModels } from "./match";
 
 const GOOD: ModelsDevData = {
   openai: {
@@ -124,6 +127,119 @@ describe("sanitizeModelsDevData", () => {
     const { data, dropped } = sanitizeModelsDevData(empty);
     expect(dropped).toBe(1);
     expect(Object.keys(data)).toEqual([]);
+  });
+});
+
+describe("slimModelsDevData", () => {
+  const RICH: ModelsDevData = {
+    openai: {
+      id: "openai",
+      name: "OpenAI",
+      env: ["OPENAI_API_KEY"],
+      doc: "https://example.com/openai",
+      models: {
+        "gpt-4o": {
+          id: "gpt-4o",
+          name: "GPT-4o",
+          family: "gpt",
+          description: "long marketing copy",
+          modalities: { input: ["text"], output: ["text"] },
+          reasoning: true,
+          tool_call: true,
+          cost: { input: 2.5, output: 10, cache_read: 0.25 },
+          last_updated: "2026-01-01",
+        },
+        "no-price": {
+          id: "no-price",
+          name: "No Price",
+          description: "unpriced model",
+        } as unknown as ModelsDevModel,
+      },
+    },
+  };
+
+  it("keeps only consumed fields (provider id/name/models, model id/name/cost/last_updated)", () => {
+    const slim = slimModelsDevData(RICH);
+    expect(slim).toEqual({
+      openai: {
+        id: "openai",
+        name: "OpenAI",
+        models: {
+          "gpt-4o": {
+            id: "gpt-4o",
+            name: "GPT-4o",
+            last_updated: "2026-01-01",
+            cost: { input: 2.5, output: 10, cache_read: 0.25 },
+          },
+          "no-price": { id: "no-price", name: "No Price" },
+        },
+      },
+    });
+    const provider = slim.openai as Record<string, unknown>;
+    expect(provider.env).toBeUndefined();
+    expect(provider.doc).toBeUndefined();
+    const model = slim.openai.models["gpt-4o"] as Record<string, unknown>;
+    expect(model.family).toBeUndefined();
+    expect(model.description).toBeUndefined();
+    expect(model.modalities).toBeUndefined();
+    expect(model.reasoning).toBeUndefined();
+    expect(model.tool_call).toBeUndefined();
+  });
+
+  it("preserves no-price semantics (cost stays missing)", () => {
+    const slim = slimModelsDevData(RICH);
+    expect(slim.openai.models["no-price"].cost).toBeUndefined();
+  });
+
+  it("is idempotent for litellm-converted data (already slim)", () => {
+    const converted = convertLitellmToModelsDev(LITELLM_FLAT);
+    expect(slimModelsDevData(converted)).toEqual(converted);
+  });
+
+  it("skips malformed providers/models without throwing", () => {
+    const dirty = {
+      good: { id: "good", name: "Good", models: { m: { id: "m", cost: { input: 1, output: 2 } } } },
+      nul: null,
+      "no-models": { id: "no-models", name: "NoModels" },
+      mixed: {
+        id: "mixed",
+        models: { ok: { id: "ok", cost: { input: 1, output: 1 } }, nul: null },
+      },
+    } as unknown as ModelsDevData;
+    const slim = slimModelsDevData(dirty);
+    expect(Object.keys(slim)).toEqual(["good", "no-models", "mixed"]);
+    expect(slim["no-models"].models).toEqual({});
+    expect(Object.keys(slim.mixed.models)).toEqual(["ok"]);
+  });
+
+  it("does not mutate the input", () => {
+    const input = structuredClone(RICH);
+    slimModelsDevData(input);
+    expect(input).toEqual(RICH);
+  });
+
+  it("keeps match / search / list behavior unchanged", () => {
+    const slim = slimModelsDevData(RICH);
+    expect(matchModelsDevModel("GPT-4O", slim)).toEqual(matchModelsDevModel("GPT-4O", RICH));
+    expect(matchModelsDevModel("No-Price", slim).matched?.modelId).toBe("no-price");
+    expect(searchModelsDevModel("openai", slim)).toEqual(searchModelsDevModel("openai", RICH));
+    expect(listProviderModels(slim, "openai")).toEqual(listProviderModels(RICH, "openai"));
+  });
+
+  it("getSnapshot returns slimmed data while the disk file keeps full data", async () => {
+    await uploadSnapshot(RICH, { filePath, now: new Date() });
+    const onDisk = JSON.parse(readFileSync(filePath, "utf-8"));
+    expect(onDisk.data.openai.models["gpt-4o"].description).toBe("long marketing copy");
+
+    const mem = await getSnapshot({ filePath });
+    expect((mem!.data.openai.models["gpt-4o"] as Record<string, unknown>).description).toBeUndefined();
+
+    // 重置内存缓存后从磁盘加载 → 仍走裁剪
+    resetSnapshotCache();
+    const fromDisk = await getSnapshot({ filePath, fetchImpl: vi.fn() });
+    expect((fromDisk!.data.openai as Record<string, unknown>).env).toBeUndefined();
+    expect(fromDisk!.data.openai.models["gpt-4o"].cost.input).toBe(2.5);
+    resetSnapshotCache();
   });
 });
 
