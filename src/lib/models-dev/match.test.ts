@@ -144,6 +144,132 @@ describe("matchModelsDevModel", () => {
   });
 });
 
+describe("matchModelsDevModel last-segment matching（LiteLLM 前缀 id）", () => {
+  // LiteLLM 源 modelId 自带 provider 路径前缀；裸名 / 带前缀名需按末段命中
+  const SEGMENT_DATA: ModelsDevData = {
+    openrouter: {
+      id: "openrouter",
+      name: "OpenRouter",
+      models: {
+        "deepseek/deepseek-v4-flash-0731": mkModel("deepseek/deepseek-v4-flash-0731", {
+          input: 0.5,
+          output: 2,
+        }),
+      },
+    },
+    moonshotai: {
+      id: "moonshotai",
+      name: "Moonshot AI",
+      models: {
+        "Kimi-K3": mkModel("Kimi-K3", { input: 1, output: 4 }),
+      },
+    },
+    friendliai: {
+      id: "friendliai",
+      name: "FriendliAI",
+      models: {
+        "zai-org/GLM-5.3": mkModel("zai-org/GLM-5.3", { input: 0.2, output: 1 }),
+        "zai-org/GLM-5.3-Flash": mkModel("zai-org/GLM-5.3-Flash", {
+          input: 0.1,
+          output: 0.5,
+        }),
+      },
+    },
+    fireworks: {
+      id: "fireworks",
+      name: "Fireworks",
+      models: {
+        // 近似名：末段归一化后与 kimi-k3 / glm-5.3 不相等，不得误吞
+        "FW-Kimi-K3": mkModel("FW-Kimi-K3", { input: 9, output: 9 }),
+        "kimi-k3-fast": mkModel("kimi-k3-fast", { input: 9, output: 9 }),
+        "databricks-glm-5-3": mkModel("databricks-glm-5-3", {
+          input: 9,
+          output: 9,
+        }),
+      },
+    },
+  };
+
+  it("last-segment: prefixed snapshot id matches bare query name", () => {
+    const result = matchModelsDevModel("deepseek-v4-flash-0731", SEGMENT_DATA);
+    expect(result.matched?.modelsDevId).toBe(
+      "openrouter/deepseek/deepseek-v4-flash-0731"
+    );
+    expect(result.candidates).toHaveLength(1);
+  });
+
+  it("last-segment: prefixed query name matches bare snapshot id", () => {
+    // 独立 fixture：避免 openrouter 的整串归一化（阶段 2）抢先命中
+    const bareOnly: ModelsDevData = {
+      moonshotai: SEGMENT_DATA.moonshotai,
+    };
+    const result = matchModelsDevModel("kimi/kimi-k3", bareOnly);
+    expect(result.matched?.modelsDevId).toBe("moonshotai/Kimi-K3");
+  });
+
+  it("last-segment: normalized segment match ignores case/separators", () => {
+    const result = matchModelsDevModel("glm-5.3-flash", SEGMENT_DATA);
+    expect(result.matched?.modelsDevId).toBe("friendliai/zai-org/GLM-5.3-Flash");
+  });
+
+  it("last-segment: does not swallow similar names", () => {
+    // 仅含近似名：段级相等 ≠ 子串，kimi-k3 不命中 FW-Kimi-K3 / kimi-k3-fast，
+    // glm-5.3 不命中 databricks-glm-5-3（归一化后不相等）
+    const similarOnly: ModelsDevData = {
+      fireworks: SEGMENT_DATA.fireworks,
+    };
+    expect(matchModelsDevModel("kimi-k3", similarOnly).matched).toBeNull();
+    expect(matchModelsDevModel("glm-5.3", similarOnly).matched).toBeNull();
+  });
+
+  it("last-segment: multi-candidate price conflict resolved by priority table", () => {
+    // kimi-k3 末段命中两个带前缀 id（裸 id 会被阶段 2 抢先命中，故均带前缀）：
+    // 价格不一致 → 冲突，moonshotai 在原厂优先级表内 → 预选；全部候选返回
+    const conflictData: ModelsDevData = {
+      openrouter: {
+        id: "openrouter",
+        name: "OpenRouter",
+        models: {
+          "kimi/Kimi-K3": mkModel("kimi/Kimi-K3", { input: 2, output: 8 }),
+        },
+      },
+      moonshotai: {
+        id: "moonshotai",
+        name: "Moonshot AI",
+        models: {
+          "vendor/Kimi-K3": mkModel("vendor/Kimi-K3", { input: 1, output: 4 }),
+        },
+      },
+    };
+    const result = matchModelsDevModel("kimi-k3", conflictData);
+    expect(result.matched?.modelsDevId).toBe("moonshotai/vendor/Kimi-K3");
+    expect(result.candidates).toHaveLength(2);
+  });
+
+  it("exact match takes priority: stage 1 hit stops before last-segment stage", () => {
+    const data: ModelsDevData = {
+      deepseek: {
+        id: "deepseek",
+        name: "DeepSeek",
+        models: {
+          "deepseek-chat": mkModel("deepseek-chat", { input: 0.27, output: 1.1 }),
+        },
+      },
+      fireworks: {
+        id: "fireworks",
+        name: "Fireworks",
+        models: {
+          // 末段同为 deepseek-chat：若阶段 4 生效会被收集，验证阶段 1 命中即停
+          "x/deepseek-chat": mkModel("x/deepseek-chat", { input: 9, output: 9 }),
+        },
+      },
+    };
+    const result = matchModelsDevModel("deepseek-chat", data);
+    expect(result.matched?.modelsDevId).toBe("deepseek/deepseek-chat");
+    expect(result.candidates).toHaveLength(1);
+  });
+});
+
 describe("searchModelsDevModel", () => {
   it("matches model id by normalized substring", () => {
     const results = searchModelsDevModel("claude-sonnet", DATA);

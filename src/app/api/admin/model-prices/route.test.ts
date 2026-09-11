@@ -6,7 +6,8 @@ import { NextRequest } from "next/server";
 import { GET, PUT, DELETE } from "./route";
 import { POST as selectPOST } from "./select/route";
 import { POST as autofillPOST } from "./auto-fill/route";
-import { db, initDatabase, upstreamsTable, modelPricesTable } from "@/lib/db";
+import { db, initDatabase, upstreamsTable, modelPricesTable, tokenRecords, syncInstancesTable } from "@/lib/db";
+import { invalidateRemoteModelCache } from "@/lib/model-prices-service";
 import { eq } from "drizzle-orm";
 import {
   setAdminApiKey,
@@ -51,6 +52,18 @@ const SNAPSHOT = {
         },
       },
     },
+    // LiteLLM 风格：modelId 自带 provider 路径前缀（末段匹配阶段 4 的数据源）
+    dashscope: {
+      id: "dashscope",
+      name: "DashScope",
+      models: {
+        "deepseek/deepseek-v4-flash-0731": {
+          id: "deepseek/deepseek-v4-flash-0731",
+          cost: { input: 0.5, output: 2 },
+          last_updated: "2026-07-01",
+        },
+      },
+    },
   },
 };
 
@@ -75,7 +88,10 @@ beforeEach(async () => {
   await withSkipCache(async () => {
     await db.delete(upstreamsTable);
     await db.delete(modelPricesTable);
+    await db.delete(tokenRecords);
+    await db.delete(syncInstancesTable);
   });
+  invalidateRemoteModelCache();
   await deleteSetting("token_epoch").catch(() => {});
   await deleteSetting("model_aliases").catch(() => {});
   await setAdminApiKey(ADMIN_KEY);
@@ -412,6 +428,41 @@ describe("model-prices admin routes", () => {
     expect(byModel.get("claude-sonnet-4-6").source).toBe("manual");
     expect(byModel.get("gpt-4o").source).toBe("models.dev");
     expect(byModel.get("gpt-4o").modelsDevId).toBe("openai/gpt-4o");
+  });
+
+  it("auto-fill: remote pushed models included in batch fill via last-segment match", async () => {
+    const token = await makeToken();
+    const uid = "u-abcdef0123456789abcdef0123456789";
+    // B 端推送记录：remote provider 前缀 + remote_instance_uid 身份键
+    await withSkipCache(async () => {
+      await db.insert(syncInstancesTable).values({
+        uid,
+        instanceName: "laptop",
+        epoch: "1",
+        lastRecordId: 0,
+      });
+      await db.insert(tokenRecords).values({
+        model: "deepseek-v4-flash-0731",
+        provider: "remote/laptop/up-b",
+        virtualKeyId: -1,
+        remoteInstanceUid: uid,
+        inputTokens: 10,
+        outputTokens: 5,
+      });
+    });
+    invalidateRemoteModelCache();
+
+    const res = await json(await autofillPOST(req("/api/admin/model-prices/auto-fill", "POST", undefined, token)));
+    expect(res.success).toBe(true);
+    // remote 模型纳入批量填充模型集，末段匹配命中 dashscope/deepseek-v4-flash-0731
+    expect(res.data.filled).toEqual(["deepseek-v4-flash-0731"]);
+
+    const rows = await getRows();
+    const row = rows.find((r) => r.model === "deepseek-v4-flash-0731");
+    expect(row.source).toBe("models.dev");
+    expect(row.modelsDevId).toBe("dashscope/deepseek/deepseek-v4-flash-0731");
+    expect(row.inputPrice).toBe(0.5);
+    expect(row.upstreams).toEqual(["remote/laptop/up-b"]);
   });
 
   it("auto-fill force: rejects unknown mode (400)", async () => {

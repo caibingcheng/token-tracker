@@ -470,7 +470,8 @@ function upsertPriceRow(price: AutoFillModelPrice) {
   });
 }
 
-// 批量自动填充所有未定价行（只填空不覆盖；无快照时跳过全部）
+// 批量自动填充所有未定价行（只填空不覆盖；无快照时跳过全部）。
+// 模型集 = 本机启用 upstream 的 enabled_models ∪ remote 推送模型（存量补齐）
 export async function autoFillAllUnpriced(): Promise<{
   filled: string[];
   updated: string[];
@@ -478,15 +479,19 @@ export async function autoFillAllUnpriced(): Promise<{
   unmatched: string[];
 }> {
   await initDatabase();
-  const [upstreamModels, priced] = await Promise.all([
+  const [upstreamModels, priced, remoteModels] = await Promise.all([
     loadUpstreamModelRows(),
     loadPricedModels(),
+    loadRemoteModelRows(),
   ]);
   const source = await loadModelsDevSource();
   const snapshot = await getSnapshot({ source });
   const pricedSet = new Set(priced.map((p) => p.model));
   const models = Array.from(
-    new Set(upstreamModels.map((r) => r.model))
+    new Set([
+      ...upstreamModels.map((r) => r.model),
+      ...remoteModels.map((r) => r.model),
+    ])
   );
 
   const result = await autoFillModelPrices(models, {
@@ -507,9 +512,10 @@ export async function autoFillForceAll(): Promise<{
   unmatched: string[];
 }> {
   await initDatabase();
-  const [upstreamModels, priced] = await Promise.all([
+  const [upstreamModels, priced, remoteModels] = await Promise.all([
     loadUpstreamModelRows(),
     loadPricedModels(),
+    loadRemoteModelRows(),
   ]);
   const source = await loadModelsDevSource();
   const snapshot = await getSnapshot({ source });
@@ -520,6 +526,7 @@ export async function autoFillForceAll(): Promise<{
   const models = Array.from(
     new Set([
       ...upstreamModels.map((r) => r.model),
+      ...remoteModels.map((r) => r.model),
       ...priced.filter((p) => p.source !== "manual").map((p) => p.model),
     ])
   );
