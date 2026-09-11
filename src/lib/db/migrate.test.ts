@@ -17,6 +17,7 @@ const TABLES = [
       { name: "ttft_ms", definition: "ttft_ms INTEGER" },
       { name: "virtual_key_id", definition: "virtual_key_id INTEGER" },
       { name: "user_agent", definition: "user_agent TEXT" },
+      { name: "session_id", definition: "session_id TEXT" },
       { name: "remote_instance_uid", definition: "remote_instance_uid TEXT" },
     ],
   },
@@ -94,7 +95,7 @@ describe("migrateColumns", () => {
     migrateColumns(db, TABLES);
 
     expect(tableColumns("token_records")).toEqual(
-      expect.arrayContaining(["status", "latency_ms", "ttft_ms", "virtual_key_id", "user_agent", "remote_instance_uid"])
+      expect.arrayContaining(["status", "latency_ms", "ttft_ms", "virtual_key_id", "user_agent", "session_id", "remote_instance_uid"])
     );
     expect(tableColumns("virtual_keys")).toEqual(
       expect.arrayContaining([
@@ -132,10 +133,11 @@ describe("migrateColumns", () => {
     db.exec(`INSERT INTO token_records (model, provider, status, latency_ms) VALUES ('gpt-4o', 'openai', 'ok', 1234)`);
     migrateColumns(db, TABLES);
     const row: any = db
-      .prepare(`SELECT latency_ms, ttft_ms, remote_instance_uid FROM token_records WHERE model = 'gpt-4o'`)
+      .prepare(`SELECT latency_ms, ttft_ms, session_id, remote_instance_uid FROM token_records WHERE model = 'gpt-4o'`)
       .get();
     expect(row.latency_ms).toBe(1234);
     expect(row.ttft_ms).toBeNull();
+    expect(row.session_id).toBeNull(); // 存量行不回填
     expect(row.remote_instance_uid).toBeNull(); // 存量 remote 行不回填
   });
 

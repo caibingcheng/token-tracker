@@ -276,6 +276,7 @@ export function createProxyDeps(): ProxyDeps {
           ttftMs: usage.ttftMs ?? null,
           virtualKeyId: usage.virtualKeyId ?? null,
           userAgent: usage.userAgent ?? null,
+          sessionId: usage.sessionId ?? null,
           requestModel: usage.requestModel ?? null,
         });
         // fire-and-forget 通知推送 worker（未配置同步时零开销）

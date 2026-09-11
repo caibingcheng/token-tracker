@@ -5,6 +5,7 @@ import {
   isValidInstanceUid,
   MAX_RECORDS_PER_BATCH,
   MAX_BODY_BYTES,
+  MAX_SESSION_ID_LENGTH,
 } from "./validate";
 
 function validRecord(overrides: Record<string, unknown> = {}) {
@@ -133,6 +134,52 @@ describe("validateIngestPayload", () => {
     }
   });
 
+  it("accepts sessionId string / null / missing (old B compat) and truncates to 256", () => {
+    const result = validateIngestPayload({
+      instanceUid: VALID_UID,
+      instance: "ok",
+      epoch: "e",
+      records: [
+        validRecord({ sourceRecordId: 1, sessionId: "sess-1" }),
+        validRecord({ sourceRecordId: 2, sessionId: null }),
+        validRecord({ sourceRecordId: 3 }), // 旧 B：字段缺失
+        validRecord({ sourceRecordId: 4, sessionId: "  padded  " }),
+        validRecord({ sourceRecordId: 5, sessionId: "   " }),
+        validRecord({ sourceRecordId: 6, sessionId: "s".repeat(300) }),
+      ],
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.payload.records.map((r) => r.sessionId)).toEqual([
+        "sess-1",
+        null,
+        null,
+        "padded",
+        null,
+        "s".repeat(256),
+      ]);
+      expect(result.payload.records[5]!.sessionId).toHaveLength(MAX_SESSION_ID_LENGTH);
+    }
+  });
+
+  it("skips records whose sessionId is not a string (partial accept)", () => {
+    const result = validateIngestPayload({
+      instanceUid: VALID_UID,
+      instance: "ok",
+      epoch: "e",
+      records: [
+        validRecord({ sourceRecordId: 1 }),
+        validRecord({ sourceRecordId: 2, sessionId: 123 }),
+        validRecord({ sourceRecordId: 3, sessionId: { id: "x" } }),
+      ],
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.payload.records.map((r) => r.sourceRecordId)).toEqual([1]);
+      expect(result.payload.skippedInvalid).toEqual([2, 3]);
+    }
+  });
+
   it("accepts large finite token values and truncates userAgent", () => {
     const result = validateIngestPayload({
       instanceUid: VALID_UID,
@@ -156,5 +203,9 @@ describe("validateIngestPayload", () => {
 describe("limits", () => {
   it("MAX_BODY_BYTES is 2MB", () => {
     expect(MAX_BODY_BYTES).toBe(2 * 1024 * 1024);
+  });
+
+  it("MAX_SESSION_ID_LENGTH is 256 (same as proxy capture)", () => {
+    expect(MAX_SESSION_ID_LENGTH).toBe(256);
   });
 });

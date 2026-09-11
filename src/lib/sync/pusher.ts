@@ -48,6 +48,7 @@ export interface SyncRecordRow {
   ttftMs: number | null;
   requestModel: string | null;
   userAgent: string | null;
+  sessionId: string | null;
   createdAt: string;
 }
 
@@ -95,6 +96,7 @@ async function fetchBatch(cursor: number, limit = BATCH_SIZE): Promise<SyncRecor
         ttftMs: tokenRecords.ttftMs,
         requestModel: tokenRecords.requestModel,
         userAgent: tokenRecords.userAgent,
+        sessionId: tokenRecords.sessionId,
         createdAt: tokenRecords.createdAt,
       })
       .from(tokenRecords)
@@ -126,6 +128,7 @@ function toPayload(row: SyncRecordRow): Record<string, unknown> {
     ttftMs: row.ttftMs ?? null,
     requestModel: row.requestModel ?? null,
     userAgent: row.userAgent ?? null,
+    sessionId: row.sessionId ?? null,
     createdAt: row.createdAt,
   };
 }

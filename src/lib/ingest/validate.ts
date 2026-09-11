@@ -9,6 +9,7 @@ export const MAX_RECORDS_PER_BATCH = 500;
 export const MAX_BODY_BYTES = 2 * 1024 * 1024;
 export const MAX_MODEL_LENGTH = 256;
 export const MAX_NAME_LENGTH = 512;
+export const MAX_SESSION_ID_LENGTH = 256;
 
 // 远程来源命名空间保留前缀：本机 upstream / vk 名禁止以 remote/ 开头，
 // 保证与 ingest 写入的 provider/agent（remote/{instance}/{原名}）命名空间干净隔离
@@ -32,6 +33,7 @@ export interface IngestRecordPayload {
   ttftMs: number | null;
   requestModel: string | null;
   userAgent: string | null;
+  sessionId: string | null; // 旧 B（无此字段）→ null 兼容；新 B → 原值（截断 256）
   createdAt: string;
 }
 
@@ -95,6 +97,14 @@ function validateRecord(raw: unknown): IngestRecordPayload | null {
       ? r.userAgent.slice(0, 512)
       : null;
 
+  // sessionId：旧 B 推送不含该字段（undefined）→ null；显式 null → null；其余非 string 类型跳过该条
+  let sessionId: string | null = null;
+  if (r.sessionId !== undefined && r.sessionId !== null) {
+    if (typeof r.sessionId !== "string") return null;
+    const trimmed = r.sessionId.trim();
+    sessionId = trimmed === "" ? null : trimmed.slice(0, MAX_SESSION_ID_LENGTH);
+  }
+
   const createdAt = r.createdAt;
   if (typeof createdAt !== "string" || Number.isNaN(Date.parse(createdAt))) return null;
 
@@ -112,6 +122,7 @@ function validateRecord(raw: unknown): IngestRecordPayload | null {
     ttftMs: r.ttftMs === null ? null : (r.ttftMs as number),
     requestModel: r.requestModel === null ? null : (r.requestModel as string),
     userAgent,
+    sessionId,
     createdAt: createdAt as string,
   };
 }

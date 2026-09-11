@@ -41,6 +41,7 @@ export function toStoredRecord(
     ttftMs: record.ttftMs ?? null,
     virtualKeyId: -1,
     userAgent: record.userAgent ?? null,
+    sessionId: record.sessionId ?? null,
     requestModel: record.requestModel ?? null,
     remoteInstanceUid: instanceUid,
     createdAt: record.createdAt,
