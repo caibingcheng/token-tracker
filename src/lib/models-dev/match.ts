@@ -49,6 +49,16 @@ export function stripDateVariant(s: string): string {
   return s.replace(/-\d{8}$/, "");
 }
 
+// 取最后一个 / 段：dashscope/deepseek-v4-flash-0731 → deepseek-v4-flash-0731
+function lastSegment(s: string): string {
+  const idx = s.lastIndexOf("/");
+  return idx >= 0 ? s.slice(idx + 1) : s;
+}
+
+function exactOrNormalizedEqual(a: string, b: string): boolean {
+  return a === b || normalizeModelKey(a) === normalizeModelKey(b);
+}
+
 function toCandidate(
   providerId: string,
   providerName: string | undefined,
@@ -96,16 +106,29 @@ export function matchModelsDevModel(
   const seen = new Map<string, PriceCandidate>(); // modelsDevId → candidate
   const found = new Set<string>();
 
+  // 末段匹配（阶段 4）查询侧变体：raw 本身 +（含 / 时）最后一个 / 段。
+  // LiteLLM 源 modelId 自带 provider 路径前缀（dashscope/deepseek-v4-flash-0731），
+  // 推送的裸名 / 带前缀名需要按末段比较才能命中；段级相等非子串，天然排除近似名。
+  const rawLastSeg = lastSegment(raw);
+  const queryVariants = raw.includes("/") ? [raw, rawLastSeg] : [raw];
+
   // 匹配阶段（依次尝试，一旦命中即收集该阶段全部结果）：
   // 1. 精确匹配 model id
   // 2. 归一化匹配（小写 + 去除 . - _）
   // 3. 日期变体归并（剥离 -\d{8}$ 后缀后重试精确/归一化）
+  // 4. 末段匹配（查询侧与快照侧各取最后一个 / 段变体，任一对精确/归一化相等即命中）
   const stages: Array<(modelId: string) => boolean> = [
     (id) => id === raw,
     (id) => normalizeModelKey(id) === norm,
     (id) => {
       const strippedId = stripDateVariant(id);
       return strippedId === stripped || normalizeModelKey(strippedId) === normStripped;
+    },
+    (id) => {
+      const idVariants = id.includes("/") ? [id, lastSegment(id)] : [id];
+      return queryVariants.some((qv) =>
+        idVariants.some((iv) => exactOrNormalizedEqual(qv, iv))
+      );
     },
   ];
 

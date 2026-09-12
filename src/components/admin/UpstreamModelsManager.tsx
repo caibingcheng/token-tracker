@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/client/api-client";
+import { filterModelsByQuery } from "@/lib/model-search";
 import type { UpstreamItem } from "./UpstreamsPanel";
 
 interface ModelsData {
@@ -23,6 +24,8 @@ export default function UpstreamModelsManager({
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
+  // 模型列表搜索词（视图过滤，不改写选择集）
+  const [query, setQuery] = useState("");
   // 本次会话是否已成功拉取上游列表（拉取成功后才具备「已下架」判断基准）
   const [fetchedOk, setFetchedOk] = useState(false);
   const selectAllRef = useRef<HTMLInputElement>(null);
@@ -46,16 +49,23 @@ export default function UpstreamModelsManager({
   const missingModels = fetchedOk
     ? Array.from(new Set(concreteManual.filter((m) => !available.includes(m))))
     : [];
+  // 搜索过滤后的可见子集（空白查询 = 全量）
+  const visibleMain = filterModelsByQuery(mainModels, query);
+  const visibleMissing = filterModelsByQuery(missingModels, query);
   const hasModels =
     mainModels.length > 0 || missingModels.length > 0 || wildcardRules.length > 0;
 
-  const allMainSelected = mainModels.length > 0 && mainModels.every((m) => selected.has(m));
+  // Select-all 的作用域：有搜索词时为当前可见（过滤后）子集，否则为全量。
+  // 勾选状态与动作必须基于同一 scope，否则三态 checkbox 会出现「点了没反应」的断裂。
+  const scopeMain = query.trim() ? visibleMain : mainModels;
+  const scopeMissing = query.trim() ? visibleMissing : missingModels;
+  const allMainSelected = scopeMain.length > 0 && scopeMain.every((m) => selected.has(m));
   const someMainSelected =
-    mainModels.some((m) => selected.has(m)) && !allMainSelected;
+    scopeMain.some((m) => selected.has(m)) && !allMainSelected;
   const allMissingSelected =
-    missingModels.length > 0 && missingModels.every((m) => selected.has(m));
+    scopeMissing.length > 0 && scopeMissing.every((m) => selected.has(m));
   const someMissingSelected =
-    missingModels.some((m) => selected.has(m)) && !allMissingSelected;
+    scopeMissing.some((m) => selected.has(m)) && !allMissingSelected;
 
   useEffect(() => {
     if (selectAllRef.current) {
@@ -74,6 +84,7 @@ export default function UpstreamModelsManager({
     setData({ manual: upstream.enabledModels, available: [], merged: upstream.enabledModels });
     setFetchedOk(false);
     setSelected(new Set(upstream.enabledModels));
+    setQuery("");
     setOpen(true);
   };
 
@@ -150,11 +161,11 @@ export default function UpstreamModelsManager({
     );
   }
 
-  // 主列表「全部勾选/取消」只作用于上游现有模型，不动下方已下架区段
+  // 主列表「全部勾选/取消」：作用于当前 scope（有搜索词 = 可见子集），不动下方已下架区段
   const toggleSelectAll = () => {
     setSelected((prev) => {
       const next = new Set(prev);
-      for (const m of mainModels) {
+      for (const m of scopeMain) {
         if (allMainSelected) {
           next.delete(m);
         } else {
@@ -165,11 +176,11 @@ export default function UpstreamModelsManager({
     });
   };
 
-  // 已下架区段「全部勾选/取消」
+  // 已下架区段「全部勾选/取消」：作用于当前 scope
   const toggleMissingAll = () => {
     setSelected((prev) => {
       const next = new Set(prev);
-      for (const m of missingModels) {
+      for (const m of scopeMissing) {
         if (allMissingSelected) {
           next.delete(m);
         } else {
@@ -218,6 +229,38 @@ export default function UpstreamModelsManager({
             </div>
           ) : (
             <div>
+              <div className="relative mb-3">
+                <input
+                  type="text"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search models..."
+                  className="w-full rounded border border-gray-300 bg-white py-2 pl-9 pr-8 text-base shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 md:text-sm"
+                />
+                <svg
+                  className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M21 21l-4.35-4.35M17 10.5a6.5 6.5 0 11-13 0 6.5 6.5 0 0113 0z"
+                  />
+                </svg>
+                {query && (
+                  <button
+                    type="button"
+                    onClick={() => setQuery("")}
+                    className="absolute right-2 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center text-gray-400 hover:text-gray-600"
+                    aria-label="Clear search"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
               {mainModels.length > 0 && (
                 <div>
                   <label className="mb-2 flex items-center gap-2 rounded border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-600">
@@ -226,12 +269,13 @@ export default function UpstreamModelsManager({
                       type="checkbox"
                       checked={allMainSelected}
                       onChange={toggleSelectAll}
+                      disabled={scopeMain.length === 0}
                       className="rounded border-gray-300"
                     />
                     {mainSelectLabel}
                   </label>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
-                    {mainModels.map((model) => (
+                    {visibleMain.map((model) => (
                       <label
                         key={model}
                         className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-gray-50"
@@ -266,6 +310,7 @@ export default function UpstreamModelsManager({
                         type="checkbox"
                         checked={allMissingSelected}
                         onChange={toggleMissingAll}
+                        disabled={scopeMissing.length === 0}
                         className="rounded border-gray-300"
                       />
                       {allMissingSelected ? "Unselect all" : "Select all"}
@@ -276,7 +321,7 @@ export default function UpstreamModelsManager({
                     them selected to retain, or clear the section to drop them.
                   </p>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
-                    {missingModels.map((model) => (
+                    {visibleMissing.map((model) => (
                       <label
                         key={model}
                         title="No longer available on this upstream"
@@ -296,6 +341,12 @@ export default function UpstreamModelsManager({
                     ))}
                   </div>
                 </div>
+              )}
+
+              {query.trim() && visibleMain.length === 0 && visibleMissing.length === 0 && (
+                <p className="py-2 text-center text-xs text-gray-400">
+                  No matches in {mainModels.length + missingModels.length} models
+                </p>
               )}
 
               {wildcardRules.length > 0 && (

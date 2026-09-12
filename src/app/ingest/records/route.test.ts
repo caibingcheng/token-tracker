@@ -67,6 +67,7 @@ function body(overrides: Record<string, unknown> = {}) {
         ttftMs: 80,
         requestModel: "gpt-4o",
         userAgent: "test-agent",
+        sessionId: "sess-e2e",
         createdAt: "2026-09-01T10:00:00.000Z",
       },
     ],
@@ -185,6 +186,7 @@ describe("POST /ingest/records", () => {
     expect(row.ttftMs).toBe(80);
     expect(row.requestModel).toBe("gpt-4o");
     expect(row.userAgent).toBe("test-agent");
+    expect(row.sessionId).toBe("sess-e2e");
   });
 
   it("TOFU: first push binds by uid, same uid ok, different uid 403 instance_mismatch", async () => {

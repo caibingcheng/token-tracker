@@ -101,6 +101,7 @@ export interface RecordUsageMeta {
   ttftMs?: number; // 流式首 token 延迟（首 chunk 到达 - 请求开始），非流式无此概念不写
   virtualKeyId?: number;
   userAgent?: string | null;
+  sessionId?: string | null; // 客户端 session header 原值（trim + 截断 256；未携带 NULL）
   requestModel?: string | null; // 客户端原始请求名（虚拟名路由场景可追溯）
 }
 
@@ -138,6 +139,22 @@ export interface ProxyDeps {
     markModelHealthy?: (upstreamId: number, model: string) => Promise<void> | void;
   };
   log?: (message: string) => void;
+}
+
+// 从请求头中提取客户端会话 id（仅用于记录，不透传行为不变）：
+// 依次尝试 x-session-id → session_id → x-conversation-id，取第一个 trim 后非空值，截断 256
+const SESSION_ID_HEADERS = ["x-session-id", "session_id", "x-conversation-id"] as const;
+export const MAX_SESSION_ID_LENGTH = 256;
+
+export function extractSessionId(headers: Headers): string | null {
+  for (const name of SESSION_ID_HEADERS) {
+    const raw = headers.get(name);
+    if (raw === null) continue;
+    const trimmed = raw.trim();
+    if (trimmed === "") continue;
+    return trimmed.slice(0, MAX_SESSION_ID_LENGTH);
+  }
+  return null;
 }
 
 // 从请求头/query 中提取虚拟 key token
@@ -261,6 +278,7 @@ export async function handleProxyRequest(
 
   const rawUA = request.headers.get("user-agent");
   const userAgent = rawUA && rawUA.trim() !== "" ? rawUA.slice(0, 512) : null;
+  const clientSessionId = extractSessionId(request.headers);
 
   if (!token) {
     return proxyError(401, "Missing virtual key", "authentication_error");
@@ -681,6 +699,7 @@ export async function handleProxyRequest(
         cacheWrite: 0,
         virtualKeyId: virtualKey.id,
         userAgent,
+        sessionId: clientSessionId,
         requestModel: model,
       };
       return passthroughResponse(fallbackBusinessResponse, {
@@ -746,6 +765,7 @@ export async function handleProxyRequest(
     latencyMs,
     virtualKeyId: virtualKey.id,
     userAgent,
+    sessionId: clientSessionId,
     requestModel: model,
   };
 

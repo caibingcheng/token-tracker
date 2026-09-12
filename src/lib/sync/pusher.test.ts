@@ -87,7 +87,7 @@ function jsonResponse(status: number, data: Record<string, unknown>): Response {
 
 describe("SyncPusher", () => {
   it("pushes one batch and advances cursor past sentinel records", async () => {
-    await insertRecord({ id: undefined });
+    await insertRecord({ id: undefined, sessionId: "sess-push-1" });
     await insertRecord({ id: undefined });
     await insertRecord({ id: undefined });
     const rows = await withSkipCache(async () => db.select().from(tokenRecords));
@@ -121,13 +121,16 @@ describe("SyncPusher", () => {
       instanceUid: string;
       instance: string;
       epoch: string;
-      records: Array<{ sourceRecordId: number; model: string }>;
+      records: Array<{ sourceRecordId: number; model: string; sessionId: string | null }>;
     };
     expect(payload.instanceUid).toBe(UID);
     expect(payload.instance).toBe("b-host");
     expect(payload.epoch).toBe("epoch-1");
     expect(payload.records.map((r) => r.sourceRecordId)).toEqual([rows[0]!.id, rows[2]!.id]);
     expect(payload.records[0]).toMatchObject({ model: "gpt-4o", provider: "openai" });
+    // sessionId 透传：有值原样、无值 null
+    expect(payload.records[0]!.sessionId).toBe("sess-push-1");
+    expect(payload.records[1]!.sessionId).toBeNull();
 
     const c = await config();
     expect(c.cursor).toBe(rows[2]!.id); // 原始扫描最大 id（含 -1 哨兵）

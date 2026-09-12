@@ -1,5 +1,18 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { buildProbeRequest, probeModel, probeModelWithKeys, PROBE_TIMEOUT_MS } from "./probe";
+import {
+  buildProbeRequest,
+  buildProbeHeaders,
+  probeModel,
+  probeModelWithKeys,
+  PROBE_TIMEOUT_MS,
+  PROBE_USER_AGENT,
+  PROBE_KEY_NAME,
+} from "./probe";
+import type { HeaderTransform } from "./header-transforms";
+
+function ht(partial: Partial<HeaderTransform> & { header: string }): HeaderTransform {
+  return { id: "ht-1", value: "v", mode: "fill", enabled: true, ...partial };
+}
 
 describe("buildProbeRequest", () => {
   it("builds openai chat completions request", () => {
@@ -268,6 +281,160 @@ describe("probeModel", () => {
 
   it("default timeout is 15s", () => {
     expect(PROBE_TIMEOUT_MS).toBe(15_000);
+  });
+});
+
+describe("buildProbeHeaders", () => {
+  const target = { protocol: "openai" as const, baseUrl: "https://api.example" };
+
+  it("sends a client-like baseline instead of undici's `node` UA", () => {
+    const headers = buildProbeHeaders(target, "sk-test", "gpt-4o");
+    expect(headers.get("user-agent")).toBe(PROBE_USER_AGENT);
+    expect(headers.get("user-agent")).not.toBe("node");
+    expect(headers.get("accept")).toBe("application/json");
+    expect(headers.get("accept-encoding")).toBe("identity");
+    expect(headers.get("content-type")).toBe("application/json");
+    expect(headers.get("authorization")).toBe("Bearer sk-test");
+  });
+
+  it("keeps baseline headers untouched when no transform is configured", () => {
+    const headers = buildProbeHeaders(target, "sk-test", "gpt-4o");
+    expect(Array.from(headers.keys()).sort()).toEqual([
+      "accept",
+      "accept-encoding",
+      "authorization",
+      "content-type",
+      "user-agent",
+    ]);
+  });
+
+  it("applies override transforms on top of the baseline", () => {
+    const headers = buildProbeHeaders(
+      { ...target, headerTransforms: [ht({ header: "User-Agent", value: "claude-cli/2.0.1", mode: "override" })] },
+      "sk-test",
+      "gpt-4o"
+    );
+    expect(headers.get("user-agent")).toBe("claude-cli/2.0.1");
+  });
+
+  it("fill mode fills only headers missing from the baseline", () => {
+    const headers = buildProbeHeaders(
+      {
+        ...target,
+        headerTransforms: [
+          ht({ id: "ht-1", header: "accept", value: "text/event-stream", mode: "fill" }),
+          ht({ id: "ht-2", header: "x-tenant", value: "team-a", mode: "fill" }),
+        ],
+      },
+      "sk-test",
+      "gpt-4o"
+    );
+    expect(headers.get("accept")).toBe("application/json"); // 基线已有 → fill 跳过
+    expect(headers.get("x-tenant")).toBe("team-a");
+  });
+
+  it("skips disabled transforms", () => {
+    const headers = buildProbeHeaders(
+      {
+        ...target,
+        headerTransforms: [ht({ header: "user-agent", value: "disabled-ua", mode: "override", enabled: false })],
+      },
+      "sk-test",
+      "gpt-4o"
+    );
+    expect(headers.get("user-agent")).toBe(PROBE_USER_AGENT);
+  });
+
+  it("expands template variables with probe-time values", () => {
+    const headers = buildProbeHeaders(
+      {
+        ...target,
+        upstreamName: "my-upstream",
+        headerTransforms: [
+          ht({
+            header: "x-probe",
+            value: "${var.sessionId}|${var.model}|${var.upstream}|${var.keyName}|${var.unknown}",
+            mode: "override",
+          }),
+        ],
+      },
+      "sk-test",
+      "gpt-4o"
+    );
+    const value = headers.get("x-probe") ?? "";
+    const [sessionId, model, upstream, keyName, unknown] = value.split("|");
+    expect(sessionId).toMatch(/^probe-[0-9a-f]{8}$/); // 临时值，非真实会话指纹
+    expect(model).toBe("gpt-4o");
+    expect(upstream).toBe("my-upstream");
+    expect(keyName).toBe(PROBE_KEY_NAME);
+    expect(unknown).toBe("${var.unknown}"); // 未知变量保留字面量
+  });
+
+  it("uses one stable sessionId per probe and a fresh one across probes", () => {
+    const withSid = {
+      ...target,
+      headerTransforms: [
+        ht({ id: "ht-1", header: "x-sid-a", value: "${var.sessionId}", mode: "override" }),
+        ht({ id: "ht-2", header: "x-sid-b", value: "prefix-${var.sessionId}", mode: "override" }),
+      ],
+    };
+    const first = buildProbeHeaders(withSid, "sk-test", "gpt-4o");
+    const a = first.get("x-sid-a") ?? "";
+    expect(a).toMatch(/^probe-[0-9a-f]{8}$/);
+    // 同一次探测内恒定：与真实链路「同一请求内 sessionId 不变」语义对齐
+    expect(first.get("x-sid-b")).toBe(`prefix-${a}`);
+    // 跨探测重新生成
+    expect(buildProbeHeaders(withSid, "sk-test", "gpt-4o").get("x-sid-a")).not.toBe(a);
+  });
+
+  it("applies transforms after auth injection (transform can override auth header)", () => {
+    const headers = buildProbeHeaders(
+      {
+        ...target,
+        headerTransforms: [ht({ header: "authorization", value: "Bearer override", mode: "override" })],
+      },
+      "sk-test",
+      "gpt-4o"
+    );
+    expect(headers.get("authorization")).toBe("Bearer override");
+  });
+
+  it("keeps protocol-specific auth headers for anthropic/gemini", () => {
+    const anthropic = buildProbeHeaders(
+      { protocol: "anthropic", baseUrl: "https://api.anthropic.com" },
+      "sk-ant",
+      "claude-3-5-sonnet"
+    );
+    expect(anthropic.get("x-api-key")).toBe("sk-ant");
+    expect(anthropic.get("anthropic-version")).toBe("2023-06-01");
+    const gemini = buildProbeHeaders(
+      { protocol: "gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta" },
+      "gk-1",
+      "gemini-1.5-flash"
+    );
+    expect(gemini.get("x-goog-api-key")).toBe("gk-1");
+  });
+
+  it("reaches the wire through probeModel", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      await probeModel(
+        {
+          ...target,
+          upstreamName: "up-1",
+          headerTransforms: [ht({ header: "user-agent", value: "agent-ua/1.0", mode: "override" })],
+        },
+        "gpt-4o",
+        "sk-test"
+      );
+      const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      const headers = new Headers(init.headers);
+      expect(headers.get("user-agent")).toBe("agent-ua/1.0");
+      expect(headers.get("authorization")).toBe("Bearer sk-test");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

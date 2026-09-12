@@ -1,14 +1,19 @@
 // 通用 model 探活函数：非流式小 LLM 请求，不记录 token 用量。
 // 用于 unhealthy upstream 的自动恢复探活与 Admin 面板的模型可用性测试。
+import { randomBytes } from "crypto";
 import type { Protocol } from "./model-router";
 import { buildAuthHeaders, isEdgeBlockStatus } from "./upstream-client";
 import { joinUrlPath } from "./url-utils";
 import { getProxyDispatcher } from "./proxy-dispatcher";
+import { applyHeaderTransforms } from "./header-transforms";
+import type { HeaderTransform } from "./header-transforms";
 
 export interface ProbeTarget {
   protocol: Protocol;
   baseUrl: string;
   proxyUrl?: string | null; // HTTP CONNECT 代理明文 URL（解密后），null/undefined = 直连
+  headerTransforms?: HeaderTransform[]; // upstream 出站 header 变换（与真实链路同一份配置）
+  upstreamName?: string; // ${var.upstream} 的取值（探测上下文）
 }
 
 export type ProbeStyle = "chat" | "responses";
@@ -22,6 +27,49 @@ export interface ProbeResult {
 }
 
 export const PROBE_TIMEOUT_MS = 15_000;
+
+// 探测基线头：真实链路是「客户端头透传 → 注入 key → transforms」，探测没有客户端，
+// 用一份固定「类客户端」基线补齐，否则 undici 传输层会补上 `user-agent: node`
+// （Cloudflare error 1010 等按 UA 拦的边缘 WAF 会直接拒掉探测请求）。
+// accept-encoding 强制 identity，与真实链路口径一致。
+export const PROBE_USER_AGENT = "token-tracker-probe/1.0";
+// 探测没有虚拟 key，${var.keyName} 用固定占位（保留语义便于排查，不留空值）
+export const PROBE_KEY_NAME = "probe";
+
+// 探测临时 sessionId：同一次探测内恒定（与真实链路「同请求同指纹」语义一致），
+// 跨探测重新生成（探测无真实会话，不参与 session 粘性）
+function createProbeSessionId(): string {
+  return `probe-${randomBytes(4).toString("hex")}`;
+}
+
+// 探测出站头 = 基线头 + 按协议注入 key + transforms（最后一棒，与真实链路同序）
+export function buildProbeHeaders(
+  target: ProbeTarget,
+  apiKey: string,
+  model: string
+): Headers {
+  const headers = new Headers({
+    "user-agent": PROBE_USER_AGENT,
+    accept: "application/json",
+    "content-type": "application/json", // 显式声明：undici 对字符串 body 默认发 text/plain，多数上游会拒绝
+    "accept-encoding": "identity",
+  });
+  for (const [key, value] of Object.entries(buildAuthHeaders(target.protocol, apiKey))) {
+    headers.set(key, value);
+  }
+  // 懒求值 + 同次调用内 memoize：多个 transform 引用 ${var.sessionId} 时取值必须一致
+  let probeSessionId: string | null = null;
+  applyHeaderTransforms(headers, target.headerTransforms, {
+    sessionId: () => {
+      if (probeSessionId === null) probeSessionId = createProbeSessionId();
+      return probeSessionId;
+    },
+    model,
+    keyName: PROBE_KEY_NAME,
+    upstream: target.upstreamName ?? "",
+  });
+  return headers;
+}
 
 export function buildProbeRequest(
   protocol: Protocol,
@@ -74,9 +122,7 @@ async function probeOnce(
   opts.signal?.addEventListener("abort", onOuterAbort);
 
   try {
-    // 显式声明 content-type：undici 对字符串 body 默认发 text/plain，多数上游会拒绝
-    const headers = new Headers(buildAuthHeaders(target.protocol, apiKey));
-    headers.set("content-type", "application/json");
+    const headers = buildProbeHeaders(target, apiKey, model);
     const dispatcher = getProxyDispatcher(target.proxyUrl);
     const res = await fetch(url, {
       method: "POST",

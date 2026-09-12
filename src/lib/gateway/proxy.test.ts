@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { handleProxyRequest, extractVirtualKeyToken, MAX_RETRY } from "./proxy";
+import { handleProxyRequest, extractVirtualKeyToken, extractSessionId, MAX_SESSION_ID_LENGTH, MAX_RETRY } from "./proxy";
 import type { ProxyDeps } from "./proxy";
 import type { UpstreamRoute } from "./model-router";
 import { buildSessionId } from "./session";
@@ -79,6 +79,42 @@ describe("extractVirtualKeyToken", () => {
   it("returns null when missing", () => {
     const headers = new Headers();
     expect(extractVirtualKeyToken(headers, new URLSearchParams())).toBeNull();
+  });
+});
+
+describe("extractSessionId", () => {
+  it("recognizes x-session-id / session_id / x-conversation-id", () => {
+    expect(extractSessionId(new Headers({ "x-session-id": "s1" }))).toBe("s1");
+    expect(extractSessionId(new Headers({ session_id: "s2" }))).toBe("s2");
+    expect(extractSessionId(new Headers({ "x-conversation-id": "s3" }))).toBe("s3");
+  });
+
+  it("prefers x-session-id over the other two headers", () => {
+    const headers = new Headers({
+      "x-session-id": "first",
+      session_id: "second",
+      "x-conversation-id": "third",
+    });
+    expect(extractSessionId(headers)).toBe("first");
+  });
+
+  it("skips blank values and falls through to the next header", () => {
+    expect(
+      extractSessionId(new Headers({ "x-session-id": "   ", "x-conversation-id": "next" }))
+    ).toBe("next");
+  });
+
+  it("trims the value and returns null when all headers are blank/missing", () => {
+    expect(extractSessionId(new Headers({ "x-session-id": "  padded  " }))).toBe("padded");
+    expect(extractSessionId(new Headers())).toBeNull();
+    expect(extractSessionId(new Headers({ session_id: "" }))).toBeNull();
+  });
+
+  it("truncates to 256 chars", () => {
+    const long = "s".repeat(300);
+    const value = extractSessionId(new Headers({ "x-session-id": long }));
+    expect(value).toHaveLength(MAX_SESSION_ID_LENGTH);
+    expect(value).toBe(long.slice(0, 256));
   });
 });
 
@@ -689,6 +725,73 @@ describe("handleProxyRequest - usage capture & write-back", () => {
     await res.text();
 
     expect(deps.onUsage).toHaveBeenCalledWith(expect.objectContaining({ userAgent: longUA.slice(0, 512) }));
+  });
+
+  it("passes session id header through to onUsage meta", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ usage: { prompt_tokens: 10, completion_tokens: 5 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+
+    const deps = mkDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good", "x-session-id": "  sess-123  " },
+        body: { model: "gpt-4o" },
+      }),
+      deps
+    );
+    await res.text();
+
+    expect(deps.onUsage).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "sess-123" }));
+  });
+
+  it("sets sessionId null when no session header is present", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ usage: { prompt_tokens: 10, completion_tokens: 5 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+
+    const deps = mkDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o" },
+      }),
+      deps
+    );
+    await res.text();
+
+    expect(deps.onUsage).toHaveBeenCalledWith(expect.objectContaining({ sessionId: null }));
+  });
+
+  it("carries sessionId on the streaming usage write path", async () => {
+    const sse =
+      'data: {"id":"1","choices":[],"usage":{"prompt_tokens":50,"completion_tokens":20}}\n\n' +
+      "data: [DONE]\n\n";
+    fetchMock.mockResolvedValueOnce(
+      new Response(sse, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      })
+    );
+    const deps = mkDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good", "x-conversation-id": "sess-stream" },
+        body: { model: "gpt-4o", stream: true },
+      }),
+      deps
+    );
+    await res.text();
+
+    expect(deps.onUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "sess-stream", inputTokens: 50, outputTokens: 20 })
+    );
   });
 });
 

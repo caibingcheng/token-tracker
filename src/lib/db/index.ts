@@ -64,6 +64,7 @@ async function ensureClient() {
       output_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read INTEGER NOT NULL DEFAULT 0,
       cache_write INTEGER NOT NULL DEFAULT 0,
+      session_id TEXT,
       created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     );
     CREATE INDEX IF NOT EXISTS idx_token_records_created_at ON token_records(created_at);
@@ -179,6 +180,7 @@ async function ensureClient() {
         { name: "ttft_ms", definition: "ttft_ms INTEGER" },
         { name: "virtual_key_id", definition: "virtual_key_id INTEGER" },
         { name: "user_agent", definition: "user_agent TEXT" },
+        { name: "session_id", definition: "session_id TEXT" },
         { name: "remote_instance_uid", definition: "remote_instance_uid TEXT" },
       ],
     },

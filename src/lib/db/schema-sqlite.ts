@@ -14,6 +14,7 @@ export const tokenRecords = sqliteTable("token_records", {
   ttftMs: integer("ttft_ms"), // 流式首 token 延迟（首 chunk 到达 - 请求开始），非流式为 NULL
   virtualKeyId: integer("virtual_key_id"),
   userAgent: text("user_agent"),
+  sessionId: text("session_id"), // 客户端 session header 原值（截断 256，未携带 NULL；仅存储展示用，无索引）
   requestModel: text("request_model"), // 客户端原始请求名（虚拟名路由场景可追溯）
   remoteInstanceUid: text("remote_instance_uid"), // 来源实例稳定身份键（NULL = 本地记录；非 NULL = ingest 推送来源）
   createdAt: text("created_at").$defaultFn(() => new Date().toISOString()),

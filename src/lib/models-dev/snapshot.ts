@@ -247,6 +247,33 @@ export function sanitizeModelsDevData(
   return { data: out, dropped };
 }
 
+// 内存裁剪：磁盘快照保留完整数据，仅加载进内存时裁剪到消费端实际读取的字段。
+// provider 只留 {id, name, models}，model 只留 {id, name, cost, last_updated}；
+// 未消费字段（description/modalities/reasoning_options/family 等）剥离，
+// 实测把 4.4MB JSON 的解析驻留从 ~16.7MB 降到 ~2.6MB。
+// cost 对象原样保留（无价条目 cost 缺失语义不变）。
+// ⚠️ 新增消费端字段时必须同步扩展白名单（match.ts / model-prices-service / model-pricing API
+// 均只用 id/name/cost/last_updated）。
+export function slimModelsDevData(data: ModelsDevData): ModelsDevData {
+  const out: ModelsDevData = {};
+  for (const [pid, p] of Object.entries(data)) {
+    // 容忍个别坏 provider/model（与 isValidModelsDevData / match.ts 同口径，不因脏数据抛错）
+    if (!p || typeof p !== "object") continue;
+    const models: Record<string, ModelsDevModel> = {};
+    for (const [mid, m] of Object.entries(p.models ?? {})) {
+      if (!m || typeof m !== "object") continue;
+      models[mid] = { id: m.id, name: m.name, last_updated: m.last_updated, cost: m.cost };
+    }
+    out[pid] = { id: p.id, name: p.name, models };
+  }
+  return out;
+}
+
+// 内存缓存统一存裁剪后的快照（写盘仍用完整数据）
+function slimSnapshot(snapshot: ModelsDevSnapshot): ModelsDevSnapshot {
+  return { ...snapshot, data: slimModelsDevData(snapshot.data) };
+}
+
 // 手动上传快照（admin API）：构造 {fetchedAt: now, source, data} 写入内存缓存 + 落盘，
 // 立即生效无需重启；同时清空 in-flight 刷新（进行中的 fetch 不可取消，
 // 其完成后可能覆盖上传结果 —— 极小概率竞态，接受）。
@@ -259,10 +286,11 @@ export function uploadSnapshot(
     source: opts.source ?? MODELS_DEV_SOURCE_DEFAULT,
     data,
   };
-  parsedCache = snapshot;
+  const slim = slimSnapshot(snapshot);
+  parsedCache = slim;
   inflightRefresh = null;
   writeSnapshotFile(snapshot, opts.filePath);
-  return snapshot;
+  return slim;
 }
 
 async function fetchModelsDevApi(
@@ -392,12 +420,13 @@ export async function getSnapshot(
 
   const disk = readSnapshotFile(opts.filePath);
   if (disk) {
-    parsedCache = disk;
+    const slim = slimSnapshot(disk);
+    parsedCache = slim;
     const age = Date.now() - new Date(disk.fetchedAt).getTime();
     if (opts.force || age > SNAPSHOT_TTL_MS) {
       runRefresh(opts).catch(() => {});
     }
-    if (!opts.force) return disk;
+    if (!opts.force) return slim;
     return await snapshotFromRefresh(await runRefresh(opts));
   }
 
@@ -430,9 +459,11 @@ async function doRefresh(opts: RefreshOpts): Promise<ModelsDevRefreshResult> {
     source,
     data: fetched.data,
   };
-  parsedCache = snapshot;
+  // 内存驻留裁剪版；磁盘写完整版（刷新后磁盘快照保持数据完整，便于排查/复用）
+  const slim = slimSnapshot(snapshot);
+  parsedCache = slim;
   writeSnapshotFile(snapshot, opts.filePath);
-  return { ok: true, snapshot };
+  return { ok: true, snapshot: slim };
 }
 
 // 测试辅助：清空内存缓存（含 in-flight）
