@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiFetch } from "@/lib/client/api-client";
+import { filterModelsByQuery } from "@/lib/model-search";
 import { PROVIDER_PRESETS } from "@/lib/provider-presets";
 import UpstreamModelsManager from "./UpstreamModelsManager";
 import { CopyableCode } from "./CopyableCode";
@@ -91,6 +92,8 @@ export default function UpstreamsPanel() {
   const [formKeyTests, setFormKeyTests] = useState<Record<number, FormKeyTestResult | null>>({});
   const [formKeyShown, setFormKeyShown] = useState<Record<number, boolean>>({});
   const [modelPicker, setModelPicker] = useState<ModelPickerState | null>(null);
+  // 模型选择弹窗的搜索词（视图过滤，不改写选择集）
+  const [pickerQuery, setPickerQuery] = useState("");
   const [fetchingModels, setFetchingModels] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [clearProxy, setClearProxy] = useState(false);
@@ -464,6 +467,7 @@ export default function UpstreamsPanel() {
     if (!apiKey && !editingId) return;
     setFetchingModels(true);
     setError(null);
+    setPickerQuery("");
     try {
       const res = await apiFetch("/api/admin/upstreams/fetch-models", {
         method: "POST",
@@ -541,13 +545,18 @@ export default function UpstreamsPanel() {
     });
   };
 
-  // 底部「已下架」区段的组级全选/取消
+  // 底部「已下架」区段的组级全选/取消：作用域 = 有搜索词时的可见子集，与行内弹窗语义对齐
   const pickerMissing = modelPicker?.missing ?? [];
+  const visiblePickerModels = modelPicker
+    ? filterModelsByQuery(modelPicker.models, pickerQuery)
+    : [];
+  const visiblePickerMissing = filterModelsByQuery(pickerMissing, pickerQuery);
+  const scopePickerMissing = pickerQuery.trim() ? visiblePickerMissing : pickerMissing;
   const allPickerMissingSelected =
-    pickerMissing.length > 0 && pickerMissing.every((m) => modelPicker?.selected.has(m) ?? false);
+    scopePickerMissing.length > 0 && scopePickerMissing.every((m) => modelPicker?.selected.has(m) ?? false);
   const somePickerMissingSelected =
-    pickerMissing.length > 0 &&
-    pickerMissing.some((m) => modelPicker?.selected.has(m) ?? false) &&
+    scopePickerMissing.length > 0 &&
+    scopePickerMissing.some((m) => modelPicker?.selected.has(m) ?? false) &&
     !allPickerMissingSelected;
   const pickerMissingAllRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
@@ -560,7 +569,7 @@ export default function UpstreamsPanel() {
     setModelPicker((prev) => {
       if (!prev) return prev;
       const next = new Set(prev.selected);
-      for (const m of pickerMissing) {
+      for (const m of scopePickerMissing) {
         if (allPickerMissingSelected) {
           next.delete(m);
         } else {
@@ -956,7 +965,10 @@ export default function UpstreamsPanel() {
               </h3>
               <button
                 type="button"
-                onClick={() => setModelPicker(null)}
+                onClick={() => {
+                  setModelPicker(null);
+                  setPickerQuery("");
+                }}
                 className="text-2xl leading-none text-gray-400 hover:text-gray-600"
               >
                 ×
@@ -977,9 +989,41 @@ export default function UpstreamsPanel() {
                   </div>
                 ) : (
                   <div>
+                    <div className="relative mb-3">
+                      <input
+                        type="text"
+                        value={pickerQuery}
+                        onChange={(e) => setPickerQuery(e.target.value)}
+                        placeholder="Search models..."
+                        className="w-full rounded border border-gray-300 bg-white py-2 pl-9 pr-8 text-base shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 md:text-sm"
+                      />
+                      <svg
+                        className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                        strokeWidth={2}
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M21 21l-4.35-4.35M17 10.5a6.5 6.5 0 11-13 0 6.5 6.5 0 0113 0z"
+                        />
+                      </svg>
+                      {pickerQuery && (
+                        <button
+                          type="button"
+                          onClick={() => setPickerQuery("")}
+                          className="absolute right-2 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center text-gray-400 hover:text-gray-600"
+                          aria-label="Clear search"
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
                     {modelPicker.models.length > 0 && (
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
-                        {modelPicker.models.map((model) => (
+                        {visiblePickerModels.map((model) => (
                           <label
                             key={model}
                             className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-gray-50"
@@ -995,6 +1039,13 @@ export default function UpstreamsPanel() {
                         ))}
                       </div>
                     )}
+                    {pickerQuery.trim() &&
+                      visiblePickerModels.length === 0 &&
+                      visiblePickerMissing.length === 0 && (
+                        <p className="py-2 text-center text-xs text-gray-400">
+                          No matches in {modelPicker.models.length + pickerMissing.length} models
+                        </p>
+                      )}
 
                     {pickerMissing.length > 0 && (
                       <div className="mt-5 border-t border-gray-200 pt-3">
@@ -1008,6 +1059,7 @@ export default function UpstreamsPanel() {
                               type="checkbox"
                               checked={allPickerMissingSelected}
                               onChange={togglePickerMissingAll}
+                              disabled={scopePickerMissing.length === 0}
                               className="rounded border-gray-300"
                             />
                             {allPickerMissingSelected ? "Unselect all" : "Select all"}
@@ -1018,7 +1070,7 @@ export default function UpstreamsPanel() {
                           Keep them selected to retain, or clear the section to drop them.
                         </p>
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
-                          {pickerMissing.map((model) => (
+                          {visiblePickerMissing.map((model) => (
                             <label
                               key={model}
                               title="No longer available on this upstream"
@@ -1046,7 +1098,10 @@ export default function UpstreamsPanel() {
             <div className="flex items-center justify-end border-t px-5 py-3 gap-2">
               <button
                 type="button"
-                onClick={() => setModelPicker(null)}
+                onClick={() => {
+                  setModelPicker(null);
+                  setPickerQuery("");
+                }}
                 className="rounded border border-gray-300 px-4 py-1.5 text-sm text-gray-600 hover:bg-gray-50"
               >
                 Cancel
