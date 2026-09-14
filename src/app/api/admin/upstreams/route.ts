@@ -58,6 +58,8 @@ export const GET = withAuth(async () => {
         healthCheckModel: row.healthCheckModel ?? null,
         unhealthy: !(await healthTracker.isHealthy(row.id)),
         modelUnhealthy: await healthTracker.listModelUnhealthy(row.id),
+        // 探活状态（纯内存，重启后 null = 未探测）
+        probe: healthTracker.getProbeStatus(row.id),
         keyCount: countMap.get(row.id) || 0,
         balance: row.balance ?? null,
         balanceUpdatedAt: row.balanceUpdatedAt ?? null,

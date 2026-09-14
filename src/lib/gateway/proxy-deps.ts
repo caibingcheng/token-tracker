@@ -19,7 +19,7 @@ import { SessionStore } from "./session";
 import { parseHeaderTransforms } from "./header-transforms";
 import { HealthTracker } from "./health";
 import type { HealthPersistence } from "./health";
-import { probeModel } from "./probe";
+import { probeModelWithKeys } from "./probe";
 import { loadQuotaUsageFromDb } from "./quota-db";
 
 // 模块级单例：session binding 与健康状态必须在请求间共享
@@ -49,20 +49,25 @@ export async function loadPlainUpstreamKeys(upstreamId: number): Promise<string[
 }
 
 // 探活：health_check_model 优先，否则 enabled_models 中第一个非通配 model；
-// 无可探活 model / 无 key 时返回 false（保持 unhealthy）
-async function probeUpstream(upstreamId: number): Promise<boolean> {
+// 无可探活 model / 无 key 时返回失败（保持 unhealthy）。
+// 全 key 链逐个探测（与真实请求/手动 test-model 口径一致），任一 key 成功即恢复；
+// 404 放宽：全部 key 均返回 403/404（model 级问题）且未出现 401 → 视为 upstream 级恢复
+// （上游可达 + key 有效，仅探测 model 被下架/改名，连通性已恢复），401 不放宽。
+async function probeUpstream(
+  upstreamId: number
+): Promise<{ ok: boolean; status?: number; error?: string }> {
   await initDatabase();
   const upstream = (
     await db.select().from(upstreamsTable).where(eq(upstreamsTable.id, upstreamId))
   )[0];
-  if (!upstream) return false;
+  if (!upstream) return { ok: false };
 
   let model: string | null = upstream.healthCheckModel ?? null;
   if (!model) {
     const models = parseEnabledModels(upstream.enabledModels).filter((m) => !m.endsWith("*"));
     model = models[0] ?? null;
   }
-  if (!model) return false;
+  if (!model) return { ok: false };
 
   let keys: string[];
   try {
@@ -71,13 +76,13 @@ async function probeUpstream(upstreamId: number): Promise<boolean> {
     // GATEWAY_SECRET 缺失：探活无法解密 key，保持 unhealthy（fail-closed）
     if (err instanceof GatewaySecretMissingError) {
       console.log("[gateway] probe skipped: GATEWAY_SECRET is not configured");
-      return false;
+      return { ok: false };
     }
     throw err;
   }
-  if (keys.length === 0) return false;
+  if (keys.length === 0) return { ok: false };
 
-  const result = await probeModel(
+  const result = await probeModelWithKeys(
     {
       protocol: upstream.protocol as Protocol,
       baseUrl: upstream.baseUrl,
@@ -86,10 +91,24 @@ async function probeUpstream(upstreamId: number): Promise<boolean> {
       upstreamName: upstream.name,
     },
     model,
-    keys[0]
+    keys
   );
-  if (result.ok) {
-    console.log(`[gateway] upstream "${upstream.name}" recovered via probe (model=${model})`);
+  // 404 放宽：上游可达 + key 有效，仅探测 model 不存在 → upstream 级恢复
+  const recovered = result.ok || (result.sawModelError && !result.sawAuthError);
+  if (recovered) {
+    // 恢复时清被探测 model 的不可用标记（与兜底自愈「清当跳 model」口径对齐）
+    await healthTracker.markModelHealthy(upstreamId, model);
+    if (result.ok) {
+      console.log(`[gateway] upstream "${upstream.name}" recovered via probe (model=${model})`);
+    } else {
+      console.log(
+        `[gateway] upstream "${upstream.name}" recovered via probe relaxation: model "${model}" may be delisted/renamed (status=${result.status})`
+      );
+    }
+  } else if (result.sawAuthError) {
+    console.log(
+      `[gateway] upstream "${upstream.name}" probe failed: all keys rejected (401) — replace the API keys (model=${model})`
+    );
   } else {
     console.log(
       `[gateway] upstream "${upstream.name}" probe failed (model=${model}, status=${result.status}${
@@ -97,17 +116,19 @@ async function probeUpstream(upstreamId: number): Promise<boolean> {
       })`
     );
   }
-  return result.ok;
+  return { ok: recovered, status: result.status, error: result.error };
 }
 
 // 健康状态持久化：upstream 级存 upstreams.health_status，model 级存 upstream_model_health
 const healthPersistence: HealthPersistence = {
   async loadUpstreams() {
     await initDatabase();
+    // 只调度 enabled 的 unhealthy upstream：禁用的不挂探活 timer（DB 状态保留，
+    // 供 UI 展示与重新启用时恢复）
     const rows = await db
       .select({ id: upstreamsTable.id })
       .from(upstreamsTable)
-      .where(eq(upstreamsTable.healthStatus, "unhealthy"));
+      .where(and(eq(upstreamsTable.healthStatus, "unhealthy"), eq(upstreamsTable.enabled, 1)));
     return rows.map((r: any) => r.id);
   },
 
