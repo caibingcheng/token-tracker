@@ -1127,7 +1127,12 @@ export default function UpstreamsPanel() {
           </div>
         )}
         {upstreams.map((u) => (
-          <div key={u.id} className="rounded-lg bg-white p-3 shadow">
+          <div
+            key={u.id}
+            className={`rounded-lg p-3 shadow ${
+              u.enabled ? "bg-white" : "bg-gray-50 ring-1 ring-gray-200"
+            }`}
+          >
             <div className="flex flex-wrap items-center gap-2">
               <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
                 <span
@@ -1142,7 +1147,17 @@ export default function UpstreamsPanel() {
                         : "Healthy"
                   }
                 />
-                <span className="font-semibold text-sm">{u.name}</span>
+                <span className={`font-semibold text-sm ${u.enabled ? "" : "text-gray-500"}`}>
+                  {u.name}
+                </span>
+                {!u.enabled && (
+                  <span
+                    className="rounded bg-gray-700 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white"
+                    title="Disabled — excluded from routing and failover. Click Enable to restore."
+                  >
+                    disabled
+                  </span>
+                )}
                 <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-600">{u.protocol}</span>
                 <span className="text-xs text-gray-400 truncate max-w-[200px]">{u.baseUrl}</span>
                 <span className="text-xs text-gray-400">
