@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { eq, count } from "drizzle-orm";
-import { db, initDatabase, upstreamsTable, upstreamKeysTable } from "@/lib/db";
+import { db, initDatabase, upstreamsTable, upstreamKeysTable, upstreamModelHealthTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";
 import { isProtocol, parseEnabledModels } from "@/lib/gateway/model-router";
@@ -16,7 +16,7 @@ import {
   normalizeHeaderTransforms,
   parseHeaderTransforms,
 } from "@/lib/gateway/header-transforms";
-import { decryptProxyUrl } from "@/lib/gateway/proxy-deps";
+import { decryptProxyUrl, healthTracker } from "@/lib/gateway/proxy-deps";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 import { isReservedRemoteName, REMOTE_NAME_PREFIX } from "@/lib/ingest/validate";
 
@@ -204,6 +204,16 @@ export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
         userAgent,
         details: { changed: Object.keys(values) },
       });
+      // 探活生命周期联动：禁用停 timer 保留 DB 状态；重新启用且仍 unhealthy → 立即探活
+      // （fire-and-forget，不阻塞 PATCH 响应，最长 N key × 15s 在后台完成）
+      if (body.enabled === false) {
+        healthTracker.stopProbing(id);
+      } else if (body.enabled === true) {
+        healthTracker.resumeProbing(id);
+        if (!(await healthTracker.isHealthy(id))) {
+          void healthTracker.probeNow(id).catch(() => {});
+        }
+      }
       // best-effort：enabled_models 变更后对新 model 自动填充官方价
       if (Array.isArray(body.enabledModels)) {
         const { autoFillForModels } = await import("@/lib/model-prices-service");
@@ -233,6 +243,9 @@ export const DELETE = withAuth(async (request: NextRequest, ctx: any) => {
       return NextResponse.json({ success: false, error: "Upstream not found" }, { status: 404 });
     }
     await db.delete(upstreamsTable).where(eq(upstreamsTable.id, id));
+    // 探活清理：停 timer + 清内存态（含 model 标记），并清除 upstream_model_health 残留行
+    healthTracker.removeUpstream(id);
+    await db.delete(upstreamModelHealthTable).where(eq(upstreamModelHealthTable.upstreamId, id));
     // 可选联动：同时隐藏其历史数据（追加进 hidden_sources，不自动隐藏）
     if (request.nextUrl.searchParams.get("hideHistory") === "1") {
       const { loadHiddenSources, setHiddenSourcesSetting } = await import(

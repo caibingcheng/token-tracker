@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi, afterEach } from "vitest";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -10,7 +10,8 @@ import { eq } from "drizzle-orm";
 import { setAdminApiKey, getTokenEpoch, deleteSetting } from "@/lib/auth/settings";
 import { signSessionToken, keyFingerprint } from "@/lib/auth/session";
 import { withSkipCache } from "@/lib/db/cache";
-import { decryptSecret } from "@/lib/gateway/crypto";
+import { decryptSecret, encryptSecret } from "@/lib/gateway/crypto";
+import { healthTracker } from "@/lib/gateway/proxy-deps";
 
 const ORIG_DB = process.env.SQLITE_DATABASE_PATH;
 const ORIG_SECRET = process.env.GATEWAY_SECRET;
@@ -293,6 +294,53 @@ describe("/api/admin/upstreams - proxy_url", () => {
       })
     );
     expect(res2.status).toBe(401);
+  });
+});
+
+describe("/api/admin/upstreams - probe status", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("GET 列表返回 probe 字段：从未探测为 null，探测后带结果", async () => {
+    const token = await makeToken();
+    const createRes = await LIST_POST(
+      req("/api/admin/upstreams", "POST", token, {
+        name: "up-probe",
+        protocol: "openai",
+        baseUrl: "https://8.8.8.8",
+        enabledModels: ["gpt-4o"],
+      })
+    );
+    const { data: created } = (await createRes.json()) as { data: { id: number } };
+    await withSkipCache(async () =>
+      db.insert(upstreamKeysTable).values({
+        upstreamId: created.id,
+        apiKeyEncrypted: encryptSecret("sk-key-1"),
+        enabled: 1,
+      })
+    );
+
+    // 从未探测：null
+    const list1 = await LIST_GET(req("/api/admin/upstreams", "GET", token));
+    const row1 = (await list1.json()).data.find((u: { id: number }) => u.id === created.id);
+    expect(row1.probe).toBeNull();
+
+    // unhealthy + 探测成功 → probe 带结果
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response("{}", { status: 200, headers: { "content-type": "application/json" } })
+      )
+    );
+    await healthTracker.markUnhealthy(created.id);
+    await healthTracker.probeNow(created.id);
+
+    const list2 = await LIST_GET(req("/api/admin/upstreams", "GET", token));
+    const row2 = (await list2.json()).data.find((u: { id: number }) => u.id === created.id);
+    expect(row2.probe.ok).toBe(true);
+    expect(row2.probe.lastAt).toBeGreaterThan(0);
+    expect(row2.probe.nextAt).toBeNull();
   });
 });
 

@@ -9,6 +9,14 @@ import { CopyableCode } from "./CopyableCode";
 import ActionMenu from "./ActionMenu";
 import type { HeaderTransform } from "@/lib/gateway/header-transforms";
 
+export interface UpstreamProbeStatus {
+  lastAt: number; // 0 = 尚未探测
+  ok: boolean;
+  status: number; // 0 = 无 HTTP 响应（网络层失败）
+  error?: string;
+  nextAt: number | null;
+}
+
 export interface UpstreamItem {
   id: number;
   name: string;
@@ -20,6 +28,7 @@ export interface UpstreamItem {
   unhealthy: boolean;
   healthCheckModel: string | null;
   modelUnhealthy: string[];
+  probe: UpstreamProbeStatus | null;
   keyCount: number;
   balance: string | null;
   balanceUpdatedAt: string | null;
@@ -107,6 +116,13 @@ export default function UpstreamsPanel() {
   const [modelTests, setModelTests] = useState<Record<number, Record<string, ModelTestResult | null>>>({});
   const [testingModels, setTestingModels] = useState<Record<number, Record<string, boolean>>>({});
   const [testingAll, setTestingAll] = useState<Record<number, boolean>>({});
+  const [probing, setProbing] = useState<Record<number, boolean>>({});
+  // 探活倒计时基准时钟（unhealthy 行的 nextAt 倒计时随其刷新）
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(t);
+  }, []);
   const [pendingDelete, setPendingDelete] = useState<UpstreamItem | null>(null);
   const [hideHistory, setHideHistory] = useState(false);
   // 编辑表单中 key 启停的本地暂存（点击 Save 后才提交生效）
@@ -298,6 +314,20 @@ export default function UpstreamsPanel() {
     setTestResults((prev) => ({ ...prev, [u.id]: json.data ?? { ok: false, error: json.error } }));
   };
 
+  const handleProbeNow = async (u: UpstreamItem) => {
+    setProbing((prev) => ({ ...prev, [u.id]: true }));
+    try {
+      const res = await apiFetch(`/api/admin/upstreams/${u.id}/probe`, { method: "POST" });
+      const json = await res.json();
+      if (!json.success) setError(json.error || "Probe failed");
+      await loadUpstreams();
+    } catch {
+      setError("Network error");
+    } finally {
+      setProbing((prev) => ({ ...prev, [u.id]: false }));
+    }
+  };
+
   const handleTestModel = async (u: UpstreamItem, model: string) => {
     setTestingModels((prev) => ({ ...prev, [u.id]: { ...(prev[u.id] ?? {}), [model]: true } }));
     try {
@@ -345,6 +375,26 @@ export default function UpstreamsPanel() {
   // 实际用于 unhealthy upstream 探活的模型：healthCheckModel 优先，否则第一个非通配
   const probeModelFor = (u: UpstreamItem): string | null =>
     u.healthCheckModel || u.enabledModels.find((m) => !m.endsWith("*")) || null;
+
+  // 探活状态文本：上次时间 + 结果（ok / HTTP status / network）+ error 摘要 + 下次倒计时
+  const formatProbeStatus = (p: UpstreamProbeStatus): string => {
+    const parts: string[] = [];
+    if (!p.lastAt) {
+      parts.push("not probed yet");
+    } else {
+      const result = p.ok
+        ? "ok"
+        : p.status > 0
+          ? `failed (HTTP ${p.status})`
+          : "failed (no response)";
+      const err = p.error ? `: ${p.error.slice(0, 60)}` : "";
+      parts.push(`last ${new Date(p.lastAt).toLocaleString()} — ${result}${err}`);
+    }
+    if (p.nextAt !== null) {
+      parts.push(`next in ${Math.max(0, Math.round((p.nextAt - now) / 60_000))}m`);
+    }
+    return parts.join(" · ");
+  };
 
   const handleSaveBalance = async (u: UpstreamItem) => {
     const value = (balanceInput[u.id] ?? "").trim();
@@ -1127,7 +1177,12 @@ export default function UpstreamsPanel() {
           </div>
         )}
         {upstreams.map((u) => (
-          <div key={u.id} className="rounded-lg bg-white p-3 shadow">
+          <div
+            key={u.id}
+            className={`rounded-lg p-3 shadow ${
+              u.enabled ? "bg-white" : "bg-gray-50 ring-1 ring-gray-200"
+            }`}
+          >
             <div className="flex flex-wrap items-center gap-2">
               <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
                 <span
@@ -1142,7 +1197,17 @@ export default function UpstreamsPanel() {
                         : "Healthy"
                   }
                 />
-                <span className="font-semibold text-sm">{u.name}</span>
+                <span className={`font-semibold text-sm ${u.enabled ? "" : "text-gray-500"}`}>
+                  {u.name}
+                </span>
+                {!u.enabled && (
+                  <span
+                    className="rounded bg-gray-700 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white"
+                    title="Disabled — excluded from routing and failover. Click Enable to restore."
+                  >
+                    disabled
+                  </span>
+                )}
                 <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-600">{u.protocol}</span>
                 <span className="text-xs text-gray-400 truncate max-w-[200px]">{u.baseUrl}</span>
                 <span className="text-xs text-gray-400">
@@ -1171,6 +1236,16 @@ export default function UpstreamsPanel() {
                 )}
               </div>
               <div className="hidden md:flex items-center gap-2">
+                {u.unhealthy && (
+                  <button
+                    type="button"
+                    onClick={() => handleProbeNow(u)}
+                    disabled={probing[u.id]}
+                    className="rounded border border-red-200 px-2.5 py-1 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50"
+                  >
+                    {probing[u.id] ? "Probing..." : "Probe now"}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => handleTest(u)}
@@ -1202,6 +1277,9 @@ export default function UpstreamsPanel() {
               </div>
               <ActionMenu
                 items={[
+                  ...(u.unhealthy
+                    ? [{ label: "Probe now", onClick: () => handleProbeNow(u) }]
+                    : []),
                   { label: "Test", onClick: () => handleTest(u) },
                   { label: u.enabled ? "Disable" : "Enable", onClick: () => handleToggleEnabled(u) },
                   { label: "Edit", onClick: () => handleEdit(u) },
@@ -1209,6 +1287,14 @@ export default function UpstreamsPanel() {
                 ]}
               />
             </div>
+
+            {u.unhealthy && (
+              <div className="mt-2 text-xs text-red-600">
+                <span title="Automatic recovery probe status">
+                  Probe: {u.probe ? formatProbeStatus(u.probe) : "never"}
+                </span>
+              </div>
+            )}
 
             {testResults[u.id] && (
               <div
