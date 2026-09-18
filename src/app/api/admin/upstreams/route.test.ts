@@ -510,3 +510,30 @@ describe("/api/admin/upstreams - header transforms", () => {
     expect(JSON.parse(rows[0]!.headerTransforms as string)).toEqual([]);
   });
 });
+
+describe("/api/admin/upstreams - key counts", () => {
+  it("GET 列表 keyCount 为全量、activeKeyCount 只数启用的 key", async () => {
+    const token = await makeToken();
+    const createRes = await LIST_POST(
+      req("/api/admin/upstreams", "POST", token, {
+        name: "up-keycount",
+        protocol: "openai",
+        baseUrl: "https://8.8.8.8",
+        enabledModels: ["gpt-4o"],
+      })
+    );
+    const { data: created } = (await createRes.json()) as { data: { id: number } };
+    await withSkipCache(async () =>
+      db.insert(upstreamKeysTable).values([
+        { upstreamId: created.id, apiKeyEncrypted: encryptSecret("sk-a"), enabled: 1 },
+        { upstreamId: created.id, apiKeyEncrypted: encryptSecret("sk-b"), enabled: 1 },
+        { upstreamId: created.id, apiKeyEncrypted: encryptSecret("sk-c"), enabled: 0 },
+      ])
+    );
+
+    const res = await LIST_GET(req("/api/admin/upstreams", "GET", token));
+    const row = (await res.json()).data.find((u: { id: number }) => u.id === created.id);
+    expect(row.keyCount).toBe(3);
+    expect(row.activeKeyCount).toBe(2);
+  });
+});

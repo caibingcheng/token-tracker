@@ -30,6 +30,7 @@ export interface UpstreamItem {
   modelUnhealthy: string[];
   probe: UpstreamProbeStatus | null;
   keyCount: number;
+  activeKeyCount: number;
   balance: string | null;
   balanceUpdatedAt: string | null;
   hasProxy: boolean;
@@ -305,6 +306,7 @@ export default function UpstreamsPanel() {
       method: "DELETE",
     });
     loadKeys(key.upstreamId);
+    loadUpstreams();
   };
 
   const handleTest = async (u: UpstreamItem) => {
@@ -876,7 +878,10 @@ export default function UpstreamsPanel() {
             </label>
             <div className="space-y-2">
               {formTransforms.map((t, index) => (
-                <div key={t.id} className="flex flex-wrap items-center gap-2">
+                <div
+                  key={t.id}
+                  className={`flex flex-wrap items-center gap-2 ${t.enabled ? "" : "opacity-60"}`}
+                >
                   <input
                     type="text"
                     value={t.header}
@@ -1208,10 +1213,18 @@ export default function UpstreamsPanel() {
                     disabled
                   </span>
                 )}
+                {u.enabled && u.activeKeyCount === 0 && (
+                  <span
+                    className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-600"
+                    title="No enabled API keys — this upstream cannot serve any request. Add or enable keys via Edit."
+                  >
+                    no active keys
+                  </span>
+                )}
                 <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-600">{u.protocol}</span>
                 <span className="text-xs text-gray-400 truncate max-w-[200px]">{u.baseUrl}</span>
-                <span className="text-xs text-gray-400">
-                  {u.enabledModels.length} models · {u.keyCount} keys · p{u.priority}
+                <span className="text-xs text-gray-400" title="Active / total API keys (disabled keys are excluded from routing)">
+                  {u.enabledModels.length} models · {u.activeKeyCount}/{u.keyCount} keys · p{u.priority}
                   {u.headerTransforms.length > 0 &&
                     ` · ${u.headerTransforms.filter((t) => t.enabled).length}/${u.headerTransforms.length} header transforms`}
                 </span>
@@ -1484,8 +1497,8 @@ export default function UpstreamsPanel() {
                       </code>
                       {!key.enabled && (
                         <span
-                          className="rounded bg-amber-50 px-1 py-0.5 text-[10px] font-medium text-amber-600"
-                          title="This key is disabled and will not be used for routing or failover"
+                          className="rounded bg-gray-700 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white"
+                          title="Disabled — this key is not used for routing or failover. Click Enable to restore."
                         >
                           disabled
                         </span>

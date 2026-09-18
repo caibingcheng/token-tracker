@@ -1,0 +1,72 @@
+# 测试
+
+> 上级文档：`AGENTS.md`。加测试或改动被测模块前必读。
+
+- 首次引入 vitest（`src/**/*.test.ts`，`npm test`），测试范围均为不依赖 Next.js 运行时的纯逻辑模块：
+  - `src/lib/gateway/parsers/`：三协议 usage 解析（含 `stream-usage` 增量提取：随机 chunk 边界对照批量 parser、多行 data、跨 chunk 事件、UTF-8 截断）
+  - `src/lib/gateway/model-router`：精确/通配/priority 匹配、Gemini path 提取
+  - `src/lib/gateway/proxy`：认证、跨 upstream 故障转移链 + session 粘性（mock fetch）、usage 写库回调、vk model allowlist 403、sessionId 捕获（三 header 优先级/trim/截断 256/缺失 NULL，非流式 + 流式写库路径携带）
+  - `src/lib/gateway/session`：会话指纹提取（截断/多 system/多模态/无 user）+ hash 稳定性 + LRU binding store
+  - `src/lib/gateway/health`：健康状态机（失败 → unhealthy → 探活成功 → healthy、失败重调度、幂等）+ 探活状态（probeStatus 记录 nextAt/结果、stopProbing 停 timer 保留 lastAt、resumeProbing 恢复调度、removeUpstream 清内存态与 model 标记、probeNow 立即恢复/并发互斥/禁用下失败不再调度、probeFn 抛错记录 error）
+  - `src/lib/gateway/crypto`：AES-256-GCM 往返/篡改
+  - `src/lib/auth/totp`：RFC 6238 测试向量 + 时间窗容差
+  - `src/lib/auth/recovery-codes`：生成格式/互斥/字符集、SHA-256 哈希、验证+标记已用（重复失败）、归一化、剩余数量递减、提醒标记往返、classifySecondFactorInput 分流
+  - `src/app/api/admin/auth/totp/route.test`：TOTP 路由集成测试（临时 SQLite + 真实 handler + 签名 token）：换绑无 currentCode → 400、错误计入 totp_fail_count、换绑成功替换 secret + token_epoch+1、首次启用 epoch 不变、解绑清理 recovery_codes/reminder
+  - `src/lib/auth/session`：会话 token 签发/验签/过期/滑动续期判定
+  - `src/lib/auth/edge-verify`：WebCrypto 验签（与 node 侧签名互认）
+  - `src/lib/auth/guard-scan`：静态扫描所有 /api 路由必须用 withAuth（login 除外）
+  - `src/lib/gateway/balance`：deepseek/openrouter 余额解析（mock fetch）、provider 判定
+  - `src/lib/db/migrate`：存量表补列迁移（临时 SQLite 库，幂等性 + NOT NULL 默认值回填）+ `migrateTokenRecordsModelColumns`（request_model 回填、model 覆盖 target_model、DROP、幂等）+ `migrateSyncInstancesTable`/`migrateIngestTokensTable` 表重建（旧行丢弃 / 行回迁 + bound_uid 置 NULL、幂等）+ token_records session_id/remote_instance_uid 补列（存量不回填）
+  - `src/lib/models-dev/match`：三级匹配管线（精确/归一化/日期变体剥离）、多候选冲突按优先级预选、价格相同不视为冲突、`searchModelsDevModel` 搜索（子串/大小写/provider 名命中、上限截断）
+  - `src/lib/models-dev/auto-fill`：fill 只填空不覆盖、manual 行不动、未匹配跳过；force 覆盖非 manual / 跳过 manual / updated 计数（fill 模式零回归）
+  - `src/lib/auth/settings-models-dev-source`：合法值往返（withSkipCache 即时生效）、非法值回退默认、isValid/parse 边界
+  - `src/lib/models-dev/snapshot`：convertLitellmToModelsDev（×1e6 换算、cache 映射、sample_spec/空 provider 跳过、无价条目保留、含 `/` model id、NaN/负数忽略）、looksLikeLitellmStructure 正反例、fetch 两 URL 顺序与回退、readSnapshotFile 旧文件 source 回退、uploadSnapshot source 标签、in-flight 同源复用/异源串行、**内存裁剪 slim**（仅保留 id/name/cost/last_updated、冗余字段剥离、无价条目语义保留、match/search/list 行为不变、磁盘保留完整数据）
+  - `src/lib/pricing`：loadPriceMap cache 价 NULL 回退 input + 内存缓存/失效、computeModelCost
+  - `src/lib/model-registry`：注入 aliases 的归一化各优先级规则、缓存失效、getDisplayName、isValidModelAliases/parseModelAliases
+  - `src/app/api/admin/model-prices/route.test`：Admin API 集成测试（临时 SQLite + 真实 handler + 签名 token）——GET 行集与徽标状态（active/inactive/待确认/未匹配/有更新/已下架）、PUT 手动编辑（source='manual' 清空 modelsDevId、model 名含 `/`）、DELETE、select 落库、auto-fill `mode=force` 分支 + 缺省 fill 兼容 + 非法 mode 400、未带 withAuth 401
+  - `src/app/api/model-pricing/route.test`：模拟器数据源集成测试（临时 SQLite + 临时快照文件 + 签名 token）——已定价行 + providers 列表、provider 推断（含日期变体剥离）、`?provider=` 懒加载/未知 provider 空数组、`?search=` 命中（canonicalId 格式 + cache 回退）/无结果、未带 token 401
+  - `src/lib/provider-presets`：预设合法性（protocol/baseUrl/唯一性）
+  - `src/lib/gateway/url-guard`：上游 baseUrl SSRF 防护（环回/私有/链路本地/元数据 IP 拒绝、DNS 解析后分类、ALLOW_PRIVATE_UPSTREAMS 逃生开关）
+  - `src/lib/gateway/url-utils`：`joinUrlPath` 前缀去重 + `sanitizePathSegments` `..` 段净化（逃逸返回 null）
+  - `src/lib/net/client-ip`：限流 IP 可信源（TRUSTED_PROXY 开关、XFF 伪造防护）
+  - `src/lib/auth/totp-lock`：TOTP 失败计数 + 指数锁定（settings 表持久化，防重启清零）
+  - `src/lib/stats-query`：静态断言聚合口径（Total Input = `SUM(input_tokens) + SUM(cache_read)`；防止 totalInput 回退为纯 `SUM(input_tokens)` 或 totalInputUncached 再次减去 `cache_read`）+ 日期过滤必须直比较（sargable，防 strftime 套列导致索引失效）+ **agent 维度静态断言**（不再按 `agent` 列过滤、`user_agent IN (uas)` / `IS NULL` 条件、exclude.agents 仍按 agent 列 NOT IN）
+  - `src/lib/latency-query`：percentile 线性插值、归一化 model × provider 分组、active 过滤（已删除 model 不显示）、tok/s 守卫（latency ≤ ttft 排除）、非流式行口径（不进 TTFT 统计但计入 avgLatency/count）、时区分组（getTimezoneOffset 语义：UTC+8 = -480）、排序（p50 升序 nulls 最后）
+  - `src/lib/timezone-utils`：`localDateKeyToUtcStartISO` 时区换算（含互逆 round-trip）
+  - `src/lib/auth/settings-status`：status_page_config 默认值合并（fail-closed、非法 JSON/字段回退、不污染共享默认）+ 合法性校验
+  - `src/lib/agent-utils` / `src/lib/auth/settings-agent-aliases`：UA token 提取、内置映射、手动 alias 优先级与大小写、unknown、反找（多 UA→一 agent、无匹配）；parse/isValid 边界、load 回退、set 后 invalidateQueryCache
+  - `src/app/api/admin/settings/agent-aliases/route.test`：401/400/往返（withSkipCache 立即可读、loadAgentAliases 同源）
+  - `src/lib/status-query`：元素联动（hourly→daily）+ 按需查询断言（cost/topModels 关闭不执行 model 级查询）+ 响应裁剪（不泄露模型名）+ 隐私裁剪断言（无 firstActiveAt/lastActiveAt、无 costPerMillion*、无嵌套 cost 对象，保留 totalCost）+ 响应缓存失效 + 60 req/min 限流
+  - `src/lib/gateway/probe`：探活请求构造（三协议 + responses 双风格）+ 出站头（基线常量 + 注入 key + transforms 应用，override/fill/disabled、变量展开含单次探测内恒定的临时 sessionId）+ 双风格回退判定 + 3xx 不跟随（redirect manual）
+  - `src/lib/gateway/quota`：配额窗口计算与超限判定（rpm/tpm/daily/monthly）
+  - `src/lib/gateway/upstream-client`：模型列表拉取 + 3xx 不跟随（redirect manual，防 key 跨源泄露）
+  - `src/lib/gateway/response-rewriter`：响应体模型名改写
+  - `src/lib/models-dev/snapshot`：快照拉取/缓存/消毒
+  - `src/lib/auth/setup`：首次设置向导闸门（canRunSetup 双条件 + runSetup 事务 re-check）
+  - `src/lib/auth/settings-display` / `settings-hidden-sources` / `settings-stream` / `settings-status`：settings 读写与回退优先级（含 stream timeout 函数族、hidden providers/sources、status_page_config）
+  - `src/lib/admin/audit`：审计日志写入
+  - `src/lib/clipboard` / `src/lib/mask-utils`：剪贴板 fallback / 密钥掩码
+  - `src/lib/provider-utils-async`：匿名化分组解析 + 归一化索引
+  - `src/app/api/admin/virtual-keys/route.test`：vk CRUD + 配额用量窗口查询集成测试
+  - `src/app/api/admin/routing-rules/route.test`：priority POST/PATCH、重复 (name, protocol, upstream) → 409、同名不同 upstream 允许创建、GET 排序
+  - `src/app/api/admin/models-dev/upload/route.test`：快照上传校验（大小/结构/全非法 400）+ litellm 格式自动识别转换上传成功 + 审计 source
+  - `src/app/api/admin/models-dev/refresh/route.test`：双源 refresh（github 分支走 Litellm URL、非法 setting 值回退默认）+ 审计含 source
+  - `src/app/api/admin/settings/hidden-sources/route.test`：Hidden Sources API + 统计剔除 + 删除联动
+  - `src/app/api/admin/upstreams/test-connection|fetch-models/route.test`：SSRF 校验（私网 400 不发请求）+ 存储 key 模式 + 3xx 不跟随
+  - `src/app/api/admin/upstreams/route.test`：proxy_url 加密落库（密文 ≠ 明文可解密还原）、GET/PATCH 不泄漏凭据（仅脱敏 host）、PATCH null 清除/省略保持/换代理、非法 proxyUrl 400、其他字段更新不触碰密文 + GET 列表 `probe` 字段（从未探测 null / 探测后带结果）
+  - `src/lib/gateway/proxy-deps.test`：probeUpstream 集成（临时 SQLite + mock fetch）——全 key 链任一成功即恢复、404 放宽恢复并清被探测 model 标记（DB 残留行同步清）、401/5xx 不放宽、无 key 保持 unhealthy
+  - `src/app/api/admin/upstreams/[id]/route.test`：PATCH enabled=false 停探活（nextAt 清空、状态保留）、enabled=true 且 unhealthy 立即探活（fire-and-forget 恢复）、healthy 不触发、DELETE 清内存态与 `upstream_model_health` 残留行
+  - `src/app/api/admin/upstreams/[id]/probe/route.test`：401 / 404 / 200 返回探活状态
+  - `src/lib/gateway/header-transforms`：格式校验（token 字符集/CRLF/长度/条数/mode/enabled 类型、无语义黑名单）、normalize 小写、parse 失败回退 []、applyHeaderTransforms（fill/override、客户端带与不带、同名后者覆盖——缺失基准为应用前 header 集、enabled=false 跳过、变量展开、sessionId 懒计算、未知变量保留字面量）
+  - `src/lib/gateway/proxy`（header transforms 集成）：transform 经 upstream 配置在出站请求生效（变量展开 per-hop、sessionId 与 session 模块指纹同源且随首问变化、fill 保留/override 覆盖客户端值）、无 transforms 零影响
+  - `src/lib/gateway/proxy-dispatcher`：null/空串 → undefined、同 URL 缓存复用、上限 50 重建
+  - `src/lib/gateway/url-guard`：`validateProxyUrl`（scheme 拒绝/私网 IP + DNS 拒绝/逃生开关/含凭据通过）+ `sanitizeProxyUrlForDisplay` 剥 userinfo
+  - `src/lib/gateway/proxy` / `probe` / `upstream-client` / `balance`：upstream 带 proxyUrl 时 init 含 dispatcher、无 proxyUrl 时无 dispatcher key（主链 + responses 辅助链各一）
+  - `src/app/api/dashboard/route.test` / `src/app/api/records/route.test`：Dashboard/Records API 集成（含 agent 参数按派生工具名反找 / unknown 走 IS NULL / 未知 agent 400 / records 行 `keyName`）
+  - `src/lib/ingest/validate.test`：payload 校验（instance 格式、结构错误 400、批量上限、部分接受 skippedInvalid、token 非负、userAgent 截断、sessionId 兼容——string/null/缺失（旧 B）→ 落库口径、trim + 截断 256、非 string 类型 skip、空批）
+  - `src/app/ingest/records/route.test`：ingest 端点集成（临时 SQLite + 真实 handler + 真实 token）——401/禁用、缺 instanceUid 400、2MB、400 超限、uid TOFU 绑定与 instance_mismatch、字段改写（remote 前缀 + vk=-1 + remote_instance_uid + sessionId + createdAt 保留）、同 epoch 去重重推、epoch 变化重置水位、部分接受、同实例并发串行化、**同名不同 uid 双设备水位独立**、**同 uid 改名 instance_name 刷新**
+  - `src/lib/sync/pusher.test`：推送 worker（mock fetch）——成功推进（含 -1 哨兵夹心、redirect=manual、payload 携带 instanceUid + sessionId、boundUid ack 锁定）、401 不 drop、5xx/网络不 drop、400 五十次自动 drop 累计计数、skippedInvalid 计入 dropped、未配置不启动、多批推送；错误诊断 `describeFetchError`（ECONNREFUSED + Docker localhost 提示、ENOTFOUND DNS 提示、TLS 证书提示、TimeoutError、AggregateError 多地址展开、无 cause 回退 err.message）+ HTTP 401/404 提示后缀
+  - `src/lib/sync/config.test`：URL 格式校验、token 加密往返与清除、instance/uid 校验、cursor/dropped 读写往返、reset 语义（dropped 保留、**uid 不重置**）、instance/uid/epoch 自动生成持久
+  - `src/app/api/admin/sync/config/route.test`：DELETE 集成——401、清除项（target_url/token/bound_uid/last_error/last_attempt）与保留项（cursor/dropped/epoch/uid/instance/last_success）逐项断言、幂等 no-op、审计 `sync_config_deleted` 含 cursor 快照
+  - `src/lib/model-prices-service.test`：可见性（近期流量 30 天窗口、推送模型行集含全历史 + 来源标注、active 判定、`inactive` 与默认可见性口径对齐、**uid 等值 + instance_name LIKE 兜底**、改名后历史行仍可发现）、徽标语义（跨快照源不判定 removed/hasUpdate、同源快照下 removed/hasUpdate、无快照不误报下架、无价条目不列下架、modelsDevId 为 null 不判定、removed/inactive 排序末尾含 active 的红 removed 行）
+- 新增纯逻辑模块（如解析器、路由匹配、加密）时应同步提交单测

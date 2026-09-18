@@ -1,5 +1,41 @@
 import { describe, expect, it } from "vitest";
-import { formatLatencyMs } from "./number-utils";
+import { formatLatencyMs, parseCompactNumber } from "./number-utils";
+
+describe("parseCompactNumber", () => {
+  it("parses plain integers", () => {
+    expect(parseCompactNumber("0")).toBe(0);
+    expect(parseCompactNumber("2000")).toBe(2000);
+    expect(parseCompactNumber("  2000 ")).toBe(2000);
+  });
+
+  it("parses suffixed values with or without spaces, case-insensitive", () => {
+    expect(parseCompactNumber("2K")).toBe(2000);
+    expect(parseCompactNumber("2 K")).toBe(2000);
+    expect(parseCompactNumber("2k")).toBe(2000);
+    expect(parseCompactNumber("1M")).toBe(1_000_000);
+    expect(parseCompactNumber("1 M")).toBe(1_000_000);
+    expect(parseCompactNumber("1m")).toBe(1_000_000);
+    expect(parseCompactNumber("1.5M")).toBe(1_500_000);
+    expect(parseCompactNumber("1B")).toBe(1_000_000_000);
+  });
+
+  it("rounds fractional results to an integer", () => {
+    expect(parseCompactNumber("0.0006K")).toBe(1);
+  });
+
+  it("returns null for invalid input", () => {
+    expect(parseCompactNumber("")).toBeNull();
+    expect(parseCompactNumber("   ")).toBeNull();
+    expect(parseCompactNumber("-1")).toBeNull();
+    expect(parseCompactNumber("K")).toBeNull();
+    expect(parseCompactNumber("2K3")).toBeNull();
+    expect(parseCompactNumber("2KB")).toBeNull();
+    expect(parseCompactNumber("1,000")).toBeNull();
+    expect(parseCompactNumber("abc")).toBeNull();
+    expect(parseCompactNumber("1e3")).toBeNull();
+    expect(parseCompactNumber("99999999999999999999T")).toBeNull();
+  });
+});
 
 describe("formatLatencyMs", () => {
   it("returns rounded ms for values below 1s", () => {

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { apiFetch } from "@/lib/client/api-client";
-import { formatNumber } from "@/lib/number-utils";
+import { formatNumber, parseCompactNumber } from "@/lib/number-utils";
 import { maskVirtualKey } from "@/lib/mask-utils";
 import { modelMatchesPattern, type Protocol } from "@/lib/gateway/model-router";
 import { CopyableCode } from "./CopyableCode";
@@ -119,12 +119,11 @@ function formatQuota(n: number | null | undefined): string {
   return String(n);
 }
 
-function quotaInputToField(raw: string): number | undefined {
+function quotaInputToField(raw: string): { ok: boolean; value?: number } {
   const trimmed = raw.trim();
-  if (trimmed === "") return undefined;
-  const value = Number(trimmed);
-  if (!Number.isInteger(value) || value < 0) return undefined;
-  return value;
+  if (trimmed === "") return { ok: true };
+  const value = parseCompactNumber(trimmed);
+  return value === null ? { ok: false } : { ok: true, value };
 }
 
 function quotaText(key: VirtualKeyItem): string {
@@ -217,6 +216,22 @@ export default function VirtualKeysPanel() {
       setError("Enabled models must be non-empty (use '*' for all)");
       return;
     }
+    const parsedQuota = {
+      maxRpm: quotaInputToField(quotaInputs.rpm),
+      maxTpm: quotaInputToField(quotaInputs.tpm),
+      maxDailyTokens: quotaInputToField(quotaInputs.daily),
+      maxMonthlyTokens: quotaInputToField(quotaInputs.monthly),
+    };
+    if (Object.values(parsedQuota).some((p) => !p.ok)) {
+      setError("Quota limits must be non-negative numbers, e.g. 1000, 2K, 1M");
+      return;
+    }
+    const quotaFields = {
+      maxRpm: parsedQuota.maxRpm.value,
+      maxTpm: parsedQuota.maxTpm.value,
+      maxDailyTokens: parsedQuota.maxDailyTokens.value,
+      maxMonthlyTokens: parsedQuota.maxMonthlyTokens.value,
+    };
     setSaving(true);
     setError(null);
     try {
@@ -228,10 +243,7 @@ export default function VirtualKeysPanel() {
               name,
               comment: commentInput.trim(),
               enabledModels,
-              maxRpm: quotaInputToField(quotaInputs.rpm),
-              maxTpm: quotaInputToField(quotaInputs.tpm),
-              maxDailyTokens: quotaInputToField(quotaInputs.daily),
-              maxMonthlyTokens: quotaInputToField(quotaInputs.monthly),
+              ...quotaFields,
             }),
           })
         : await apiFetch("/api/admin/virtual-keys", {
@@ -241,10 +253,7 @@ export default function VirtualKeysPanel() {
               name,
               comment: commentInput.trim(),
               enabledModels,
-              maxRpm: quotaInputToField(quotaInputs.rpm),
-              maxTpm: quotaInputToField(quotaInputs.tpm),
-              maxDailyTokens: quotaInputToField(quotaInputs.daily),
-              maxMonthlyTokens: quotaInputToField(quotaInputs.monthly),
+              ...quotaFields,
             }),
           });
       const json = await res.json();
@@ -412,50 +421,49 @@ export default function VirtualKeysPanel() {
                 <input
                   value={quotaInputs.rpm}
                   onChange={(e) => setQuotaInputs((q) => ({ ...q, rpm: e.target.value }))}
-                  placeholder="0 = unlimited"
-                  title="Max requests per minute (60s window). Empty = unlimited, 0 = unlimited."
-                  inputMode="numeric"
+                  placeholder="e.g. 2K"
+                  title="Max requests per minute (60s window). Empty = unlimited, 0 = unlimited. Accepts 1000, 2K, 1M."
                   className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
-                <p className="mt-0.5 text-xs text-gray-400">Requests per minute</p>
+                <p className="mt-0.5 text-xs text-gray-400">Requests per minute · 0 = unlimited</p>
               </div>
               <div>
                 <label className="mb-0.5 block text-xs font-medium text-gray-600">Max TPM</label>
                 <input
                   value={quotaInputs.tpm}
                   onChange={(e) => setQuotaInputs((q) => ({ ...q, tpm: e.target.value }))}
-                  placeholder="0 = unlimited"
-                  title="Max tokens per minute (60s window). Empty = unlimited, 0 = unlimited."
-                  inputMode="numeric"
+                  placeholder="e.g. 100K"
+                  title="Max tokens per minute (60s window). Empty = unlimited, 0 = unlimited. Accepts 1000, 2K, 1M."
                   className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
-                <p className="mt-0.5 text-xs text-gray-400">Tokens per minute</p>
+                <p className="mt-0.5 text-xs text-gray-400">Tokens per minute · 0 = unlimited</p>
               </div>
               <div>
                 <label className="mb-0.5 block text-xs font-medium text-gray-600">Max Daily Tokens</label>
                 <input
                   value={quotaInputs.daily}
                   onChange={(e) => setQuotaInputs((q) => ({ ...q, daily: e.target.value }))}
-                  placeholder="0 = unlimited"
-                  title="Max tokens per UTC calendar day. Empty = unlimited, 0 = unlimited."
-                  inputMode="numeric"
+                  placeholder="e.g. 10M"
+                  title="Max tokens per UTC calendar day. Empty = unlimited, 0 = unlimited. Accepts 1000, 2K, 1M."
                   className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
-                <p className="mt-0.5 text-xs text-gray-400">Per UTC calendar day</p>
+                <p className="mt-0.5 text-xs text-gray-400">Per UTC calendar day · 0 = unlimited</p>
               </div>
               <div>
                 <label className="mb-0.5 block text-xs font-medium text-gray-600">Max Monthly Tokens</label>
                 <input
                   value={quotaInputs.monthly}
                   onChange={(e) => setQuotaInputs((q) => ({ ...q, monthly: e.target.value }))}
-                  placeholder="0 = unlimited"
-                  title="Max tokens per UTC calendar month. Empty = unlimited, 0 = unlimited."
-                  inputMode="numeric"
+                  placeholder="e.g. 500M"
+                  title="Max tokens per UTC calendar month. Empty = unlimited, 0 = unlimited. Accepts 1000, 2K, 1M."
                   className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
-                <p className="mt-0.5 text-xs text-gray-400">Per UTC calendar month</p>
+                <p className="mt-0.5 text-xs text-gray-400">Per UTC calendar month · 0 = unlimited</p>
               </div>
             </div>
+            <p className="mt-1 text-xs text-gray-400">
+              Accepts 1000, 2K, 1M (K = 1000, M = 1000000).
+            </p>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -522,11 +530,29 @@ export default function VirtualKeysPanel() {
           </div>
         )}
         {keys.map((key) => (
-          <div key={key.id} className="rounded-lg bg-white p-3 shadow">
+          <div
+            key={key.id}
+            className={`rounded-lg p-3 shadow ${
+              key.enabled ? "bg-white" : "bg-gray-50 ring-1 ring-gray-200"
+            }`}
+          >
             <div className="flex flex-wrap items-center gap-2">
               <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-                <span className={`h-2 w-2 rounded-full ${key.enabled ? "bg-green-500" : "bg-gray-300"}`} />
-                <span className="font-semibold text-sm">{key.name}</span>
+                <span
+                  className={`h-2 w-2 rounded-full ${key.enabled ? "bg-green-500" : "bg-gray-300"}`}
+                  title={key.enabled ? "Enabled" : "Disabled"}
+                />
+                <span className={`font-semibold text-sm ${key.enabled ? "" : "text-gray-500"}`}>
+                  {key.name}
+                </span>
+                {!key.enabled && (
+                  <span
+                    className="rounded bg-gray-700 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white"
+                    title="Disabled — the gateway rejects requests with this key. Click Enable to restore."
+                  >
+                    disabled
+                  </span>
+                )}
                 {key.decryptFailed ? (
                   <span
                     className="rounded bg-red-50 px-1.5 py-0.5 text-[11px] text-red-600"
@@ -570,7 +596,7 @@ export default function VirtualKeysPanel() {
                   onClick={() => toggleEnabled(key)}
                   className="rounded border border-gray-300 px-2.5 py-1 text-xs text-gray-600 hover:bg-gray-50"
                 >
-                  {key.enabled ? "Revoke" : "Enable"}
+                  {key.enabled ? "Disable" : "Enable"}
                 </button>
                 <button
                   type="button"
@@ -585,7 +611,7 @@ export default function VirtualKeysPanel() {
                   { label: copied === key.id ? "Copied!" : "Copy", onClick: () => copyKey(key) },
                   { label: "Usage", onClick: () => toggleUsage(key) },
                   { label: "Edit", onClick: () => startEdit(key) },
-                  { label: key.enabled ? "Revoke" : "Enable", onClick: () => toggleEnabled(key) },
+                  { label: key.enabled ? "Disable" : "Enable", onClick: () => toggleEnabled(key) },
                   { label: "Delete", onClick: () => remove(key), variant: "danger" },
                 ]}
               />
