@@ -30,7 +30,8 @@ drizzle/
 .opencode/
 
 # Docs (plan/spec)
-/docs/
+/docs/*
+!/docs/agents/
 /specs/
 
 # Local dev tooling
