@@ -26,6 +26,21 @@ export function formatCompactNumber(num: number, decimals = 2): string {
   return formatFullNumber(num);
 }
 
+const COMPACT_MULTIPLIERS: Record<string, number> = {
+  k: 1_000,
+  m: 1_000_000,
+  b: 1_000_000_000,
+  t: 1_000_000_000_000,
+};
+
+// 解析紧凑数字书写："2000"、"2K"、"2 k"、"1M"、"1.5m"；非法输入（含负数、空串）返回 null
+export function parseCompactNumber(raw: string): number | null {
+  const match = /^(\d+(?:\.\d+)?)\s*([kmbt]?)$/.exec(raw.trim().toLowerCase());
+  if (!match) return null;
+  const value = Math.round(Number(match[1]) * (COMPACT_MULTIPLIERS[match[2]] ?? 1));
+  return Number.isSafeInteger(value) ? value : null;
+}
+
 export function formatNumber(num: number, compact: boolean): string {
   return compact ? formatCompactNumber(num) : formatFullNumber(num);
 }
