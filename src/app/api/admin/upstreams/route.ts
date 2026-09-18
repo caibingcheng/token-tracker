@@ -38,10 +38,20 @@ export const GET = withAuth(async () => {
       .select({ upstreamId: upstreamKeysTable.upstreamId, count: count() })
       .from(upstreamKeysTable)
       .groupBy(upstreamKeysTable.upstreamId);
+    // 参与路由的 key 数（enabled=1）：与 loadPlainUpstreamKeys 的过滤口径一致
+    const activeKeyCounts = await db
+      .select({ upstreamId: upstreamKeysTable.upstreamId, count: count() })
+      .from(upstreamKeysTable)
+      .where(eq(upstreamKeysTable.enabled, 1))
+      .groupBy(upstreamKeysTable.upstreamId);
 
     const countMap = new Map<number, number>();
     for (const row of keyCounts) {
       countMap.set(row.upstreamId, row.count);
+    }
+    const activeCountMap = new Map<number, number>();
+    for (const row of activeKeyCounts) {
+      activeCountMap.set(row.upstreamId, row.count);
     }
 
     const data = [];
@@ -61,6 +71,7 @@ export const GET = withAuth(async () => {
         // 探活状态（纯内存，重启后 null = 未探测）
         probe: healthTracker.getProbeStatus(row.id),
         keyCount: countMap.get(row.id) || 0,
+        activeKeyCount: activeCountMap.get(row.id) || 0,
         balance: row.balance ?? null,
         balanceUpdatedAt: row.balanceUpdatedAt ?? null,
         hasProxy: proxyUrl !== null,

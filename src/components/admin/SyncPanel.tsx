@@ -891,6 +891,11 @@ export default function SyncPanel() {
                       <button
                         type="button"
                         onClick={() => toggleToken(token)}
+                        title={
+                          token.enabled
+                            ? "Enabled — this instance can push records to /ingest/records"
+                            : "Disabled — pushes with this token are rejected (401). Click to re-enable."
+                        }
                         className={`rounded px-2 py-0.5 text-xs font-medium ${
                           token.enabled
                             ? "bg-green-100 text-green-700 hover:bg-green-200"
@@ -962,6 +967,11 @@ export default function SyncPanel() {
                       <button
                         type="button"
                         onClick={() => toggleToken(token)}
+                        title={
+                          token.enabled
+                            ? "Enabled — this instance can push records to /ingest/records"
+                            : "Disabled — pushes with this token are rejected (401). Click to re-enable."
+                        }
                         className={`rounded px-2 py-1 text-[11px] font-medium min-h-[32px] ${
                           token.enabled
                             ? "bg-green-100 text-green-700"

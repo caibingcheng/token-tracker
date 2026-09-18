@@ -522,11 +522,29 @@ export default function VirtualKeysPanel() {
           </div>
         )}
         {keys.map((key) => (
-          <div key={key.id} className="rounded-lg bg-white p-3 shadow">
+          <div
+            key={key.id}
+            className={`rounded-lg p-3 shadow ${
+              key.enabled ? "bg-white" : "bg-gray-50 ring-1 ring-gray-200"
+            }`}
+          >
             <div className="flex flex-wrap items-center gap-2">
               <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-                <span className={`h-2 w-2 rounded-full ${key.enabled ? "bg-green-500" : "bg-gray-300"}`} />
-                <span className="font-semibold text-sm">{key.name}</span>
+                <span
+                  className={`h-2 w-2 rounded-full ${key.enabled ? "bg-green-500" : "bg-gray-300"}`}
+                  title={key.enabled ? "Enabled" : "Disabled"}
+                />
+                <span className={`font-semibold text-sm ${key.enabled ? "" : "text-gray-500"}`}>
+                  {key.name}
+                </span>
+                {!key.enabled && (
+                  <span
+                    className="rounded bg-gray-700 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white"
+                    title="Disabled — the gateway rejects requests with this key. Click Enable to restore."
+                  >
+                    disabled
+                  </span>
+                )}
                 {key.decryptFailed ? (
                   <span
                     className="rounded bg-red-50 px-1.5 py-0.5 text-[11px] text-red-600"
@@ -570,7 +588,7 @@ export default function VirtualKeysPanel() {
                   onClick={() => toggleEnabled(key)}
                   className="rounded border border-gray-300 px-2.5 py-1 text-xs text-gray-600 hover:bg-gray-50"
                 >
-                  {key.enabled ? "Revoke" : "Enable"}
+                  {key.enabled ? "Disable" : "Enable"}
                 </button>
                 <button
                   type="button"
@@ -585,7 +603,7 @@ export default function VirtualKeysPanel() {
                   { label: copied === key.id ? "Copied!" : "Copy", onClick: () => copyKey(key) },
                   { label: "Usage", onClick: () => toggleUsage(key) },
                   { label: "Edit", onClick: () => startEdit(key) },
-                  { label: key.enabled ? "Revoke" : "Enable", onClick: () => toggleEnabled(key) },
+                  { label: key.enabled ? "Disable" : "Enable", onClick: () => toggleEnabled(key) },
                   { label: "Delete", onClick: () => remove(key), variant: "danger" },
                 ]}
               />
