@@ -48,6 +48,7 @@ export const upstreams = sqliteTable("upstreams", {
   balanceUpdatedAt: text("balance_updated_at"),
   proxyUrlEncrypted: text("proxy_url_encrypted"), // AES-256-GCM，NULL = 直连
   headerTransforms: text("header_transforms"), // JSON: HeaderTransform[]，出站 header 变换（最后一棒）
+  probeConfig: text("probe_config"), // JSON: {path, body}，自定义探活端点；NULL = 默认 chat → responses 双风格
   createdAt: text("created_at").$defaultFn(() => new Date().toISOString()),
 });
 

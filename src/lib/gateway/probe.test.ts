@@ -210,6 +210,78 @@ describe("probeModel", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("uses the configured probe endpoint verbatim (no fallback to the second style)", async () => {
+    fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
+    const config = {
+      path: "/v1/systemone",
+      body: { model: "{{model}}", state: "hi", questions: { ok: { type: "noul" } } },
+    };
+    const result = await probeModel(
+      { protocol: "openai", baseUrl: "https://api.typesafe.ai", probeConfig: config },
+      "jev-latest",
+      "sk-test"
+    );
+    expect(result).toEqual({ ok: true, status: 200, style: "custom" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://api.typesafe.ai/v1/systemone");
+    expect(JSON.parse(String(init.body))).toEqual({
+      model: "jev-latest",
+      state: "hi",
+      questions: { ok: { type: "noul" } },
+    });
+  });
+
+  it("does not retry the default styles when a configured endpoint fails", async () => {
+    fetchMock.mockResolvedValue(new Response("not found", { status: 404 }));
+    const result = await probeModel(
+      {
+        protocol: "openai",
+        baseUrl: "https://api.example",
+        probeConfig: { path: "/v1/systemone", body: { model: "{{model}}" } },
+      },
+      "jev-latest",
+      "sk-test"
+    );
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe(404);
+    expect(result.style).toBe("custom");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets the configured endpoint override the protocol default path", async () => {
+    fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
+    await probeModel(
+      {
+        protocol: "gemini",
+        baseUrl: "https://generativelanguage.googleapis.com",
+        probeConfig: { path: "/v1/embeddings", body: { model: "{{model}}", input: "hi" } },
+      },
+      "text-embedding-004",
+      "sk-test"
+    );
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://generativelanguage.googleapis.com/v1/embeddings");
+  });
+
+  it("falls back to the default styles when a configured path escapes the base prefix", async () => {
+    fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
+    const result = await probeModel(
+      {
+        protocol: "openai",
+        baseUrl: "https://api.example/v1",
+        // 手工构造（绕过 isValidProbeConfig 的段校验）：`?` 让段变成 `..?x=1`
+        probeConfig: { path: "/v1/..?x=1", body: { model: "{{model}}" } },
+      },
+      "gpt-4o",
+      "sk-test"
+    );
+    expect(result).toEqual({ ok: true, status: 200, style: "chat" });
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://api.example/v1/chat/completions");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("does not fall back on 401 (key-level error)", async () => {
     fetchMock.mockResolvedValue(new Response("unauthorized", { status: 401 }));
     const result = await probeModel(

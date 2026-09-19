@@ -205,6 +205,7 @@ async function ensureClient() {
         { name: "balance_updated_at", definition: "balance_updated_at TEXT" },
         { name: "proxy_url_encrypted", definition: "proxy_url_encrypted TEXT" },
         { name: "header_transforms", definition: "header_transforms TEXT" },
+        { name: "probe_config", definition: "probe_config TEXT" },
       ],
     },
   ]);
