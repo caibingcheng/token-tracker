@@ -511,6 +511,146 @@ describe("/api/admin/upstreams - header transforms", () => {
   });
 });
 
+describe("/api/admin/upstreams - probe config", () => {
+  const PROBE = {
+    path: "/v1/systemone",
+    body: {
+      model: "{{model}}",
+      state: "hi",
+      questions: { ok: { type: "noul", instructions: "Is this text non-empty?" } },
+    },
+  };
+
+  it("POST 带 probeConfig 落库并 GET 返回解析对象", async () => {
+    const token = await makeToken();
+    const res = await LIST_POST(
+      req("/api/admin/upstreams", "POST", token, {
+        name: "up-probe",
+        protocol: "openai",
+        baseUrl: "https://8.8.8.8",
+        probeConfig: PROBE,
+      }), { params: {} });
+    expect(res.status).toBe(201);
+
+    const list = await LIST_GET(req("/api/admin/upstreams", "GET", token), { params: {} });
+    const json = await list.json();
+    const row = json.data.find((u: { name: string }) => u.name === "up-probe");
+    expect(row.probeConfig).toEqual(PROBE);
+  });
+
+  it("POST 省略 probeConfig 时落库 NULL 且 GET 返回 null", async () => {
+    const token = await makeToken();
+    await LIST_POST(
+      req("/api/admin/upstreams", "POST", token, {
+        name: "up-probe-none",
+        protocol: "openai",
+        baseUrl: "https://8.8.8.8",
+      }), { params: {} });
+    const rows = await withSkipCache(async () =>
+      db.select().from(upstreamsTable).where(eq(upstreamsTable.name, "up-probe-none"))
+    );
+    expect(rows[0]!.probeConfig).toBeNull();
+
+    const list = await LIST_GET(req("/api/admin/upstreams", "GET", token), { params: {} });
+    const json = await list.json();
+    const row = json.data.find((u: { name: string }) => u.name === "up-probe-none");
+    expect(row.probeConfig).toBeNull();
+  });
+
+  it("POST 非法 probeConfig 400（绝对 URL / // 开头 / 逃逸 .. / 非对象 body）", async () => {
+    const token = await makeToken();
+    for (const path of ["https://evil.example/x", "//evil.example/x", "/../internal", ""]) {
+      const res = await LIST_POST(
+        req("/api/admin/upstreams", "POST", token, {
+          name: `up-probe-bad-${Math.random().toString(36).slice(2, 8)}`,
+          protocol: "openai",
+          baseUrl: "https://8.8.8.8",
+          probeConfig: { path, body: {} },
+        }),
+        { params: {} }
+      );
+      expect(res.status).toBe(400);
+    }
+    for (const body of [["x"], "y", 1]) {
+      const res = await LIST_POST(
+        req("/api/admin/upstreams", "POST", token, {
+          name: `up-probe-bad-${Math.random().toString(36).slice(2, 8)}`,
+          protocol: "openai",
+          baseUrl: "https://8.8.8.8",
+          probeConfig: { path: "/v1/x", body },
+        }),
+        { params: {} }
+      );
+      expect(res.status).toBe(400);
+    }
+  });
+
+  it("PATCH 设置 probeConfig，GET 单项返回新值", async () => {
+    const token = await makeToken();
+    await LIST_POST(
+      req("/api/admin/upstreams", "POST", token, {
+        name: "up-probe-patch",
+        protocol: "openai",
+        baseUrl: "https://8.8.8.8",
+      }), { params: {} });
+    const rows = await withSkipCache(async () =>
+      db.select().from(upstreamsTable).where(eq(upstreamsTable.name, "up-probe-patch"))
+    );
+    const id = rows[0]!.id;
+
+    const patch = await PATCH(
+      req(`/api/admin/upstreams/${id}`, "PATCH", token, { probeConfig: PROBE }),
+      { params: { id: String(id) } }
+    );
+    expect(patch.status).toBe(200);
+
+    const get = await ITEM_GET(req(`/api/admin/upstreams/${id}`, "GET", token), {
+      params: { id: String(id) },
+    });
+    const json = await get.json();
+    expect(json.data.probeConfig).toEqual(PROBE);
+  });
+
+  it("PATCH probeConfig:null 清除配置，省略时保持不变，非法值 400", async () => {
+    const token = await makeToken();
+    await LIST_POST(
+      req("/api/admin/upstreams", "POST", token, {
+        name: "up-probe-clear",
+        protocol: "openai",
+        baseUrl: "https://8.8.8.8",
+        probeConfig: PROBE,
+      }), { params: {} });
+    const rows = await withSkipCache(async () =>
+      db.select().from(upstreamsTable).where(eq(upstreamsTable.name, "up-probe-clear"))
+    );
+    const id = rows[0]!.id;
+
+    const invalid = await PATCH(
+      req(`/api/admin/upstreams/${id}`, "PATCH", token, {
+        probeConfig: { path: "no-slash", body: {} },
+      }),
+      { params: { id: String(id) } }
+    );
+    expect(invalid.status).toBe(400);
+
+    await PATCH(req(`/api/admin/upstreams/${id}`, "PATCH", token, { priority: 3 }), {
+      params: { id: String(id) },
+    });
+    let get = await ITEM_GET(req(`/api/admin/upstreams/${id}`, "GET", token), {
+      params: { id: String(id) },
+    });
+    expect((await get.json()).data.probeConfig).toEqual(PROBE);
+
+    await PATCH(req(`/api/admin/upstreams/${id}`, "PATCH", token, { probeConfig: null }), {
+      params: { id: String(id) },
+    });
+    get = await ITEM_GET(req(`/api/admin/upstreams/${id}`, "GET", token), {
+      params: { id: String(id) },
+    });
+    expect((await get.json()).data.probeConfig).toBeNull();
+  });
+});
+
 describe("/api/admin/upstreams - key counts", () => {
   it("GET 列表 keyCount 为全量、activeKeyCount 只数启用的 key", async () => {
     const token = await makeToken();

@@ -7,6 +7,8 @@ import { joinUrlPath } from "./url-utils";
 import { getProxyDispatcher } from "./proxy-dispatcher";
 import { applyHeaderTransforms } from "./header-transforms";
 import type { HeaderTransform } from "./header-transforms";
+import { buildProbeRequestFromConfig, isProbePathInsideBase } from "./probe-config";
+import type { ProbeConfig } from "./probe-config";
 
 export interface ProbeTarget {
   protocol: Protocol;
@@ -14,15 +16,17 @@ export interface ProbeTarget {
   proxyUrl?: string | null; // HTTP CONNECT 代理明文 URL（解密后），null/undefined = 直连
   headerTransforms?: HeaderTransform[]; // upstream 出站 header 变换（与真实链路同一份配置）
   upstreamName?: string; // ${var.upstream} 的取值（探测上下文）
+  probeConfig?: ProbeConfig | null; // 自定义探活端点；null/undefined = 默认 chat → responses 双风格
 }
 
-export type ProbeStyle = "chat" | "responses";
+// chat / responses = openai 协议双风格；custom = upstream 自定义探活端点
+export type ProbeStyle = "chat" | "responses" | "custom";
 
 export interface ProbeResult {
   ok: boolean;
   status: number;
   error?: string;
-  style?: ProbeStyle; // 成功/失败时使用的探测风格（openai 双风格探测后标注）
+  style?: ProbeStyle; // 成功/失败时使用的探测风格（openai 双风格探测后标注；custom = 自定义端点）
   contentType?: string; // 失败响应的 content-type（用于边缘拦截判读）
 }
 
@@ -40,6 +44,26 @@ export const PROBE_KEY_NAME = "probe";
 // 跨探测重新生成（探测无真实会话，不参与 session 粘性）
 function createProbeSessionId(): string {
   return `probe-${randomBytes(4).toString("hex")}`;
+}
+
+// 配置是否可用：不仅非空，还要在 URL 归一化后仍落在 baseUrl 路径前缀内
+// （纵深防御，见 probe-config.ts 的 isProbePathInsideBase）；不可用即当作 auto
+function hasUsableProbeConfig(target: ProbeTarget): boolean {
+  const config = target.probeConfig;
+  if (!config) return false;
+  return isProbePathInsideBase(target.baseUrl, config.path);
+}
+
+// 探活请求来源：配了可用自定义端点走配置，否则按协议 + 风格构造
+function resolveProbeRequest(
+  target: ProbeTarget,
+  model: string,
+  apiStyle: ProbeStyle
+): { url: string; body: Record<string, unknown> } {
+  if (hasUsableProbeConfig(target)) {
+    return buildProbeRequestFromConfig(target.baseUrl, model, target.probeConfig!);
+  }
+  return buildProbeRequest(target.protocol, target.baseUrl, model, apiStyle);
 }
 
 // 探测出站头 = 基线头 + 按协议注入 key + transforms（最后一棒，与真实链路同序）
@@ -114,7 +138,7 @@ async function probeOnce(
   apiStyle: ProbeStyle,
   opts: { timeoutMs?: number; signal?: AbortSignal } = {}
 ): Promise<ProbeResult> {
-  const { url, body } = buildProbeRequest(target.protocol, target.baseUrl, model, apiStyle);
+  const { url, body } = resolveProbeRequest(target, model, apiStyle);
   const controller = new AbortController();
   const timeoutMs = opts.timeoutMs ?? PROBE_TIMEOUT_MS;
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -175,6 +199,11 @@ export async function probeModel(
   apiKey: string,
   opts: { timeoutMs?: number; signal?: AbortSignal } = {}
 ): Promise<ProbeResult> {
+  // 自定义探活端点：只打配置的端点一次，不补发第二种风格（显式配置即真相，
+  // 否则「embeddings 失败后去试 /v1/responses」会引入与风格无关的假信号）
+  if (hasUsableProbeConfig(target)) {
+    return probeOnce(target, model, apiKey, "custom", opts);
+  }
   const chatResult = await probeOnce(target, model, apiKey, "chat", opts);
   if (chatResult.ok || target.protocol !== "openai") return chatResult;
   const shouldFallback =

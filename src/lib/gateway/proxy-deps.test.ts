@@ -47,7 +47,11 @@ beforeEach(async () => {
 const BASE_URL = "https://probe.example.com";
 
 // 创建 upstream + 两个启用 key（sk-key-1 / sk-key-2），返回 upstream id
-async function createUpstream(name: string, models: string[]): Promise<number> {
+async function createUpstream(
+  name: string,
+  models: string[],
+  probeConfig: string | null = null
+): Promise<number> {
   const inserted = await withSkipCache(async () => {
     const rows = await db
       .insert(upstreamsTable)
@@ -57,6 +61,7 @@ async function createUpstream(name: string, models: string[]): Promise<number> {
         baseUrl: BASE_URL,
         enabledModels: JSON.stringify(models),
         enabled: 1,
+        probeConfig,
       })
       .returning();
     for (const key of ["sk-key-1", "sk-key-2"]) {
@@ -88,6 +93,19 @@ function stubFetchByKey(statusForKey: Record<string, number>) {
     })
   );
   return calls;
+}
+
+// mock fetch：记录每次请求的 url + 解析后的 body，统一返回指定 status
+function stubFetchRecording(status: number) {
+  const records: Array<{ url: string; body: unknown }> = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: unknown, opts?: { body?: unknown }) => {
+      records.push({ url: String(url), body: JSON.parse(String(opts?.body)) });
+      return new Response("{}", { status, headers: { "content-type": "application/json" } });
+    })
+  );
+  return records;
 }
 
 describe("probeUpstream（经 healthTracker.probeNow 驱动）", () => {
@@ -150,6 +168,60 @@ describe("probeUpstream（经 healthTracker.probeNow 驱动）", () => {
     expect(status?.ok).toBe(false);
     expect(status?.status).toBe(503);
     expect(await healthTracker.isHealthy(id)).toBe(false);
+  });
+
+  it("自定义探活端点：DB probe_config → 只打配置的端点与 body（不补发默认风格）", async () => {
+    const { healthTracker } = await import("./proxy-deps");
+    const id = await createUpstream(
+      "up-custom",
+      ["jev-latest"],
+      JSON.stringify({
+        path: "/v1/systemone",
+        body: { model: "{{model}}", state: "hi", questions: { ok: { type: "noul" } } },
+      })
+    );
+    const records = stubFetchRecording(200);
+
+    await healthTracker.markUnhealthy(id);
+    const status = await healthTracker.probeNow(id);
+
+    expect(status?.ok).toBe(true);
+    expect(await healthTracker.isHealthy(id)).toBe(true);
+    // 首个 key 即 2xx，key 链短路 → 只发一次请求，且打的是自定义端点（无 chat / responses 基线）
+    expect(records.map((r) => r.url)).toEqual([`${BASE_URL}/v1/systemone`]);
+    expect(records[0]!.body).toEqual({
+      model: "jev-latest",
+      state: "hi",
+      questions: { ok: { type: "noul" } },
+    });
+  });
+
+  it("自定义探活端点同样适用 404 放宽：全部 key 404 → 仍视为 upstream 级恢复", async () => {
+    const { healthTracker } = await import("./proxy-deps");
+    const id = await createUpstream(
+      "up-custom-404",
+      ["jev-latest"],
+      JSON.stringify({ path: "/v1/systemone", body: { model: "{{model}}" } })
+    );
+    stubFetchRecording(404);
+
+    await healthTracker.markUnhealthy(id);
+    const status = await healthTracker.probeNow(id);
+
+    expect(status?.ok).toBe(true);
+    expect(await healthTracker.isHealthy(id)).toBe(true);
+  });
+
+  it("probe_config 为坏 JSON → 静默回落默认 chat 基线，不影响探活", async () => {
+    const { healthTracker } = await import("./proxy-deps");
+    const id = await createUpstream("up-bad-json", ["gpt-4o"], "{not json");
+    const records = stubFetchRecording(200);
+
+    await healthTracker.markUnhealthy(id);
+    const status = await healthTracker.probeNow(id);
+
+    expect(status?.ok).toBe(true);
+    expect(records[0]!.url).toBe(`${BASE_URL}/v1/chat/completions`);
   });
 
   it("无 key 的 upstream 探活失败保持 unhealthy", async () => {
