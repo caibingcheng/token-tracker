@@ -29,8 +29,32 @@ describe("fetchUpstreamModels", () => {
     expect(result.error).toContain("redirect");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("https://api.example/models");
+    expect(url).toBe("https://api.example/v1/models");
     expect((init as RequestInit & { redirect?: string }).redirect).toBe("manual");
+  });
+
+  it("appends /v1/models when base has no version suffix", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    await fetchUpstreamModels({ protocol: "openai", baseUrl: "https://api.example.com" }, "sk-test");
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://api.example.com/v1/models");
+  });
+
+  it("dedups /v1 when base already ends with /v1", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    await fetchUpstreamModels({ protocol: "openai", baseUrl: "https://api.example.com/v1" }, "sk-test");
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://api.example.com/v1/models");
   });
 
   it("parses models from successful response", async () => {
