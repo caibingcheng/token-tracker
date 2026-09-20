@@ -113,7 +113,7 @@ docker compose up -d
 | OpenAI 兼容（Codex / OpenCode 等） | `base_url = http://host:3000/v1`，`api_key = vk-xxx` |
 | Claude Code（Anthropic 协议） | `ANTHROPIC_BASE_URL = http://host:3000`，`ANTHROPIC_AUTH_TOKEN = vk-xxx` |
 | Gemini 协议客户端 | `base_url = http://host:3000`，key 走 `x-goog-api-key` 或 `?key=` |
-| 其它端点（如 OpenRouter 的 `/api/alpha/*`） | `base_url = http://host:3000/raw`，`api_key = vk-xxx`；`/raw` 前缀在网关侧剥离后再透传 |
+| 其它端点（如 OpenRouter 的 `/alpha/*`，上游完整路径为 `/api/alpha/*`） | `base_url = http://host:3000/raw`，`api_key = vk-xxx`；`/raw` 前缀剥离后拼在 upstream base URL（`https://openrouter.ai/api`）之后——客户端路径按 `/alpha/*` 写，与 `/v1` 之于 `/api/v1` 同理 |
 
 虚拟 key（`vk-` 前缀）在 `/admin` 创建。多个设备共用同一个 key 时无法区分设备——需要按设备各建一个 key。
 

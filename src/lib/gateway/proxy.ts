@@ -262,8 +262,8 @@ export const PROXY_RESPONSE_HEADERS: Record<string, string> = {
   "x-accel-buffering": "no",
 };
 
-// /raw 裸透传入口前缀：客户端打 /raw/<完整上游路径>，网关剥掉前缀后原样透传（上游永远看不到 /raw），
-// 用于 /v1、/v1beta 之外的上游端点（如 OpenRouter 的 /api/alpha/*）。
+// /raw 裸透传入口前缀：客户端打 /raw/<upstream base URL 之后的部分>，网关剥掉前缀后原样拼到 base URL（上游永远看不到 /raw），
+// 用于 /v1、/v1beta 之外的上游端点（如 OpenRouter 的 /alpha/*，base = https://openrouter.ai/api）。
 const RAW_PASSTHROUGH_PREFIX = "/raw";
 
 // 剥离 /raw 前缀：非 /raw 路径原样返回；内层路径再过一次净化（防 .. 逃逸），

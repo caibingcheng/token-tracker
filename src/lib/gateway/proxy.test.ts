@@ -299,7 +299,7 @@ describe("stripRawPassthroughPrefix", () => {
   });
 
   it("strips the /raw prefix", () => {
-    expect(stripRawPassthroughPrefix("/raw/api/alpha/decisions")).toBe("/api/alpha/decisions");
+    expect(stripRawPassthroughPrefix("/raw/alpha/decisions")).toBe("/alpha/decisions");
     expect(stripRawPassthroughPrefix("/raw/v1/chat/completions")).toBe("/v1/chat/completions");
   });
 
@@ -348,7 +348,7 @@ describe("handleProxyRequest - /raw passthrough", () => {
 
     const deps = openrouterDeps("https://openrouter.ai/api");
     const res = await handleProxyRequest(
-      makeRequest("/raw/api/alpha/decisions", {
+      makeRequest("/raw/alpha/decisions", {
         headers: { authorization: "Bearer vk-good" },
         body: { model: "typesafe/jev-1.13", questions: [], state: {} },
       }),
@@ -360,7 +360,7 @@ describe("handleProxyRequest - /raw passthrough", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     // 协议判定落到 openai（Bearer 注入），内层路径原样拼到 upstream base（上游看不到 /raw）
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("https://openrouter.ai/api/api/alpha/decisions");
+    expect(url).toBe("https://openrouter.ai/api/alpha/decisions");
     expect(new Headers(init.headers).get("authorization")).toBe("Bearer sk-or-1");
     // usage 为 responses 风格（input_tokens/output_tokens），openai parser 兼容并写库
     expect(deps.onUsage).toHaveBeenCalledWith(
