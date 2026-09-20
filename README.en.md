@@ -113,6 +113,7 @@ First run, three steps:
 | OpenAI-compatible (Codex / OpenCode, etc.) | `base_url = http://host:3000/v1`, `api_key = vk-xxx` |
 | Claude Code (Anthropic protocol) | `ANTHROPIC_BASE_URL = http://host:3000`, `ANTHROPIC_AUTH_TOKEN = vk-xxx` |
 | Gemini-protocol clients | `base_url = http://host:3000`, key via `x-goog-api-key` or `?key=` |
+| Other endpoints (e.g. OpenRouter's `/alpha/*`, whose full upstream path is `/api/alpha/*`) | `base_url = http://host:3000/raw`, `api_key = vk-xxx`; the `/raw` prefix is stripped and the inner path appended to the upstream base URL (`https://openrouter.ai/api`) — write the client path as `/alpha/*`, the same way `/v1` maps to `/api/v1` |
 
 Virtual keys (the `vk-` prefix) are created in `/admin`. Sharing one key across devices does not distinguish between devices — create one key per device if you need that.
 
@@ -133,6 +134,7 @@ The SQLite database is created automatically on the first request (with incremen
 | Route | Auth | Description |
 |---|---|---|
 | `/v1/*`, `/v1beta/*` | Virtual key | Proxy entry points (pass-through) |
+| `/raw/*` | Virtual key | Raw pass-through entry: strips the `/raw` prefix and forwards the inner path upstream (for endpoints outside `/v1`, `/v1beta`) |
 | `/api/auth/login` | Raw API key (+ optional TOTP) | Login to exchange for a session token |
 | `/api/dashboard` and other stats APIs | Session token (`X-API-Key` header) | Dashboard data |
 | `/api/admin/*` | Session token | Admin operations |

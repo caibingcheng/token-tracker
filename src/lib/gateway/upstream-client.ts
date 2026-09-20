@@ -28,7 +28,7 @@ function buildListModelsUrl(protocol: Protocol, baseUrl: string): string {
     case "gemini":
       return joinUrlPath(baseUrl, "/v1beta/models");
     default:
-      return joinUrlPath(baseUrl, "/models");
+      return joinUrlPath(baseUrl, "/v1/models");
   }
 }
 

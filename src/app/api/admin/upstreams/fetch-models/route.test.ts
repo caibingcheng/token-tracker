@@ -145,7 +145,7 @@ describe("/api/admin/upstreams/fetch-models", () => {
     expect(json.data.models).toEqual(["gpt-4o"]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("https://8.8.8.8/models");
+    expect(url).toBe("https://8.8.8.8/v1/models");
     const headers = new Headers(init.headers);
     expect(headers.get("authorization")).toBe("Bearer sk-stored");
   });

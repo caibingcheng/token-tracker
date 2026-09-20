@@ -8,6 +8,8 @@ import UpstreamModelsManager from "./UpstreamModelsManager";
 import { CopyableCode } from "./CopyableCode";
 import ActionMenu from "./ActionMenu";
 import type { HeaderTransform } from "@/lib/gateway/header-transforms";
+import { PROBE_PRESETS } from "@/lib/gateway/probe-config";
+import type { ProbeConfig } from "@/lib/gateway/probe-config";
 
 export interface UpstreamProbeStatus {
   lastAt: number; // 0 = 尚未探测
@@ -36,6 +38,7 @@ export interface UpstreamItem {
   hasProxy: boolean;
   proxyDisplay: string | null;
   headerTransforms: HeaderTransform[];
+  probeConfig: ProbeConfig | null;
   createdAt: string;
 }
 
@@ -58,6 +61,8 @@ interface FormState {
   priority: string;
   healthCheckModel: string;
   proxyUrl: string;
+  probePath: string;
+  probeBody: string;
 }
 
 const EMPTY_FORM: FormState = {
@@ -68,6 +73,8 @@ const EMPTY_FORM: FormState = {
   priority: "0",
   healthCheckModel: "",
   proxyUrl: "",
+  probePath: "",
+  probeBody: "",
 };
 
 interface FormKeyTestResult {
@@ -91,6 +98,22 @@ interface ModelPickerState {
   error?: string;
 }
 
+// 由表单内容反推预置下拉的应显示值（不单独持久化预置名）
+function deriveProbePreset(path: string, body: string): string {
+  const trimmed = path.trim();
+  if (trimmed === "") return "auto";
+  let parsed: unknown;
+  try {
+    parsed = body.trim() === "" ? {} : JSON.parse(body);
+  } catch {
+    return "custom";
+  }
+  const hit = PROBE_PRESETS.find(
+    (p) => p.path === trimmed && JSON.stringify(p.body) === JSON.stringify(parsed)
+  );
+  return hit ? hit.id : "custom";
+}
+
 export default function UpstreamsPanel() {
   const [upstreams, setUpstreams] = useState<UpstreamItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -107,6 +130,7 @@ export default function UpstreamsPanel() {
   const [fetchingModels, setFetchingModels] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [clearProxy, setClearProxy] = useState(false);
+  const [probeCustom, setProbeCustom] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const [keysByUpstream, setKeysByUpstream] = useState<Record<number, UpstreamKeyItem[]>>({});
@@ -139,6 +163,33 @@ export default function UpstreamsPanel() {
     if (!query) return PROVIDER_PRESETS;
     return PROVIDER_PRESETS.filter((p) => p.name.toLowerCase().includes(query));
   }, [form.name]);
+
+  // 探活预置下拉的当前值：内容与预置完全一致时显示该预置，否则 custom；
+  // 「custom」一旦显式选中就粘住（probeCustom），否则选中后内容仍等于预置会让下拉立即弹回
+  const derivedProbePreset = useMemo(
+    () => deriveProbePreset(form.probePath, form.probeBody),
+    [form.probePath, form.probeBody]
+  );
+  const probePresetValue = probeCustom ? "custom" : derivedProbePreset;
+
+  const applyProbePreset = (value: string) => {
+    if (value === "auto") {
+      setProbeCustom(false);
+      setForm({ ...form, probePath: "", probeBody: "" });
+      return;
+    }
+    const preset = PROBE_PRESETS.find((p) => p.id === value);
+    if (preset) {
+      setProbeCustom(false);
+      setForm({ ...form, probePath: preset.path, probeBody: JSON.stringify(preset.body, null, 2) });
+      return;
+    }
+    // custom：粘住选择，并在 path 为空时预填占位，使 body 输入框立即出现
+    setProbeCustom(true);
+    if (form.probePath.trim() === "") {
+      setForm({ ...form, probePath: "/", probeBody: form.probeBody.trim() || "{}" });
+    }
+  };
 
   const loadKeys = useCallback(async (upstreamId: number) => {
     const res = await apiFetch(`/api/admin/upstreams/${upstreamId}/keys`);
@@ -195,6 +246,22 @@ export default function UpstreamsPanel() {
     }
     // header transforms 全量替换（前端数组操作后整体提交）
     payload.headerTransforms = formTransforms;
+    // 自定义探活端点：path 为空 = 不配置（回落默认 chat → responses 双风格）；
+    // 编辑态清空 path 则显式下发 null 移除配置
+    const probePath = form.probePath.trim();
+    if (probePath) {
+      let probeBody: unknown;
+      try {
+        probeBody = form.probeBody.trim() === "" ? {} : JSON.parse(form.probeBody);
+      } catch {
+        setError("Probe body is not valid JSON");
+        setSaving(false);
+        return;
+      }
+      payload.probeConfig = { path: probePath, body: probeBody };
+    } else if (editingId) {
+      payload.probeConfig = null;
+    }
     const newKeys = formKeys.map((k) => k.trim()).filter(Boolean);
     try {
       const res = editingId
@@ -241,6 +308,7 @@ export default function UpstreamsPanel() {
       setFormKeyShown({});
       setEditingId(null);
       setClearProxy(false);
+      setProbeCustom(false);
       setPendingKeyEnabled({});
       loadUpstreams();
     } catch {
@@ -260,8 +328,15 @@ export default function UpstreamsPanel() {
       priority: String(u.priority),
       healthCheckModel: u.healthCheckModel ?? "",
       proxyUrl: "",
+      probePath: u.probeConfig?.path ?? "",
+      probeBody: u.probeConfig ? JSON.stringify(u.probeConfig.body, null, 2) : "",
     });
     setClearProxy(false);
+    // 存量配置与预置不匹配时显示为 custom，且不被「内容回算」弹回
+    setProbeCustom(
+      u.probeConfig !== null &&
+        deriveProbePreset(u.probeConfig.path, JSON.stringify(u.probeConfig.body, null, 2)) === "custom"
+    );
     setFormKeys([""]);
     // 浅拷贝数组 + 展开条目，避免直接改列表缓存
     setFormTransforms(u.headerTransforms.map((t) => ({ ...t })));
@@ -979,6 +1054,48 @@ export default function UpstreamsPanel() {
               className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>
+          <div className="md:col-span-3">
+            <label className="mb-1 block text-xs text-gray-600">
+              Probe Endpoint{" "}
+              <span className="text-gray-400">
+                (optional; override the endpoint used by probe / Test. Empty = default chat → responses)
+              </span>
+            </label>
+            <div className="grid grid-cols-1 gap-2 md:grid-cols-[260px_1fr]">
+              <select
+                value={probePresetValue}
+                onChange={(e) => applyProbePreset(e.target.value)}
+                className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              >
+                <option value="auto">auto (default chat → responses)</option>
+                {PROBE_PRESETS.map((p) => (
+                  <option key={p.id} value={p.id}>{p.label}</option>
+                ))}
+                <option value="custom">custom</option>
+              </select>
+              <input
+                value={form.probePath}
+                onChange={(e) => setForm({ ...form, probePath: e.target.value })}
+                placeholder="/v1/systemone"
+                autoComplete="off"
+                className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+            </div>
+            {form.probePath.trim() !== "" && (
+              <textarea
+                value={form.probeBody}
+                onChange={(e) => setForm({ ...form, probeBody: e.target.value })}
+                rows={4}
+                spellCheck={false}
+                placeholder='{"model":"{{model}}","state":"hi","questions":{}}'
+                className="mt-2 w-full rounded border border-gray-300 px-3 py-2 font-mono text-xs focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+            )}
+            <p className="mt-1 text-[10px] text-gray-400">
+              Body is JSON; {"{{model}}"} is replaced with the probed model name. Configured
+              probe endpoint is used as-is (no fallback to the second style).
+            </p>
+          </div>
           <div className="md:col-span-3 flex items-center gap-2">
             <button
               type="submit"
@@ -997,6 +1114,7 @@ export default function UpstreamsPanel() {
                   setFormTransforms([]);
                   setFormKeyTests({});
                   setClearProxy(false);
+                  setProbeCustom(false);
                   setPendingKeyEnabled({});
                 }}
                 className="rounded border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50"
@@ -1227,6 +1345,7 @@ export default function UpstreamsPanel() {
                   {u.enabledModels.length} models · {u.activeKeyCount}/{u.keyCount} keys · p{u.priority}
                   {u.headerTransforms.length > 0 &&
                     ` · ${u.headerTransforms.filter((t) => t.enabled).length}/${u.headerTransforms.length} header transforms`}
+                  {u.probeConfig && ` · probe ${u.probeConfig.path}`}
                 </span>
                 {u.unhealthy && (
                   <span

@@ -113,6 +113,7 @@ docker compose up -d
 | OpenAI 兼容（Codex / OpenCode 等） | `base_url = http://host:3000/v1`，`api_key = vk-xxx` |
 | Claude Code（Anthropic 协议） | `ANTHROPIC_BASE_URL = http://host:3000`，`ANTHROPIC_AUTH_TOKEN = vk-xxx` |
 | Gemini 协议客户端 | `base_url = http://host:3000`，key 走 `x-goog-api-key` 或 `?key=` |
+| 其它端点（如 OpenRouter 的 `/alpha/*`，上游完整路径为 `/api/alpha/*`） | `base_url = http://host:3000/raw`，`api_key = vk-xxx`；`/raw` 前缀剥离后拼在 upstream base URL（`https://openrouter.ai/api`）之后——客户端路径按 `/alpha/*` 写，与 `/v1` 之于 `/api/v1` 同理 |
 
 虚拟 key（`vk-` 前缀）在 `/admin` 创建。多个设备共用同一个 key 时无法区分设备——需要按设备各建一个 key。
 
@@ -133,6 +134,7 @@ SQLite 数据库在首次请求时自动建表 + 增量迁移，无需手动操�
 | 路由 | 认证 | 说明 |
 |---|---|---|
 | `/v1/*`、`/v1beta/*` | 虚拟 key | 代理入口（纯透传） |
+| `/raw/*` | 虚拟 key | 裸透传入口：剥掉 `/raw` 前缀后按内层路径透传到上游（用于 `/v1`、`/v1beta` 之外的端点） |
 | `/api/auth/login` | 原始 API key（+ 可选 TOTP） | 登录换取会话 token |
 | `/api/dashboard` 等统计 API | 会话 token（`X-API-Key` header） | 仪表盘数据 |
 | `/api/admin/*` | 会话 token | 管理操作 |

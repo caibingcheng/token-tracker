@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { handleProxyRequest, extractVirtualKeyToken, extractSessionId, MAX_SESSION_ID_LENGTH, MAX_RETRY } from "./proxy";
+import { handleProxyRequest, extractVirtualKeyToken, extractSessionId, stripRawPassthroughPrefix, MAX_SESSION_ID_LENGTH, MAX_RETRY } from "./proxy";
 import type { ProxyDeps } from "./proxy";
 import type { UpstreamRoute } from "./model-router";
 import { buildSessionId } from "./session";
@@ -287,6 +287,126 @@ describe("handleProxyRequest - protocol mismatch", () => {
     expect(res.status).toBe(400);
     const json = await res.json();
     expect(json.error.type).toBe("protocol_mismatch");
+  });
+});
+
+describe("stripRawPassthroughPrefix", () => {
+  it("leaves non-raw paths untouched", () => {
+    expect(stripRawPassthroughPrefix("/v1/chat/completions")).toBe("/v1/chat/completions");
+    expect(stripRawPassthroughPrefix("/v1beta/models/x:generateContent")).toBe(
+      "/v1beta/models/x:generateContent"
+    );
+  });
+
+  it("strips the /raw prefix", () => {
+    expect(stripRawPassthroughPrefix("/raw/alpha/decisions")).toBe("/alpha/decisions");
+    expect(stripRawPassthroughPrefix("/raw/v1/chat/completions")).toBe("/v1/chat/completions");
+  });
+
+  it("returns null for bare /raw and empty inner path", () => {
+    expect(stripRawPassthroughPrefix("/raw")).toBeNull();
+    expect(stripRawPassthroughPrefix("/raw/")).toBeNull();
+  });
+
+  it("returns null when the inner path escapes the upstream base", () => {
+    expect(stripRawPassthroughPrefix("/raw/../x")).toBeNull();
+    expect(stripRawPassthroughPrefix("/raw/../..")).toBeNull();
+  });
+});
+
+describe("handleProxyRequest - /raw passthrough", () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    fetchMock.mockReset();
+  });
+
+  const openrouterDeps = (baseUrl: string) =>
+    mkDeps({
+      loadUpstreams: vi.fn(async () => [
+        mkUpstream({
+          name: "openrouter",
+          baseUrl,
+          enabledModels: ["typesafe/jev-1.13"],
+        }),
+      ]),
+      resolveUpstreamKeys: vi.fn(async () => ["sk-or-1"]),
+    });
+
+  it("strips /raw and forwards the inner path to the openai upstream", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ usage: { input_tokens: 12, output_tokens: 7 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+
+    const deps = openrouterDeps("https://openrouter.ai/api");
+    const res = await handleProxyRequest(
+      makeRequest("/raw/alpha/decisions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "typesafe/jev-1.13", questions: [], state: {} },
+      }),
+      deps
+    );
+    await res.text();
+
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // 协议判定落到 openai（Bearer 注入），内层路径原样拼到 upstream base（上游看不到 /raw）
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://openrouter.ai/api/alpha/decisions");
+    expect(new Headers(init.headers).get("authorization")).toBe("Bearer sk-or-1");
+    // usage 为 responses 风格（input_tokens/output_tokens），openai parser 兼容并写库
+    expect(deps.onUsage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: "typesafe/jev-1.13",
+        provider: "openrouter",
+        inputTokens: 12,
+        outputTokens: 7,
+      })
+    );
+  });
+
+  it("dedups /v1 when upstream base ends with /v1", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+
+    const res = await handleProxyRequest(
+      makeRequest("/raw/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "typesafe/jev-1.13" },
+      }),
+      openrouterDeps("https://api.example.com/v1")
+    );
+    await res.text();
+
+    expect(res.status).toBe(200);
+    expect(fetchMock.mock.calls[0][0]).toBe("https://api.example.com/v1/chat/completions");
+  });
+
+  it("returns 400 for bare /raw without an inner path", async () => {
+    for (const target of ["/raw", "/raw/"]) {
+      const res = await handleProxyRequest(
+        makeRequest(target, {
+          headers: { authorization: "Bearer vk-good" },
+          body: { model: "typesafe/jev-1.13" },
+        }),
+        openrouterDeps("https://openrouter.ai/api")
+      );
+      expect(res.status).toBe(400);
+      expect((await res.json()).error.type).toBe("invalid_request_error");
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

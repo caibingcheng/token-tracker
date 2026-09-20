@@ -16,6 +16,11 @@ import {
   normalizeHeaderTransforms,
   parseHeaderTransforms,
 } from "@/lib/gateway/header-transforms";
+import {
+  isValidProbeConfig,
+  parseProbeConfig,
+  serializeProbeConfig,
+} from "@/lib/gateway/probe-config";
 import { decryptProxyUrl, healthTracker } from "@/lib/gateway/proxy-deps";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 import { isReservedRemoteName, REMOTE_NAME_PREFIX } from "@/lib/ingest/validate";
@@ -35,7 +40,12 @@ async function withKeys(upstream: any) {
     .from(upstreamKeysTable)
     .where(eq(upstreamKeysTable.upstreamId, upstream.id));
   const proxyUrl = decryptProxyUrl(upstream.proxyUrlEncrypted);
-  const { proxyUrlEncrypted: _proxyUrlEncrypted, headerTransforms: _raw, ...rest } = upstream;
+  const {
+    proxyUrlEncrypted: _proxyUrlEncrypted,
+    headerTransforms: _raw,
+    probeConfig: _probe,
+    ...rest
+  } = upstream;
   return {
     ...rest,
     enabled: upstream.enabled === 1,
@@ -45,6 +55,7 @@ async function withKeys(upstream: any) {
     hasProxy: proxyUrl !== null,
     proxyDisplay: proxyUrl ? sanitizeProxyUrlForDisplay(proxyUrl) : null,
     headerTransforms: parseHeaderTransforms(upstream.headerTransforms),
+    probeConfig: parseProbeConfig(upstream.probeConfig),
     keys: keyRows.map((k: any) => ({
       id: k.id,
       enabled: k.enabled === 1,
@@ -183,6 +194,19 @@ export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
       values.headerTransforms = JSON.stringify(
         normalizeHeaderTransforms(body.headerTransforms)
       );
+    }
+    // 自定义探活端点：对象 = 设置，null = 清除（回落默认双风格）
+    if (body.probeConfig !== undefined) {
+      if (body.probeConfig === null) {
+        values.probeConfig = null;
+      } else if (isValidProbeConfig(body.probeConfig)) {
+        values.probeConfig = serializeProbeConfig(body.probeConfig);
+      } else {
+        return NextResponse.json(
+          { success: false, error: "Invalid probeConfig" },
+          { status: 400 }
+        );
+      }
     }
 
     if (Object.keys(values).length === 0) {

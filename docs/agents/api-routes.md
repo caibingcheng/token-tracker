@@ -4,7 +4,7 @@
 
 | 路由 | 方法 | 认证 | 说明 |
 |------|------|------|------|
-| `/v1/*`, `/v1beta/*` | 全部 | 虚拟 key（`vk-` 前缀，DB 加密比对） | 代理入口：虚拟 key 校验 → vk model allowlist → model 路由 → 上游 key 故障转移链 → 纯透传 + usage 解析写库 |
+| `/v1/*`, `/v1beta/*`, `/raw/*` | 全部 | 虚拟 key（`vk-` 前缀，DB 加密比对） | 代理入口：虚拟 key 校验 → vk model allowlist → model 路由 → 上游 key 故障转移链 → 纯透传 + usage 解析写库（`/raw/*` 先剥离前缀再按内层 path 走同一套逻辑，见 `gateway.md`） |
 | `POST /api/auth/login` | POST | 原始 API key（DB 优先，env 兜底）+ 可选第二因素（TOTP 动态码或 recovery code） | 登录换会话 token（唯一换取入口，可信 IP 限流；key 无效/缺 TOTP/TOTP 错误统一 401 同文案，无 oracle） |
 | `GET/POST /api/auth/setup` | GET/POST | 无（fail-open 闸门自校验） | 首次设置向导：GET 探测 `{setupRequired}`；POST 设置初始 admin key + 返回会话 token（仅当 DB 无 key AND env 无 key，限流 + 事务 re-check） |
 | `/api/dashboard` | GET | 会话 token（`X-API-Key` header） | 聚合统计（total + today + yesterday + daily + models + 365 天 heatmap + 24h 分布） |

@@ -31,7 +31,7 @@ docker compose up -d                                 # 本地运行
 |---|---|
 | schema / 加表加列 / 写迁移 | `docs/agents/database.md` |
 | 新增或修改 `/api/*` 路由、认证、TOTP、recovery codes、公开 Status 面板 | `docs/agents/api-routes.md` |
-| `/v1/*` `/v1beta/*` 代理链路、model 路由、failover、探活、usage 解析、header transforms、出站代理 | `docs/agents/gateway.md` |
+| `/v1/*` `/v1beta/*` `/raw/*` 代理链路、model 路由、failover、探活、usage 解析、header transforms、出站代理 | `docs/agents/gateway.md` |
 | 多实例同步（push / ingest / 水位 / uid） | `docs/agents/sync.md` |
 | 统计口径、Dashboard/Records 聚合、延迟统计、Dashboard 组件清单、定价、models.dev、model 归一化、Provider 匿名化、Hidden Sources、Agent 派生、时区、查询缓存 | `docs/agents/data-conventions.md` |
 | UI / 组件 / 新增表格弹窗 / 移动端适配 | `docs/agents/deployment.md` |

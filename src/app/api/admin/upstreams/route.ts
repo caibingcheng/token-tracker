@@ -17,6 +17,11 @@ import {
   parseHeaderTransforms,
 } from "@/lib/gateway/header-transforms";
 import type { HeaderTransform } from "@/lib/gateway/header-transforms";
+import {
+  isValidProbeConfig,
+  parseProbeConfig,
+  serializeProbeConfig,
+} from "@/lib/gateway/probe-config";
 import { healthTracker, decryptProxyUrl } from "@/lib/gateway/proxy-deps";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 import { isReservedRemoteName, REMOTE_NAME_PREFIX } from "@/lib/ingest/validate";
@@ -77,6 +82,7 @@ export const GET = withAuth(async () => {
         hasProxy: proxyUrl !== null,
         proxyDisplay: proxyUrl ? sanitizeProxyUrlForDisplay(proxyUrl) : null,
         headerTransforms: parseHeaderTransforms(row.headerTransforms),
+        probeConfig: parseProbeConfig(row.probeConfig),
         createdAt: row.createdAt,
       });
     }
@@ -159,6 +165,18 @@ export const POST = withAuth(async (request: NextRequest) => {
       headerTransforms = body.headerTransforms;
     }
 
+    // 自定义探活端点（省略/null = 默认 chat → responses 双风格）
+    let probeConfig: string | null = null;
+    if (body.probeConfig !== undefined && body.probeConfig !== null) {
+      if (!isValidProbeConfig(body.probeConfig)) {
+        return NextResponse.json(
+          { success: false, error: "Invalid probeConfig" },
+          { status: 400 }
+        );
+      }
+      probeConfig = serializeProbeConfig(body.probeConfig);
+    }
+
     try {
       const result = await db
         .insert(upstreamsTable)
@@ -172,6 +190,7 @@ export const POST = withAuth(async (request: NextRequest) => {
           healthCheckModel,
           proxyUrlEncrypted,
           headerTransforms: JSON.stringify(normalizeHeaderTransforms(headerTransforms)),
+          probeConfig,
         })
         .returning();
       const { ip, userAgent } = extractClientInfo(request);
