@@ -262,6 +262,21 @@ export const PROXY_RESPONSE_HEADERS: Record<string, string> = {
   "x-accel-buffering": "no",
 };
 
+// /raw 裸透传入口前缀：客户端打 /raw/<完整上游路径>，网关剥掉前缀后原样透传（上游永远看不到 /raw），
+// 用于 /v1、/v1beta 之外的上游端点（如 OpenRouter 的 /api/alpha/*）。
+const RAW_PASSTHROUGH_PREFIX = "/raw";
+
+// 剥离 /raw 前缀：非 /raw 路径原样返回；内层路径再过一次净化（防 .. 逃逸），
+// 空内层路径（/raw、/raw/）或逃逸路径返回 null（调用方 400）。
+export function stripRawPassthroughPrefix(path: string): string | null {
+  if (path !== RAW_PASSTHROUGH_PREFIX && !path.startsWith(`${RAW_PASSTHROUGH_PREFIX}/`)) {
+    return path;
+  }
+  const inner = sanitizePathSegments(path.slice(RAW_PASSTHROUGH_PREFIX.length));
+  if (inner === null || inner === "/") return null;
+  return inner;
+}
+
 // 核心代理流程
 export async function handleProxyRequest(
   request: Request,
@@ -270,7 +285,12 @@ export async function handleProxyRequest(
   const url = new URL(request.url);
   const rawPath = url.pathname;
   // `..` 段净化：拒绝逃逸出上游 base 前缀的路径（/v1/../internal 等）
-  const path = sanitizePathSegments(rawPath);
+  const sanitizedPath = sanitizePathSegments(rawPath);
+  if (sanitizedPath === null) {
+    return proxyError(400, "Invalid request path", "invalid_request_error");
+  }
+  // /raw 裸透传：剥掉 /raw 前缀后按内层路径复用下述协议检测/model 提取/路由/转发逻辑
+  const path = stripRawPassthroughPrefix(sanitizedPath);
   if (path === null) {
     return proxyError(400, "Invalid request path", "invalid_request_error");
   }
