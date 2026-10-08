@@ -8,9 +8,15 @@ import {
 } from "@/lib/auth/setup";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 import { getRateLimitKey } from "@/lib/net/client-ip";
+import { canBypassAuth } from "@/lib/auth/local-bypass";
 
-export async function GET() {
-  return NextResponse.json({ setupRequired: await canRunSetup() });
+export async function GET(request: NextRequest) {
+  // authDisabled：本地免密码直通生效时前端跳过登录/设置向导直接进入
+  const authDisabled = canBypassAuth(request);
+  return NextResponse.json({
+    setupRequired: authDisabled ? false : await canRunSetup(),
+    authDisabled,
+  });
 }
 
 export async function POST(request: NextRequest) {

@@ -6,7 +6,7 @@
 |------|------|------|------|
 | `/v1/*`, `/v1beta/*`, `/raw/*` | 全部 | 虚拟 key（`vk-` 前缀，DB 加密比对） | 代理入口：虚拟 key 校验 → vk model allowlist → model 路由 → 上游 key 故障转移链 → 纯透传 + usage 解析写库（`/raw/*` 先剥离前缀再按内层 path 走同一套逻辑，见 `gateway.md`） |
 | `POST /api/auth/login` | POST | 原始 API key（DB 优先，env 兜底）+ 可选第二因素（TOTP 动态码或 recovery code） | 登录换会话 token（唯一换取入口，可信 IP 限流；key 无效/缺 TOTP/TOTP 错误统一 401 同文案，无 oracle） |
-| `GET/POST /api/auth/setup` | GET/POST | 无（fail-open 闸门自校验） | 首次设置向导：GET 探测 `{setupRequired}`；POST 设置初始 admin key + 返回会话 token（仅当 DB 无 key AND env 无 key，限流 + 事务 re-check） |
+| `GET/POST /api/auth/setup` | GET/POST | 无（fail-open 闸门自校验） | 首次设置向导：GET 探测 `{setupRequired, authDisabled}`（`LOCAL_ADMIN_BYPASS` 生效时 `authDisabled: true` 且 `setupRequired` 恒 false）；POST 设置初始 admin key + 返回会话 token（仅当 DB 无 key AND env 无 key，限流 + 事务 re-check） |
 | `/api/dashboard` | GET | 会话 token（`X-API-Key` header） | 聚合统计（total + today + yesterday + daily + models + 365 天 heatmap + 24h 分布） |
 | `/api/providers` `/api/models` `/api/agents` `/api/cli` `/api/records` | GET | 会话 token | 统计/查询 API —— `/api/agents` 默认返回**派生工具名**列表（按 `user_agent` 解析，NULL UA 追加 `(unknown)`），`?dimension=key` 保留旧行为（distinct `agent` 列 + hidden vk 过滤，供 DisplaySettings vk 建议列表 `?dimension=key&includeHidden=1`）；`/api/records` 行 `agent` = 派生工具名、`keyName` = `agent` 列原值（vk 名） |
 | `/api/model-pricing` | GET | 会话 token | 已定价模型行集（PriceSimulatorModal 下拉数据源，附带 models.dev 归一化索引推断的 `provider` 分组字段 + `providers` 全量列表）；`?provider=<id>` 返回该 provider 的 models.dev 全部模型（懒加载数据源）；`?search=<q>` 切换为快照全量搜索模式（`searchModelsDevModel` 全量收集 + 相关性排序再截断 50：provider 名精确命中 > modelId 精确 > 归一化精确 > 前缀 > 子串，同级按原厂优先级表，保证原厂不被聚合平台挤出）；models.dev 来源 canonicalId = `providerId/modelId`，cache 价缺失回退 input，快照缺失返回空数组；仿真只读不落库 |
@@ -39,6 +39,7 @@
 | `/status/data` | GET | **无（有意公开）** | 公开用量数据端点：详见下方「公开 Status 面板」小节 |
 
 - **认证架构（多层防漏）**：验签 middleware（第一层，WebCrypto 验 HMAC 签名 + exp，Edge runtime）→ 路由内 `withAuth`（第二层，epoch 检查 + DB key 指纹校验）→ vitest 静态扫描测试（第三层，`src/lib/auth/guard-scan.test.ts`，login + setup 白名单）→ `AGENTS.md` 约定（第四层）
+- **本地免密码直通（`LOCAL_ADMIN_BYPASS=1`）**：`src/lib/auth/local-bypass.ts` 的 `canBypassAuth()` 同时要求 env 开启 **且** 请求 Host 为 loopback（localhost / 127.x / ::1）；生效时 middleware 与 `withAuth` 双双跳过认证，setup GET 返回 `authDisabled: true`，前端 `ApiKeyGate` 直接进入 admin（logout / 401 跳转均 no-op）。**仅 `docker-compose.local.yml` 设置该 env（端口绑定 127.0.0.1），VPS / 对外部署严禁开启**；Host 头可伪造，真正边界是端口只绑 loopback
 - **⚠️ breaking change**：所有 `/api/*`（login、setup 除外）只接受会话 token（HMAC-SHA256 签名，GATEWAY_SECRET 派生密钥），**原始 API key 不能直接调 API**。脚本/curl 必须先 `POST /api/auth/login`（body `{apiKey, totpCode?}`）换 token，再带 `X-API-Key: <token>` 调用
 - **新增 /api 路由必须用 `withAuth` 包裹**（`src/lib/auth/guard.ts`，login/setup 除外），否则静态扫描测试失败
 - **首次设置向导（唯一 fail-open 入口）**：`src/lib/auth/setup.ts` 的 `canRunSetup()` ⟺ DB 无 `admin_api_key` AND env 无有效 key（`getEnvAdminKeys()` 统一解析）；`runSetup()` 事务内 re-check + 写 key + epoch+1 + 签发 token；middleware matcher 已排除 `auth/setup`；强度 ≥16 字符且 ≥2 字符类别（`isStrongLoginKey`，api-key 修改共用）、独立限流 bucket、审计 `setup_admin_key`

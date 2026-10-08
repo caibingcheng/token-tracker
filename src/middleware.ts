@@ -5,6 +5,7 @@ import {
   verifyEdgeSignature,
   parseEdgeSessionPayload,
 } from "@/lib/auth/edge-verify";
+import { canBypassAuth } from "@/lib/auth/local-bypass";
 
 // 验签 middleware（第一层防漏）：Edge runtime 无法访问 SQLite / node:crypto，
 // 因此这里只用 WebCrypto 验证会话 token 的 HMAC-SHA256 签名 + exp 过期检查；
@@ -20,6 +21,9 @@ function unauthorized() {
 }
 
 export async function middleware(request: NextRequest) {
+  // 本地免密码直通：仅 LOCAL_ADMIN_BYPASS=1 且 loopback Host（见 local-bypass.ts）
+  if (canBypassAuth(request)) return NextResponse.next();
+
   const token = request.headers.get("X-API-Key");
   if (!token) return unauthorized();
 

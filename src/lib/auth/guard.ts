@@ -9,6 +9,7 @@ import {
   keyFingerprint,
 } from "./session";
 import { getTokenEpoch, getAdminApiKey, getEnvAdminKeys, resolveSessionTtlMs } from "./settings";
+import { canBypassAuth } from "./local-bypass";
 
 export type RouteHandler = (
   request: NextRequest,
@@ -36,6 +37,9 @@ export async function matchesActiveLoginKey(keyId: string): Promise<boolean> {
 // 认证通过且 token 剩余有效期不足一半时，通过 X-Session-Token 响应头下发新 token（滑动续期）
 export function withAuth(handler: RouteHandler): RouteHandler {
   return async (request, ctx) => {
+    // 本地免密码直通：仅 LOCAL_ADMIN_BYPASS=1 且 loopback Host（见 local-bypass.ts）
+    if (canBypassAuth(request)) return handler(request, ctx);
+
     const token = request.headers.get("X-API-Key");
     if (!token) return unauthorized();
 
