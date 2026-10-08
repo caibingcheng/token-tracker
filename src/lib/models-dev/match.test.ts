@@ -7,6 +7,7 @@ import {
   searchModelsDevModel,
   buildModelsDevIndex,
   listProviderModels,
+  hasPriceData,
   SEARCH_RESULT_LIMIT,
 } from "./match";
 import type { ModelsDevData } from "./snapshot";
@@ -421,5 +422,104 @@ describe("listProviderModels", () => {
     expect(sonnet.inputPrice).toBe(3);
     expect(sonnet.cacheReadPrice).toBe(0.3);
     expect(sonnet.cacheWritePrice).toBe(3.75);
+  });
+});
+
+describe("hasPriceData（D1 有价谓词）", () => {
+  it("要求 input 与 output 均为有限非负数，显式 0 算有价", () => {
+    expect(hasPriceData({ input: 1, output: 2 })).toBe(true);
+    expect(hasPriceData({ input: 0, output: 0 })).toBe(true);
+    expect(hasPriceData({ input: 0.15, output: 0 })).toBe(true);
+  });
+
+  it("cost 缺失 / 只提供其中一个字段 / 非法值 → 无价", () => {
+    expect(hasPriceData(undefined)).toBe(false);
+    expect(hasPriceData({ input: 0.15 } as any)).toBe(false);
+    expect(hasPriceData({ output: 1 } as any)).toBe(false);
+    expect(hasPriceData({ input: -1, output: 2 })).toBe(false);
+    expect(hasPriceData({ input: Number.NaN, output: 2 })).toBe(false);
+    expect(hasPriceData({ input: Number.POSITIVE_INFINITY, output: 2 })).toBe(false);
+  });
+
+  it("cache 字段缺失不算无价", () => {
+    expect(hasPriceData({ input: 1, output: 2 })).toBe(true);
+    expect(hasPriceData({ input: 1, output: 2, cache_read: 0.1 })).toBe(true);
+  });
+});
+
+describe("候选有价优先（F4：无冲突短路 + 冲突排序）", () => {
+  // anthropic 在 Object.keys 顺序与优先级表都靠前，但条目无价；openrouter 条目价格为显式 0/0
+  const COSTLESS_FIRST: ModelsDevData = {
+    anthropic: {
+      id: "anthropic",
+      name: "Anthropic",
+      models: { "kimi-k3": { id: "kimi-k3" } as any },
+    },
+    openrouter: {
+      id: "openrouter",
+      name: "OpenRouter",
+      models: { "kimi-k3": mkModel("kimi-k3", { input: 0, output: 0 }) },
+    },
+  };
+
+  it("同价（无冲突短路）时选中有价候选，而非无价候选", () => {
+    const result = matchModelsDevModel("kimi-k3", COSTLESS_FIRST);
+    expect(result.candidates).toHaveLength(2);
+    expect(result.matched?.modelsDevId).toBe("openrouter/kimi-k3");
+    expect(result.matched?.hasCost).toBe(true);
+  });
+
+  it("价格冲突时有价候选压过更高优先级 provider 的无价候选", () => {
+    const data: ModelsDevData = {
+      anthropic: {
+        id: "anthropic",
+        name: "Anthropic",
+        models: { "deepseek-v4": { id: "deepseek-v4" } as any },
+      },
+      openrouter: {
+        id: "openrouter",
+        name: "OpenRouter",
+        models: { "deepseek-v4": mkModel("deepseek-v4", { input: 0.5, output: 2 }) },
+      },
+    };
+    const result = matchModelsDevModel("deepseek-v4", data);
+    expect(result.matched?.modelsDevId).toBe("openrouter/deepseek-v4");
+    expect(result.matched?.inputPrice).toBe(0.5);
+  });
+
+  it("无价条目不再被兜底成 0/0 写入语义：hasCost=false 且价格为 0", () => {
+    const data: ModelsDevData = {
+      p1: { id: "p1", name: "P1", models: { "only-input": mkModel("only-input", { input: 0.15 }) } },
+      p2: { id: "p2", name: "P2", models: { "no-cost": { id: "no-cost" } as any } },
+    };
+    const partial = matchModelsDevModel("only-input", data).matched!;
+    expect(partial.hasCost).toBe(false);
+    expect(partial.inputPrice).toBe(0.15);
+    expect(partial.outputPrice).toBe(0);
+
+    const costless = matchModelsDevModel("no-cost", data).matched!;
+    expect(costless.hasCost).toBe(false);
+    expect(costless.inputPrice).toBe(0);
+    expect(costless.outputPrice).toBe(0);
+  });
+
+  it("全部候选无价时 matched 仍返回首个候选，但 hasCost=false（调用方据谓词拒绝写入）", () => {
+    const data: ModelsDevData = {
+      anthropic: { id: "anthropic", name: "Anthropic", models: { "kimi-k3": { id: "kimi-k3" } as any } },
+      openrouter: { id: "openrouter", name: "OpenRouter", models: { "kimi-k3": { id: "kimi-k3" } as any } },
+    };
+    const result = matchModelsDevModel("kimi-k3", data);
+    expect(result.candidates).toHaveLength(2);
+    expect(result.matched).not.toBeNull();
+    expect(result.matched?.hasCost).toBe(false);
+  });
+
+  it("有价候选之间仍按 PRIORITY_PROVIDERS 消解价格冲突", () => {
+    const data: ModelsDevData = {
+      openrouter: { id: "openrouter", name: "OpenRouter", models: { "kimi-k3": mkModel("kimi-k3", { input: 5, output: 5 }) } },
+      anthropic: { id: "anthropic", name: "Anthropic", models: { "kimi-k3": mkModel("kimi-k3", { input: 1, output: 4 }) } },
+    };
+    const result = matchModelsDevModel("kimi-k3", data);
+    expect(result.matched?.modelsDevId).toBe("anthropic/kimi-k3");
   });
 });

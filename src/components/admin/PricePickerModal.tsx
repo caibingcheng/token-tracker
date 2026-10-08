@@ -23,6 +23,7 @@ interface PriceCandidate {
   outputPrice: number;
   cacheReadPrice: number | null;
   cacheWritePrice: number | null;
+  hasCost: boolean;
   lastUpdated: string | null;
   preferred: boolean;
 }
@@ -259,10 +260,17 @@ export default function PricePickerModal({
                   <tr key={c.modelsDevId} className={c.preferred ? "bg-green-50/40" : ""}>
                     <AdminTd>
                       <div className="flex items-center gap-1.5">
-                        <span className="font-medium">{c.providerName}</span>
+                        <span className={`font-medium ${c.hasCost ? "" : "text-gray-400"}`}>
+                          {c.providerName}
+                        </span>
                         {c.preferred && (
                           <span className="rounded bg-green-100 px-1 py-0.5 text-[10px] font-medium text-green-700">
                             preferred
+                          </span>
+                        )}
+                        {!c.hasCost && (
+                          <span className="rounded border border-gray-200 bg-gray-50 px-1 py-0.5 text-[10px] font-medium text-gray-500">
+                            no official price
                           </span>
                         )}
                       </div>
@@ -277,8 +285,9 @@ export default function PricePickerModal({
                     <AdminTd align="right">
                       <button
                         type="button"
-                        disabled={saving !== null}
+                        disabled={saving !== null || !c.hasCost}
                         onClick={() => pick(c)}
+                        title={c.hasCost ? undefined : "This snapshot entry has no official price"}
                         className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50 min-h-[36px] md:min-h-0"
                       >
                         {saving === c.modelsDevId ? "Saving…" : "Use"}
@@ -309,6 +318,9 @@ export default function PricePickerModal({
                       </span>
                     )}
                   </div>
+                  {!c.hasCost && (
+                    <p className="mt-1 text-[10px] font-medium text-gray-500">no official price</p>
+                  )}
                   <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-gray-600">
                     <span>Input <span className="float-right font-mono">{fmtPrice(c.inputPrice)}</span></span>
                     <span>Output <span className="float-right font-mono">{fmtPrice(c.outputPrice)}</span></span>
@@ -317,8 +329,9 @@ export default function PricePickerModal({
                   </div>
                   <button
                     type="button"
-                    disabled={saving !== null}
+                    disabled={saving !== null || !c.hasCost}
                     onClick={() => pick(c)}
+                    title={c.hasCost ? undefined : "This snapshot entry has no official price"}
                     className="mt-3 w-full rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
                   >
                     {saving === c.modelsDevId ? "Saving…" : "Use this price"}

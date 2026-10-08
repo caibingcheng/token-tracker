@@ -5,6 +5,7 @@ import { join } from "path";
 import { NextRequest } from "next/server";
 import { GET, PUT, DELETE } from "./route";
 import { POST as selectPOST } from "./select/route";
+import { GET as candidatesGET } from "./candidates/route";
 import { POST as autofillPOST } from "./auto-fill/route";
 import { db, initDatabase, upstreamsTable, modelPricesTable, tokenRecords, syncInstancesTable } from "@/lib/db";
 import { invalidateRemoteModelCache } from "@/lib/model-prices-service";
@@ -369,6 +370,165 @@ describe("model-prices admin routes", () => {
     }, token)));
     expect(res.success).toBe(false);
     expect(res.error).toContain("Candidate not found");
+  });
+
+  it("select: 快照条目只提供 input（无价）→ 404 且不落库", async () => {
+    writeFileSync(snapshotPath, JSON.stringify({
+      fetchedAt: "2026-08-01T00:00:00.000Z",
+      source: "models.dev",
+      data: {
+        openai: {
+          id: "openai",
+          name: "OpenAI",
+          models: { "gpt-partial": { id: "gpt-partial", cost: { input: 0.15 } } },
+        },
+      },
+    }), "utf-8");
+    resetSnapshotCache();
+    try {
+      const token = await makeToken();
+      const res = await json(await selectPOST(req("/api/admin/model-prices/select", "POST", {
+        model: "gpt-partial",
+        modelsDevId: "openai/gpt-partial",
+      }, token)));
+      expect(res.success).toBe(false);
+      // 区分「候选不存在」与「候选存在但无官方价」，且不得回显内部细节
+      expect(res.error).toContain("no official price");
+      const rows = await getRows();
+      expect(rows.find((r) => r.model === "gpt-partial")).toBeUndefined();
+    } finally {
+      writeFileSync(snapshotPath, JSON.stringify(SNAPSHOT), "utf-8");
+      resetSnapshotCache();
+    }
+  });
+
+  it("candidates: 无价条目标 hasCost=false 且不被预选（preferred 只给有价候选）", async () => {
+    writeFileSync(snapshotPath, JSON.stringify({
+      fetchedAt: "2026-08-01T00:00:00.000Z",
+      source: "models.dev",
+      data: {
+        // anthropic 在 Object.keys 与优先级表都靠前，但条目无价
+        anthropic: { id: "anthropic", name: "Anthropic", models: { "kimi-k3": { id: "kimi-k3" } } },
+        openrouter: {
+          id: "openrouter",
+          name: "OpenRouter",
+          models: { "kimi-k3": { id: "kimi-k3", cost: { input: 0, output: 0 } } },
+        },
+      },
+    }), "utf-8");
+    resetSnapshotCache();
+    try {
+      const token = await makeToken();
+      const res = await json(await candidatesGET(
+        req("/api/admin/model-prices/candidates?model=kimi-k3", "GET", undefined, token),
+        { params: {} } as any
+      ) as any);
+      expect(res.success).toBe(true);
+      expect(res.data).toHaveLength(2);
+      const byId = new Map<string, any>(res.data.map((c: any) => [c.modelsDevId, c]));
+      expect(byId.get("anthropic/kimi-k3").hasCost).toBe(false);
+      expect(byId.get("anthropic/kimi-k3").preferred).toBe(false);
+      expect(byId.get("openrouter/kimi-k3").hasCost).toBe(true);
+      expect(byId.get("openrouter/kimi-k3").preferred).toBe(true);
+    } finally {
+      writeFileSync(snapshotPath, JSON.stringify(SNAPSHOT), "utf-8");
+      resetSnapshotCache();
+    }
+  });
+
+  it("candidates: 全部候选无价时没有任何 preferred", async () => {
+    writeFileSync(snapshotPath, JSON.stringify({
+      fetchedAt: "2026-08-01T00:00:00.000Z",
+      source: "models.dev",
+      data: {
+        p1: { id: "p1", name: "P1", models: { "kimi-k3": { id: "kimi-k3" } } },
+        p2: { id: "p2", name: "P2", models: { "kimi-k3": { id: "kimi-k3", cost: { input: 1 } } } },
+      },
+    }), "utf-8");
+    resetSnapshotCache();
+    try {
+      const token = await makeToken();
+      const res = await json(await candidatesGET(
+        req("/api/admin/model-prices/candidates?model=kimi-k3", "GET", undefined, token),
+        { params: {} } as any
+      ) as any);
+      expect(res.success).toBe(true);
+      expect(res.data).toHaveLength(2);
+      expect(res.data.every((c: any) => c.hasCost === false)).toBe(true);
+      expect(res.data.some((c: any) => c.preferred)).toBe(false);
+    } finally {
+      writeFileSync(snapshotPath, JSON.stringify(SNAPSHOT), "utf-8");
+      resetSnapshotCache();
+    }
+  });
+
+  it("auto-fill force: 快照无价条目不覆盖已有价（含 0 价行只标记不写库）", async () => {
+    const token = await makeToken();
+    await insertUpstream({ enabledModels: ["gpt-costless", "gpt-zero"] });
+    await withSkipCache(async () => {
+      await db.insert(modelPricesTable).values([
+        {
+          model: "gpt-costless",
+          inputPrice: 2.5,
+          outputPrice: 10,
+          cacheReadPrice: null,
+          cacheWritePrice: null,
+          source: "models.dev",
+          modelsDevId: "openai/gpt-costless",
+          updatedAt: new Date().toISOString(),
+        },
+        {
+          model: "gpt-zero",
+          inputPrice: 0,
+          outputPrice: 0,
+          cacheReadPrice: null,
+          cacheWritePrice: null,
+          source: "models.dev",
+          modelsDevId: "openai/gpt-zero",
+          updatedAt: new Date().toISOString(),
+        },
+      ]);
+    });
+    // 快照切为「名称命中但条目无价」（litellm / models.dev 均保留此类条目）
+    writeFileSync(snapshotPath, JSON.stringify({
+      fetchedAt: "2026-08-01T00:00:00.000Z",
+      source: "models.dev",
+      data: {
+        openai: {
+          id: "openai",
+          name: "OpenAI",
+          models: {
+            "gpt-costless": { id: "gpt-costless" },
+            "gpt-zero": { id: "gpt-zero" },
+          },
+        },
+      },
+    }), "utf-8");
+    resetSnapshotCache();
+    try {
+      const res = await json(await autofillPOST(
+        req("/api/admin/model-prices/auto-fill", "POST", { mode: "force" }, token)
+      ));
+      expect(res.success).toBe(true);
+      expect(res.data.updated).toEqual([]);
+      expect(res.data.unmatched).toHaveLength(2);
+      expect(res.data.unmatched).toEqual(
+        expect.arrayContaining(["gpt-costless", "gpt-zero"])
+      );
+
+      const rows = await getRows();
+      const byModel = new Map(rows.map((r) => [r.model, r]));
+      // 原有的非 0 价保持不变（旧实现会写成 0/0）
+      expect(byModel.get("gpt-costless").inputPrice).toBe(2.5);
+      expect(byModel.get("gpt-costless").outputPrice).toBe(10);
+      // 存量 0 价行不被自动改写，只标待人工确认
+      expect(byModel.get("gpt-zero").inputPrice).toBe(0);
+      expect(byModel.get("gpt-zero").status.zeroNoPrice).toBe(true);
+      expect(byModel.get("gpt-costless").status.zeroNoPrice).toBe(false);
+    } finally {
+      writeFileSync(snapshotPath, JSON.stringify(SNAPSHOT), "utf-8");
+      resetSnapshotCache();
+    }
   });
 
   it("auto-fill: fills unpriced rows only, never touches manual rows", async () => {

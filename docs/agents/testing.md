@@ -17,13 +17,13 @@
   - `src/lib/auth/guard-scan`：静态扫描所有 /api 路由必须用 withAuth（login 除外）
   - `src/lib/gateway/balance`：deepseek/openrouter 余额解析（mock fetch）、provider 判定
   - `src/lib/db/migrate`：存量表补列迁移（临时 SQLite 库，幂等性 + NOT NULL 默认值回填）+ `migrateTokenRecordsModelColumns`（request_model 回填、model 覆盖 target_model、DROP、幂等）+ `migrateSyncInstancesTable`/`migrateIngestTokensTable` 表重建（旧行丢弃 / 行回迁 + bound_uid 置 NULL、幂等）+ token_records session_id/remote_instance_uid 补列（存量不回填）
-  - `src/lib/models-dev/match`：三级匹配管线（精确/归一化/日期变体剥离）、多候选冲突按优先级预选、价格相同不视为冲突、`searchModelsDevModel` 搜索（子串/大小写/provider 名命中、上限截断）
-  - `src/lib/models-dev/auto-fill`：fill 只填空不覆盖、manual 行不动、未匹配跳过；force 覆盖非 manual / 跳过 manual / updated 计数（fill 模式零回归）
+  - `src/lib/models-dev/match`：三级匹配管线（精确/归一化/日期变体剥离）、多候选冲突按优先级预选、价格相同不视为冲突、**有价候选（hasPriceData/hasCost）恒优先：含“显式 0/0 有价 vs 无价同价”的无冲突短路场景与全候选无价场景**、`searchModelsDevModel` 搜索（子串/大小写/provider 名命中、上限截断）
+  - `src/lib/models-dev/auto-fill`：fill 只填空不覆盖、manual 行不动、未匹配跳过；force 覆盖非 manual / 跳过 manual / updated 计数（fill 模式零回归）；**无价条目（cost 缺失 / 只提供单字段）fill/force 均不写库且计入 unmatched，显式 0/0 仍正常写入**
   - `src/lib/auth/settings-models-dev-source`：合法值往返（withSkipCache 即时生效）、非法值回退默认、isValid/parse 边界
   - `src/lib/models-dev/snapshot`：convertLitellmToModelsDev（×1e6 换算、cache 映射、sample_spec/空 provider 跳过、无价条目保留、含 `/` model id、NaN/负数忽略）、looksLikeLitellmStructure 正反例、fetch 两 URL 顺序与回退、readSnapshotFile 旧文件 source 回退、uploadSnapshot source 标签、in-flight 同源复用/异源串行、**内存裁剪 slim**（仅保留 id/name/cost/last_updated、冗余字段剥离、无价条目语义保留、match/search/list 行为不变、磁盘保留完整数据）
   - `src/lib/pricing`：loadPriceMap cache 价 NULL 回退 input + 内存缓存/失效、computeModelCost
   - `src/lib/model-registry`：注入 aliases 的归一化各优先级规则、缓存失效、getDisplayName、isValidModelAliases/parseModelAliases
-  - `src/app/api/admin/model-prices/route.test`：Admin API 集成测试（临时 SQLite + 真实 handler + 签名 token）——GET 行集与徽标状态（active/inactive/待确认/未匹配/有更新/已下架）、PUT 手动编辑（source='manual' 清空 modelsDevId、model 名含 `/`）、DELETE、select 落库、auto-fill `mode=force` 分支 + 缺省 fill 兼容 + 非法 mode 400、未带 withAuth 401
+  - `src/app/api/admin/model-prices/route.test`：Admin API 集成测试（临时 SQLite + 真实 handler + 签名 token）——GET 行集与徽标状态（active/inactive/待确认/未匹配/有更新/已下架）、PUT 手动编辑（source='manual' 清空 modelsDevId、model 名含 `/`）、DELETE、select 落库、auto-fill `mode=force` 分支 + 缺省 fill 兼容 + 非法 mode 400、**force 下快照无价条目不覆盖已有价且存量 0 价行只标 zeroNoPrice**、**select 对“仅 input”条目 404（区分文案 no official price）**、**candidates 响应带 `hasCost` 且无价候选不被预选**、未带 withAuth 401
   - `src/app/api/model-pricing/route.test`：模拟器数据源集成测试（临时 SQLite + 临时快照文件 + 签名 token）——已定价行 + providers 列表、provider 推断（含日期变体剥离）、`?provider=` 懒加载/未知 provider 空数组、`?search=` 命中（canonicalId 格式 + cache 回退）/无结果、未带 token 401
   - `src/lib/provider-presets`：预设合法性（protocol/baseUrl/唯一性）
   - `src/lib/gateway/url-guard`：上游 baseUrl SSRF 防护（环回/私有/链路本地/元数据 IP 拒绝、DNS 解析后分类、ALLOW_PRIVATE_UPSTREAMS 逃生开关）
@@ -68,5 +68,5 @@
   - `src/lib/sync/pusher.test`：推送 worker（mock fetch）——成功推进（含 -1 哨兵夹心、redirect=manual、payload 携带 instanceUid + sessionId、boundUid ack 锁定）、401 不 drop、5xx/网络不 drop、400 五十次自动 drop 累计计数、skippedInvalid 计入 dropped、未配置不启动、多批推送；错误诊断 `describeFetchError`（ECONNREFUSED + Docker localhost 提示、ENOTFOUND DNS 提示、TLS 证书提示、TimeoutError、AggregateError 多地址展开、无 cause 回退 err.message）+ HTTP 401/404 提示后缀
   - `src/lib/sync/config.test`：URL 格式校验、token 加密往返与清除、instance/uid 校验、cursor/dropped 读写往返、reset 语义（dropped 保留、**uid 不重置**）、instance/uid/epoch 自动生成持久
   - `src/app/api/admin/sync/config/route.test`：DELETE 集成——401、清除项（target_url/token/bound_uid/last_error/last_attempt）与保留项（cursor/dropped/epoch/uid/instance/last_success）逐项断言、幂等 no-op、审计 `sync_config_deleted` 含 cursor 快照
-  - `src/lib/model-prices-service.test`：可见性（近期流量 30 天窗口、推送模型行集含全历史 + 来源标注、active 判定、`inactive` 与默认可见性口径对齐、**uid 等值 + instance_name LIKE 兜底**、改名后历史行仍可发现）、徽标语义（跨快照源不判定 removed/hasUpdate、同源快照下 removed/hasUpdate、无快照不误报下架、无价条目不列下架、modelsDevId 为 null 不判定、removed/inactive 排序末尾含 active 的红 removed 行）
+  - `src/lib/model-prices-service.test`：可见性（近期流量 30 天窗口、推送模型行集含全历史 + 来源标注、active 判定、`inactive` 与默认可见性口径对齐、**uid 等值 + instance_name LIKE 兜底**、改名后历史行仍可发现）、徽标语义（跨快照源不判定 removed/hasUpdate、同源快照下 removed/hasUpdate、无快照不误报下架、无价条目不列下架、modelsDevId 为 null 不判定、removed/inactive 排序末尾含 active 的红 removed 行）、**无价候选与 zeroNoPrice**（仅提供 input 的条目按 no_price 不标 hasUpdate/diff、快照无价 + 已存价含 0 → `status.zeroNoPrice` 而显式 0/0 有价行与快照有价行不误报、未定价行候选全无价 → unmatched 而非 confirm）
 - 新增纯逻辑模块（如解析器、路由匹配、加密）时应同步提交单测

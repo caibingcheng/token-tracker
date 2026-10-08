@@ -4,7 +4,7 @@ import { withSkipCache } from "@/lib/db/cache";
 import { sql } from "drizzle-orm";
 import { parseEnabledModels } from "@/lib/gateway/model-router";
 import { getSnapshot, type ModelsDevSnapshot } from "@/lib/models-dev/snapshot";
-import { matchModelsDevModel } from "@/lib/models-dev/match";
+import { matchModelsDevModel, hasPriceData } from "@/lib/models-dev/match";
 import {
   autoFillModelPrices,
   type AutoFillModelPrice,
@@ -47,6 +47,7 @@ export interface ModelPriceRow {
     unmatched: boolean; // 未定价且无候选
     hasUpdate: boolean; // 同源快照同 id 价格不同（跨源不比较）
     removed: boolean; // 同源快照无该 id（跨源不比较）
+    zeroNoPrice: boolean; // 已定价为 0 且同源快照条目无官方价（早期 force 覆盖遗留，待人工确认）
     diff: {
       inputPrice: number;
       outputPrice: number;
@@ -188,13 +189,17 @@ function lookupSnapshotPrice(
   const modelId = modelsDevId.slice(slash + 1);
   const model = snapshot.data[providerId]?.models[modelId];
   if (!model) return { kind: "not_found" };
-  if (!model.cost) return { kind: "no_price" };
+  // D1 谓词：只有 input 与 output 都在才算有官方价（仅一个字段 = 无价条目），
+  // 否则会把缺失字段兜底成 0 写入/误报有更新
+  if (!hasPriceData(model.cost)) return { kind: "no_price" };
+  // 谓词已保证 input/output 为有限非负数（否则上面即返回），无需再兜底
   const cost = model.cost;
   return {
     kind: "priced",
     price: {
-      inputPrice: typeof cost.input === "number" ? cost.input : 0,
-      outputPrice: typeof cost.output === "number" ? cost.output : 0,
+      inputPrice: cost.input,
+      outputPrice: cost.output,
+      // cache 字段可缺（DB 列可 NULL，pricing 层回退 input_price），仍做类型防御
       cacheReadPrice: typeof cost.cache_read === "number" ? cost.cache_read : null,
       cacheWritePrice: typeof cost.cache_write === "number" ? cost.cache_write : null,
     },
@@ -269,6 +274,7 @@ export async function getModelPricesList(): Promise<ModelPriceRow[]> {
       unmatched: false,
       hasUpdate: false,
       removed: false,
+      zeroNoPrice: false,
       diff: null,
     };
 
@@ -301,21 +307,31 @@ export async function getModelPricesList(): Promise<ModelPriceRow[]> {
             };
           }
         }
-        // kind === "no_price"：快照 id 仍在但无官方价 → 保留旧价，既不标下架也不标有更新
+        // kind === "no_price"：快照 id 仍在但无官方价 → 保留旧价，既不标下架也不标有更新；
+        // 但若已定价为 0，则该 0 价不可能来自官方价（官方价缺失）→ 标 zeroNoPrice 提醒人工确认
+        else if (
+          lookup.kind === "no_price" &&
+          (price.inputPrice === 0 || price.outputPrice === 0)
+        ) {
+          status.zeroNoPrice = true;
+        }
       }
     } else {
       // 未定价：匹配候选判定待确认/未匹配
       if (snapshot) {
         const { matched, candidates } = matchModelsDevModel(model, snapshot.data);
+        // 无价候选（快照条目缺 input/output）不得参与价格比较：否则会把 0/0 兜底价
+        // 当成一个合法候选 → 误标待确认，且与 auto-fill 的 unmatched 口径不一致
+        const pricedCandidates = candidates.filter((c) => c.hasCost);
         const distinct = new Set(
-          candidates.map(
+          pricedCandidates.map(
             (c) =>
               `${c.inputPrice}|${c.outputPrice}|${c.cacheReadPrice}|${c.cacheWritePrice}`
           )
         );
-        if (!matched) {
+        if (!matched || !matched.hasCost) {
           status.unmatched = true;
-        } else if (candidates.length > 1 && distinct.size > 1) {
+        } else if (pricedCandidates.length > 1 && distinct.size > 1) {
           status.pending = true;
         }
       } else {

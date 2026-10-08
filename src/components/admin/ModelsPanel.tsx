@@ -104,6 +104,7 @@ interface PriceRow {
     unmatched: boolean;
     hasUpdate: boolean;
     removed: boolean;
+    zeroNoPrice: boolean;
     diff: {
       inputPrice: number;
       outputPrice: number;
@@ -1710,6 +1711,14 @@ function PriceBadges({
   }
   if (row.status.removed) {
     badges.push({ key: "removed", cls: "bg-red-50 text-red-700 border-red-200", label: "removed", action: onPick });
+  }
+  if (row.status.zeroNoPrice) {
+    badges.push({
+      key: "zero-price",
+      cls: "bg-amber-50 text-amber-700 border-amber-200",
+      label: "check price",
+      title: "No official price in snapshot, but stored price is 0 — likely overwritten by an earlier force Re-fill. Confirm or delete this row.",
+    });
   }
 
   if (badges.length === 0) return null;
