@@ -1,4 +1,5 @@
 import type { HeaderTransform } from "./header-transforms";
+import type { ClassifierKind } from "./classifier/types";
 
 export type Protocol = "openai" | "anthropic" | "gemini";
 
@@ -18,30 +19,48 @@ export interface UpstreamRoute {
   enabledModels?: string | string[];
   proxyUrl?: string | null; // HTTP CONNECT 代理明文 URL（解密后），null = 直连
   headerTransforms?: HeaderTransform[]; // 出站 header 变换（最后一棒）
+  classifierModels?: string | null; // upstreams.classifier_models 原始 JSON（命名路由分类器声明）
 }
 
-// 手动路由规则：客户端请求的虚拟名 name + protocol → 目标 upstream 的真实模型 targetModel。
-// 同名同协议可挂多条（多目标 failover 链），priority 小者先尝试，同 priority 按 id 升序
-export interface RoutingRule {
+// 命名路由：客户端请求的虚拟名 name + protocol → 目标 upstream 的真实模型。
+// 自带目标池（多目标 failover 链）与可选分类器：
+//   classifierKind='priority' = 无 LLM 分类器，链首取首个健康目标（按 priority）
+//   classifierKind='model' = 由 classifierUpstreamId + classifierModel 指向的 LLM 分类器选链首
+export interface NamedRoute {
   id: number;
   name: string;
   protocol: Protocol;
+  instruction: string;
+  classifierUpstreamId: number; // kind='priority' 时为占位 0
+  classifierModel: string; // kind='priority' 时为占位 ''
+  classifierKind: ClassifierKind;
+  enabled: boolean;
+}
+
+// 命名路由的目标：failover 链的一跳，同时是分类器的候选项
+export interface NamedRouteTarget {
+  id: number;
+  namedRouteId: number;
   upstreamId: number;
-  targetModel: string;
+  upstreamModel: string;
+  description: string | null;
   priority: number;
 }
 
-// 手动路由精确匹配：返回该 name + protocol 的全部命中规则，
-// 按 priority 升序、同 priority 按 id 升序（与自动路由链路组合成多目标 failover 链）
-export function findRoutingRules(
+// 命名路由精确匹配（name+protocol 唯一），未命中或已禁用返回 null
+export function findNamedRoute(
   model: string,
   protocol: Protocol,
-  rules: RoutingRule[]
-): RoutingRule[] {
-  return rules
-    .filter((r) => r.protocol === protocol && r.name === model)
-    .slice()
-    .sort((a, b) => a.priority - b.priority || a.id - b.id);
+  routes: NamedRoute[]
+): NamedRoute | null {
+  return (
+    routes.find((r) => r.protocol === protocol && r.name === model && r.enabled) ?? null
+  );
+}
+
+// 目标按 priority 升序、同 priority 按 id 升序（failover 链顺序）
+export function sortNamedRouteTargets<T extends { id: number; priority: number }>(targets: T[]): T[] {
+  return targets.slice().sort((a, b) => a.priority - b.priority || a.id - b.id);
 }
 
 // 前缀通配（如 "gpt-*"）匹配："gpt-4o" 命中，但 "gpt" 本身不命中

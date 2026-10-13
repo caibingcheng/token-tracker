@@ -1,4 +1,4 @@
-// 响应 model 字段回写（仅手动路由命中时启用，正常流量零开销）：
+// 响应 model 字段回写（仅命名路由命中时启用，正常流量零开销）：
 // 客户端请求的是虚拟名，上游返回的是真实模型名，透传时把 model 字段改回虚拟名。
 // Gemini 不改写（modelVersion 是版本信息，不回显请求名）。
 import type { Protocol } from "./model-router";

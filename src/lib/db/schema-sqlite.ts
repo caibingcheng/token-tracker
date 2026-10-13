@@ -49,42 +49,68 @@ export const upstreams = sqliteTable("upstreams", {
   proxyUrlEncrypted: text("proxy_url_encrypted"), // AES-256-GCM，NULL = 直连
   headerTransforms: text("header_transforms"), // JSON: HeaderTransform[]，出站 header 变换（最后一棒）
   probeConfig: text("probe_config"), // JSON: {path, body}，自定义探活端点；NULL = 默认 chat → responses 双风格
+  classifierModels: text("classifier_models"), // JSON: [{model, type, maxInputTokens?, path?}]，声明该 upstream 可作分类器的模型；NULL = 无
   createdAt: text("created_at").$defaultFn(() => new Date().toISOString()),
 });
 
 export type Upstream = typeof upstreams.$inferSelect;
 export type NewUpstream = typeof upstreams.$inferInsert;
 
-// 手动路由规则：虚拟名 + protocol → 目标 upstream 的某个 model（优先级高于自动路由）。
-// 同名同协议允许挂多个目标 upstream（带 priority），命中后按 priority 构成多目标 failover 链；
-// 同 upstream 重复无意义，禁止
-export const routingRules = sqliteTable(
-  "routing_rules",
+// 命名路由：客户端请求的虚拟名 name + protocol → 目标 upstream 的真实模型（优先级高于自动路由）。
+// 自带路由目标池 named_route_targets，可选分类器决定链首：
+//   classifier_kind = 'priority'：无 LLM 分类器，链首 = 首个健康目标（按 priority），零 LLM 开销
+//   classifier_kind = 'model'：由 classifier_upstream_id + classifier_model 指向的 LLM 分类器选链首
+// 命中后目标池构成一条 failover 链（链首由分类器/优先级决定，其余按 priority 接链尾），
+// 同名自动路由完全失效。classifier_upstream_id 不加外键级联：删 classifier upstream 不 nuking
+// 配置，运行时回退 priority 链首。
+export const namedRoutes = sqliteTable(
+  "named_routes",
   {
     id: integer("id").primaryKey({ autoIncrement: true }),
     name: text("name").notNull(), // 客户端请求的虚拟模型名
     protocol: text("protocol").notNull(), // 'openai' | 'anthropic' | 'gemini'
+    instruction: text("instruction").notNull().default(""), // 给 LLM 分类器的决策指令
+    classifierUpstreamId: integer("classifier_upstream_id").notNull().default(0), // 分类器所在 upstream（kind=priority 时占位 0）
+    classifierModel: text("classifier_model").notNull().default(""), // 分类器模型名（须在 upstream.classifier_models 中声明；kind=priority 时占位 ''）
+    classifierKind: text("classifier_kind").notNull().default("priority"), // 'priority' = 规则分类器 | 'model' = LLM 分类器
+    enabled: integer("enabled").notNull().default(1),
+    createdAt: text("created_at").$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [uniqueIndex("uq_named_routes_name_protocol").on(table.name, table.protocol)]
+);
+
+export type NamedRoute = typeof namedRoutes.$inferSelect;
+export type NewNamedRoute = typeof namedRoutes.$inferInsert;
+
+// 命名路由的目标池：分类器的选项池，同时是路由内部的 failover 链（链首排前，其余按 priority）
+export const namedRouteTargets = sqliteTable(
+  "named_route_targets",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    namedRouteId: integer("named_route_id")
+      .notNull()
+      .references(() => namedRoutes.id, { onDelete: "cascade" }),
     upstreamId: integer("upstream_id")
       .notNull()
       .references(() => upstreams.id, { onDelete: "cascade" }),
-    targetModel: text("target_model").notNull(), // 上游真实模型名
+    upstreamModel: text("upstream_model").notNull(), // 目标 upstream 上的真实模型名
+    description: text("description"), // 路由特性描述（给分类器看的候选说明）
     priority: integer("priority").notNull().default(0), // 小者先尝试；同 priority 按 id 升序
     createdAt: text("created_at").$defaultFn(() => new Date().toISOString()),
   },
   (table) => [
-    // 同名同协议允许挂多个不同 upstream；同 upstream 允许挂多个不同 targetModel（链内 model 级 failover）
-    uniqueIndex("uq_routing_rules_name_protocol_upstream_model").on(
-      table.name,
-      table.protocol,
+    uniqueIndex("uq_named_route_targets_route_upstream_model").on(
+      table.namedRouteId,
       table.upstreamId,
-      table.targetModel
+      table.upstreamModel
     ),
-    index("idx_routing_rules_protocol_name").on(table.protocol, table.name),
+    index("idx_named_route_targets_named_route").on(table.namedRouteId),
   ]
 );
 
-export type RoutingRule = typeof routingRules.$inferSelect;
-export type NewRoutingRule = typeof routingRules.$inferInsert;
+export type NamedRouteTarget = typeof namedRouteTargets.$inferSelect;
+
+export type NewNamedRouteTarget = typeof namedRouteTargets.$inferInsert;
 
 // upstream 级 model 不可用标记（持久化；TTL 过期由 HealthTracker 懒清理）
 export const upstreamModelHealth = sqliteTable(

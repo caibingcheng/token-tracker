@@ -1,8 +1,22 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { handleProxyRequest, extractVirtualKeyToken, extractSessionId, stripRawPassthroughPrefix, MAX_SESSION_ID_LENGTH, MAX_RETRY } from "./proxy";
 import type { ProxyDeps } from "./proxy";
-import type { UpstreamRoute } from "./model-router";
+import type { UpstreamRoute, NamedRoute } from "./model-router";
 import { buildSessionId } from "./session";
+
+function mkNamedRoute(overrides: Partial<NamedRoute> = {}): NamedRoute {
+  return {
+    id: 1,
+    name: "my-alias",
+    protocol: "openai",
+    instruction: "",
+    classifierUpstreamId: 0,
+    classifierModel: "",
+    classifierKind: "priority",
+    enabled: true,
+    ...overrides,
+  };
+}
 
 function mkUpstream(overrides: Partial<UpstreamRoute>): UpstreamRoute {
   return {
@@ -1964,7 +1978,7 @@ describe("handleProxyRequest - GET /v1/models", () => {
     expect(ids).toEqual(["gpt-4o"]);
   });
 
-  it("includes manual route names filtered by request protocol and vk allowlist", async () => {
+  it("includes named route names filtered by request protocol and vk allowlist", async () => {
     const deps = mkDeps({
       resolveVirtualKey: vi.fn(async () => ({
         id: 1,
@@ -1976,9 +1990,9 @@ describe("handleProxyRequest - GET /v1/models", () => {
         mkUpstream({ name: "a", enabledModels: ["gpt-4o"] }),
         mkUpstream({ id: 2, name: "anthropic-up", protocol: "anthropic", enabledModels: ["claude-3-5-sonnet"] }),
       ]),
-      loadRoutingRules: vi.fn(async () => [
-        { id: 1, name: "my-alias", protocol: "openai", upstreamId: 1, targetModel: "gpt-4o-real" },
-        { id: 2, name: "my-claude", protocol: "anthropic", upstreamId: 2, targetModel: "claude-3-5-sonnet" },
+      loadNamedRoutes: vi.fn(async () => [
+        mkNamedRoute({ id: 1, name: "my-alias", protocol: "openai" }),
+        mkNamedRoute({ id: 2, name: "my-claude", protocol: "anthropic" }),
       ]),
     });
     const res = await handleProxyRequest(
@@ -1994,25 +2008,12 @@ describe("handleProxyRequest - GET /v1/models", () => {
   });
 });
 
-describe("handleProxyRequest - manual routing", () => {
+describe("handleProxyRequest - named routing", () => {
   const fetchMock = vi.fn();
 
-  const RULE = {
-    id: 1,
-    name: "my-alias",
-    protocol: "openai" as const,
-    upstreamId: 1,
-    targetModel: "gpt-4o-real",
-    priority: 0,
-  };
-  const RULE2 = {
-    id: 2,
-    name: "my-alias",
-    protocol: "openai" as const,
-    upstreamId: 2,
-    targetModel: "gpt-4o-alt",
-    priority: 1,
-  };
+  const ROUTE = mkNamedRoute({ id: 1, name: "my-alias" });
+  const TARGET = { id: 1, upstreamId: 1, targetModel: "gpt-4o-real", description: null, priority: 0 };
+  const TARGET2 = { id: 2, upstreamId: 2, targetModel: "gpt-4o-alt", description: null, priority: 1 };
 
   function mkManualDeps(overrides: Partial<ProxyDeps> = {}): ProxyDeps {
     return mkDeps({
@@ -2020,12 +2021,13 @@ describe("handleProxyRequest - manual routing", () => {
         mkUpstream({ id: 1, name: "target-up", baseUrl: "https://target.example", enabledModels: ["gpt-4o-real"] }),
       ]),
       resolveUpstreamKeys: vi.fn(async () => ["key-1"]),
-      loadRoutingRules: vi.fn(async () => [RULE]),
+      loadNamedRoutes: vi.fn(async () => [ROUTE]),
+      loadNamedRouteTargets: vi.fn(async () => [TARGET]),
       ...overrides,
     });
   }
 
-  // 多目标手动路由依赖：primary(priority 0) + secondary(priority 1)
+  // 多目标命名路由依赖：primary(priority 0) + secondary(priority 1)
   function mkManualMultiDeps(overrides: Partial<ProxyDeps> = {}): ProxyDeps {
     return mkDeps({
       loadUpstreams: vi.fn(async () => [
@@ -2033,7 +2035,8 @@ describe("handleProxyRequest - manual routing", () => {
         mkUpstream({ id: 2, name: "secondary-up", baseUrl: "https://secondary.example", enabledModels: ["gpt-4o-alt"] }),
       ]),
       resolveUpstreamKeys: vi.fn(async () => ["key-1", "key-2"]),
-      loadRoutingRules: vi.fn(async () => [RULE, RULE2]),
+      loadNamedRoutes: vi.fn(async () => [ROUTE]),
+      loadNamedRouteTargets: vi.fn(async () => [TARGET, TARGET2]),
       ...overrides,
     });
   }
@@ -2047,7 +2050,7 @@ describe("handleProxyRequest - manual routing", () => {
     fetchMock.mockReset();
   });
 
-  it("routes to target upstream and rewrites body model to target_model", async () => {
+  it("routes to target upstream and rewrites body model to the target model", async () => {
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify({ model: "gpt-4o-real", usage: { prompt_tokens: 5, completion_tokens: 3 } }), {
         status: 200,
@@ -2072,7 +2075,7 @@ describe("handleProxyRequest - manual routing", () => {
     expect(sentBody.messages).toEqual([{ role: "user", content: "hi" }]);
   });
 
-  it("manual route wins over auto candidates (chain only contains target upstream)", async () => {
+  it("named route wins over auto candidates (chain only contains target upstream)", async () => {
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify({ model: "gpt-4o-real", usage: { prompt_tokens: 5, completion_tokens: 3 } }), {
         status: 200,
@@ -2085,7 +2088,8 @@ describe("handleProxyRequest - manual routing", () => {
         mkUpstream({ id: 2, name: "auto-up", baseUrl: "https://auto.example", priority: 0, enabledModels: ["my-alias"] }),
       ]),
       resolveUpstreamKeys: vi.fn(async () => ["key-1"]),
-      loadRoutingRules: vi.fn(async () => [RULE]),
+      loadNamedRoutes: vi.fn(async () => [ROUTE]),
+      loadNamedRouteTargets: vi.fn(async () => [TARGET]),
     });
     const res = await handleProxyRequest(
       makeRequest("/v1/chat/completions", {
@@ -2100,7 +2104,7 @@ describe("handleProxyRequest - manual routing", () => {
     expect(fetchMock.mock.calls[0][0]).toContain("target.example");
   });
 
-  it("falls back to auto routing when no manual rule matches (regression)", async () => {
+  it("falls back to auto routing when no named route matches (regression)", async () => {
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify({ usage: { prompt_tokens: 5, completion_tokens: 3 } }), {
         status: 200,
@@ -2110,7 +2114,7 @@ describe("handleProxyRequest - manual routing", () => {
     const deps = mkDeps({
       loadUpstreams: vi.fn(async () => [mkUpstream({ id: 1, name: "auto-up", enabledModels: ["gpt-4o"] })]),
       resolveUpstreamKeys: vi.fn(async () => ["key-1"]),
-      loadRoutingRules: vi.fn(async () => [RULE]),
+      loadNamedRoutes: vi.fn(async () => [ROUTE]),
     });
     const res = await handleProxyRequest(
       makeRequest("/v1/chat/completions", {
@@ -2124,7 +2128,7 @@ describe("handleProxyRequest - manual routing", () => {
     expect(deps.onUsage).toHaveBeenCalledWith(expect.objectContaining({ model: "gpt-4o", requestModel: "gpt-4o" }));
   });
 
-  it("returns 502 manual_route_unavailable when target upstream is disabled/missing", async () => {
+  it("returns 502 named_route_unavailable when target upstream is disabled/missing", async () => {
     const deps = mkManualDeps({ loadUpstreams: vi.fn(async () => []) });
     const res = await handleProxyRequest(
       makeRequest("/v1/chat/completions", {
@@ -2135,11 +2139,11 @@ describe("handleProxyRequest - manual routing", () => {
     );
     expect(res.status).toBe(502);
     const json = await res.json();
-    expect(json.error.type).toBe("manual_route_unavailable");
+    expect(json.error.type).toBe("named_route_unavailable");
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("returns 502 manual_route_unavailable when target upstream has no keys", async () => {
+  it("returns 502 named_route_unavailable when target upstream has no keys", async () => {
     const deps = mkManualDeps({ resolveUpstreamKeys: vi.fn(async () => []) });
     const res = await handleProxyRequest(
       makeRequest("/v1/chat/completions", {
@@ -2150,12 +2154,12 @@ describe("handleProxyRequest - manual routing", () => {
     );
     expect(res.status).toBe(502);
     const json = await res.json();
-    expect(json.error.type).toBe("manual_route_unavailable");
-    expect(json.error.message).toContain("Manual route target unavailable");
+    expect(json.error.type).toBe("named_route_unavailable");
+    expect(json.error.message).toContain("Named route target unavailable");
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("attempts manual route despite unhealthy target upstream (last resort, no 502)", async () => {
+  it("attempts named route despite unhealthy target upstream (last resort, no 502)", async () => {
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify({ model: "gpt-4o-real", usage: { prompt_tokens: 5, completion_tokens: 3 } }), {
         status: 200,
@@ -2190,7 +2194,7 @@ describe("handleProxyRequest - manual routing", () => {
     expect(markModelHealthy).toHaveBeenCalledWith(1, "gpt-4o-real");
   });
 
-  it("attempts manual route despite target_model marked unavailable (no 502)", async () => {
+  it("attempts named route despite target model marked unavailable (no 502)", async () => {
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify({ model: "gpt-4o-real", usage: { prompt_tokens: 5, completion_tokens: 3 } }), {
         status: 200,
@@ -2408,7 +2412,7 @@ describe("handleProxyRequest - manual routing", () => {
           )
         : Promise.resolve(new Response("should not be called", { status: 200 }))
     );
-    const getBinding = vi.fn(() => ({ upstreamId: 2, boundAt: Date.now() }));
+    const getBinding = vi.fn(() => ({ upstreamId: 2, targetModel: "gpt-4o-alt", boundAt: Date.now() }));
     const setBinding = vi.fn();
     const deps = mkManualMultiDeps({
       session: { getBinding, setBinding },
@@ -2428,19 +2432,18 @@ describe("handleProxyRequest - manual routing", () => {
     expect(fetchMock.mock.calls[0][0]).toContain("secondary.example");
   });
 
-  it("multi-target: skips disabled/missing rule targets but uses remaining targets", async () => {
+  it("multi-target: skips disabled/missing targets but uses remaining targets", async () => {
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify({ model: "gpt-4o-alt", usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
         status: 200,
         headers: { "content-type": "application/json" },
       })
     );
-    // RULE 指向的 upstream 1 不在 loadUpstreams 中（被禁用/删除），仅 RULE2 有效
+    // TARGET 指向的 upstream 1 不在 loadUpstreams 中（被禁用/删除），仅 TARGET2 有效
     const deps = mkManualMultiDeps({
       loadUpstreams: vi.fn(async () => [
         mkUpstream({ id: 2, name: "secondary-up", baseUrl: "https://secondary.example", enabledModels: ["gpt-4o-alt"] }),
       ]),
-      loadRoutingRules: vi.fn(async () => [RULE, RULE2]),
     });
     const res = await handleProxyRequest(
       makeRequest("/v1/chat/completions", {
@@ -2455,7 +2458,7 @@ describe("handleProxyRequest - manual routing", () => {
     expect(fetchMock.mock.calls[0][0]).toContain("secondary.example");
   });
 
-  it("multi-target: 502 manual_route_unavailable when no rule target is valid", async () => {
+  it("multi-target: 502 named_route_unavailable when no target is valid", async () => {
     const deps = mkManualMultiDeps({
       loadUpstreams: vi.fn(async () => []),
     });
@@ -2468,7 +2471,7 @@ describe("handleProxyRequest - manual routing", () => {
     );
     expect(res.status).toBe(502);
     const json = await res.json();
-    expect(json.error.type).toBe("manual_route_unavailable");
+    expect(json.error.type).toBe("named_route_unavailable");
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -2528,8 +2531,9 @@ describe("handleProxyRequest - manual routing", () => {
       loadUpstreams: vi.fn(async () => [
         mkUpstream({ id: 1, name: "target-up", protocol: "gemini", baseUrl: "https://target.example", enabledModels: ["gemini-2.0-flash"] }),
       ]),
-      loadRoutingRules: vi.fn(async () => [
-        { id: 1, name: "my-gemini", protocol: "gemini", upstreamId: 1, targetModel: "gemini-2.0-flash" },
+      loadNamedRoutes: vi.fn(async () => [mkNamedRoute({ name: "my-gemini", protocol: "gemini" })]),
+      loadNamedRouteTargets: vi.fn(async () => [
+        { id: 1, upstreamId: 1, targetModel: "gemini-2.0-flash", description: null, priority: 0 },
       ]),
     });
     const res = await handleProxyRequest(
@@ -3190,5 +3194,442 @@ describe("handleProxyRequest - header transforms", () => {
     const headers = new Headers(init.headers);
     expect(headers.get("x-opencode-session")).toBeNull();
     expect(headers.get("x-opencode-client")).toBeNull();
+  });
+});
+
+describe("handleProxyRequest - named route routing (LLM classifier)", () => {
+  const fetchMock = vi.fn();
+
+  // 两个目标 upstream + classifier upstream(id 9)；命名路由自带目标池
+  const NAMED_ROUTE = mkNamedRoute({
+    name: "auto",
+    instruction: "按复杂度选路由",
+    classifierUpstreamId: 9,
+    classifierModel: "jev-latest",
+    classifierKind: "model",
+  });
+  const TARGETS = [
+    { id: 101, upstreamId: 1, targetModel: "gpt-4o-mini", description: "简单任务", priority: 0 },
+    { id: 102, upstreamId: 2, targetModel: "gpt-5", description: "复杂任务", priority: 1 },
+  ];
+
+  function mkNamedDeps(overrides: Partial<ProxyDeps> = {}): ProxyDeps {
+    return mkDeps({
+      loadUpstreams: vi.fn(async () => [
+        mkUpstream({ id: 1, name: "cheap-up", baseUrl: "https://cheap.example", enabledModels: ["gpt-4o-mini"] }),
+        mkUpstream({ id: 2, name: "precise-up", baseUrl: "https://precise.example", enabledModels: ["gpt-5"] }),
+        mkUpstream({
+          id: 9,
+          name: "typesafe",
+          baseUrl: "https://api.typesafe.ai",
+          enabledModels: [],
+          classifierModels: JSON.stringify([{ model: "jev-latest", type: "jev-systemone" }]),
+        }),
+      ]),
+      resolveUpstreamKeys: vi.fn(async () => ["key-1"]),
+      loadNamedRoutes: vi.fn(async () => [NAMED_ROUTE]),
+      loadNamedRouteTargets: vi.fn(async () => TARGETS),
+      runClassifier: vi.fn(async () => ({ routeId: 102, usage: { inputTokens: 10, outputTokens: 2 } })),
+      ...overrides,
+    });
+  }
+
+  function mkMemorySession() {
+    const map = new Map<string, { upstreamId: number; targetModel?: string; boundAt: number }>();
+    return {
+      getBinding: vi.fn((sid: string) => map.get(sid)),
+      setBinding: vi.fn((sid: string, upstreamId: number, targetModel?: string) => {
+        map.set(sid, { upstreamId, targetModel, boundAt: Date.now() });
+      }),
+      map,
+    };
+  }
+
+  const okJson = (model: string) =>
+    new Response(JSON.stringify({ model, usage: { prompt_tokens: 5, completion_tokens: 3 } }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+
+  const vmRequest = () =>
+    makeRequest("/v1/chat/completions", {
+      headers: { authorization: "Bearer vk-good" },
+      body: { model: "auto", messages: [{ role: "user", content: "写个编译器" }] },
+    });
+
+  const sessionIdOf = () =>
+    buildSessionId(
+      { model: "auto", messages: [{ role: "user", content: "写个编译器" }] },
+      "auto",
+      1,
+      "openai"
+    );
+
+  beforeEach(() => {
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    fetchMock.mockReset();
+  });
+
+  it("classifier picks route → lands on selected targetModel, binding + classifier usage recorded", async () => {
+    fetchMock.mockResolvedValue(okJson("gpt-5"));
+    const session = mkMemorySession();
+    const deps = mkNamedDeps({ session });
+    const res = await handleProxyRequest(vmRequest(), deps);
+    await res.text();
+
+    expect(res.status).toBe(200);
+    expect(deps.runClassifier).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("precise.example");
+    expect(JSON.parse(new TextDecoder().decode(init.body as Uint8Array)).model).toBe("gpt-5");
+    // binding 写入 route 粒度（upstreamId + targetModel）
+    expect(session.setBinding).toHaveBeenCalledWith(sessionIdOf(), 2, "gpt-5");
+    // 分类器 usage 单独记一条（status=classifier），主请求记真实落点 + 虚拟名
+    const usageCalls = (deps.onUsage as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
+    expect(usageCalls).toContainEqual(
+      expect.objectContaining({ model: "jev-latest", provider: "typesafe", status: "classifier", requestModel: "auto" })
+    );
+    expect(usageCalls).toContainEqual(
+      expect.objectContaining({ model: "gpt-5", provider: "precise-up", requestModel: "auto" })
+    );
+  });
+
+  it("second request in same session sticks to binding without calling classifier", async () => {
+    fetchMock.mockImplementation(() => Promise.resolve(okJson("gpt-5")));
+    const session = mkMemorySession();
+    const deps = mkNamedDeps({ session });
+
+    const res1 = await handleProxyRequest(vmRequest(), deps);
+    await res1.text();
+    const res2 = await handleProxyRequest(vmRequest(), deps);
+    await res2.text();
+
+    expect(res2.status).toBe(200);
+    expect(deps.runClassifier).toHaveBeenCalledTimes(1);
+    expect((fetchMock.mock.calls[1] as [string, RequestInit])[0]).toContain("precise.example");
+  });
+
+  it("pre-seeded route-level binding is honored (no classifier call)", async () => {
+    fetchMock.mockResolvedValue(okJson("gpt-4o-mini"));
+    const session = mkMemorySession();
+    session.map.set(sessionIdOf(), { upstreamId: 1, targetModel: "gpt-4o-mini", boundAt: Date.now() });
+    const deps = mkNamedDeps({ session });
+    const res = await handleProxyRequest(vmRequest(), deps);
+    await res.text();
+
+    expect(deps.runClassifier).not.toHaveBeenCalled();
+    expect((fetchMock.mock.calls[0] as [string, RequestInit])[0]).toContain("cheap.example");
+  });
+
+  it("classifier failure falls back to priority-min route and still pins the session", async () => {
+    fetchMock.mockResolvedValue(okJson("gpt-4o-mini"));
+    const session = mkMemorySession();
+    const deps = mkNamedDeps({
+      session,
+      runClassifier: vi.fn(async () => ({ routeId: null, usage: null })),
+    });
+    const res = await handleProxyRequest(vmRequest(), deps);
+    await res.text();
+
+    expect(res.status).toBe(200);
+    expect((fetchMock.mock.calls[0] as [string, RequestInit])[0]).toContain("cheap.example");
+    expect(session.setBinding).toHaveBeenCalledWith(sessionIdOf(), 1, "gpt-4o-mini");
+  });
+
+  it("selected target down → failover to next target by priority and rebind", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response("boom", { status: 500 }))
+      .mockResolvedValueOnce(new Response("boom", { status: 500 }))
+      .mockResolvedValueOnce(okJson("gpt-4o-mini"));
+    const session = mkMemorySession();
+    const deps = mkNamedDeps({ session });
+    const res = await handleProxyRequest(vmRequest(), deps);
+    await res.text();
+
+    expect(res.status).toBe(200);
+    // 分类器选中 precise(2)，500 x2 → 路由内 failover 到 cheap(1)
+    expect((fetchMock.mock.calls[2] as [string, RequestInit])[0]).toContain("cheap.example");
+    expect(session.setBinding).toHaveBeenLastCalledWith(sessionIdOf(), 1, "gpt-4o-mini");
+  });
+
+  it("disabled named route → falls back to automatic routing", async () => {
+    fetchMock.mockResolvedValue(okJson("auto"));
+    const deps = mkNamedDeps({
+      loadNamedRoutes: vi.fn(async () => [{ ...NAMED_ROUTE, enabled: false }]),
+      loadUpstreams: vi.fn(async () => [
+        mkUpstream({ id: 1, name: "auto-up", baseUrl: "https://auto.example", enabledModels: ["auto"] }),
+      ]),
+    });
+    const res = await handleProxyRequest(vmRequest(), deps);
+    await res.text();
+
+    expect(res.status).toBe(200);
+    expect(deps.runClassifier).not.toHaveBeenCalled();
+    expect((fetchMock.mock.calls[0] as [string, RequestInit])[0]).toContain("auto.example");
+  });
+
+  it("named route without targets → 502 named_route_unavailable", async () => {
+    const deps = mkNamedDeps({ loadNamedRouteTargets: vi.fn(async () => []) });
+    const res = await handleProxyRequest(vmRequest(), deps);
+    expect(res.status).toBe(502);
+    const json = await res.json();
+    expect(json.error.type).toBe("named_route_unavailable");
+    expect(deps.runClassifier).not.toHaveBeenCalled();
+  });
+
+  it("single-target named route skips classifier (degenerates to direct route)", async () => {
+    fetchMock.mockResolvedValue(okJson("gpt-4o-mini"));
+    const session = mkMemorySession();
+    const deps = mkNamedDeps({
+      session,
+      loadNamedRouteTargets: vi.fn(async () => [TARGETS[0]]),
+    });
+    const res = await handleProxyRequest(vmRequest(), deps);
+    await res.text();
+
+    expect(res.status).toBe(200);
+    expect(deps.runClassifier).not.toHaveBeenCalled();
+    expect((fetchMock.mock.calls[0] as [string, RequestInit])[0]).toContain("cheap.example");
+  });
+});
+
+describe("handleProxyRequest - named route binding granularity", () => {
+  const fetchMock = vi.fn();
+
+  function mkSession() {
+    const map = new Map<string, { upstreamId: number; targetModel?: string; boundAt: number }>();
+    return {
+      getBinding: vi.fn((sid: string) => map.get(sid)),
+      setBinding: vi.fn((sid: string, upstreamId: number, targetModel?: string) => {
+        map.set(sid, { upstreamId, targetModel, boundAt: Date.now() });
+      }),
+      map,
+    };
+  }
+
+  function mkNamedDeps(overrides: Partial<ProxyDeps> = {}): ProxyDeps {
+    return mkDeps({
+      loadUpstreams: vi.fn(async () => [
+        mkUpstream({ id: 1, name: "primary", baseUrl: "https://primary.example", enabledModels: ["gpt-4o", "claude-sonnet"] }),
+        mkUpstream({ id: 2, name: "alt", baseUrl: "https://alt.example", enabledModels: ["gpt-4o", "claude-sonnet"] }),
+      ]),
+      resolveUpstreamKeys: vi.fn(async () => ["key-1"]),
+      loadNamedRoutes: vi.fn(async () => []),
+      loadNamedRouteTargets: vi.fn(async () => []),
+      ...overrides,
+    });
+  }
+
+  const aliasRequest = () =>
+    makeRequest("/v1/chat/completions", {
+      headers: { authorization: "Bearer vk-good" },
+      body: { model: "alias", messages: [{ role: "user", content: "hi" }] },
+    });
+
+  const okJson = () =>
+    new Response(JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+
+  beforeEach(() => {
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    fetchMock.mockReset();
+  });
+
+  it("same-upstream multi-target drift writes route-level binding", async () => {
+    // 命名路由：同 upstream 挂 gpt-4o(p0) + claude-sonnet(p1)；
+    // gpt-4o 500 → failover 到同 upstream 的 claude-sonnet 成功：
+    // successUpstream.id === defaultUpstream.id，靠 targetModel 差异识别漂移并写 binding
+    fetchMock
+      .mockResolvedValueOnce(new Response("boom", { status: 500 }))
+      .mockResolvedValueOnce(new Response("boom", { status: 500 }))
+      .mockResolvedValueOnce(okJson());
+    const session = mkSession();
+    const deps = mkNamedDeps({
+      session,
+      loadNamedRoutes: vi.fn(async () => [mkNamedRoute({ name: "alias" })]),
+      loadNamedRouteTargets: vi.fn(async () => [
+        { id: 1, upstreamId: 1, targetModel: "gpt-4o", description: null, priority: 0 },
+        { id: 2, upstreamId: 1, targetModel: "claude-sonnet", description: null, priority: 1 },
+      ]),
+    });
+    const res = await handleProxyRequest(aliasRequest(), deps);
+    await res.text();
+
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const [, lastInit] = fetchMock.mock.calls[2] as [string, RequestInit];
+    expect(JSON.parse(new TextDecoder().decode(lastInit.body as Uint8Array)).model).toBe("claude-sonnet");
+    const sid = buildSessionId(
+      { model: "alias", messages: [{ role: "user", content: "hi" }] },
+      "alias",
+      1,
+      "openai"
+    );
+    expect(session.setBinding).toHaveBeenCalledWith(sid, 1, "claude-sonnet");
+  });
+
+  it("legacy undefined-targetModel binding is not honored for named routes", async () => {
+    // targetModel=undefined 是旧自动路由粒度的残留 binding，不通配命名路由目标
+    fetchMock.mockResolvedValue(okJson());
+    const session = mkSession();
+    session.map.set(
+      buildSessionId(
+        { model: "alias", messages: [{ role: "user", content: "hi" }] },
+        "alias",
+        1,
+        "openai"
+      ),
+      { upstreamId: 2, boundAt: Date.now() }
+    );
+    const deps = mkNamedDeps({
+      session,
+      loadNamedRoutes: vi.fn(async () => [mkNamedRoute({ name: "alias" })]),
+      loadNamedRouteTargets: vi.fn(async () => [
+        { id: 1, upstreamId: 1, targetModel: "gpt-4o", description: null, priority: 0 },
+        { id: 2, upstreamId: 2, targetModel: "claude-sonnet", description: null, priority: 1 },
+      ]),
+    });
+    const res = await handleProxyRequest(aliasRequest(), deps);
+    await res.text();
+
+    expect(res.status).toBe(200);
+    // 未提链首：按 priority 走 primary(gpt-4o)，而非 binding 指向的 alt
+    const [firstUrl] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(firstUrl).toContain("primary.example");
+  });
+});
+
+describe("handleProxyRequest - rule classifier (priority)", () => {
+  const fetchMock = vi.fn();
+
+  const RULE_ROUTE = mkNamedRoute({ name: "auto" });
+  const TARGETS = [
+    { id: 101, upstreamId: 1, targetModel: "gpt-4o-mini", description: null, priority: 0 },
+    { id: 102, upstreamId: 2, targetModel: "gpt-5", description: null, priority: 1 },
+  ];
+
+  function mkRuleDeps(overrides: Partial<ProxyDeps> = {}): ProxyDeps {
+    return mkDeps({
+      loadUpstreams: vi.fn(async () => [
+        mkUpstream({ id: 1, name: "cheap-up", baseUrl: "https://cheap.example", enabledModels: ["gpt-4o-mini"] }),
+        mkUpstream({ id: 2, name: "precise-up", baseUrl: "https://precise.example", enabledModels: ["gpt-5"] }),
+      ]),
+      resolveUpstreamKeys: vi.fn(async () => ["key-1"]),
+      loadNamedRoutes: vi.fn(async () => [RULE_ROUTE]),
+      loadNamedRouteTargets: vi.fn(async () => TARGETS),
+      runClassifier: vi.fn(async () => ({ routeId: 102, usage: { inputTokens: 10, outputTokens: 2 } })),
+      ...overrides,
+    });
+  }
+
+  function mkSession() {
+    const map = new Map<string, { upstreamId: number; targetModel?: string; boundAt: number }>();
+    return {
+      getBinding: vi.fn((sid: string) => map.get(sid)),
+      setBinding: vi.fn((sid: string, upstreamId: number, targetModel?: string) => {
+        map.set(sid, { upstreamId, targetModel, boundAt: Date.now() });
+      }),
+      map,
+    };
+  }
+
+  const vmRequest = () =>
+    makeRequest("/v1/chat/completions", {
+      headers: { authorization: "Bearer vk-good" },
+      body: { model: "auto", messages: [{ role: "user", content: "hi" }] },
+    });
+
+  const okJson = (model: string) =>
+    new Response(JSON.stringify({ model, usage: { prompt_tokens: 5, completion_tokens: 3 } }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+
+  beforeEach(() => {
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    fetchMock.mockReset();
+  });
+
+  it("rule classifier picks first healthy target: no LLM call, no classifier usage record", async () => {
+    fetchMock.mockResolvedValue(okJson("gpt-4o-mini"));
+    const session = mkSession();
+    const deps = mkRuleDeps({ session });
+    const res = await handleProxyRequest(vmRequest(), deps);
+    await res.text();
+
+    expect(res.status).toBe(200);
+    expect(deps.runClassifier).not.toHaveBeenCalled(); // 零 LLM 开销
+    expect((fetchMock.mock.calls[0] as [string, RequestInit])[0]).toContain("cheap.example");
+    const usageCalls = (deps.onUsage as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
+    expect(usageCalls.some((m: { status?: string }) => m.status === "classifier")).toBe(false);
+    // 决策结果写 binding（整个 session 不再重复决策）
+    expect(session.setBinding).toHaveBeenCalledWith(
+      buildSessionId({ model: "auto", messages: [{ role: "user", content: "hi" }] }, "auto", 1, "openai"),
+      1,
+      "gpt-4o-mini"
+    );
+    // 主请求记真实落点
+    expect(usageCalls).toContainEqual(
+      expect.objectContaining({ model: "gpt-4o-mini", provider: "cheap-up", requestModel: "auto" })
+    );
+  });
+
+  it("rule classifier skips unhealthy first target (availability)", async () => {
+    fetchMock.mockResolvedValue(okJson("gpt-5"));
+    const session = mkSession();
+    const deps = mkRuleDeps({
+      session,
+      health: {
+        isHealthy: vi.fn(async (id: number) => id !== 1), // cheap-up 不健康
+        markUnhealthy: vi.fn(),
+        isModelHealthy: vi.fn(async () => true),
+      },
+    });
+    const res = await handleProxyRequest(vmRequest(), deps);
+    await res.text();
+
+    expect(res.status).toBe(200);
+    expect((fetchMock.mock.calls[0] as [string, RequestInit])[0]).toContain("precise.example");
+    expect(session.setBinding).toHaveBeenCalledWith(
+      buildSessionId({ model: "auto", messages: [{ role: "user", content: "hi" }] }, "auto", 1, "openai"),
+      2,
+      "gpt-5"
+    );
+  });
+
+  it("second request sticks to binding without re-deciding", async () => {
+    fetchMock.mockImplementation(() => Promise.resolve(okJson("gpt-5")));
+    const session = mkSession();
+    const deps = mkRuleDeps({
+      session,
+      health: {
+        isHealthy: vi.fn(async (id: number) => id !== 1),
+        markUnhealthy: vi.fn(),
+        isModelHealthy: vi.fn(async () => true),
+      },
+    });
+    const res1 = await handleProxyRequest(vmRequest(), deps);
+    await res1.text();
+    const res2 = await handleProxyRequest(vmRequest(), deps);
+    await res2.text();
+
+    expect(res2.status).toBe(200);
+    expect(deps.runClassifier).not.toHaveBeenCalled();
+    expect(session.setBinding).toHaveBeenCalledTimes(1); // 第二次请求预选 binding，不再决策
+    expect((fetchMock.mock.calls[1] as [string, RequestInit])[0]).toContain("precise.example");
   });
 });

@@ -21,6 +21,11 @@ import {
   parseProbeConfig,
   serializeProbeConfig,
 } from "@/lib/gateway/probe-config";
+import {
+  isValidClassifierModelEntry,
+  parseClassifierModels,
+  MAX_CLASSIFIER_MODELS_PER_UPSTREAM,
+} from "@/lib/gateway/classifier/types";
 import { decryptProxyUrl, healthTracker } from "@/lib/gateway/proxy-deps";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 import { isReservedRemoteName, REMOTE_NAME_PREFIX } from "@/lib/ingest/validate";
@@ -56,6 +61,7 @@ async function withKeys(upstream: any) {
     proxyDisplay: proxyUrl ? sanitizeProxyUrlForDisplay(proxyUrl) : null,
     headerTransforms: parseHeaderTransforms(upstream.headerTransforms),
     probeConfig: parseProbeConfig(upstream.probeConfig),
+    classifierModels: parseClassifierModels(upstream.classifierModels),
     keys: keyRows.map((k: any) => ({
       id: k.id,
       enabled: k.enabled === 1,
@@ -204,6 +210,25 @@ export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
       } else {
         return NextResponse.json(
           { success: false, error: "Invalid probeConfig" },
+          { status: 400 }
+        );
+      }
+    }
+
+    // 分类器模型声明：数组 = 全量替换，null = 清除
+    if (body.classifierModels !== undefined) {
+      if (body.classifierModels === null) {
+        values.classifierModels = null;
+      } else if (
+        Array.isArray(body.classifierModels) &&
+        body.classifierModels.length <= MAX_CLASSIFIER_MODELS_PER_UPSTREAM &&
+        body.classifierModels.every(isValidClassifierModelEntry)
+      ) {
+        values.classifierModels =
+          body.classifierModels.length > 0 ? JSON.stringify(body.classifierModels) : null;
+      } else {
+        return NextResponse.json(
+          { success: false, error: "Invalid classifierModels" },
           { status: 400 }
         );
       }

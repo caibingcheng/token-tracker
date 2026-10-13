@@ -1,18 +1,9 @@
 import { eq, sql, and } from "drizzle-orm";
-import {
-  db,
-  initDatabase,
-  upstreamsTable,
-  upstreamKeysTable,
-  virtualKeysTable,
-  tokenRecords,
-  upstreamModelHealthTable,
-  routingRulesTable,
-} from "@/lib/db";
+import { db, initDatabase, upstreamsTable, upstreamKeysTable, virtualKeysTable, tokenRecords, upstreamModelHealthTable, namedRoutesTable, namedRouteTargetsTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { decryptSecret, safeCompare, GatewaySecretMissingError } from "./crypto";
 import type { ProxyDeps, RecordUsageMeta } from "./proxy";
-import type { UpstreamRoute, RoutingRule } from "./model-router";
+import type { UpstreamRoute, NamedRoute, NamedRouteTarget } from "./model-router";
 import { parseEnabledModels } from "./model-router";
 import type { Protocol } from "./model-router";
 import { SessionStore } from "./session";
@@ -193,16 +184,35 @@ const healthTracker = new HealthTracker(probeUpstream, healthPersistence);
 
 export { healthTracker };
 
-// 加载全部手动路由规则（SELECT 走现有 10s 查询缓存，命中即短路自动路由）
-export async function loadRoutingRules(): Promise<RoutingRule[]> {
+// 加载全部命名路由（SELECT 走现有 10s 查询缓存，命中即短路自动路由）
+export async function loadNamedRoutes(): Promise<NamedRoute[]> {
   await initDatabase();
-  const rows = await db.select().from(routingRulesTable);
-  return rows.map((row: any): RoutingRule => ({
+  const rows = await db.select().from(namedRoutesTable);
+  return rows.map((row: any): NamedRoute => ({
     id: row.id,
     name: row.name,
     protocol: row.protocol,
+    instruction: row.instruction ?? "",
+    classifierUpstreamId: row.classifierUpstreamId ?? 0,
+    classifierModel: row.classifierModel ?? "",
+    classifierKind: row.classifierKind === "model" ? "model" : "priority",
+    enabled: row.enabled === 1,
+  }));
+}
+
+// 加载某条命名路由的目标池（表小，直查）
+export async function loadNamedRouteTargets(namedRouteId: number): Promise<NamedRouteTarget[]> {
+  await initDatabase();
+  const rows = await db
+    .select()
+    .from(namedRouteTargetsTable)
+    .where(eq(namedRouteTargetsTable.namedRouteId, namedRouteId));
+  return rows.map((row: any): NamedRouteTarget => ({
+    id: row.id,
+    namedRouteId: row.namedRouteId,
     upstreamId: row.upstreamId,
-    targetModel: row.targetModel,
+    upstreamModel: row.upstreamModel,
+    description: row.description ?? null,
     priority: row.priority ?? 0,
   }));
 }
@@ -268,13 +278,45 @@ export function createProxyDeps(): ProxyDeps {
             enabledModels: row.enabledModels,
             proxyUrl: decryptProxyUrl(row.proxyUrlEncrypted),
             headerTransforms: parseHeaderTransforms(row.headerTransforms),
+            classifierModels: row.classifierModels ?? null,
           })
         );
       });
     },
 
-    async loadRoutingRules() {
-      return loadRoutingRules();
+    async loadNamedRoutes() {
+      return loadNamedRoutes();
+    },
+
+    async loadNamedRouteTargets(namedRouteId: number) {
+      const targets = await loadNamedRouteTargets(namedRouteId);
+      return targets.map((t) => ({
+        id: t.id,
+        upstreamId: t.upstreamId,
+        targetModel: t.upstreamModel,
+        description: t.description,
+        priority: t.priority,
+      }));
+    },
+
+    // 分类器决策：直连 classifier upstream（keys 解密 fail-closed；models.dev 快照查 context window）
+    async runClassifier(opts) {
+      const { runClassifier } = await import("./classifier");
+      const { getSnapshot } = await import("@/lib/models-dev/snapshot");
+      const { lookupContextWindow } = await import("./classifier/budget");
+      const { loadModelsDevSource } = await import("@/lib/auth/settings-models-dev-source");
+      return runClassifier({
+        ...opts,
+        deps: {
+          resolveUpstreamKeys: (upstreamId: number) =>
+            withSkipCache(() => loadPlainUpstreamKeys(upstreamId)),
+          lookupContextWindow: async (model: string) => {
+            const snapshot = await getSnapshot({ source: await loadModelsDevSource() });
+            return snapshot ? lookupContextWindow(model, snapshot.data) : null;
+          },
+          log: (message: string) => console.log(message),
+        },
+      });
     },
 
     async resolveStreamIdleTimeoutMs() {
@@ -326,7 +368,8 @@ quota: {
 
     session: {
       getBinding: (sessionId) => sessionStore.get(sessionId),
-      setBinding: (sessionId, upstreamId) => sessionStore.set(sessionId, upstreamId),
+      setBinding: (sessionId, upstreamId, targetModel) =>
+        sessionStore.set(sessionId, upstreamId, targetModel),
     },
 
     health: {

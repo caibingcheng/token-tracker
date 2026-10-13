@@ -9,12 +9,13 @@ export const SESSION_STORE_TTL_MS = 24 * 60 * 60 * 1000;
 
 export interface SessionBinding {
   upstreamId: number;
+  targetModel?: string; // route 粒度粘性（命名路由分类器决策绑定）；undefined = upstream 粒度（自动路由 failover）
   boundAt: number;
 }
 
 export interface SessionStoreLike {
   get(sessionId: string): SessionBinding | undefined;
-  set(sessionId: string, upstreamId: number, now?: number): void;
+  set(sessionId: string, upstreamId: number, targetModel?: string, now?: number): void;
   delete(sessionId: string): void;
 }
 
@@ -29,8 +30,8 @@ export class SessionStore implements SessionStoreLike {
     return this.cache.get(sessionId);
   }
 
-  set(sessionId: string, upstreamId: number, now = Date.now()): void {
-    this.cache.set(sessionId, { upstreamId, boundAt: now });
+  set(sessionId: string, upstreamId: number, targetModel?: string, now = Date.now()): void {
+    this.cache.set(sessionId, { upstreamId, targetModel, boundAt: now });
   }
 
   delete(sessionId: string): void {

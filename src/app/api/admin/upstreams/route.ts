@@ -22,6 +22,11 @@ import {
   parseProbeConfig,
   serializeProbeConfig,
 } from "@/lib/gateway/probe-config";
+import {
+  isValidClassifierModelEntry,
+  parseClassifierModels,
+  MAX_CLASSIFIER_MODELS_PER_UPSTREAM,
+} from "@/lib/gateway/classifier/types";
 import { healthTracker, decryptProxyUrl } from "@/lib/gateway/proxy-deps";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 import { isReservedRemoteName, REMOTE_NAME_PREFIX } from "@/lib/ingest/validate";
@@ -83,6 +88,7 @@ export const GET = withAuth(async () => {
         proxyDisplay: proxyUrl ? sanitizeProxyUrlForDisplay(proxyUrl) : null,
         headerTransforms: parseHeaderTransforms(row.headerTransforms),
         probeConfig: parseProbeConfig(row.probeConfig),
+        classifierModels: parseClassifierModels(row.classifierModels),
         createdAt: row.createdAt,
       });
     }
@@ -177,6 +183,23 @@ export const POST = withAuth(async (request: NextRequest) => {
       probeConfig = serializeProbeConfig(body.probeConfig);
     }
 
+    // 分类器模型声明（省略 = 无）：数组，每条 {model, type, maxInputTokens?, path?}
+    let classifierModels: string | null = null;
+    if (body.classifierModels !== undefined && body.classifierModels !== null) {
+      if (
+        !Array.isArray(body.classifierModels) ||
+        body.classifierModels.length > MAX_CLASSIFIER_MODELS_PER_UPSTREAM ||
+        !body.classifierModels.every(isValidClassifierModelEntry)
+      ) {
+        return NextResponse.json(
+          { success: false, error: "Invalid classifierModels" },
+          { status: 400 }
+        );
+      }
+      classifierModels =
+        body.classifierModels.length > 0 ? JSON.stringify(body.classifierModels) : null;
+    }
+
     try {
       const result = await db
         .insert(upstreamsTable)
@@ -191,6 +214,7 @@ export const POST = withAuth(async (request: NextRequest) => {
           proxyUrlEncrypted,
           headerTransforms: JSON.stringify(normalizeHeaderTransforms(headerTransforms)),
           probeConfig,
+          classifierModels,
         })
         .returning();
       const { ip, userAgent } = extractClientInfo(request);

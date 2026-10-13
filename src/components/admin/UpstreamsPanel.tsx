@@ -10,6 +10,7 @@ import ActionMenu from "./ActionMenu";
 import type { HeaderTransform } from "@/lib/gateway/header-transforms";
 import { PROBE_PRESETS } from "@/lib/gateway/probe-config";
 import type { ProbeConfig } from "@/lib/gateway/probe-config";
+import type { ClassifierModelEntry } from "@/lib/gateway/classifier/types";
 
 export interface UpstreamProbeStatus {
   lastAt: number; // 0 = 尚未探测
@@ -39,6 +40,7 @@ export interface UpstreamItem {
   proxyDisplay: string | null;
   headerTransforms: HeaderTransform[];
   probeConfig: ProbeConfig | null;
+  classifierModels: ClassifierModelEntry[];
   createdAt: string;
 }
 
@@ -122,6 +124,10 @@ export default function UpstreamsPanel() {
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [formKeys, setFormKeys] = useState<string[]>([""]);
   const [formTransforms, setFormTransforms] = useState<HeaderTransform[]>([]);
+  // 分类器模型声明表单（maxInputTokens / path 以字符串暂存，提交时转换）
+  const [formClassifiers, setFormClassifiers] = useState<
+    { model: string; type: string; maxInputTokens: string; path: string }[]
+  >([]);
   const [formKeyTests, setFormKeyTests] = useState<Record<number, FormKeyTestResult | null>>({});
   const [formKeyShown, setFormKeyShown] = useState<Record<number, boolean>>({});
   const [modelPicker, setModelPicker] = useState<ModelPickerState | null>(null);
@@ -246,6 +252,23 @@ export default function UpstreamsPanel() {
     }
     // header transforms 全量替换（前端数组操作后整体提交）
     payload.headerTransforms = formTransforms;
+    // 分类器模型声明：全量替换；编辑态清空 = 显式 null 移除
+    const classifierModels = formClassifiers
+      .filter((c) => c.model.trim() !== "")
+      .map((c) => {
+        const entry: Record<string, unknown> = { model: c.model.trim(), type: c.type };
+        const max = Number(c.maxInputTokens);
+        if (c.maxInputTokens.trim() !== "" && Number.isFinite(max) && max > 0) {
+          entry.maxInputTokens = Math.floor(max);
+        }
+        if (c.path.trim() !== "") entry.path = c.path.trim();
+        return entry;
+      });
+    if (classifierModels.length > 0) {
+      payload.classifierModels = classifierModels;
+    } else if (editingId) {
+      payload.classifierModels = null;
+    }
     // 自定义探活端点：path 为空 = 不配置（回落默认 chat → responses 双风格）；
     // 编辑态清空 path 则显式下发 null 移除配置
     const probePath = form.probePath.trim();
@@ -304,6 +327,7 @@ export default function UpstreamsPanel() {
       setForm(EMPTY_FORM);
       setFormKeys([""]);
       setFormTransforms([]);
+      setFormClassifiers([]);
       setFormKeyTests({});
       setFormKeyShown({});
       setEditingId(null);
@@ -340,6 +364,14 @@ export default function UpstreamsPanel() {
     setFormKeys([""]);
     // 浅拷贝数组 + 展开条目，避免直接改列表缓存
     setFormTransforms(u.headerTransforms.map((t) => ({ ...t })));
+    setFormClassifiers(
+      (u.classifierModels ?? []).map((c) => ({
+        model: c.model,
+        type: c.type,
+        maxInputTokens: c.maxInputTokens !== undefined ? String(c.maxInputTokens) : "",
+        path: c.path ?? "",
+      }))
+    );
     setFormKeyTests({});
     setFormKeyShown({});
     setPendingKeyEnabled({});
@@ -1096,6 +1128,87 @@ export default function UpstreamsPanel() {
               probe endpoint is used as-is (no fallback to the second style).
             </p>
           </div>
+          {/* 分类器模型声明：命名路由的 LLM 分类器只能从这里声明的条目里选 */}
+          <div className="md:col-span-3">
+            <label className="mb-1 block text-xs text-gray-600">
+              Classifier Models{" "}
+              <span className="text-gray-400">
+                (optional; models on this upstream usable as virtual-model classifiers)
+              </span>
+            </label>
+            {formClassifiers.map((c, index) => (
+              <div key={index} className="mb-2 grid grid-cols-1 gap-2 md:grid-cols-[1fr_150px_140px_1fr_auto]">
+                <input
+                  value={c.model}
+                  onChange={(e) =>
+                    setFormClassifiers((prev) =>
+                      prev.map((x, i) => (i === index ? { ...x, model: e.target.value } : x))
+                    )
+                  }
+                  placeholder="jev-latest"
+                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                />
+                <select
+                  value={c.type}
+                  onChange={(e) =>
+                    setFormClassifiers((prev) =>
+                      prev.map((x, i) => (i === index ? { ...x, type: e.target.value } : x))
+                    )
+                  }
+                  className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                >
+                  <option value="jev-systemone">jev-systemone</option>
+                  <option value="chat">chat</option>
+                </select>
+                <input
+                  value={c.maxInputTokens}
+                  onChange={(e) =>
+                    setFormClassifiers((prev) =>
+                      prev.map((x, i) => (i === index ? { ...x, maxInputTokens: e.target.value } : x))
+                    )
+                  }
+                  type="number"
+                  min={256}
+                  placeholder="max input tok"
+                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                />
+                <input
+                  value={c.path}
+                  onChange={(e) =>
+                    setFormClassifiers((prev) =>
+                      prev.map((x, i) => (i === index ? { ...x, path: e.target.value } : x))
+                    )
+                  }
+                  placeholder="path override (e.g. /alpha/decisions)"
+                  autoComplete="off"
+                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => setFormClassifiers((prev) => prev.filter((_, i) => i !== index))}
+                  className="rounded border border-gray-300 px-3 py-2 text-sm text-gray-500 hover:bg-gray-50"
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+            <button
+              type="button"
+              onClick={() =>
+                setFormClassifiers((prev) => [
+                  ...prev,
+                  { model: "", type: "jev-systemone", maxInputTokens: "", path: "" },
+                ])
+              }
+              className="rounded border border-dashed border-gray-300 px-3 py-1.5 text-xs text-gray-500 hover:bg-gray-50"
+            >
+              + Add classifier model
+            </button>
+            <p className="mt-1 text-[10px] text-gray-400">
+              type = wire format (jev-systemone: POST /v1/systemone typed decisions; chat: OpenAI chat
+              completions). max input tokens defaults to models.dev context window, then 4096.
+            </p>
+          </div>
           <div className="md:col-span-3 flex items-center gap-2">
             <button
               type="submit"
@@ -1112,6 +1225,7 @@ export default function UpstreamsPanel() {
                   setForm(EMPTY_FORM);
                   setFormKeys([""]);
                   setFormTransforms([]);
+                  setFormClassifiers([]);
                   setFormKeyTests({});
                   setClearProxy(false);
                   setProbeCustom(false);
@@ -1346,6 +1460,8 @@ export default function UpstreamsPanel() {
                   {u.headerTransforms.length > 0 &&
                     ` · ${u.headerTransforms.filter((t) => t.enabled).length}/${u.headerTransforms.length} header transforms`}
                   {u.probeConfig && ` · probe ${u.probeConfig.path}`}
+                  {u.classifierModels && u.classifierModels.length > 0 &&
+                    ` · classifier: ${u.classifierModels.map((c) => c.model).join(", ")}`}
                 </span>
                 {u.unhealthy && (
                   <span

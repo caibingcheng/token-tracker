@@ -101,67 +101,83 @@ export function migrateIngestTokensTable(client: any): void {
   `);
 }
 
-// routing_rules 专用迁移（两段式，均幂等）：
-// 1. 部分旧库仍为 UNIQUE(name, protocol)（单目标）结构，需重建表支持多目标
-//    （UNIQUE(name, protocol, upstream_id)）+ priority 列。检测 priority 列是否存在，
-//    缺失则 RENAME → 建新表 → 回迁（priority 回填 0）→ DROP 旧表。
-// 2. 第二阶段放宽约束为 UNIQUE(name, protocol, upstream_id, target_model)，
-//    允许同 upstream 挂多个不同 targetModel。检测新唯一索引名是否存在，缺失则表重建回迁。
-// SQLite 无法修改表约束，统一采用表重建。routing_rules 为管理面小表，重建零风险。
-// 各阶段旧约束都是新约束的超集，回迁必定不冲突。
-export function migrateRoutingRulesTable(client: any): void {
-  const existing: string[] = client
-    .prepare(`PRAGMA table_info(routing_rules)`)
+// 命名路由迁移（幂等）：把旧 routing_rules / virtual_models + virtual_model_routes 折叠进
+// named_routes + named_route_targets，然后删旧表。
+// - manual 规则行 → named_routes(classifier_kind='priority') + 各目标一条 target
+// - virtual model 行 → 同名同协议 upsert（同名 manual 行的分类器配置被 vm 覆盖）+ 其路由候选进 target
+// 旧表不存在（全新库 / 已迁移）直接跳过；旧表缺后加列（priority / description / classifier_kind 等）按默认值回填。
+export function migrateNamedRoutesTables(client: any): void {
+  const tableNames: string[] = client
+    .prepare("SELECT name FROM sqlite_master WHERE type='table'")
     .all()
-    .map((c: any) => c.name);
-  if (!existing.includes("priority")) {
-    client.exec(`DROP TABLE IF EXISTS routing_rules_old`);
+    .map((r: any) => r.name);
+  const hasRoutingRules = tableNames.includes("routing_rules");
+  const hasVirtualModels = tableNames.includes("virtual_models");
+  if (!hasRoutingRules && !hasVirtualModels) return;
+
+  const columnsOf = (table: string): string[] =>
+    client
+      .prepare(`PRAGMA table_info(${table})`)
+      .all()
+      .map((c: any) => c.name);
+
+  // 1. manual 规则（routing_rules）→ priority 规则分类器的命名路由
+  if (hasRoutingRules) {
+    const ruleColumns = columnsOf("routing_rules");
+    const priorityExpr = ruleColumns.includes("priority") ? "priority" : "0";
     client.exec(`
-      ALTER TABLE routing_rules RENAME TO routing_rules_old;
-      CREATE TABLE routing_rules (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        protocol TEXT NOT NULL,
-        upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
-        target_model TEXT NOT NULL,
-        priority INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-        UNIQUE(name, protocol, upstream_id)
-      );
-      INSERT INTO routing_rules (id, name, protocol, upstream_id, target_model, priority, created_at)
-        SELECT id, name, protocol, upstream_id, target_model, 0, created_at FROM routing_rules_old;
-      DROP TABLE routing_rules_old;
-      CREATE INDEX IF NOT EXISTS idx_routing_rules_protocol_name ON routing_rules(protocol, name);
+      INSERT OR IGNORE INTO named_routes
+        (name, protocol, instruction, classifier_upstream_id, classifier_model, classifier_kind, enabled, created_at)
+        SELECT name, protocol, '', 0, '', 'priority', 1, created_at FROM routing_rules;
+      INSERT OR IGNORE INTO named_route_targets
+        (named_route_id, upstream_id, upstream_model, description, priority, created_at)
+        SELECT nr.id, rr.upstream_id, rr.target_model, NULL, ${priorityExpr}, rr.created_at
+        FROM routing_rules rr
+        JOIN named_routes nr ON nr.name = rr.name AND nr.protocol = rr.protocol;
     `);
   }
 
-  // 第二阶段：UNIQUE(name, protocol, upstream_id) → UNIQUE(name, protocol, upstream_id, target_model)，
-  // 允许同 upstream 挂多个不同 targetModel（链内 model 级 failover）。
-  // 检测新唯一索引是否存在（幂等）；不存在则表重建回迁。
-  // 旧约束是新约束的超集，回迁必定不冲突。显式命名索引保证重建后可被幂等检测。
-  const indexes: string[] = client
-    .prepare(`PRAGMA index_list(routing_rules)`)
-    .all()
-    .map((i: any) => i.name);
-  if (indexes.includes("uq_routing_rules_name_protocol_upstream_model")) return;
+  // 2. virtual model 行：同名同协议合并到一个命名路由，分类器配置以 vm 为准
+  if (hasVirtualModels) {
+    const vmColumns = columnsOf("virtual_models");
+    const instructionExpr = vmColumns.includes("instruction") ? "instruction" : "''";
+    const kindExpr = vmColumns.includes("classifier_kind") ? "classifier_kind" : "'model'";
+    const enabledExpr = vmColumns.includes("enabled") ? "enabled" : "1";
+    const classifierUpstreamExpr = vmColumns.includes("classifier_upstream_id")
+      ? "classifier_upstream_id"
+      : "0";
+    const classifierModelExpr = vmColumns.includes("classifier_model") ? "classifier_model" : "''";
+    client.exec(`
+      INSERT INTO named_routes
+        (name, protocol, instruction, classifier_upstream_id, classifier_model, classifier_kind, enabled, created_at)
+        SELECT name, protocol, ${instructionExpr}, ${classifierUpstreamExpr}, ${classifierModelExpr}, ${kindExpr}, ${enabledExpr}, created_at
+        FROM virtual_models
+        WHERE 1
+        ON CONFLICT(name, protocol) DO UPDATE SET
+          instruction = CASE WHEN excluded.instruction <> '' THEN excluded.instruction ELSE instruction END,
+          classifier_upstream_id = excluded.classifier_upstream_id,
+          classifier_model = excluded.classifier_model,
+          classifier_kind = excluded.classifier_kind,
+          enabled = excluded.enabled;
+    `);
+    if (tableNames.includes("virtual_model_routes")) {
+      const routeColumns = columnsOf("virtual_model_routes");
+      const descriptionExpr = routeColumns.includes("description") ? "vr.description" : "NULL";
+      const routePriorityExpr = routeColumns.includes("priority") ? "vr.priority" : "0";
+      client.exec(`
+        INSERT OR IGNORE INTO named_route_targets
+          (named_route_id, upstream_id, upstream_model, description, priority, created_at)
+          SELECT nr.id, vr.upstream_id, vr.upstream_model, ${descriptionExpr}, ${routePriorityExpr}, vr.created_at
+          FROM virtual_model_routes vr
+          JOIN virtual_models vm ON vm.id = vr.virtual_model_id
+          JOIN named_routes nr ON nr.name = vm.name AND nr.protocol = vm.protocol;
+      `);
+    }
+  }
 
-  client.exec(`DROP TABLE IF EXISTS routing_rules_old`);
   client.exec(`
-    ALTER TABLE routing_rules RENAME TO routing_rules_old;
-    CREATE TABLE routing_rules (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      protocol TEXT NOT NULL,
-      upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
-      target_model TEXT NOT NULL,
-      priority INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-    );
-    INSERT INTO routing_rules (id, name, protocol, upstream_id, target_model, priority, created_at)
-      SELECT id, name, protocol, upstream_id, target_model, priority, created_at FROM routing_rules_old;
-    DROP TABLE routing_rules_old;
-    CREATE UNIQUE INDEX uq_routing_rules_name_protocol_upstream_model
-      ON routing_rules(name, protocol, upstream_id, target_model);
-    CREATE INDEX IF NOT EXISTS idx_routing_rules_protocol_name ON routing_rules(protocol, name);
+    DROP TABLE IF EXISTS virtual_model_routes;
+    DROP TABLE IF EXISTS virtual_models;
+    DROP TABLE IF EXISTS routing_rules;
   `);
 }

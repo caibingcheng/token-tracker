@@ -48,7 +48,7 @@
   - `src/lib/clipboard` / `src/lib/mask-utils`：剪贴板 fallback / 密钥掩码
   - `src/lib/provider-utils-async`：匿名化分组解析 + 归一化索引
   - `src/app/api/admin/virtual-keys/route.test`：vk CRUD + 配额用量窗口查询集成测试
-  - `src/app/api/admin/routing-rules/route.test`：priority POST/PATCH、重复 (name, protocol, upstream) → 409、同名不同 upstream 允许创建、GET 排序
+  - `src/app/api/admin/named-routes/route.test`：命名路由 CRUD（POST 带首目标、重复 name+protocol → 409、目标协议不匹配 → 400、未声明分类器模型 → 400、切回规则分类器、DELETE 级联目标）+ 目标子资源（增/改/删、重复目标 → 409、未知路由 → 404）
   - `src/app/api/admin/models-dev/upload/route.test`：快照上传校验（大小/结构/全非法 400）+ litellm 格式自动识别转换上传成功 + 审计 source
   - `src/app/api/admin/models-dev/refresh/route.test`：双源 refresh（github 分支走 Litellm URL、非法 setting 值回退默认）+ 审计含 source
   - `src/app/api/admin/settings/hidden-sources/route.test`：Hidden Sources API + 统计剔除 + 删除联动

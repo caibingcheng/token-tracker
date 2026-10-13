@@ -7,6 +7,7 @@
 - **Uncached Input** = `SUM(input_tokens)`（不含 cache）。
 - **Cached Input** = `SUM(cache_read)`（单独列示）。
 - 仅单请求（逐条记录 / `/api/records`）展示区分 `Input (Uncached)` 与 `Input (Cached)`；聚合卡片与图表统一展示 Total Input 含 cache，避免重复扣减。
+- `status` 列：`NULL` = 正常；`'no_usage'` = 2xx 但响应无 usage；`'client_aborted'` / `'stream_interrupted'` = 中断；`'classifier'` = 命名路由 LLM 分类器决策消耗的独立记录（model=分类器真实名，request_model=虚拟名，计入聚合成本，RecordsTable 徽标 Classifier）。聚合不因 status 剔除任何行。
 
 ## Dashboard 视图
 - `src/components/UsageHeatmap.tsx`：头部 GitHub 风格 365 天使用热力图，按 input + output tokens 分档着色，移动端横向滚动。

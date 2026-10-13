@@ -67,7 +67,7 @@ I've tried a number of existing solutions (LiteLLM, NEW API, OmniRoute — all g
 - Self-healing health: upstream- and model-level unavailability markers, periodic probes restore automatically
 - Session stickiness: requests of the same session pin to one upstream, migrate gracefully on failure
 - HTTP CONNECT proxy: optional egress proxy per upstream (stored AES-256-GCM encrypted)
-- Manual routing rules: virtual model name → target upstream + real model name
+- Named routes: a requested model name maps to a target pool (upstream + real model, failover by priority); an optional LLM classifier picks the chain head per session
 
 **Accounting & statistics**
 
@@ -80,7 +80,7 @@ I've tried a number of existing solutions (LiteLLM, NEW API, OmniRoute — all g
 
 **Admin UI**
 
-- Upstreams / virtual keys / manual routing rules / model pricing / audit logs
+- Upstreams / virtual keys / named routes / model pricing / audit logs
 - Model alias normalization (display-level rollup), provider anonymization groups, hidden sources (hide vs exclude are independent dimensions)
 - Public status page: opt-in, aggregate usage only — never leaks model names or cost details
 
