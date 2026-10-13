@@ -54,7 +54,14 @@ export interface UpstreamKeyItem {
   createdAt: string;
 }
 
-const PROTOCOLS = ["openai", "anthropic", "gemini"];
+// upstream.protocol 的 UI 展示：选项值仍是 openai/anthropic/gemini（存储/API 不变），
+// 标签直接写认证头——这是三个选项之间唯一可观察的差异，避免 "protocol" 的歧义
+const PROTOCOL_OPTIONS = [
+  { value: "openai", label: "Authorization: Bearer" },
+  { value: "anthropic", label: "x-api-key" },
+  { value: "gemini", label: "x-goog-api-key" },
+];
+const PROTOCOL_LABELS = new Map(PROTOCOL_OPTIONS.map((p) => [p.value, p.label]));
 
 interface FormState {
   name: string;
@@ -882,14 +889,22 @@ export default function UpstreamsPanel() {
             )}
           </div>
           <div>
-            <label className="mb-1 block text-xs text-gray-600">Protocol</label>
+            <label className="mb-1 block text-xs text-gray-600">
+              Auth Header{" "}
+              <span
+                className="cursor-help text-gray-400"
+                title={"Which header carries the upstream API key — the real difference between the options. It also sets default probe endpoints and accepted request styles: anthropic adds the anthropic-version header; gemini speaks /v1beta paths (model in the URL). Relays serving anthropic/gemini models via OpenAI-compatible endpoints use 'Authorization: Bearer' (default); per-model probe overrides below cover their endpoint styles."}
+              >
+                (?)
+              </span>
+            </label>
             <select
               value={form.protocol}
               onChange={(e) => setForm({ ...form, protocol: e.target.value })}
               className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             >
-              {PROTOCOLS.map((p) => (
-                <option key={p} value={p}>{p}</option>
+              {PROTOCOL_OPTIONS.map((p) => (
+                <option key={p.value} value={p.value}>{p.label}</option>
               ))}
             </select>
           </div>
@@ -1624,7 +1639,7 @@ export default function UpstreamsPanel() {
                     no active keys
                   </span>
                 )}
-                <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-600">{u.protocol}</span>
+                <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-600">{PROTOCOL_LABELS.get(u.protocol) ?? u.protocol}</span>
                 <span className="text-xs text-gray-400 truncate max-w-[200px]">{u.baseUrl}</span>
                 <span className="text-xs text-gray-400" title="Active / total API keys (disabled keys are excluded from routing)">
                   {u.enabledModels.length} models · {u.activeKeyCount}/{u.keyCount} keys · p{u.priority}
