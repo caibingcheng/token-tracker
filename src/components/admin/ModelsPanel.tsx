@@ -355,7 +355,7 @@ export default function ModelsPanel() {
     result: SimRouteResult | null;
   } | null>(null);
 
-  const [selectedProtocol, setSelectedProtocol] = useState<Protocol>("openai");
+
   const [expandedModels, setExpandedModels] = useState<Set<string>>(new Set());
 
   // Models List Table（官方价参考）
@@ -619,14 +619,13 @@ export default function ModelsPanel() {
     });
   };
 
-  const routesForProtocol = useMemo(() => {
+  // 单一全量表（原 protocol tab 合并）：protocol 由列展示，按 model 字典序排序
+  const allRoutes = useMemo(() => {
     if (!data) return [];
-    return data.resolvedRoutes.filter((r) => r.protocol === selectedProtocol);
-  }, [data, selectedProtocol]);
-
-  const wildcardPatterns = useMemo(() => {
-    return data?.wildcardPatternsByProtocol[selectedProtocol] ?? [];
-  }, [data, selectedProtocol]);
+    return [...data.resolvedRoutes].sort(
+      (a, b) => a.model.localeCompare(b.model) || a.protocol.localeCompare(b.protocol)
+    );
+  }, [data]);
 
   if (loading) {
     return (
@@ -720,41 +719,28 @@ export default function ModelsPanel() {
       {/* 静态路由表 */}
       <AdminTableCard
         title={<h2 className="text-base font-semibold">Model Routing Table</h2>}
-        actions={
-          <div className="flex overflow-x-auto overflow-y-hidden scrollbar-hide rounded-md border border-gray-300">
-            {data?.protocols.map((p) => (
-              <button
-                key={p}
-                type="button"
-                onClick={() => setSelectedProtocol(p)}
-                className={`shrink-0 whitespace-nowrap px-3 py-1.5 text-xs font-medium transition-colors min-h-[40px] md:min-h-0 ${
-                  selectedProtocol === p
-                    ? "bg-blue-600 text-white"
-                    : "bg-white text-gray-600 hover:bg-gray-50"
-                }`}
-              >
-                {p}
-              </button>
-            ))}
-          </div>
-        }
       >
 
-        {wildcardPatterns.length > 0 && (
-          <div className="mb-3 rounded border border-purple-100 bg-purple-50/50 p-2 text-xs text-purple-700">
-            <span className="font-medium">Wildcard patterns configured: </span>
-            {wildcardPatterns.map((w, i) => (
-              <span key={`${w.upstreamId}-${w.pattern}`}>
-                <CopyableCode className="rounded bg-white px-1 py-0.5">{w.pattern}</CopyableCode> ({w.name}, p{w.priority})
-                {i < wildcardPatterns.length - 1 ? ", " : ""}
-              </span>
-            ))}
-          </div>
-        )}
+        {/* 通配模式按 protocol 分组展示（替代原 tab 的按协议切换） */}
+        {data?.protocols.map((p) => {
+          const patterns = data.wildcardPatternsByProtocol[p] ?? [];
+          if (patterns.length === 0) return null;
+          return (
+            <div key={p} className="mb-3 rounded border border-purple-100 bg-purple-50/50 p-2 text-xs text-purple-700">
+              <span className="font-medium">Wildcard patterns ({p}): </span>
+              {patterns.map((w, i) => (
+                <span key={`${w.upstreamId}-${w.pattern}`}>
+                  <CopyableCode className="rounded bg-white px-1 py-0.5">{w.pattern}</CopyableCode> ({w.name}, p{w.priority})
+                  {i < patterns.length - 1 ? ", " : ""}
+                </span>
+              ))}
+            </div>
+          );
+        })}
 
-        {routesForProtocol.length === 0 ? (
+        {allRoutes.length === 0 ? (
           <div className="py-8 text-center text-sm text-gray-400">
-            No concrete models configured for {selectedProtocol}.
+            No routes configured.
           </div>
         ) : (
           <>
@@ -762,6 +748,7 @@ export default function ModelsPanel() {
               <AdminTableHead
                 columns={[
                   { label: "Model" },
+                  { label: "Protocol" },
                   { label: "Winner Upstream" },
                   { label: "Priority" },
                   { label: "Pattern" },
@@ -771,7 +758,7 @@ export default function ModelsPanel() {
                 ]}
               />
               <AdminTableBody>
-                {routesForProtocol.map((route) => {
+                {allRoutes.map((route) => {
                   const key = `${route.protocol}:${route.model}`;
                   const expanded = expandedModels.has(key);
                   const hasConflict = route.candidates.length > 1;
@@ -794,6 +781,14 @@ export default function ModelsPanel() {
                               overridden
                             </span>
                           )}
+                        </AdminTd>
+                        <AdminTd>
+                          <span
+                            className={`rounded border px-1.5 py-0.5 text-[10px] ${protocolBadgeClass(route.protocol)}`}
+                            title="Request protocol: clients must call this model in this style (independent of the model's provider family)"
+                          >
+                            {route.protocol}
+                          </span>
                         </AdminTd>
                         <AdminTd className="font-medium">
                           {classifierDecides(route) ? (
@@ -864,7 +859,7 @@ export default function ModelsPanel() {
                       </tr>
                       {expanded && (
                         <tr key={`${key}-detail`}>
-                          <AdminTd colSpan={7}>
+                          <AdminTd colSpan={8}>
                             <div className="rounded border border-gray-200 bg-gray-50 p-2 text-xs">
                               {route.classifier && (
                                 <p className="mb-2 text-[11px] text-indigo-700">
@@ -969,7 +964,7 @@ export default function ModelsPanel() {
 
             {/* 移动端卡片 */}
             <AdminMobileCards>
-              {routesForProtocol.map((route) => {
+              {allRoutes.map((route) => {
                 const key = `${route.protocol}:${route.model}`;
                 const expanded = expandedModels.has(key);
                 const hasConflict = route.candidates.length > 1;
@@ -983,6 +978,11 @@ export default function ModelsPanel() {
                       <div className="flex items-center justify-between gap-2">
                         <div className="min-w-0">
                           <CopyableCode className="text-xs">{route.model}</CopyableCode>
+                          <span
+                            className={`ml-1.5 rounded border px-1.5 py-0.5 text-[10px] ${protocolBadgeClass(route.protocol)}`}
+                          >
+                            {route.protocol}
+                          </span>
                           {route.overridden && (
                             <span
                               className="ml-1.5 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500"

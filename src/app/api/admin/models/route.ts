@@ -250,8 +250,10 @@ export const GET = withAuth(async () => {
 
   const resolvedRoutes: ResolvedRoute[] = [];
   for (const protocol of VALID_PROTOCOLS) {
-    const models = concreteModelsByProtocol.get(protocol);
-    if (!models) continue;
+    // 无该协议 upstream 时也要继续走 namedOnly/brokenNamed 分支：
+    // 否则纯虚拟名命名路由（如全部 upstream 都是 openai 时的 anthropic 命名路由）
+    // 永远不会出现在 routing table 里
+    const models = concreteModelsByProtocol.get(protocol) ?? new Set<string>();
     const sortedModels = Array.from(models).sort((a, b) => a.localeCompare(b));
     for (const model of sortedModels) {
       const route = namedByKey.get(`${protocol}:${model}`);
