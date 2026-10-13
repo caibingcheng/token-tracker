@@ -9,6 +9,7 @@ import {
   detectRequestProtocol,
   findNamedRoute,
   sortNamedRouteTargets,
+  expandNamedRouteTargets,
 } from "./model-router";
 import type { UpstreamRoute, ModelCandidate, NamedRoute as NamedRouteConfig } from "./model-router";
 import { buildAuthHeaders, isEdgeBlockStatus } from "./upstream-client";
@@ -120,10 +121,10 @@ export interface NamedRouteInfo {
   enabled: boolean;
 }
 
-// 命名路由的目标（named_route_targets 表行）
+// 命名路由的目标（named_route_targets 表行）；upstreamId = null → 无 provider 目标，按路由解析
 export interface NamedRouteTargetInfo {
   id: number;
-  upstreamId: number;
+  upstreamId: number | null;
   targetModel: string;
   description: string | null;
   priority: number;
@@ -436,167 +437,221 @@ export async function handleProxyRequest(
   let decisionHop: RouteHop | null = null;
   let hops: RouteHop[] = [];
 
-  const targetHealth = async (
-    target: NamedRouteTargetInfo
-  ): Promise<{ unhealthy: boolean; upstream: UpstreamRoute }> => {
-    const upstream = upstreams.find((u) => u.id === target.upstreamId)!;
-    const upDown = deps.health && !(await deps.health.isHealthy(upstream.id));
+  const hopHealth = async (hop: RouteHop): Promise<boolean> => {
+    const upDown = deps.health && !(await deps.health.isHealthy(hop.upstream.id));
     const modelDown =
       deps.health?.isModelHealthy &&
-      !(await deps.health.isModelHealthy(upstream.id, target.targetModel));
-    return { unhealthy: Boolean(upDown || modelDown), upstream };
-  };
-
-  // 命名路由目标池 → hop 链：链首由 binding 预选 / 分类器 / priority 决定，其余按 priority 接链尾
-  const resolveNamedRouteHops = async (
-    route: NamedRouteInfo,
-    targets: NamedRouteTargetInfo[],
-    preselected: NamedRouteTargetInfo | null
-  ): Promise<RouteHop[]> => {
-    const ordered = preselected
-      ? [preselected, ...targets.filter((t) => t.id !== preselected.id)]
-      : targets;
-    let selected = preselected;
-    if (!selected && ordered.length > 1) {
-      if (route.classifierKind === "priority") {
-        // 规则分类器：按优先级 + 可用性选链首（零 LLM 开销）
-        for (const t of ordered) {
-          if (!(await targetHealth(t)).unhealthy) {
-            selected = t;
-            break;
-          }
-        }
-        selected ??= ordered[0]; // 全不健康：兜底 priority 最小，与 failover 语义一致
-        deps.log?.(
-          `[gateway] named route "${model}": rule classifier (priority) picked target ${selected.id} → ${selected.targetModel}`
-        );
-        if (sessionId && deps.session) {
-          deps.session.setBinding(sessionId, selected.upstreamId, selected.targetModel);
-        }
-      } else if (!deps.runClassifier) {
-        deps.log?.(
-          `[gateway] named route "${model}": runClassifier not provided; falling back to priority order`
-        );
-      } else if (!deps.session || !sessionId) {
-        deps.log?.(
-          `[gateway] named route "${model}": session store unavailable; classifier skipped, falling back to priority order`
-        );
-      }
-    }
-    if (
-      !selected &&
-      ordered.length > 1 &&
-      route.classifierKind === "model" &&
-      deps.runClassifier &&
-      sessionId &&
-      deps.session
-    ) {
-      const classifierUpstream = upstreams.find((u) => u.id === route.classifierUpstreamId);
-      const entry = classifierUpstream
-        ? parseClassifierModels(classifierUpstream.classifierModels).find(
-            (e) => e.model === route.classifierModel
-          )
-        : undefined;
-      if (classifierUpstream && entry) {
-        const classifierStart = Date.now();
-        const result = await deps.runClassifier({
-          upstream: classifierUpstream,
-          entry,
-          instruction: route.instruction,
-          routes: ordered.map((t) => ({
-            routeId: t.id,
-            targetModel: t.targetModel,
-            description: t.description,
-          })),
-          bodyJson,
-          protocol,
-        });
-        if (result.routeId !== null) {
-          selected = ordered.find((t) => t.id === result.routeId) ?? null;
-        }
-        // 分类器消耗的 token 记一条（成本可见）；失败也记（status=classifier）
-        if (deps.onUsage) {
-          deps
-            .onUsage({
-              model: route.classifierModel,
-              provider: classifierUpstream.name,
-              agent: virtualKey.name,
-              inputTokens: result.usage?.inputTokens ?? 0,
-              outputTokens: result.usage?.outputTokens ?? 0,
-              cacheRead: 0,
-              cacheWrite: 0,
-              status: "classifier",
-              latencyMs: Date.now() - classifierStart,
-              virtualKeyId: virtualKey.id,
-              userAgent,
-              sessionId: clientSessionId,
-              requestModel: model,
-            })
-            .catch(() => {});
-        }
-      } else {
-        deps.log?.(
-          `[gateway] named route "${model}": classifier upstream/entry not configured or unavailable; falling back to priority order`
-        );
-      }
-      selected ??= ordered[0];
-      deps.session.setBinding(sessionId, selected.upstreamId, selected.targetModel);
-    }
-    const head = selected ?? ordered[0];
-    decisionHop = {
-      upstream: (await targetHealth(head)).upstream,
-      targetModel: head.targetModel,
-    };
-
-    // 健康重排：健康目标在前，degraded 排尾（兜底成功走统一自愈）
-    const healthy: RouteHop[] = [];
-    const fallback: RouteHop[] = [];
-    for (const t of [head, ...ordered.filter((x) => x.id !== head.id)]) {
-      const { unhealthy, upstream } = await targetHealth(t);
-      if (unhealthy) {
-        degradedUpstreams.add(upstream.id);
-        fallback.push({ upstream, targetModel: t.targetModel });
-      } else {
-        healthy.push({ upstream, targetModel: t.targetModel });
-      }
-    }
-    return [...healthy, ...fallback];
+      !(await deps.health.isModelHealthy(hop.upstream.id, hop.targetModel));
+    return !(upDown || modelDown);
   };
 
   {
-    const route = deps.loadNamedRoutes
-      ? findNamedRoute(model, protocol, await deps.loadNamedRoutes())
-      : null;
+    const allRoutes = deps.loadNamedRoutes ? await deps.loadNamedRoutes() : [];
+    const route = findNamedRoute(model, protocol, allRoutes);
     if (route) {
-      const targets = sortNamedRouteTargets(
-        (deps.loadNamedRouteTargets ? await deps.loadNamedRouteTargets(route.id) : []).filter((t) =>
-          upstreams.some((u) => u.id === t.upstreamId)
-        )
-      );
+      namedRoute = { name: model };
+
+      // 预取目标池：本路由 + auto 目标嵌套可达的路由（visited 防环）
+      const targetsByRouteId = new Map<number, NamedRouteTargetInfo[]>();
+      const loadTargetsDeep = async (routeId: number, visited: Set<number>): Promise<void> => {
+        if (visited.has(routeId)) return;
+        visited.add(routeId);
+        const targets = deps.loadNamedRouteTargets ? await deps.loadNamedRouteTargets(routeId) : [];
+        targetsByRouteId.set(routeId, targets);
+        for (const t of targets) {
+          if (t.upstreamId !== null) continue;
+          const nested = allRoutes.find(
+            (r) => r.enabled && r.protocol === protocol && r.name === t.targetModel
+          );
+          if (nested && !visited.has(nested.id)) await loadTargetsDeep(nested.id, visited);
+        }
+      };
+      await loadTargetsDeep(route.id, new Set());
+
+      // 顶层目标池 → 展开 hop 链（显式目标单 hop；auto 目标嵌套命名路由 > 自动路由候选池）
+      const toPoolEntry = (routeId: number) => (t: NamedRouteTargetInfo) => ({
+        id: t.id,
+        namedRouteId: routeId,
+        upstreamId: t.upstreamId,
+        upstreamModel: t.targetModel,
+        description: t.description,
+        priority: t.priority,
+      });
+      const expandTarget = (t: NamedRouteTargetInfo): RouteHop[] =>
+        expandNamedRouteTargets({
+          protocol,
+          upstreams,
+          routes: allRoutes,
+          targets: [toPoolEntry(route.id)(t)],
+          resolveTargets: (id) => (targetsByRouteId.get(id) ?? []).map(toPoolEntry(id)),
+          rootRouteId: route.id,
+          log: deps.log,
+        }).map((p) => ({ upstream: p.upstream, targetModel: p.targetModel }));
+
+      const targets = sortNamedRouteTargets(targetsByRouteId.get(route.id) ?? []);
       if (targets.length === 0) {
-        // 命名路由存在但目标全部失效（upstream 被禁用/删除）→ 502，不回退自动路由
+        // 命名路由存在但目标池为空 → 502，不回退自动路由
         return proxyError(
           502,
           "Named route target unavailable: no valid upstream targets",
           "named_route_unavailable"
         );
       }
-      namedRoute = { name: model };
-      // session 粘性（route 粒度 binding）：多目标才需要决策；单目标直接短路
+      const hopsByTarget = new Map<number, RouteHop[]>();
+      for (const t of targets) hopsByTarget.set(t.id, expandTarget(t));
+      // 全部目标都解析不出 hop（upstream 全禁用/删除、auto 名不可解析、嵌套成环）→ 502
+      const expandable = targets.filter((t) => (hopsByTarget.get(t.id)?.length ?? 0) > 0);
+      if (expandable.length === 0) {
+        return proxyError(
+          502,
+          "Named route target unavailable: no valid upstream targets",
+          "named_route_unavailable"
+        );
+      }
+
+      // session 粘性（目标粒度决策、hop 粒度匹配）：binding 命中某目标展开链内的一跳
       let preselected: NamedRouteTargetInfo | null = null;
-      if (deps.session && targets.length > 1) {
+      let boundHop: RouteHop | null = null;
+      if (deps.session && expandable.length > 1) {
         sessionId = buildSessionId(bodyJson, model, virtualKey.id, protocol);
         const binding = deps.session.getBinding(sessionId);
-        // named-route binding 必带 targetModel（成功路径总是写 route 粒度）；
+        // named-route binding 必带 targetModel（成功路径总是写 hop 粒度）；
         // undefined = 旧自动路由粒度的残留 binding，不让它通配命名路由目标
         if (binding && binding.targetModel !== undefined) {
-          preselected =
-            targets.find(
-              (t) => t.upstreamId === binding.upstreamId && t.targetModel === binding.targetModel
-            ) ?? null;
+          for (const t of expandable) {
+            const hit = hopsByTarget.get(t.id)!.find(
+              (h) => h.upstream.id === binding.upstreamId && h.targetModel === binding.targetModel
+            );
+            if (hit) {
+              preselected = t;
+              boundHop = hit;
+              break;
+            }
+          }
         }
       }
-      hops = await resolveNamedRouteHops(route, targets, preselected);
+
+      // 链首目标：binding 预选 > LLM 分类器（kind='model'）> 首个有健康 hop 的目标（规则分类器，
+      // 零 LLM 开销）；决策/回退结果写 binding（hop 粒度）。pinHop = 链首目标内置顶的 hop
+      //（binding 命中跳 / 规则分类器健康跳），组链时排在该目标 hops 最前
+      let selected: NamedRouteTargetInfo | null = preselected;
+      let pinHop: RouteHop | null = boundHop;
+      if (!selected && expandable.length > 1) {
+        const headHopOf = (t: NamedRouteTargetInfo) => hopsByTarget.get(t.id)![0];
+        const writeBinding = (t: NamedRouteTargetInfo, hop?: RouteHop) => {
+          if (sessionId && deps.session) {
+            const h = hop ?? headHopOf(t);
+            deps.session.setBinding(sessionId, h.upstream.id, h.targetModel);
+          }
+        };
+        if (route.classifierKind === "model" && deps.runClassifier && sessionId && deps.session) {
+          const classifierUpstream = upstreams.find((u) => u.id === route.classifierUpstreamId);
+          const entry = classifierUpstream
+            ? parseClassifierModels(classifierUpstream.classifierModels).find(
+                (e) => e.model === route.classifierModel
+              )
+            : undefined;
+          if (classifierUpstream && entry) {
+            const classifierStart = Date.now();
+            const result = await deps.runClassifier({
+              upstream: classifierUpstream,
+              entry,
+              instruction: route.instruction,
+              routes: expandable.map((t) => ({
+                routeId: t.id,
+                targetModel: t.targetModel,
+                description: t.description,
+              })),
+              bodyJson,
+              protocol,
+            });
+            if (result.routeId !== null) {
+              selected = expandable.find((t) => t.id === result.routeId) ?? null;
+            }
+            // 分类器消耗的 token 记一条（成本可见）；失败也记（status=classifier）
+            if (deps.onUsage) {
+              deps
+                .onUsage({
+                  model: route.classifierModel,
+                  provider: classifierUpstream.name,
+                  agent: virtualKey.name,
+                  inputTokens: result.usage?.inputTokens ?? 0,
+                  outputTokens: result.usage?.outputTokens ?? 0,
+                  cacheRead: 0,
+                  cacheWrite: 0,
+                  status: "classifier",
+                  latencyMs: Date.now() - classifierStart,
+                  virtualKeyId: virtualKey.id,
+                  userAgent,
+                  sessionId: clientSessionId,
+                  requestModel: model,
+                })
+                .catch(() => {});
+            }
+          } else {
+            deps.log?.(
+              `[gateway] named route "${model}": classifier upstream/entry not configured or unavailable; falling back to priority order`
+            );
+          }
+          selected ??= expandable[0];
+          writeBinding(selected);
+        } else {
+          if (route.classifierKind === "model") {
+            deps.log?.(
+              `[gateway] named route "${model}": classifier unavailable (deps/session); falling back to priority order`
+            );
+          }
+          // 规则分类器：链首 = 首个有健康 hop 的目标（availability），全不健康回退 priority 最小
+          let healthyHead: NamedRouteTargetInfo | null = null;
+          let healthyHop: RouteHop | null = null;
+          for (const t of expandable) {
+            for (const h of hopsByTarget.get(t.id)!) {
+              if (await hopHealth(h)) {
+                healthyHead = t;
+                healthyHop = h;
+                break;
+              }
+            }
+            if (healthyHead) break;
+          }
+          selected = healthyHead ?? expandable[0];
+          pinHop = healthyHop;
+          deps.log?.(
+            `[gateway] named route "${model}": rule classifier (priority) picked target ${selected.id} → ${selected.targetModel}`
+          );
+          writeBinding(selected, healthyHop ?? undefined);
+        }
+      }
+      const head = selected ?? expandable[0];
+
+      // 组链：链首目标的 hops 在前（binding 命中跳置顶），其余按 priority 接链尾
+      const chain: RouteHop[] = [];
+      const pushTarget = (t: NamedRouteTargetInfo) => {
+        const list = [...(hopsByTarget.get(t.id) ?? [])];
+        if (pinHop && t.id === head.id) {
+          const idx = list.findIndex(
+            (h) => h.upstream.id === pinHop!.upstream.id && h.targetModel === pinHop!.targetModel
+          );
+          if (idx > 0) list.unshift(list.splice(idx, 1)[0]);
+        }
+        chain.push(...list);
+      };
+      pushTarget(head);
+      for (const t of expandable) if (t.id !== head.id) pushTarget(t);
+      decisionHop = chain[0] ?? null;
+
+      // hop 级健康重排：健康在前，degraded 排尾（兜底成功走统一自愈）
+      const healthyHops: RouteHop[] = [];
+      const fallbackHops: RouteHop[] = [];
+      for (const hop of chain) {
+        if (await hopHealth(hop)) {
+          healthyHops.push(hop);
+        } else {
+          degradedUpstreams.add(hop.upstream.id);
+          fallbackHops.push(hop);
+        }
+      }
+      hops = [...healthyHops, ...fallbackHops];
     }
   }
 

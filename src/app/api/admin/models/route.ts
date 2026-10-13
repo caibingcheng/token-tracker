@@ -9,6 +9,7 @@ import {
   type Protocol,
   VALID_PROTOCOLS,
 } from "@/lib/gateway/model-router";
+import { simulateRoute } from "@/lib/gateway/simulate-route";
 import type { SimNamedRoute, SimClassifierInfo } from "@/lib/gateway/simulate-route";
 import type { UpstreamRoute } from "@/lib/gateway/model-router";
 import { healthTracker } from "@/lib/gateway/proxy-deps";
@@ -56,7 +57,7 @@ interface ResolvedRoute {
 
 interface NamedTargetInfo {
   id: number;
-  upstreamId: number;
+  upstreamId: number | null; // null = auto 目标（按路由解析）
   targetModel: string;
   priority: number;
 }
@@ -139,6 +140,7 @@ export const GET = withAuth(async () => {
 
   // 模拟器数据源：含 disabled（前端按 enabled 过滤），路由不过滤 upstream 状态（simulateRoute 自己判）
   const namedRoutes: SimNamedRoute[] = routeRows.map((row: any) => ({
+    id: row.route.id,
     name: row.route.name,
     protocol: isProtocol(row.route.protocol) ? row.route.protocol : "openai",
     enabled: row.route.enabled === 1,
@@ -186,20 +188,21 @@ export const GET = withAuth(async () => {
     modelUnavailable: upstreamModelUnhealthy.get(c.upstreamId)?.has(model) ?? false,
   });
 
-  // 命名路由 resolve 行：候选池 = 目标池（health 按各目标自己的 targetModel 判定）。
+  // 命名路由 resolve 行：候选池 = 目标池展开（显式目标单 hop；auto 目标按命名路由嵌套 >
+  // 自动路由候选池展开，与 proxy 同一 simulateRoute 逻辑）。
   // LLM 分类器（kind=model，多目标）：真实链首请求时决策，静态无确定性 winner——winner 置 null，
   // 由 UI 在候选池标注 priority 最小目标为 fallback head；
   // 规则分类器（kind=priority，或单目标）：链首 = 首个健康目标（按优先级+可用性），静态 winner 即真实链首
   const buildNamedRoute = (route: SimNamedRoute, protocol: Protocol): ResolvedRoute => {
-    const sorted = route.targets.slice().sort((a, b) => a.priority - b.priority);
-    const candidates: CandidateInfo[] = sorted.map((t) => ({
-      upstreamId: t.upstreamId,
-      name: upstreamById.get(t.upstreamId)?.name ?? `(upstream #${t.upstreamId})`,
-      priority: t.priority,
-      matchedPattern: t.targetModel,
-      matchType: "exact",
-      upstreamUnhealthy: upstreamUnhealthy.has(t.upstreamId),
-      modelUnavailable: upstreamModelUnhealthy.get(t.upstreamId)?.has(t.targetModel) ?? false,
+    const sim = simulateRoute(route.name, protocol, upstreams, namedRoutes);
+    const candidates: CandidateInfo[] = sim.candidates.map((c) => ({
+      upstreamId: c.upstreamId,
+      name: c.name,
+      priority: c.priority,
+      matchedPattern: c.matchedPattern,
+      matchType: c.matchType,
+      upstreamUnhealthy: c.upstreamUnhealthy,
+      modelUnavailable: c.modelUnavailable,
     }));
     const ruleBased = route.classifierKind !== "model" || candidates.length <= 1;
     return {
@@ -211,7 +214,7 @@ export const GET = withAuth(async () => {
       effective: ruleBased
         ? computeEffective(candidates, (c) => !c.upstreamUnhealthy && !c.modelUnavailable)
         : { winner: null, failover: false, allUnhealthy: false },
-      namedRouteUnavailable: candidates.length === 0,
+      namedRouteUnavailable: sim.namedRouteUnavailable,
       classifier: {
         classifierUpstreamName: route.classifierUpstreamName,
         classifierModel: route.classifierModel,

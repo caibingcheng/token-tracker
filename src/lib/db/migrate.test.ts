@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import Database from "better-sqlite3";
-import { migrateColumns, migrateTokenRecordsModelColumns, migrateNamedRoutesTables, migrateSyncInstancesTable, migrateIngestTokensTable } from "./migrate";
+import { migrateColumns, migrateTokenRecordsModelColumns, migrateNamedRoutesTables, migrateNamedRouteTargetsNullableUpstream, migrateSyncInstancesTable, migrateIngestTokensTable } from "./migrate";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -465,6 +465,104 @@ describe("migrateNamedRoutesTables", () => {
           .all()
           .map((r: any) => r.upstream_model);
         expect(models).toEqual(["claude-sonnet", "gpt-4o-mini"]);
+      }
+    );
+  });
+});
+
+describe("migrateNamedRouteTargetsNullableUpstream", () => {
+  function withTempDb(
+    targetSql: string,
+    fn: (db: InstanceType<typeof Database>) => void
+  ) {
+    const dir = mkdtempSync(join(tmpdir(), "tt-migrate-nrt-"));
+    const db = new Database(join(dir, "test.db"));
+    db.exec(`
+      CREATE TABLE upstreams (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        protocol TEXT NOT NULL,
+        base_url TEXT NOT NULL
+      );
+      INSERT INTO upstreams (name, protocol, base_url) VALUES ('up-a', 'openai', 'https://a.example');
+      CREATE TABLE named_routes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        protocol TEXT NOT NULL,
+        instruction TEXT NOT NULL DEFAULT '',
+        classifier_upstream_id INTEGER NOT NULL DEFAULT 0,
+        classifier_model TEXT NOT NULL DEFAULT '',
+        classifier_kind TEXT NOT NULL DEFAULT 'priority',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      );
+      INSERT INTO named_routes (name, protocol) VALUES ('r', 'openai');
+    `);
+    db.exec(targetSql);
+    try {
+      fn(db);
+    } finally {
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  const notNullTable = `
+    CREATE TABLE named_route_targets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      named_route_id INTEGER NOT NULL REFERENCES named_routes(id) ON DELETE CASCADE,
+      upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
+      upstream_model TEXT NOT NULL,
+      description TEXT,
+      priority INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+    INSERT INTO named_route_targets (named_route_id, upstream_id, upstream_model, description, priority)
+      VALUES (1, 1, 'gpt-4o-mini', 'cheap', 2);
+  `;
+
+  it("rebuilds a NOT NULL upstream_id table into nullable, preserving rows", () => {
+    withTempDb(notNullTable, (db) => {
+      migrateNamedRouteTargetsNullableUpstream(db);
+
+      const notnull = (db
+        .prepare(`PRAGMA table_info(named_route_targets)`)
+        .all() as any[]).find((c) => c.name === "upstream_id").notnull;
+      expect(notnull).toBe(0);
+
+      const row: any = db
+        .prepare(`SELECT named_route_id, upstream_id, upstream_model, description, priority FROM named_route_targets`)
+        .get();
+      expect(row).toEqual({
+        named_route_id: 1,
+        upstream_id: 1,
+        upstream_model: "gpt-4o-mini",
+        description: "cheap",
+        priority: 2,
+      });
+
+      // 可空生效：auto 目标（upstream_id NULL）可写入
+      db.prepare(
+        `INSERT INTO named_route_targets (named_route_id, upstream_id, upstream_model) VALUES (1, NULL, 'claude-sonnet')`
+      ).run();
+      expect(
+        (db.prepare(`SELECT COUNT(*) AS c FROM named_route_targets WHERE upstream_id IS NULL`).get() as any).c
+      ).toBe(1);
+
+      // 幂等：二次调用不再重建（rowid 保留）
+      migrateNamedRouteTargetsNullableUpstream(db);
+      expect((db.prepare(`SELECT COUNT(*) AS c FROM named_route_targets`).get() as any).c).toBe(2);
+    });
+  });
+
+  it("is a no-op when upstream_id is already nullable", () => {
+    withTempDb(
+      notNullTable.replace(/INTEGER NOT NULL REFERENCES upstreams\(id\)/, "INTEGER REFERENCES upstreams(id)"),
+      (db) => {
+        const before: any = db.prepare(`SELECT * FROM named_route_targets`).get();
+        migrateNamedRouteTargetsNullableUpstream(db);
+        const after: any = db.prepare(`SELECT * FROM named_route_targets`).get();
+        expect(after).toEqual(before);
       }
     );
   });

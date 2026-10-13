@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm";
 import { wrapDatabaseClient } from "./cache";
 import { offsetMinutesToSqlModifiers } from "@/lib/timezone-utils";
-import { migrateColumns, migrateTokenRecordsModelColumns, migrateNamedRoutesTables, migrateSyncInstancesTable, migrateIngestTokensTable } from "./migrate";
+import { migrateColumns, migrateTokenRecordsModelColumns, migrateNamedRoutesTables, migrateNamedRouteTargetsNullableUpstream, migrateSyncInstancesTable, migrateIngestTokensTable } from "./migrate";
 
 let db: any;
 let tokenRecords: any;
@@ -149,7 +149,7 @@ async function ensureClient() {
     CREATE TABLE IF NOT EXISTS named_route_targets (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       named_route_id INTEGER NOT NULL REFERENCES named_routes(id) ON DELETE CASCADE,
-      upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
+      upstream_id INTEGER REFERENCES upstreams(id) ON DELETE CASCADE, -- NULL = 无 provider 目标（按路由解析）
       upstream_model TEXT NOT NULL,
       description TEXT,
       priority INTEGER NOT NULL DEFAULT 0,
@@ -233,6 +233,9 @@ async function ensureClient() {
   // 命名路由迁移：把存量 routing_rules / virtual_models + virtual_model_routes
   // 折叠进 named_routes + named_route_targets，然后删旧表（幂等，全新库无旧表自动跳过）
   migrateNamedRoutesTables(client);
+
+  // named_route_targets.upstream_id 放宽可空（无 provider 目标）：NOT NULL 存量表重建（幂等）
+  migrateNamedRouteTargetsNullableUpstream(client);
 
   // 多实例同步表专用迁移（幂等，全新库无旧结构自动跳过）：
   // - sync_instances：instance 主键 → uid 主键 + instance_name（旧行丢弃）

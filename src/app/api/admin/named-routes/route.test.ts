@@ -262,6 +262,58 @@ describe("/api/admin/named-routes/[id]/targets", () => {
     expect((await after.json()).data[0].targets).toEqual([]);
   });
 
+  it("adds an auto target without upstreamId, lists it as (auto), and rejects duplicates with 409", async () => {
+    const token = await makeToken();
+    const id = await createRoute(token);
+
+    const added = await ADD_TARGET(
+      req(`/api/admin/named-routes/${id}/targets`, "POST", token, {
+        targetModel: "claude-sonnet",
+        description: "resolve by routing table",
+      }),
+      await ctx(id)
+    );
+    expect(added.status).toBe(201);
+    const targetId = (await added.json()).data.id;
+
+    // 同名 auto 目标重复 → 409（UNIQUE 索引对 NULL upstream_id 不去重，应用层查重）
+    expect(
+      (
+        await ADD_TARGET(
+          req(`/api/admin/named-routes/${id}/targets`, "POST", token, { targetModel: "claude-sonnet" }),
+          await ctx(id)
+        )
+      ).status
+    ).toBe(409);
+
+    // 同名显式目标与 auto 目标不冲突（upstream 非 NULL 走 UNIQUE 索引）
+    const upstreamId = await upstreamIdByName("up-openai");
+    expect(
+      (
+        await ADD_TARGET(
+          req(`/api/admin/named-routes/${id}/targets`, "POST", token, {
+            upstreamId,
+            targetModel: "claude-sonnet",
+          }),
+          await ctx(id)
+        )
+      ).status
+    ).toBe(201);
+
+    const list = await GET(req("/api/admin/named-routes", "GET", token));
+    const targets = (await list.json()).data[0].targets;
+    expect(targets).toEqual([
+      expect.objectContaining({
+        id: targetId,
+        upstreamId: null,
+        upstreamName: "(auto)",
+        upstreamProtocol: null,
+        targetModel: "claude-sonnet",
+      }),
+      expect.objectContaining({ upstreamId, upstreamName: "up-openai" }),
+    ]);
+  });
+
   it("rejects a target on an unknown route (404) and a protocol mismatch (400)", async () => {
     const token = await makeToken();
     const upstreamId = await upstreamIdByName("up-anthropic");

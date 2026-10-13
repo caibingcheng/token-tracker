@@ -3633,3 +3633,157 @@ describe("handleProxyRequest - rule classifier (priority)", () => {
     expect((fetchMock.mock.calls[1] as [string, RequestInit])[0]).toContain("precise.example");
   });
 });
+
+describe("handleProxyRequest - auto targets (provider-less)", () => {
+  const fetchMock = vi.fn();
+
+  const AUTO_UPSTREAMS = [
+    mkUpstream({ id: 1, name: "cheap-up", baseUrl: "https://cheap.example", priority: 0, enabledModels: ["claude-sonnet"] }),
+    mkUpstream({ id: 2, name: "precise-up", baseUrl: "https://precise.example", priority: 1, enabledModels: ["claude-sonnet"] }),
+    mkUpstream({ id: 3, name: "spare-up", baseUrl: "https://spare.example", priority: 2, enabledModels: ["gpt-5"] }),
+  ];
+
+  function mkAutoDeps(overrides: Partial<ProxyDeps> = {}): ProxyDeps {
+    return mkDeps({
+      loadUpstreams: vi.fn(async () => AUTO_UPSTREAMS),
+      resolveUpstreamKeys: vi.fn(async () => ["key-1"]),
+      ...overrides,
+    });
+  }
+
+  function mkSession() {
+    const map = new Map<string, { upstreamId: number; targetModel?: string; boundAt: number }>();
+    return {
+      getBinding: vi.fn((sid: string) => map.get(sid)),
+      setBinding: vi.fn((sid: string, upstreamId: number, targetModel?: string) => {
+        map.set(sid, { upstreamId, targetModel, boundAt: Date.now() });
+      }),
+      map,
+    };
+  }
+
+  const autoRequest = (model = "auto-alias") =>
+    makeRequest("/v1/chat/completions", {
+      headers: { authorization: "Bearer vk-good" },
+      body: { model, messages: [{ role: "user", content: "hi" }] },
+    });
+
+  const okJson = (model: string) =>
+    new Response(JSON.stringify({ model, usage: { prompt_tokens: 5, completion_tokens: 3 } }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+
+  beforeEach(() => {
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    fetchMock.mockReset();
+  });
+
+  it("expands an auto target via automatic routing: unhealthy first upstream fails over to the second", async () => {
+    fetchMock.mockResolvedValue(okJson("claude-sonnet"));
+    const deps = mkAutoDeps({
+      loadNamedRoutes: vi.fn(async () => [mkNamedRoute({ name: "auto-alias" })]),
+      loadNamedRouteTargets: vi.fn(async () => [
+        { id: 101, upstreamId: null, targetModel: "claude-sonnet", description: null, priority: 0 },
+      ]),
+      health: {
+        isHealthy: vi.fn(async (id: number) => id !== 1),
+        markUnhealthy: vi.fn(),
+        isModelHealthy: vi.fn(async () => true),
+      },
+    });
+    const res = await handleProxyRequest(autoRequest(), deps);
+    await res.text();
+
+    expect(res.status).toBe(200);
+    expect((fetchMock.mock.calls[0] as [string, RequestInit])[0]).toContain("precise.example");
+    // 响应 model 回写虚拟名
+    const body = JSON.parse(await okJson("x").text());
+    expect(body).toBeTruthy();
+    const usageCalls = (deps.onUsage as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
+    expect(usageCalls).toContainEqual(
+      expect.objectContaining({ model: "claude-sonnet", provider: "precise-up", requestModel: "auto-alias" })
+    );
+  });
+
+  it("expands an auto target via nested named route", async () => {
+    fetchMock.mockResolvedValue(okJson("gpt-5"));
+    const deps = mkAutoDeps({
+      loadNamedRoutes: vi.fn(async () => [
+        mkNamedRoute({ id: 1, name: "outer" }),
+        mkNamedRoute({ id: 2, name: "inner" }),
+      ]),
+      loadNamedRouteTargets: vi.fn(async (routeId: number) =>
+        routeId === 1
+          ? [{ id: 101, upstreamId: null, targetModel: "inner", description: null, priority: 0 }]
+          : [{ id: 201, upstreamId: 3, targetModel: "gpt-5", description: null, priority: 0 }]
+      ),
+    });
+    const res = await handleProxyRequest(autoRequest("outer"), deps);
+    const text = await res.text();
+
+    expect(res.status).toBe(200);
+    expect((fetchMock.mock.calls[0] as [string, RequestInit])[0]).toContain("spare.example");
+    expect(JSON.parse(text).model).toBe("outer"); // 虚拟名回写
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(new TextDecoder().decode(init.body as Uint8Array)).model).toBe("gpt-5");
+  });
+
+  it("returns 502 named_route_unavailable on a nested cycle (A → B → A)", async () => {
+    fetchMock.mockResolvedValue(okJson("x"));
+    const deps = mkAutoDeps({
+      loadNamedRoutes: vi.fn(async () => [
+        mkNamedRoute({ id: 1, name: "loop-a" }),
+        mkNamedRoute({ id: 2, name: "loop-b" }),
+      ]),
+      loadNamedRouteTargets: vi.fn(async (routeId: number) =>
+        routeId === 1
+          ? [{ id: 101, upstreamId: null, targetModel: "loop-b", description: null, priority: 0 }]
+          : [{ id: 102, upstreamId: null, targetModel: "loop-a", description: null, priority: 0 }]
+      ),
+    });
+    const res = await handleProxyRequest(autoRequest("loop-a"), deps);
+    const json = await res.json();
+
+    expect(res.status).toBe(502);
+    expect(json.error.type).toBe("named_route_unavailable");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("auto target binding is hop-granular: second request sticks without re-deciding", async () => {
+    fetchMock.mockImplementation(() => Promise.resolve(okJson("claude-sonnet")));
+    const session = mkSession();
+    const deps = mkAutoDeps({
+      session,
+      loadNamedRoutes: vi.fn(async () => [mkNamedRoute({ name: "auto-alias" })]),
+      loadNamedRouteTargets: vi.fn(async () => [
+        { id: 101, upstreamId: null, targetModel: "claude-sonnet", description: null, priority: 0 },
+        { id: 102, upstreamId: 3, targetModel: "gpt-5", description: null, priority: 1 },
+      ]),
+      health: {
+        isHealthy: vi.fn(async (id: number) => id !== 1),
+        markUnhealthy: vi.fn(),
+        isModelHealthy: vi.fn(async () => true),
+      },
+    });
+    const res1 = await handleProxyRequest(autoRequest(), deps);
+    await res1.text();
+    const res2 = await handleProxyRequest(autoRequest(), deps);
+    await res2.text();
+
+    expect(res2.status).toBe(200);
+    // 第一次：规则分类器选首个有健康 hop 的目标（auto 目标的 up2 跳），写 hop 粒度 binding
+    expect(session.setBinding).toHaveBeenCalledWith(
+      buildSessionId({ model: "auto-alias", messages: [{ role: "user", content: "hi" }] }, "auto-alias", 1, "openai"),
+      2,
+      "claude-sonnet"
+    );
+    // 第二次：binding 命中 auto 目标展开链内的一跳 → 预选，不再决策
+    expect(session.setBinding).toHaveBeenCalledTimes(1);
+    expect((fetchMock.mock.calls[1] as [string, RequestInit])[0]).toContain("precise.example");
+  });
+});

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import {
   db,
   initDatabase,
@@ -22,9 +22,9 @@ import {
 
 export interface NamedRouteTargetRow {
   id: number;
-  upstreamId: number;
-  upstreamName: string;
-  upstreamProtocol: Protocol;
+  upstreamId: number | null; // null = 无 provider 目标（按路由解析）
+  upstreamName: string; // auto 目标 = "(auto)"；upstream 被删 = "(deleted)"
+  upstreamProtocol: Protocol | null; // auto 目标 = null
   targetModel: string;
   description: string | null;
   priority: number;
@@ -61,12 +61,13 @@ export const GET = withAuth(async () => {
     const targetsByRoute = new Map<number, NamedRouteTargetRow[]>();
     for (const row of targetRows as any[]) {
       const list = targetsByRoute.get(row.target.namedRouteId) ?? [];
+      const isAuto = row.target.upstreamId === null;
       list.push({
         id: row.target.id,
         upstreamId: row.target.upstreamId,
-        upstreamName: row.upstream?.name ?? "(deleted)",
+        upstreamName: isAuto ? "(auto)" : (row.upstream?.name ?? "(deleted)"),
         upstreamProtocol:
-          row.upstream && isProtocol(row.upstream.protocol) ? row.upstream.protocol : "openai",
+          !isAuto && row.upstream && isProtocol(row.upstream.protocol) ? row.upstream.protocol : null,
         targetModel: row.target.upstreamModel,
         description: row.target.description ?? null,
         priority: row.target.priority ?? 0,
@@ -134,17 +135,29 @@ export const POST = withAuth(async (request: NextRequest) => {
       return NextResponse.json({ success: false, error: classifier.error }, { status: 400 });
     }
 
-    // 可选首目标：与目标池写入同口径校验（协议必须与路由一致）
-    let target: { upstreamId: number; targetModel: string; description: string | null; priority: number } | null =
-      null;
+    // 可选首目标：与目标池写入同口径校验（协议必须与路由一致；upstreamId 省略 = auto 目标）
+    let target: {
+      upstreamId: number | null;
+      isAuto: boolean;
+      targetModel: string;
+      description: string | null;
+      priority: number;
+    } | null = null;
     if (body.target !== undefined) {
       const raw = body.target as Record<string, unknown>;
-      const upstreamId = Number(raw?.upstreamId);
+      const isAuto = raw?.upstreamId === undefined || raw?.upstreamId === null;
+      const upstreamId = isAuto ? null : Number(raw?.upstreamId);
       const targetModel = typeof raw?.targetModel === "string" ? raw.targetModel.trim() : "";
       const priority = parsePriority(raw?.priority);
-      if (!Number.isInteger(upstreamId) || upstreamId <= 0 || !targetModel) {
+      if (!targetModel) {
         return NextResponse.json(
-          { success: false, error: "target requires upstreamId and targetModel" },
+          { success: false, error: "target requires targetModel" },
+          { status: 400 }
+        );
+      }
+      if (!isAuto && (!Number.isInteger(upstreamId) || (upstreamId as number) <= 0)) {
+        return NextResponse.json(
+          { success: false, error: "target.upstreamId must be a positive integer (or omit for auto-routing target)" },
           { status: 400 }
         );
       }
@@ -154,23 +167,26 @@ export const POST = withAuth(async (request: NextRequest) => {
           { status: 400 }
         );
       }
-      const upstream = (
-        await db.select().from(upstreamsTable).where(eq(upstreamsTable.id, upstreamId))
-      )[0];
-      if (!upstream) {
-        return NextResponse.json({ success: false, error: "Upstream not found" }, { status: 400 });
-      }
-      if (upstream.protocol !== protocol) {
-        return NextResponse.json(
-          {
-            success: false,
-            error: `Protocol mismatch: target upstream "${upstream.name}" is ${upstream.protocol}, named route is ${protocol}`,
-          },
-          { status: 400 }
-        );
+      if (!isAuto) {
+        const upstream = (
+          await db.select().from(upstreamsTable).where(eq(upstreamsTable.id, upstreamId as number))
+        )[0];
+        if (!upstream) {
+          return NextResponse.json({ success: false, error: "Upstream not found" }, { status: 400 });
+        }
+        if (upstream.protocol !== protocol) {
+          return NextResponse.json(
+            {
+              success: false,
+              error: `Protocol mismatch: target upstream "${upstream.name}" is ${upstream.protocol}, named route is ${protocol}`,
+            },
+            { status: 400 }
+          );
+        }
       }
       target = {
         upstreamId,
+        isAuto,
         targetModel,
         description:
           typeof raw?.description === "string" && raw.description.trim() !== ""
@@ -198,6 +214,21 @@ export const POST = withAuth(async (request: NextRequest) => {
           .returning()
           .get();
         if (target) {
+          // auto 目标查重：UNIQUE 索引对 NULL upstream_id 不去重，走应用层（事务内）
+          if (target.isAuto) {
+            const dup = tx
+              .select({ id: namedRouteTargetsTable.id })
+              .from(namedRouteTargetsTable)
+              .where(
+                and(
+                  eq(namedRouteTargetsTable.namedRouteId, route.id),
+                  eq(namedRouteTargetsTable.upstreamModel, target.targetModel),
+                  isNull(namedRouteTargetsTable.upstreamId)
+                )
+              )
+              .all();
+            if (dup.length > 0) throw new Error("AUTO_TARGET_DUPLICATE");
+          }
           tx.insert(namedRouteTargetsTable)
             .values({
               namedRouteId: route.id,
@@ -231,6 +262,12 @@ export const POST = withAuth(async (request: NextRequest) => {
       return NextResponse.json({ success: true, data: created }, { status: 201 });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      if (message.includes("AUTO_TARGET_DUPLICATE")) {
+        return NextResponse.json(
+          { success: false, error: `Auto target already exists for model "${target?.targetModel}" on this named route` },
+          { status: 409 }
+        );
+      }
       if (message.includes("UNIQUE")) {
         return NextResponse.json(
           { success: false, error: `Named route already exists for "${name}" (${protocol})` },

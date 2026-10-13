@@ -17,6 +17,7 @@ function upstream(partial: Partial<SimUpstream> & { id: number }): SimUpstream {
 // 命名路由：默认双目标 + 规则分类器（无 LLM）
 function named(partial: Partial<SimNamedRoute> & { name?: string } = {}): SimNamedRoute {
   return {
+    id: partial.id ?? 1,
     name: partial.name ?? "auto",
     protocol: partial.protocol ?? "openai",
     enabled: partial.enabled ?? true,
@@ -255,5 +256,38 @@ describe("simulateRoute", () => {
     expect(result.source).toBe("named");
     expect(result.candidates.map((c) => c.matchedPattern)).toEqual(["gpt-5"]);
     expect(result.skipped).toEqual([{ upstreamId: 1, targetModel: "gpt-4o-mini", reason: "disabled" }]);
+  });
+
+  it("expands an auto target via automatic routing into per-upstream candidates", () => {
+    const upstreams = [
+      upstream({ id: 1, enabledModels: ["claude-sonnet"] }),
+      upstream({ id: 2, enabledModels: ["claude-sonnet"], priority: 1 }),
+      upstream({ id: 3 }),
+    ];
+    const routes = [
+      named({ targets: [{ id: 10, upstreamId: null, targetModel: "claude-sonnet", priority: 0 }] }),
+    ];
+    const result = simulateRoute("auto", "openai", upstreams, routes);
+    expect(result.source).toBe("named");
+    expect(result.candidates.map((c) => [c.upstreamId, c.matchedPattern])).toEqual([
+      [1, "claude-sonnet"],
+      [2, "claude-sonnet"],
+    ]);
+    expect(result.winner?.upstreamId).toBe(1);
+  });
+
+  it("expands an auto target via nested named route, and reports unresolved auto targets", () => {
+    const upstreams = [upstream({ id: 3, enabledModels: ["o3"] })];
+    const routes = [
+      named({ id: 1, name: "outer", targets: [{ id: 10, upstreamId: null, targetModel: "inner", priority: 0 }] }),
+      named({ id: 2, name: "inner", targets: [{ id: 20, upstreamId: 3, targetModel: "o3", priority: 0 }] }),
+      named({ id: 3, name: "broken", targets: [{ id: 30, upstreamId: null, targetModel: "no-such-model", priority: 0 }] }),
+    ];
+    const nested = simulateRoute("outer", "openai", upstreams, routes);
+    expect(nested.candidates.map((c) => [c.upstreamId, c.matchedPattern])).toEqual([[3, "o3"]]);
+
+    const broken = simulateRoute("broken", "openai", upstreams, routes);
+    expect(broken.namedRouteUnavailable).toBe(true);
+    expect(broken.skipped).toEqual([{ upstreamId: null, targetModel: "no-such-model", reason: "unresolved" }]);
   });
 });

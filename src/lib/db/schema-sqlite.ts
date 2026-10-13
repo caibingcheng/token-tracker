@@ -90,10 +90,9 @@ export const namedRouteTargets = sqliteTable(
     namedRouteId: integer("named_route_id")
       .notNull()
       .references(() => namedRoutes.id, { onDelete: "cascade" }),
-    upstreamId: integer("upstream_id")
-      .notNull()
-      .references(() => upstreams.id, { onDelete: "cascade" }),
-    upstreamModel: text("upstream_model").notNull(), // 目标 upstream 上的真实模型名
+    // NULL = 无 provider 目标：upstream_model 按路由解析（命名路由嵌套 > 自动路由候选池）
+    upstreamId: integer("upstream_id").references(() => upstreams.id, { onDelete: "cascade" }),
+    upstreamModel: text("upstream_model").notNull(), // 真实模型名（显式目标 = 该 upstream 上的模型；auto 目标 = 路由解析名）
     description: text("description"), // 路由特性描述（给分类器看的候选说明）
     priority: integer("priority").notNull().default(0), // 小者先尝试；同 priority 按 id 升序
     createdAt: text("created_at").$defaultFn(() => new Date().toISOString()),

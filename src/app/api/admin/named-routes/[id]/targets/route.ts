@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { db, initDatabase, namedRouteTargetsTable, namedRoutesTable, upstreamsTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";
@@ -34,7 +34,9 @@ export const POST = withAuth(async (request: NextRequest, ctx: any) => {
       return NextResponse.json({ success: false, error: "Invalid JSON body" }, { status: 400 });
     }
 
-    const upstreamId = Number(body.upstreamId);
+    // upstreamId 可省略/null = 无 provider 目标：targetModel 按路由解析（命名路由嵌套 > 自动路由候选池）
+    const isAuto = body.upstreamId === undefined || body.upstreamId === null;
+    const upstreamId = isAuto ? null : Number(body.upstreamId);
     const targetModel = typeof body.targetModel === "string" ? body.targetModel.trim() : "";
     const priority = parsePriority(body.priority);
     const description =
@@ -42,9 +44,15 @@ export const POST = withAuth(async (request: NextRequest, ctx: any) => {
         ? body.description.trim().slice(0, MAX_DESCRIPTION_LENGTH)
         : null;
 
-    if (!Number.isInteger(upstreamId) || upstreamId <= 0 || !targetModel) {
+    if (!targetModel) {
       return NextResponse.json(
-        { success: false, error: "Missing required fields: upstreamId, targetModel" },
+        { success: false, error: "Missing required field: targetModel" },
+        { status: 400 }
+      );
+    }
+    if (!isAuto && (!Number.isInteger(upstreamId) || (upstreamId as number) <= 0)) {
+      return NextResponse.json(
+        { success: false, error: "upstreamId must be a positive integer (or omit for auto-routing target)" },
         { status: 400 }
       );
     }
@@ -55,20 +63,45 @@ export const POST = withAuth(async (request: NextRequest, ctx: any) => {
       );
     }
 
-    const upstream = (await db.select().from(upstreamsTable).where(eq(upstreamsTable.id, upstreamId)))[0];
-    if (!upstream) {
-      return NextResponse.json({ success: false, error: "Upstream not found" }, { status: 400 });
-    }
-    // 目标协议必须与路由协议一致：转发时按请求协议改写 body/path，错配必失败
-    const routeProtocol = isProtocol(route.protocol) ? route.protocol : "openai";
-    if (upstream.protocol !== routeProtocol) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: `Protocol mismatch: target upstream "${upstream.name}" is ${upstream.protocol}, named route is ${routeProtocol}`,
-        },
-        { status: 400 }
-      );
+    if (!isAuto) {
+      const upstream = (
+        await db.select().from(upstreamsTable).where(eq(upstreamsTable.id, upstreamId as number))
+      )[0];
+      if (!upstream) {
+        return NextResponse.json({ success: false, error: "Upstream not found" }, { status: 400 });
+      }
+      // 目标协议必须与路由协议一致：转发时按请求协议改写 body/path，错配必失败
+      const routeProtocol = isProtocol(route.protocol) ? route.protocol : "openai";
+      if (upstream.protocol !== routeProtocol) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: `Protocol mismatch: target upstream "${upstream.name}" is ${upstream.protocol}, named route is ${routeProtocol}`,
+          },
+          { status: 400 }
+        );
+      }
+    } else {
+      // auto 目标查重：UNIQUE 索引对 NULL upstream_id 不去重（NULL ≠ NULL），走应用层 409
+      const dup = await db
+        .select({ id: namedRouteTargetsTable.id })
+        .from(namedRouteTargetsTable)
+        .where(
+          and(
+            eq(namedRouteTargetsTable.namedRouteId, routeId),
+            eq(namedRouteTargetsTable.upstreamModel, targetModel),
+            isNull(namedRouteTargetsTable.upstreamId)
+          )
+        );
+      if (dup.length > 0) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: `Auto target already exists for model "${targetModel}" on this named route`,
+          },
+          { status: 409 }
+        );
+      }
     }
 
     try {

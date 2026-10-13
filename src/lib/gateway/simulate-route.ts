@@ -1,6 +1,7 @@
 import {
   routeModelByProtocol,
   sortNamedRouteTargets,
+  expandNamedRouteTargets,
   type Protocol,
   type UpstreamRoute,
   type ModelCandidate,
@@ -17,10 +18,10 @@ export interface SimUpstream {
   modelUnhealthy: string[];
 }
 
-// 命名路由目标（与 proxy 的 NamedRouteTargetInfo 对齐）
+// 命名路由目标（与 proxy 的 NamedRouteTargetInfo 对齐）；upstreamId = null → auto 目标
 export interface SimNamedTarget {
   id: number;
-  upstreamId: number;
+  upstreamId: number | null;
   targetModel: string;
   priority: number;
 }
@@ -28,6 +29,7 @@ export interface SimNamedTarget {
 // 命名路由（与 proxy.ts 语义对齐）：目标池按 priority 构成 failover 链；
 // classifierKind='model' 时链首由分类器在请求时决策（静态模拟取 priority 最小目标作 fallback head）
 export interface SimNamedRoute {
+  id: number;
   name: string;
   protocol: Protocol;
   enabled: boolean;
@@ -60,9 +62,9 @@ export interface SimEffective {
 }
 
 export interface SkippedTarget {
-  upstreamId: number;
+  upstreamId: number | null; // null = auto 目标解析不出任何 upstream
   targetModel: string;
-  reason: "disabled" | "missing";
+  reason: "disabled" | "missing" | "unresolved";
 }
 
 export interface SimRouteResult {
@@ -140,27 +142,78 @@ export function simulateRoute(
 
   if (simRoute) {
     const skipped: SkippedTarget[] = [];
-    const candidates: SimCandidate[] = [];
-    for (const target of sortNamedRouteTargets(simRoute.targets)) {
+    // 显式目标中 upstream 缺失/禁用的进 skipped（与 proxy 语义一致：展开时跳过）
+    const pool = sortNamedRouteTargets(simRoute.targets).filter((target) => {
+      if (target.upstreamId === null) return true; // auto 目标不在此过滤
       const upstream = upstreamById.get(target.upstreamId);
       if (!upstream) {
         skipped.push({ upstreamId: target.upstreamId, targetModel: target.targetModel, reason: "missing" });
-        continue;
+        return false;
       }
       if (!upstream.enabled) {
         skipped.push({ upstreamId: target.upstreamId, targetModel: target.targetModel, reason: "disabled" });
-        continue;
+        return false;
       }
-      candidates.push({
-        upstreamId: upstream.id,
-        name: upstream.name,
-        priority: target.priority,
-        matchedPattern: target.targetModel,
-        matchType: "exact",
-        upstreamUnhealthy: upstream.unhealthy,
-        modelUnavailable: upstream.modelUnhealthy.includes(target.targetModel),
-      });
+      return true;
+    });
+
+    // 目标池 → 展开 hop 链（显式单 hop；auto：命名路由嵌套 > 自动路由候选池；防环）
+    const enabledUpstreams = upstreams.filter((u) => u.enabled);
+    const priorityByTargetId = new Map<number, number>(pool.map((t) => [t.id, t.priority]));
+    const plans = expandNamedRouteTargets({
+      protocol,
+      upstreams: enabledUpstreams.map(toUpstreamRoute),
+      routes: namedRoutes.map((r) => ({
+        id: r.id,
+        name: r.name,
+        protocol: r.protocol,
+        instruction: "",
+        classifierUpstreamId: 0,
+        classifierModel: "",
+        classifierKind: r.classifierKind,
+        enabled: r.enabled,
+      })),
+      targets: pool.map((t) => ({
+        id: t.id,
+        namedRouteId: simRoute.id,
+        upstreamId: t.upstreamId,
+        upstreamModel: t.targetModel,
+        description: null,
+        priority: t.priority,
+      })),
+      resolveTargets: (routeId) =>
+        (namedRoutes.find((r) => r.id === routeId)?.targets ?? []).map((t) => ({
+          id: t.id,
+          namedRouteId: routeId,
+          upstreamId: t.upstreamId,
+          upstreamModel: t.targetModel,
+          description: null,
+          priority: t.priority,
+        })),
+      rootRouteId: simRoute.id,
+    });
+
+    // auto 目标解析不出任何 upstream → unresolved skipped
+    const hopCountByTarget = new Map<number, number>();
+    for (const p of plans) hopCountByTarget.set(p.targetId, (hopCountByTarget.get(p.targetId) ?? 0) + 1);
+    for (const t of pool) {
+      if (t.upstreamId === null && (hopCountByTarget.get(t.id) ?? 0) === 0) {
+        skipped.push({ upstreamId: null, targetModel: t.targetModel, reason: "unresolved" });
+      }
     }
+
+    const candidates: SimCandidate[] = plans.map((p) => {
+      const u = upstreamById.get(p.upstream.id)!;
+      return {
+        upstreamId: u.id,
+        name: u.name,
+        priority: priorityByTargetId.get(p.targetId) ?? 0,
+        matchedPattern: p.targetModel,
+        matchType: "exact" as const,
+        upstreamUnhealthy: u.unhealthy,
+        modelUnavailable: u.modelUnhealthy.includes(p.targetModel),
+      };
+    });
 
     if (candidates.length === 0) {
       return {

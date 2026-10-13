@@ -319,3 +319,121 @@ describe("routeModelByProtocol", () => {
     expect(candidates).toHaveLength(0);
   });
 });
+
+import { expandNamedRouteTargets } from "./model-router";
+
+describe("expandNamedRouteTargets", () => {
+  const upstreams: UpstreamRoute[] = [
+    mkUpstream({ id: 1, name: "up-a", protocol: "openai", priority: 0, enabledModels: ["gpt-4o-mini", "claude-sonnet"] }),
+    mkUpstream({ id: 2, name: "up-b", protocol: "openai", priority: 1, enabledModels: ["claude-sonnet"] }),
+    mkUpstream({ id: 3, name: "up-c", protocol: "openai", priority: 2, enabledModels: ["o3"] }),
+  ];
+  const mkAutoTarget = (overrides: Partial<NamedRouteTarget> = {}): NamedRouteTarget =>
+    mkTarget({ upstreamId: null, ...overrides });
+
+  it("expands an explicit target to a single hop", () => {
+    const hops = expandNamedRouteTargets({
+      protocol: "openai",
+      upstreams,
+      routes: [],
+      targets: [mkTarget({ id: 10, upstreamId: 1, upstreamModel: "gpt-4o-mini" })],
+      resolveTargets: () => [],
+      rootRouteId: 1,
+    });
+    expect(hops).toEqual([{ targetId: 10, upstream: upstreams[0], targetModel: "gpt-4o-mini" }]);
+  });
+
+  it("expands an auto target via automatic routing into a multi-upstream failover chain", () => {
+    const hops = expandNamedRouteTargets({
+      protocol: "openai",
+      upstreams,
+      routes: [],
+      targets: [mkAutoTarget({ id: 20, upstreamModel: "claude-sonnet" })],
+      resolveTargets: () => [],
+      rootRouteId: 1,
+    });
+    // 两个 upstream 都配了 claude-sonnet：按 priority 升序展开
+    expect(hops.map((h) => [h.targetId, h.upstream.id, h.targetModel])).toEqual([
+      [20, 1, "claude-sonnet"],
+      [20, 2, "claude-sonnet"],
+    ]);
+  });
+
+  it("expands an auto target via nested named route, inheriting the parent targetId", () => {
+    const routes = [
+      mkRoute({ id: 1, name: "cheap" }),
+      mkRoute({ id: 2, name: "precise", protocol: "openai" }),
+    ];
+    const nestedTargets = [
+      mkTarget({ id: 30, namedRouteId: 2, upstreamId: 3, upstreamModel: "o3", priority: 0 }),
+    ];
+    const hops = expandNamedRouteTargets({
+      protocol: "openai",
+      upstreams,
+      routes,
+      targets: [mkAutoTarget({ id: 20, upstreamModel: "precise" })],
+      resolveTargets: (routeId) => (routeId === 2 ? nestedTargets : []),
+      rootRouteId: 1,
+    });
+    expect(hops.map((h) => [h.targetId, h.upstream.id, h.targetModel])).toEqual([[20, 3, "o3"]]);
+  });
+
+  it("prefers nested named route over automatic routing on name collision", () => {
+    const routes = [mkRoute({ id: 1, name: "cheap" }), mkRoute({ id: 2, name: "claude-sonnet" })];
+    const nestedTargets = [mkTarget({ id: 30, namedRouteId: 2, upstreamId: 3, upstreamModel: "o3" })];
+    const hops = expandNamedRouteTargets({
+      protocol: "openai",
+      upstreams,
+      routes,
+      targets: [mkAutoTarget({ id: 20, upstreamModel: "claude-sonnet" })],
+      resolveTargets: (routeId) => (routeId === 2 ? nestedTargets : []),
+      rootRouteId: 1,
+    });
+    // up-a/up-b 也配了 claude-sonnet，但命名路由嵌套优先于自动路由
+    expect(hops.map((h) => h.upstream.id)).toEqual([3]);
+  });
+
+  it("breaks cycles: A → B → A skips the looping target", () => {
+    const routes = [
+      mkRoute({ id: 1, name: "loop-a" }),
+      mkRoute({ id: 2, name: "loop-b" }),
+    ];
+    const targetsA = [mkAutoTarget({ id: 20, upstreamModel: "loop-b" })];
+    const targetsB = [mkAutoTarget({ id: 30, upstreamModel: "loop-a" })];
+    const hops = expandNamedRouteTargets({
+      protocol: "openai",
+      upstreams,
+      routes,
+      targets: targetsA,
+      resolveTargets: (routeId) => (routeId === 2 ? targetsB : []),
+      rootRouteId: 1,
+    });
+    expect(hops).toEqual([]);
+  });
+
+  it("skips auto targets with no resolvable upstream and yields nothing", () => {
+    const hops = expandNamedRouteTargets({
+      protocol: "openai",
+      upstreams,
+      routes: [],
+      targets: [mkAutoTarget({ id: 20, upstreamModel: "nonexistent-model" })],
+      resolveTargets: () => [],
+      rootRouteId: 1,
+    });
+    expect(hops).toEqual([]);
+  });
+
+  it("skips nested named route targets whose upstreams are all disabled", () => {
+    const routes = [mkRoute({ id: 1, name: "cheap" }), mkRoute({ id: 2, name: "precise" })];
+    const nestedTargets = [mkTarget({ id: 30, namedRouteId: 2, upstreamId: 9, upstreamModel: "o3" })];
+    const hops = expandNamedRouteTargets({
+      protocol: "openai",
+      upstreams,
+      routes,
+      targets: [mkAutoTarget({ id: 20, upstreamModel: "precise" })],
+      resolveTargets: (routeId) => (routeId === 2 ? nestedTargets : []),
+      rootRouteId: 1,
+    });
+    expect(hops).toEqual([]);
+  });
+});

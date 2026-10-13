@@ -20,9 +20,9 @@ import {
 
 interface TargetRow {
   id: number;
-  upstreamId: number;
-  upstreamName: string;
-  upstreamProtocol: Protocol;
+  upstreamId: number | null; // null = auto 目标（按路由解析）
+  upstreamName: string; // auto 目标 = "(auto)"；upstream 被删 = "(deleted)"
+  upstreamProtocol: Protocol | null; // auto 目标 = null
   targetModel: string;
   description: string | null;
   priority: number;
@@ -184,10 +184,6 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
       setError("Target model is required when a provider is selected");
       return;
     }
-    if (firstUpstreamId === "" && firstModel.trim()) {
-      setError("Select a provider for the target model");
-      return;
-    }
     setSubmitting(true);
     try {
       const payload: Record<string, unknown> = {
@@ -202,9 +198,10 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
               classifierModel: selectedClassifier!.model,
             }),
       };
-      if (firstUpstreamId !== "" && firstModel.trim()) {
+      if (firstModel.trim()) {
+        // provider 省略 = auto 目标：按 model 走路由解析（命名路由嵌套 > 自动路由候选池）
         payload.target = {
-          upstreamId: firstUpstreamId,
+          ...(firstUpstreamId !== "" ? { upstreamId: firstUpstreamId } : {}),
           targetModel: firstModel.trim(),
           description: firstDescription.trim() || undefined,
           priority: firstPriority.trim() === "" ? 0 : Number(firstPriority),
@@ -271,14 +268,14 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
   };
 
   const addTarget = async (row: NamedRouteRow) => {
-    if (targetUpstreamId === "" || !targetModel.trim()) return;
+    if (!targetModel.trim()) return;
     setAddingTarget(true);
     try {
       const res = await apiFetch(`/api/admin/named-routes/${row.id}/targets`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          upstreamId: targetUpstreamId,
+          ...(targetUpstreamId !== "" ? { upstreamId: targetUpstreamId } : {}),
           targetModel: targetModel.trim(),
           description: targetDescription.trim() || undefined,
           priority: targetPriority.trim() === "" ? 0 : Number(targetPriority),
@@ -505,7 +502,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
             }}
             className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
           >
-            <option value="">Select upstream…</option>
+            <option value="">Auto (route by model name)</option>
             {upstreamOptionsForProtocol(protocol).map((t) => (
               <option key={t.upstreamId} value={t.upstreamId}>
                 {t.upstreamName}
@@ -518,9 +515,8 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
           <input
             value={firstModel}
             onChange={(e) => setFirstModel(e.target.value)}
-            placeholder="Real model on upstream"
+            placeholder="Model name (resolved via routing when provider is Auto)"
             list="named-route-first-models"
-            disabled={firstUpstreamId === ""}
             className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none disabled:opacity-50"
           />
           <datalist id="named-route-first-models">
@@ -707,11 +703,13 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
                           <tr key={target.id}>
                             <AdminTd>
                               <span className="text-xs font-medium">{target.upstreamName}</span>
-                              <span
-                                className={`ml-1.5 rounded border px-1.5 py-0.5 text-[10px] ${protocolBadgeClass(target.upstreamProtocol)}`}
-                              >
-                                {target.upstreamProtocol}
-                              </span>
+                              {target.upstreamProtocol && (
+                                <span
+                                  className={`ml-1.5 rounded border px-1.5 py-0.5 text-[10px] ${protocolBadgeClass(target.upstreamProtocol)}`}
+                                >
+                                  {target.upstreamProtocol}
+                                </span>
+                              )}
                             </AdminTd>
                             <AdminTd>
                               {editing ? (
@@ -841,7 +839,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
                       }}
                       className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
                     >
-                      <option value="">Select upstream…</option>
+                      <option value="">Auto (route by model name)</option>
                       {upstreamOptionsForProtocol(row.protocol).map((t) => (
                         <option key={t.upstreamId} value={t.upstreamId}>
                           {t.upstreamName}
@@ -851,7 +849,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
                     <input
                       value={targetModel}
                       onChange={(e) => setTargetModel(e.target.value)}
-                      placeholder="Real model on upstream"
+                      placeholder="Model name (routing-resolved when provider is Auto)"
                       list={`named-route-models-${row.id}`}
                       className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
                     />
@@ -877,7 +875,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
                     <button
                       type="button"
                       onClick={() => addTarget(row)}
-                      disabled={targetUpstreamId === "" || !targetModel.trim() || addingTarget}
+                      disabled={!targetModel.trim() || addingTarget}
                       className="rounded bg-blue-600 px-3 py-2 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
                     >
                       {addingTarget ? "Adding…" : "Add Target"}

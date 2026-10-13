@@ -181,3 +181,34 @@ export function migrateNamedRoutesTables(client: any): void {
     DROP TABLE IF EXISTS routing_rules;
   `);
 }
+
+// named_route_targets.upstream_id 放宽为可空（NULL = 无 provider 目标，按路由解析）。
+// SQLite 无法修改列约束，表重建（rename → 新表 → 回迁 → drop）。
+// 幂等检测：PRAGMA table_info 的 notnull 标志（全新库建表即可空，直接跳过）。
+export function migrateNamedRouteTargetsNullableUpstream(client: any): void {
+  const cols: { name: string; notnull: number }[] = client
+    .prepare(`PRAGMA table_info(named_route_targets)`)
+    .all();
+  if (cols.length === 0) return; // 表不存在（不应发生，CREATE TABLE IF NOT EXISTS 已建）
+  if (cols.find((c) => c.name === "upstream_id")?.notnull !== 1) return;
+
+  client.exec(`DROP TABLE IF EXISTS named_route_targets_old`);
+  client.exec(`
+    ALTER TABLE named_route_targets RENAME TO named_route_targets_old;
+    CREATE TABLE named_route_targets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      named_route_id INTEGER NOT NULL REFERENCES named_routes(id) ON DELETE CASCADE,
+      upstream_id INTEGER REFERENCES upstreams(id) ON DELETE CASCADE,
+      upstream_model TEXT NOT NULL,
+      description TEXT,
+      priority INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+    INSERT INTO named_route_targets (id, named_route_id, upstream_id, upstream_model, description, priority, created_at)
+      SELECT id, named_route_id, upstream_id, upstream_model, description, priority, created_at FROM named_route_targets_old;
+    DROP TABLE named_route_targets_old;
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_named_route_targets_route_upstream_model
+      ON named_route_targets(named_route_id, upstream_id, upstream_model);
+    CREATE INDEX IF NOT EXISTS idx_named_route_targets_named_route ON named_route_targets(named_route_id);
+  `);
+}

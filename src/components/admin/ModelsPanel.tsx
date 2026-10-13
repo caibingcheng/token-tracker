@@ -210,8 +210,8 @@ function RouteSimulationResult({ result, model }: { result: SimRouteResult; mode
           <p className="mt-1 text-[11px] text-gray-500">
             Skipped:{" "}
             {result.skipped.map((s) => (
-              <span key={s.upstreamId} className="mr-2">
-                upstream #{s.upstreamId} → {s.targetModel} ({s.reason})
+              <span key={`${s.upstreamId}-${s.targetModel}`} className="mr-2">
+                {s.upstreamId === null ? "auto" : `upstream #${s.upstreamId}`} → {s.targetModel} ({s.reason})
               </span>
             ))}
           </p>
@@ -290,8 +290,8 @@ function RouteSimulationResult({ result, model }: { result: SimRouteResult; mode
         <p className="text-[11px] text-gray-500">
           Skipped targets (disabled/missing upstream — gateway skips these):{" "}
           {result.skipped.map((s) => (
-            <span key={s.upstreamId} className="mr-2">
-              #{s.upstreamId} → {s.targetModel} ({s.reason})
+            <span key={`${s.upstreamId}-${s.targetModel}`} className="mr-2">
+              {s.upstreamId === null ? "auto" : `#${s.upstreamId}`} → {s.targetModel} ({s.reason})
             </span>
           ))}
         </p>
