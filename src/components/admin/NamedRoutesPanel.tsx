@@ -570,8 +570,11 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
           {rows.length === 0 && <p className="text-sm text-gray-400">No named routes</p>}
           {rows.map((row) => (
             <div key={row.id} className="rounded-lg border border-gray-200">
-              {/* 概要行 */}
-              <div className="flex flex-wrap items-center gap-2 px-4 py-3">
+              {/* 概要行：点击整行展开/折叠（与 ModelsPanel 路由表交互一致），行内按钮 stopPropagation */}
+              <div
+                className="flex cursor-pointer flex-wrap items-center gap-2 px-4 py-3 hover:bg-gray-50"
+                onClick={() => toggleExpanded(row.id)}
+              >
                 <CopyableCode className="text-xs font-medium">{row.name}</CopyableCode>
                 <span className={`rounded border px-1.5 py-0.5 text-[10px] ${protocolBadgeClass(row.protocol)}`}>
                   {row.protocol}
@@ -597,7 +600,10 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
                 <div className="ml-auto flex flex-wrap items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => toggleEnabled(row)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleEnabled(row);
+                    }}
                     disabled={busyId === row.id}
                     className={`rounded px-2 py-0.5 text-xs ${
                       row.enabled ? "bg-green-50 text-green-700" : "bg-gray-100 text-gray-500"
@@ -607,7 +613,8 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
                   </button>
                   <button
                     type="button"
-                    onClick={() => {
+                    onClick={(e) => {
+                      e.stopPropagation();
                       setEditingInstructionId(row.id);
                       setInstructionDraft(row.instruction);
                     }}
@@ -617,19 +624,25 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
                   </button>
                   <button
                     type="button"
-                    onClick={() => toggleExpanded(row.id)}
-                    className="rounded border border-gray-200 px-2 py-0.5 text-xs text-gray-600 hover:bg-gray-50"
-                  >
-                    {expandedRouteId === row.id ? "Hide targets" : "Targets"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => deleteRoute(row)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      deleteRoute(row);
+                    }}
                     className="text-xs text-red-500 hover:text-red-700"
                   >
                     Delete
                   </button>
+                  <span className="text-xs text-gray-400">
+                    {expandedRouteId === row.id ? "▲" : "▼"}
+                  </span>
                 </div>
+                {/* 概要行 instruction：单行截断，悬停 tooltip 看全文（移动端无悬停，展开区看全文） */}
+                {row.instruction && (
+                  <span className="w-full truncate text-xs text-gray-500" title={row.instruction}>
+                    <span className="text-gray-400">instruction: </span>
+                    {row.instruction}
+                  </span>
+                )}
               </div>
               {editingInstructionId === row.id && (
                 <div className="flex items-start gap-2 border-t border-gray-100 px-4 py-2">
@@ -660,6 +673,17 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
               {/* 目标池编辑区 */}
               {expandedRouteId === row.id && (
                 <div className="border-t border-gray-100 px-4 py-3">
+                  {row.instruction && (
+                    <div className="mb-3">
+                      <p className="mb-1 text-xs font-medium text-gray-700">
+                        Instruction{" "}
+                        <span className="font-normal text-gray-400">(decision prompt for the classifier)</span>
+                      </p>
+                      <p className="whitespace-pre-wrap break-words rounded border border-gray-100 bg-gray-50 px-3 py-2 text-xs leading-relaxed text-gray-600">
+                        {row.instruction}
+                      </p>
+                    </div>
+                  )}
                   {row.targets.length === 0 && (
                     <p className="rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-700">
                       No targets: requests to this name return 502 named_route_unavailable. Add at least one.
