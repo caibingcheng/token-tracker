@@ -122,7 +122,7 @@ describe("/api/admin/named-routes", () => {
     expect((await POST(req("/api/admin/named-routes", "POST", token, body))).status).toBe(409);
   });
 
-  it("rejects a target whose upstream protocol differs from the route protocol", async () => {
+  it("accepts a target whose upstream family differs from the route protocol (decoupled)", async () => {
     const token = await makeToken();
     const upstreamId = await upstreamIdByName("up-anthropic");
     const res = await POST(
@@ -132,9 +132,9 @@ describe("/api/admin/named-routes", () => {
         target: { upstreamId, targetModel: "claude-sonnet" },
       })
     );
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(201);
     const json = await res.json();
-    expect(json.error).toContain("Protocol mismatch");
+    expect(json.data).toEqual(expect.objectContaining({ name: "cheap", protocol: "openai" }));
   });
 
   it("rejects an invalid protocol and an undeclared classifier model", async () => {
@@ -314,7 +314,7 @@ describe("/api/admin/named-routes/[id]/targets", () => {
     ]);
   });
 
-  it("rejects a target on an unknown route (404) and a protocol mismatch (400)", async () => {
+  it("rejects a target on an unknown route (404) but accepts a cross-family upstream (decoupled)", async () => {
     const token = await makeToken();
     const upstreamId = await upstreamIdByName("up-anthropic");
     expect(
@@ -326,12 +326,15 @@ describe("/api/admin/named-routes/[id]/targets", () => {
       ).status
     ).toBe(404);
 
-    const id = await createRoute(token);
+    const id = await createRoute(token); // createRoute 建的是 openai 路由
     const res = await ADD_TARGET(
       req(`/api/admin/named-routes/${id}/targets`, "POST", token, { upstreamId, targetModel: "claude-sonnet" }),
       await ctx(id)
     );
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toContain("Protocol mismatch");
+    expect(res.status).toBe(201);
+    // 返回原始 target 行（列名 upstream_model → upstreamModel）
+    expect((await res.json()).data).toEqual(
+      expect.objectContaining({ upstreamId, upstreamModel: "claude-sonnet" })
+    );
   });
 });

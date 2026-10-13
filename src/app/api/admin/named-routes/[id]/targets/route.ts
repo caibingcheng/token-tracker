@@ -3,7 +3,6 @@ import { and, eq, isNull } from "drizzle-orm";
 import { db, initDatabase, namedRouteTargetsTable, namedRoutesTable, upstreamsTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";
-import { isProtocol } from "@/lib/gateway/model-router";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 import { MAX_DESCRIPTION_LENGTH, parsePriority } from "@/lib/admin/named-routes";
 
@@ -70,17 +69,8 @@ export const POST = withAuth(async (request: NextRequest, ctx: any) => {
       if (!upstream) {
         return NextResponse.json({ success: false, error: "Upstream not found" }, { status: 400 });
       }
-      // 目标协议必须与路由协议一致：转发时按请求协议改写 body/path，错配必失败
-      const routeProtocol = isProtocol(route.protocol) ? route.protocol : "openai";
-      if (upstream.protocol !== routeProtocol) {
-        return NextResponse.json(
-          {
-            success: false,
-            error: `Protocol mismatch: target upstream "${upstream.name}" is ${upstream.protocol}, named route is ${routeProtocol}`,
-          },
-          { status: 400 }
-        );
-      }
+      // 有意不校验 upstream family 与 route protocol 是否一致：named route 是管理员显式
+      // 配置，允许跨 family 选 target（如 relay 同时接受多种风格）；配错由运行时暴露
     } else {
       // auto 目标查重：UNIQUE 索引对 NULL upstream_id 不去重（NULL ≠ NULL），走应用层 409
       const dup = await db

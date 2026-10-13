@@ -162,12 +162,10 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
   );
   const isRuleClassifier = classifierKey === RULE_CLASSIFIER_KEY;
 
-  const upstreamOptionsForProtocol = (proto: Protocol) =>
-    Array.from(
-      new Map(
-        routeTargets.filter((t) => t.upstreamProtocol === proto).map((t) => [t.upstreamId, t])
-      ).values()
-    );
+  // 不按协议过滤：管理员可为 openai 路由选 anthropic family 的上游（如 relay 同时接受
+  // 多种风格），协议不一致由选项里的家族标注提示（软提示，不拦截）
+  const upstreamOptionsForProtocol = (_proto: Protocol) =>
+    Array.from(new Map(routeTargets.map((t) => [t.upstreamId, t])).values());
 
   const modelCandidatesFor = (upstreamId: number | ""): string[] =>
     upstreamId === "" ? [] : routeTargets.filter((t) => t.upstreamId === upstreamId).map((t) => t.model);
@@ -506,6 +504,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
             {upstreamOptionsForProtocol(protocol).map((t) => (
               <option key={t.upstreamId} value={t.upstreamId}>
                 {t.upstreamName}
+                {t.upstreamProtocol !== protocol && ` [${t.upstreamProtocol}]`}
               </option>
             ))}
           </select>
@@ -843,6 +842,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
                       {upstreamOptionsForProtocol(row.protocol).map((t) => (
                         <option key={t.upstreamId} value={t.upstreamId}>
                           {t.upstreamName}
+                          {t.upstreamProtocol !== row.protocol && ` [${t.upstreamProtocol}]`}
                         </option>
                       ))}
                     </select>

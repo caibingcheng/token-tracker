@@ -174,15 +174,9 @@ export const POST = withAuth(async (request: NextRequest) => {
         if (!upstream) {
           return NextResponse.json({ success: false, error: "Upstream not found" }, { status: 400 });
         }
-        if (upstream.protocol !== protocol) {
-          return NextResponse.json(
-            {
-              success: false,
-              error: `Protocol mismatch: target upstream "${upstream.name}" is ${upstream.protocol}, named route is ${protocol}`,
-            },
-            { status: 400 }
-          );
-        }
+        // 有意不解耦校验：target upstream 的 family 与 route protocol 不要求相等——
+        // 管理员可为 openai 路由选 anthropic family 的上游（如同时接受多种风格的 relay），
+        // 配错由运行时 404/failover 暴露（与 upstream 级「认证 header」字段解耦，管理员自觉）
       }
       target = {
         upstreamId,
