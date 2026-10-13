@@ -8,7 +8,7 @@ import { parseEnabledModels } from "./model-router";
 import type { Protocol } from "./model-router";
 import { SessionStore } from "./session";
 import { parseHeaderTransforms } from "./header-transforms";
-import { parseProbeConfig } from "./probe-config";
+import { parseModelProbeConfigs, parseProbeConfig } from "./probe-config";
 import { HealthTracker } from "./health";
 import type { HealthPersistence } from "./health";
 import { probeModelWithKeys } from "./probe";
@@ -81,6 +81,7 @@ async function probeUpstream(
       proxyUrl: decryptProxyUrl(upstream.proxyUrlEncrypted),
       headerTransforms: parseHeaderTransforms(upstream.headerTransforms),
       probeConfig: parseProbeConfig(upstream.probeConfig),
+      modelProbeConfigs: parseModelProbeConfigs(upstream.modelProbeConfigs),
       upstreamName: upstream.name,
     },
     model,

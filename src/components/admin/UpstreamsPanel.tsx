@@ -9,7 +9,7 @@ import { CopyableCode } from "./CopyableCode";
 import ActionMenu from "./ActionMenu";
 import type { HeaderTransform } from "@/lib/gateway/header-transforms";
 import { PROBE_PRESETS } from "@/lib/gateway/probe-config";
-import type { ProbeConfig } from "@/lib/gateway/probe-config";
+import type { ModelProbeConfig, ProbeConfig } from "@/lib/gateway/probe-config";
 import type { ClassifierModelEntry } from "@/lib/gateway/classifier/types";
 
 export interface UpstreamProbeStatus {
@@ -40,6 +40,7 @@ export interface UpstreamItem {
   proxyDisplay: string | null;
   headerTransforms: HeaderTransform[];
   probeConfig: ProbeConfig | null;
+  modelProbeConfigs: ModelProbeConfig[];
   classifierModels: ClassifierModelEntry[];
   createdAt: string;
 }
@@ -128,6 +129,10 @@ export default function UpstreamsPanel() {
   const [formClassifiers, setFormClassifiers] = useState<
     { model: string; type: string; maxInputTokens: string; path: string }[]
   >([]);
+  // per-model 探活端点表单（body 以 JSON 字符串暂存，提交时解析）
+  const [formModelProbes, setFormModelProbes] = useState<
+    { model: string; path: string; body: string }[]
+  >([]);
   const [formKeyTests, setFormKeyTests] = useState<Record<number, FormKeyTestResult | null>>({});
   const [formKeyShown, setFormKeyShown] = useState<Record<number, boolean>>({});
   const [modelPicker, setModelPicker] = useState<ModelPickerState | null>(null);
@@ -177,6 +182,39 @@ export default function UpstreamsPanel() {
     [form.probePath, form.probeBody]
   );
   const probePresetValue = probeCustom ? "custom" : derivedProbePreset;
+
+  // per-model probe 的 model 可编辑 selector 候选：取表单里已填的 enabled models
+  //（datalist 允许自由输入，未配置的 model 名仍可手填）
+  const modelProbeModelOptions = useMemo(
+    () =>
+      form.enabledModels
+        .split(",")
+        .map((m) => m.trim())
+        .filter(Boolean),
+    [form.enabledModels]
+  );
+
+  // per-model 行内的预置下拉：内容与预置一致时回显该预置，否则 custom/placeholder
+  const applyModelProbePreset = (index: number, value: string) => {
+    if (value === "" || value === "custom") {
+      // custom：path 为空时预填占位，使 body 输入框出现
+      setFormModelProbes((prev) =>
+        prev.map((x, i) =>
+          i === index && x.path.trim() === ""
+            ? { ...x, path: "/", body: x.body.trim() || "{}" }
+            : x
+        )
+      );
+      return;
+    }
+    const preset = PROBE_PRESETS.find((p) => p.id === value);
+    if (!preset) return;
+    setFormModelProbes((prev) =>
+      prev.map((x, i) =>
+        i === index ? { ...x, path: preset.path, body: JSON.stringify(preset.body, null, 2) } : x
+      )
+    );
+  };
 
   const applyProbePreset = (value: string) => {
     if (value === "auto") {
@@ -285,6 +323,33 @@ export default function UpstreamsPanel() {
     } else if (editingId) {
       payload.probeConfig = null;
     }
+    // per-model 探活端点：model 与 path 成对必填（半行视为输入错误），全空行丢弃；
+    // 编辑态清空全部行 = 显式 null 移除
+    const modelProbeConfigs: ModelProbeConfig[] = [];
+    for (const p of formModelProbes) {
+      const model = p.model.trim();
+      const path = p.path.trim();
+      if (model === "" && path === "") continue;
+      if (model === "" || path === "") {
+        setError(`Per-model probe: model and path are both required (row: ${model || path})`);
+        setSaving(false);
+        return;
+      }
+      let body: unknown;
+      try {
+        body = p.body.trim() === "" ? {} : JSON.parse(p.body);
+      } catch {
+        setError(`Probe body for model "${model}" is not valid JSON`);
+        setSaving(false);
+        return;
+      }
+      modelProbeConfigs.push({ model, path, body: body as Record<string, unknown> });
+    }
+    if (modelProbeConfigs.length > 0) {
+      payload.modelProbeConfigs = modelProbeConfigs;
+    } else if (editingId) {
+      payload.modelProbeConfigs = null;
+    }
     const newKeys = formKeys.map((k) => k.trim()).filter(Boolean);
     try {
       const res = editingId
@@ -328,6 +393,7 @@ export default function UpstreamsPanel() {
       setFormKeys([""]);
       setFormTransforms([]);
       setFormClassifiers([]);
+      setFormModelProbes([]);
       setFormKeyTests({});
       setFormKeyShown({});
       setEditingId(null);
@@ -370,6 +436,13 @@ export default function UpstreamsPanel() {
         type: c.type,
         maxInputTokens: c.maxInputTokens !== undefined ? String(c.maxInputTokens) : "",
         path: c.path ?? "",
+      }))
+    );
+    setFormModelProbes(
+      (u.modelProbeConfigs ?? []).map((p) => ({
+        model: p.model,
+        path: p.path,
+        body: JSON.stringify(p.body, null, 2),
       }))
     );
     setFormKeyTests({});
@@ -1124,8 +1197,106 @@ export default function UpstreamsPanel() {
               />
             )}
             <p className="mt-1 text-[10px] text-gray-400">
-              Body is JSON; {"{{model}}"} is replaced with the probed model name. Configured
-              probe endpoint is used as-is (no fallback to the second style).
+              Body is JSON; {"{{model}}"} is replaced with the probed model name in both path and
+              body. Configured probe endpoint is used as-is (no fallback to the second style).
+            </p>
+          </div>
+          {/* per-model 探活端点：同一 upstream 混用 chat / embeddings 等不同端点风格时，
+              按真实 model 名精确匹配各自的探活端点，优先级高于上面的 upstream 级配置 */}
+          <div className="md:col-span-3">
+            <label className="mb-1 block text-xs text-gray-600">
+              Per-model Probe Endpoints{" "}
+              <span className="text-gray-400">
+                (optional; exact model name match, takes precedence over the upstream-level probe
+                config above)
+              </span>
+            </label>
+            <datalist id="model-probe-models">
+              {modelProbeModelOptions.map((m) => (
+                <option key={m} value={m} />
+              ))}
+            </datalist>
+            {formModelProbes.map((p, index) => {
+              // 内容与预置一致时回显该预置，否则 custom；path 为空时显示占位
+              const derived =
+                p.path.trim() === "" ? "" : deriveProbePreset(p.path, p.body);
+              return (
+                <div key={index} className="mb-2">
+                  <div className="grid grid-cols-1 gap-2 md:grid-cols-[1fr_220px_1fr_auto]">
+                    <input
+                      list="model-probe-models"
+                      value={p.model}
+                      onChange={(e) =>
+                        setFormModelProbes((prev) =>
+                          prev.map((x, i) => (i === index ? { ...x, model: e.target.value } : x))
+                        )
+                      }
+                      placeholder="model name (pick from enabled models or type)"
+                      autoComplete="off"
+                      className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                    />
+                    <select
+                      value={derived}
+                      onChange={(e) => applyModelProbePreset(index, e.target.value)}
+                      className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                    >
+                      <option value="">apply preset…</option>
+                      {PROBE_PRESETS.map((preset) => (
+                        <option key={preset.id} value={preset.id}>{preset.label}</option>
+                      ))}
+                      <option value="custom">custom</option>
+                    </select>
+                    <input
+                      value={p.path}
+                      onChange={(e) =>
+                        setFormModelProbes((prev) =>
+                          prev.map((x, i) => (i === index ? { ...x, path: e.target.value } : x))
+                        )
+                      }
+                      placeholder="/v1/embeddings"
+                      autoComplete="off"
+                      className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setFormModelProbes((prev) => prev.filter((_, i) => i !== index))}
+                      className="rounded border border-gray-300 px-3 py-2 text-sm text-gray-500 hover:bg-gray-50"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                  {p.path.trim() !== "" && (
+                    <textarea
+                      value={p.body}
+                      onChange={(e) =>
+                        setFormModelProbes((prev) =>
+                          prev.map((x, i) => (i === index ? { ...x, body: e.target.value } : x))
+                        )
+                      }
+                      rows={3}
+                      spellCheck={false}
+                      placeholder='{"model":"{{model}}","input":"hi"}'
+                      className="mt-2 w-full rounded border border-gray-300 px-3 py-2 font-mono text-xs focus:border-blue-500 focus:outline-none"
+                    />
+                  )}
+                </div>
+              );
+            })}
+            <button
+              type="button"
+              onClick={() =>
+                setFormModelProbes((prev) => [...prev, { model: "", path: "", body: "" }])
+              }
+              className="mt-2 rounded border border-dashed border-gray-300 px-3 py-1.5 text-xs text-gray-500 hover:bg-gray-50"
+            >
+              + Add per-model probe
+            </button>
+            <p className="mt-1 text-[10px] text-gray-400">
+              Lets one upstream mix endpoint styles (chat / responses / embeddings / rerank /
+              anthropic messages / gemini generateContent / …) without splitting into multiple
+              entries. {"{{model}}"} works in both path and body. Each entry probes that model via
+              its own endpoint (no fallback to the second style); models without an entry use the
+              upstream-level config above.
             </p>
           </div>
           {/* 分类器模型声明：命名路由的 LLM 分类器只能从这里声明的条目里选 */}
@@ -1460,6 +1631,8 @@ export default function UpstreamsPanel() {
                   {u.headerTransforms.length > 0 &&
                     ` · ${u.headerTransforms.filter((t) => t.enabled).length}/${u.headerTransforms.length} header transforms`}
                   {u.probeConfig && ` · probe ${u.probeConfig.path}`}
+                  {u.modelProbeConfigs?.length > 0 &&
+                    ` · ${u.modelProbeConfigs.length} model probe${u.modelProbeConfigs.length > 1 ? "s" : ""}`}
                   {u.classifierModels && u.classifierModels.length > 0 &&
                     ` · classifier: ${u.classifierModels.map((c) => c.model).join(", ")}`}
                 </span>

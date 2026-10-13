@@ -1,11 +1,17 @@
 import { describe, it, expect } from "vitest";
 import {
   PROBE_PRESETS,
+  applyModelToProbePath,
   buildProbeRequestFromConfig,
   isProbePathInsideBase,
+  isProbeUrlInsideBase,
+  isValidModelProbeConfigs,
   isValidProbeConfig,
+  parseModelProbeConfigs,
   parseProbeConfig,
+  serializeModelProbeConfigs,
   serializeProbeConfig,
+  type ModelProbeConfig,
   type ProbeConfig,
 } from "./probe-config";
 
@@ -140,6 +146,39 @@ describe("buildProbeRequestFromConfig", () => {
   });
 });
 
+describe("applyModelToProbePath / path substitution", () => {
+  it("replaces {{model}} inside the path (gemini style)", () => {
+    expect(applyModelToProbePath("/v1beta/models/{{model}}:generateContent", "gemini-1.5-flash")).toBe(
+      "/v1beta/models/gemini-1.5-flash:generateContent"
+    );
+  });
+
+  it("buildProbeRequestFromConfig substitutes the model into url and body", () => {
+    const config: ProbeConfig = {
+      path: "/v1beta/models/{{model}}:generateContent",
+      body: { contents: [{ parts: [{ text: "hi" }] }] },
+    };
+    const { url, body } = buildProbeRequestFromConfig("https://relay.example", "gemini-1.5-flash", config);
+    expect(url).toBe("https://relay.example/v1beta/models/gemini-1.5-flash:generateContent");
+    expect(body).toEqual({ contents: [{ parts: [{ text: "hi" }] }] });
+    // 不改动存储的配置
+    expect(config.path).toBe("/v1beta/models/{{model}}:generateContent");
+  });
+});
+
+describe("isProbeUrlInsideBase", () => {
+  it("accepts resolved URLs under the base path prefix", () => {
+    expect(isProbeUrlInsideBase("https://api.example.com/v1", "https://api.example.com/v1/chat/completions")).toBe(true);
+    expect(isProbeUrlInsideBase("https://api.example.com", "https://api.example.com/v1beta/models/m:x")).toBe(true);
+  });
+
+  it("rejects cross-origin or escaping resolved URLs", () => {
+    expect(isProbeUrlInsideBase("https://api.example.com", "https://evil.example.com/v1/x")).toBe(false);
+    expect(isProbeUrlInsideBase("https://api.example.com/v1", "https://api.example.com/admin")).toBe(false);
+    expect(isProbeUrlInsideBase("not-a-url", "https://api.example.com/v1/x")).toBe(false);
+  });
+});
+
 describe("isProbePathInsideBase", () => {
   it("accepts paths under the base path prefix", () => {
     expect(isProbePathInsideBase("https://api.example.com/v1", "/v1/systemone")).toBe(true);
@@ -166,17 +205,88 @@ describe("isProbePathInsideBase", () => {
   });
 });
 
+describe("isValidModelProbeConfigs", () => {
+  const emb: ModelProbeConfig = {
+    model: "text-embedding-3-large",
+    path: "/v1/embeddings",
+    body: { model: "{{model}}", input: "hi" },
+  };
+
+  it("accepts a list of per-model configs", () => {
+    expect(isValidModelProbeConfigs([emb])).toBe(true);
+    expect(isValidModelProbeConfigs([])).toBe(true);
+    expect(isValidModelProbeConfigs(null)).toBe(false);
+    expect(isValidModelProbeConfigs({})).toBe(false);
+  });
+
+  it("rejects empty/oversized/duplicate model names", () => {
+    expect(isValidModelProbeConfigs([{ ...emb, model: "" }])).toBe(false);
+    expect(isValidModelProbeConfigs([{ ...emb, model: "   " }])).toBe(false);
+    expect(isValidModelProbeConfigs([{ ...emb, model: "m".repeat(257) }])).toBe(false);
+    expect(isValidModelProbeConfigs([emb, { ...emb }])).toBe(false);
+  });
+
+  it("rejects entries whose path/body fail single-config validation", () => {
+    expect(isValidModelProbeConfigs([{ ...emb, path: "no-slash" }])).toBe(false);
+    expect(isValidModelProbeConfigs([{ ...emb, path: "/v1/../admin" }])).toBe(false);
+    expect(isValidModelProbeConfigs([{ ...emb, body: [] }])).toBe(false);
+  });
+
+  it("rejects non-object entries and oversized lists", () => {
+    expect(isValidModelProbeConfigs(["x"])).toBe(false);
+    expect(isValidModelProbeConfigs([null])).toBe(false);
+    const many = Array.from({ length: 21 }, (_, i) => ({
+      model: `m${i}`,
+      path: "/v1/embeddings",
+      body: {},
+    }));
+    expect(isValidModelProbeConfigs(many)).toBe(false);
+  });
+});
+
+describe("parseModelProbeConfigs / serializeModelProbeConfigs", () => {
+  const list: ModelProbeConfig[] = [
+    { model: "text-embedding-3-large", path: "/v1/embeddings", body: { model: "{{model}}" } },
+  ];
+
+  it("round-trips a valid list", () => {
+    expect(parseModelProbeConfigs(serializeModelProbeConfigs(list))).toEqual(list);
+  });
+
+  it("serializes an empty list to null and rejects invalid input", () => {
+    expect(serializeModelProbeConfigs([])).toBeNull();
+    expect(serializeModelProbeConfigs([{ model: "", path: "/v1/x", body: {} }])).toBeNull();
+  });
+
+  it("falls back to [] for empty or invalid stored JSON", () => {
+    expect(parseModelProbeConfigs(null)).toEqual([]);
+    expect(parseModelProbeConfigs("")).toEqual([]);
+    expect(parseModelProbeConfigs("not json")).toEqual([]);
+    // 含非法条目时整体回落（与 parseProbeConfig 口径一致）
+    expect(parseModelProbeConfigs(JSON.stringify([{ model: "", path: "/v1/x", body: {} }]))).toEqual([]);
+    expect(parseModelProbeConfigs(JSON.stringify({ path: "/v1/x" }))).toEqual([]);
+  });
+});
+
 describe("PROBE_PRESETS", () => {
-  it("every preset is a valid probe config with a model placeholder", () => {
+  it("every preset is a valid probe config with a model placeholder in path or body", () => {
     for (const preset of PROBE_PRESETS) {
       expect(isValidProbeConfig({ path: preset.path, body: preset.body })).toBe(true);
-      expect(JSON.stringify(preset.body)).toContain("{{model}}");
+      // {{model}} 在 body（chat/anthropic 风格）或 path（gemini 风格）均可
+      expect(preset.path + JSON.stringify(preset.body)).toContain("{{model}}");
     }
   });
 
   it("covers the known non-chat endpoints", () => {
     const ids = PROBE_PRESETS.map((p) => p.id);
     expect(ids).toContain("embeddings");
+    expect(ids).toContain("rerank");
     expect(ids).toContain("systemone");
+  });
+
+  it("covers the cross-protocol relay endpoints", () => {
+    const ids = PROBE_PRESETS.map((p) => p.id);
+    expect(ids).toContain("anthropic-messages");
+    expect(ids).toContain("gemini-generateContent");
   });
 });

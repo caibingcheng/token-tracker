@@ -50,6 +50,57 @@ export function isValidProbeConfig(input: unknown): input is ProbeConfig {
   return true;
 }
 
+// per-model 自定义探活端点：同一 upstream 混用不同端点风格（chat / responses / embeddings 等）
+// 时，按真实 model 名精确匹配各自的探活端点，不再需要拆多条同 base_url upstream。
+// 解析优先级：per-model 命中 > upstream 级 probeConfig > 默认协议双风格。
+export interface ModelProbeConfig {
+  model: string; // 精确匹配发往 upstream 的真实 model 名（不做通配，通配 enabled_models 走 upstream 级/默认）
+  path: string; // 同 ProbeConfig.path
+  body: Record<string, unknown>; // 同 ProbeConfig.body，字符串值里的 {{model}} 会被替换
+}
+
+export const MAX_MODEL_PROBE_CONFIGS = 20;
+export const MAX_MODEL_PROBE_MODEL_LENGTH = 256;
+
+// 格式校验：数组 ≤20 条、model 非空 ≤256、每条 path/body 复用单条 ProbeConfig 校验、model 不重复
+export function isValidModelProbeConfigs(input: unknown): input is ModelProbeConfig[] {
+  if (!Array.isArray(input)) return false;
+  if (input.length > MAX_MODEL_PROBE_CONFIGS) return false;
+  const seen = new Set<string>();
+  for (const item of input) {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) return false;
+    const cfg = item as Record<string, unknown>;
+    if (
+      typeof cfg.model !== "string" ||
+      cfg.model.trim() === "" ||
+      cfg.model.length > MAX_MODEL_PROBE_MODEL_LENGTH
+    ) {
+      return false;
+    }
+    if (!isValidProbeConfig({ path: cfg.path, body: cfg.body })) return false;
+    if (seen.has(cfg.model)) return false;
+    seen.add(cfg.model);
+  }
+  return true;
+}
+
+// DB 读出的 JSON 文本 → ModelProbeConfig[]；空值/解析失败/含非法条目一律整体回落 []（不阻塞读路径）
+export function parseModelProbeConfigs(raw: string | null | undefined): ModelProbeConfig[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return isValidModelProbeConfigs(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+// 落库前序列化；空数组返回 null（与 classifierModels 口径一致），非法返回 null（调用方已校验，这里安全兜底）
+export function serializeModelProbeConfigs(configs: ModelProbeConfig[]): string | null {
+  if (!isValidModelProbeConfigs(configs)) return null;
+  return configs.length > 0 ? JSON.stringify(configs) : null;
+}
+
 // DB 读出的 JSON 文本 → ProbeConfig；空值/解析失败/非法一律回落 null（= auto，不阻塞读路径）
 export function parseProbeConfig(raw: string | null | undefined): ProbeConfig | null {
   if (!raw) return null;
@@ -84,6 +135,12 @@ export function applyModelToProbeBody(body: Record<string, unknown>, model: stri
   return walk(body) as Record<string, unknown>;
 }
 
+// path 中的 {{model}} 替换（gemini 风格端点的 model 在 path 段里，如
+// /v1beta/models/{{model}}:generateContent）；替换结果由调用方复核仍在 baseUrl 前缀内
+export function applyModelToProbePath(path: string, model: string): string {
+  return path.split(PROBE_MODEL_VAR).join(model);
+}
+
 // 按自定义配置构造探活请求（与 buildProbeRequest 同序：URL 由 baseUrl + path 拼接）
 export function buildProbeRequestFromConfig(
   baseUrl: string,
@@ -91,9 +148,24 @@ export function buildProbeRequestFromConfig(
   config: ProbeConfig
 ): { url: string; body: Record<string, unknown> } {
   return {
-    url: joinUrlPath(baseUrl, config.path),
+    url: joinUrlPath(baseUrl, applyModelToProbePath(config.path, model)),
     body: applyModelToProbeBody(config.body, model),
   };
+}
+
+// 纵深防御：已拼接完成的 URL 是否仍在 baseUrl 的路径前缀内（防 {{model}} 替换进
+// 含 // 或 .. 的 model 名后逃出前缀；isProbePathInsideBase 只查模板 path，查不到替换后结果）
+export function isProbeUrlInsideBase(baseUrl: string, url: string): boolean {
+  try {
+    const base = new URL(baseUrl);
+    const resolved = new URL(url);
+    if (resolved.origin !== base.origin) return false;
+    const basePath = base.pathname.replace(/\/+$/, "");
+    if (basePath === "") return true;
+    return resolved.pathname === basePath || resolved.pathname.startsWith(`${basePath}/`);
+  } catch {
+    return false;
+  }
 }
 
 // 纵深防御：按 WHATWG URL 归一化后，path 是否仍在 baseUrl 的路径前缀内。
@@ -124,7 +196,7 @@ export interface ProbePreset {
 export const PROBE_PRESETS: ProbePreset[] = [
   {
     id: "chat",
-    label: "chat (/v1/chat/completions)",
+    label: "chat (/v1/chat/completions, openai style)",
     path: "/v1/chat/completions",
     body: {
       model: PROBE_MODEL_VAR,
@@ -144,6 +216,32 @@ export const PROBE_PRESETS: ProbePreset[] = [
     label: "embeddings (/v1/embeddings)",
     path: "/v1/embeddings",
     body: { model: PROBE_MODEL_VAR, input: "hi" },
+  },
+  {
+    id: "anthropic-messages",
+    label: "anthropic messages (/v1/messages)",
+    path: "/v1/messages",
+    body: {
+      model: PROBE_MODEL_VAR,
+      messages: [{ role: "user", content: "hi" }],
+      max_tokens: 1,
+      stream: false,
+    },
+  },
+  {
+    id: "gemini-generateContent",
+    label: "gemini generateContent (/v1beta/models/{model}:generateContent)",
+    path: "/v1beta/models/{{model}}:generateContent",
+    body: {
+      contents: [{ parts: [{ text: "hi" }] }],
+      generationConfig: { maxOutputTokens: 1 },
+    },
+  },
+  {
+    id: "rerank",
+    label: "rerank (/v1/rerank)",
+    path: "/v1/rerank",
+    body: { model: PROBE_MODEL_VAR, query: "hi", documents: ["hi"] },
   },
   {
     id: "systemone",

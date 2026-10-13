@@ -49,6 +49,7 @@ export const upstreams = sqliteTable("upstreams", {
   proxyUrlEncrypted: text("proxy_url_encrypted"), // AES-256-GCM，NULL = 直连
   headerTransforms: text("header_transforms"), // JSON: HeaderTransform[]，出站 header 变换（最后一棒）
   probeConfig: text("probe_config"), // JSON: {path, body}，自定义探活端点；NULL = 默认 chat → responses 双风格
+  modelProbeConfigs: text("model_probe_configs"), // JSON: [{model, path, body}]，per-model 探活端点（精确匹配）；NULL/[] = 无
   classifierModels: text("classifier_models"), // JSON: [{model, type, maxInputTokens?, path?}]，声明该 upstream 可作分类器的模型；NULL = 无
   createdAt: text("created_at").$defaultFn(() => new Date().toISOString()),
 });

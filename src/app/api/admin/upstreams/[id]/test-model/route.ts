@@ -6,7 +6,7 @@ import { withAuth } from "@/lib/auth/guard";
 import { loadPlainUpstreamKeys, healthTracker, decryptProxyUrl } from "@/lib/gateway/proxy-deps";
 import { probeModelWithKeys } from "@/lib/gateway/probe";
 import { parseHeaderTransforms } from "@/lib/gateway/header-transforms";
-import { parseProbeConfig } from "@/lib/gateway/probe-config";
+import { parseModelProbeConfigs, parseProbeConfig } from "@/lib/gateway/probe-config";
 
 interface Params {
   params: { id: string };
@@ -52,6 +52,7 @@ export const POST = withAuth(async (request: NextRequest, ctx: any) => {
         proxyUrl: decryptProxyUrl(upstream.proxyUrlEncrypted),
         headerTransforms: parseHeaderTransforms(upstream.headerTransforms),
         probeConfig: parseProbeConfig(upstream.probeConfig),
+        modelProbeConfigs: parseModelProbeConfigs(upstream.modelProbeConfigs),
         upstreamName: upstream.name,
       },
       model,

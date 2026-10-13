@@ -222,6 +222,7 @@ async function ensureClient() {
         { name: "proxy_url_encrypted", definition: "proxy_url_encrypted TEXT" },
         { name: "header_transforms", definition: "header_transforms TEXT" },
         { name: "probe_config", definition: "probe_config TEXT" },
+        { name: "model_probe_configs", definition: "model_probe_configs TEXT" },
         { name: "classifier_models", definition: "classifier_models TEXT" },
       ],
     },

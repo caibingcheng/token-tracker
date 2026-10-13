@@ -17,8 +17,11 @@ import {
   parseHeaderTransforms,
 } from "@/lib/gateway/header-transforms";
 import {
+  isValidModelProbeConfigs,
   isValidProbeConfig,
+  parseModelProbeConfigs,
   parseProbeConfig,
+  serializeModelProbeConfigs,
   serializeProbeConfig,
 } from "@/lib/gateway/probe-config";
 import {
@@ -49,6 +52,7 @@ async function withKeys(upstream: any) {
     proxyUrlEncrypted: _proxyUrlEncrypted,
     headerTransforms: _raw,
     probeConfig: _probe,
+    modelProbeConfigs: _mpc,
     ...rest
   } = upstream;
   return {
@@ -61,6 +65,7 @@ async function withKeys(upstream: any) {
     proxyDisplay: proxyUrl ? sanitizeProxyUrlForDisplay(proxyUrl) : null,
     headerTransforms: parseHeaderTransforms(upstream.headerTransforms),
     probeConfig: parseProbeConfig(upstream.probeConfig),
+    modelProbeConfigs: parseModelProbeConfigs(upstream.modelProbeConfigs),
     classifierModels: parseClassifierModels(upstream.classifierModels),
     keys: keyRows.map((k: any) => ({
       id: k.id,
@@ -210,6 +215,20 @@ export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
       } else {
         return NextResponse.json(
           { success: false, error: "Invalid probeConfig" },
+          { status: 400 }
+        );
+      }
+    }
+
+    // per-model 探活端点：数组 = 全量替换，null = 清除
+    if (body.modelProbeConfigs !== undefined) {
+      if (body.modelProbeConfigs === null) {
+        values.modelProbeConfigs = null;
+      } else if (isValidModelProbeConfigs(body.modelProbeConfigs)) {
+        values.modelProbeConfigs = serializeModelProbeConfigs(body.modelProbeConfigs);
+      } else {
+        return NextResponse.json(
+          { success: false, error: "Invalid modelProbeConfigs" },
           { status: 400 }
         );
       }

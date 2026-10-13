@@ -18,8 +18,11 @@ import {
 } from "@/lib/gateway/header-transforms";
 import type { HeaderTransform } from "@/lib/gateway/header-transforms";
 import {
+  isValidModelProbeConfigs,
   isValidProbeConfig,
+  parseModelProbeConfigs,
   parseProbeConfig,
+  serializeModelProbeConfigs,
   serializeProbeConfig,
 } from "@/lib/gateway/probe-config";
 import {
@@ -88,6 +91,7 @@ export const GET = withAuth(async () => {
         proxyDisplay: proxyUrl ? sanitizeProxyUrlForDisplay(proxyUrl) : null,
         headerTransforms: parseHeaderTransforms(row.headerTransforms),
         probeConfig: parseProbeConfig(row.probeConfig),
+        modelProbeConfigs: parseModelProbeConfigs(row.modelProbeConfigs),
         classifierModels: parseClassifierModels(row.classifierModels),
         createdAt: row.createdAt,
       });
@@ -183,6 +187,18 @@ export const POST = withAuth(async (request: NextRequest) => {
       probeConfig = serializeProbeConfig(body.probeConfig);
     }
 
+    // per-model 探活端点（省略 = 无）：数组，每条 {model, path, body}，model 精确匹配
+    let modelProbeConfigs: string | null = null;
+    if (body.modelProbeConfigs !== undefined && body.modelProbeConfigs !== null) {
+      if (!isValidModelProbeConfigs(body.modelProbeConfigs)) {
+        return NextResponse.json(
+          { success: false, error: "Invalid modelProbeConfigs" },
+          { status: 400 }
+        );
+      }
+      modelProbeConfigs = serializeModelProbeConfigs(body.modelProbeConfigs);
+    }
+
     // 分类器模型声明（省略 = 无）：数组，每条 {model, type, maxInputTokens?, path?}
     let classifierModels: string | null = null;
     if (body.classifierModels !== undefined && body.classifierModels !== null) {
@@ -214,6 +230,7 @@ export const POST = withAuth(async (request: NextRequest) => {
           proxyUrlEncrypted,
           headerTransforms: JSON.stringify(normalizeHeaderTransforms(headerTransforms)),
           probeConfig,
+          modelProbeConfigs,
           classifierModels,
         })
         .returning();
