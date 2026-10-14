@@ -1257,9 +1257,10 @@ export default function UpstreamsPanel() {
                     <button
                       type="button"
                       onClick={() => setFormModelProbes((prev) => prev.filter((_, i) => i !== index))}
-                      className="rounded border border-gray-300 px-3 py-2 text-sm text-gray-500 hover:bg-gray-50"
+                      className="shrink-0 rounded border border-gray-300 px-3 py-2 text-xs text-gray-600 hover:bg-gray-50"
+                      title="Remove model probe"
                     >
-                      Remove
+                      −
                     </button>
                   </div>
                   {p.path.trim() !== "" && (
