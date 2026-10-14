@@ -6,10 +6,11 @@ import { detectRequestProtocol, type Protocol } from "@/lib/gateway/model-router
 import {
   simulateRoute,
   type SimRouteResult,
-  type SimManualRule,
+  type SimNamedRoute,
 } from "@/lib/gateway/simulate-route";
 import { CopyableCode } from "./CopyableCode";
 import PricePickerModal from "./PricePickerModal";
+import NamedRoutesPanel from "./NamedRoutesPanel";
 import {
   AdminMobileCard,
   AdminMobileCards,
@@ -51,23 +52,14 @@ interface EffectiveRoute {
 interface ResolvedRoute {
   protocol: Protocol;
   model: string;
-  source: "manual" | "auto";
+  source: "named" | "auto";
   winner: CandidateInfo | null;
   candidates: CandidateInfo[];
   effective: EffectiveRoute;
   overridden?: boolean;
   shadowedCandidates?: CandidateInfo[];
-}
-
-interface ManualRouteInfo {
-  id: number;
-  name: string;
-  protocol: Protocol;
-  upstreamId: number;
-  upstreamName: string;
-  upstreamProtocol: Protocol;
-  targetModel: string;
-  priority: number;
+  namedRouteUnavailable?: boolean;
+  classifier?: { classifierUpstreamName: string; classifierModel: string; kind?: "model" | "priority" } | null;
 }
 
 interface WildcardInfo {
@@ -82,7 +74,7 @@ interface ModelsData {
   protocols: Protocol[];
   resolvedRoutes: ResolvedRoute[];
   wildcardPatternsByProtocol: Record<Protocol, WildcardInfo[]>;
-  manualRoutes: ManualRouteInfo[];
+  namedRoutes?: SimNamedRoute[];
 }
 
 interface PriceRow {
@@ -104,6 +96,7 @@ interface PriceRow {
     unmatched: boolean;
     hasUpdate: boolean;
     removed: boolean;
+    zeroNoPrice: boolean;
     diff: {
       inputPrice: number;
       outputPrice: number;
@@ -134,13 +127,13 @@ function protocolBadgeClass(protocol: Protocol): string {
   }
 }
 
-function MatchTypeBadge({ type }: { type: "exact" | "wildcard" | "manual" }) {
+function MatchTypeBadge({ type }: { type: "exact" | "wildcard" | "named" }) {
   const cls =
     type === "exact"
       ? "bg-green-50 text-green-700"
       : type === "wildcard"
         ? "bg-purple-50 text-purple-700"
-        : "bg-blue-50 text-blue-700";
+        : "bg-indigo-50 text-indigo-700";
   return (
     <span className={`rounded px-1.5 py-0.5 text-[10px] ${cls}`}>
       {type}
@@ -192,21 +185,33 @@ function EffectiveBadge({ effective }: { effective: EffectiveRoute }) {
   return null;
 }
 
-// 模拟器结果面板：手动路由短路 / 自动路由统一渲染
+// 命名路由 + LLM 分类器 + 多目标：链首请求时决策，静态无确定性 winner
+function classifierDecides(route: ResolvedRoute): boolean {
+  return (
+    route.source === "named" &&
+    route.classifier?.kind !== "priority" &&
+    route.candidates.length > 1
+  );
+}
+
+// 模拟器结果面板：命名路由短路 / 自动路由统一渲染
 function RouteSimulationResult({ result, model }: { result: SimRouteResult; model: string }) {
   const winner = result.winner;
-  if (result.manualRouteUnavailable) {
+  // LLM 分类器多目标：链首请求时决策，静态无确定性 winner
+  const classifierDecides =
+    result.source === "named" && result.classifier?.kind !== "priority" && result.candidates.length > 1;
+  if (result.namedRouteUnavailable) {
     return (
       <div className="text-sm text-red-600">
-        Manual route targets unavailable: no valid upstream targets for{" "}
+        Named route targets unavailable: no valid upstream targets for{" "}
         <CopyableCode className="rounded bg-white px-1 py-0.5 text-xs">{model}</CopyableCode>{" "}
-        (gateway returns 502 <code className="text-xs">manual_route_unavailable</code>)
+        (gateway returns 502 <code className="text-xs">named_route_unavailable</code>)
         {result.skipped.length > 0 && (
           <p className="mt-1 text-[11px] text-gray-500">
             Skipped:{" "}
             {result.skipped.map((s) => (
-              <span key={s.upstreamId} className="mr-2">
-                upstream #{s.upstreamId} → {s.targetModel} ({s.reason})
+              <span key={`${s.upstreamId}-${s.targetModel}`} className="mr-2">
+                {s.upstreamId === null ? "auto" : `upstream #${s.upstreamId}`} → {s.targetModel} ({s.reason})
               </span>
             ))}
           </p>
@@ -226,22 +231,53 @@ function RouteSimulationResult({ result, model }: { result: SimRouteResult; mode
     <div className="space-y-3">
       <div className="rounded border border-green-200 bg-green-50 p-2">
         <div className="mb-1 flex flex-wrap items-center gap-2 text-xs font-medium text-green-700">
-          Winning Upstream
+          {classifierDecides ? "Decision" : "Winning Upstream"}
           <EffectiveBadge effective={result.effective} />
         </div>
         <div className="flex flex-wrap items-center gap-2 text-sm">
-          <span className="font-semibold">{result.effective.winner?.name ?? winner.name}</span>
-          <span className="text-xs text-gray-500">priority {result.effective.winner?.priority ?? winner.priority}</span>
-          <CopyableCode className="rounded bg-white px-1.5 py-0.5 text-xs">
-            {result.effective.winner?.matchedPattern ?? winner.matchedPattern}
-          </CopyableCode>
-          <MatchTypeBadge type={(result.effective.winner ?? winner).matchType} />
-          <HealthBadges candidate={result.effective.winner ?? winner} />
+          {classifierDecides ? (
+            <>
+              <span className="font-semibold">{result.classifier!.classifierModel}</span>
+              <span className="text-xs text-gray-500">
+                on {result.classifier!.classifierUpstreamName}
+              </span>
+              <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] text-indigo-700">
+                classifier decides per session
+              </span>
+            </>
+          ) : (
+            <>
+              <span className="font-semibold">{result.effective.winner?.name ?? winner.name}</span>
+              <span className="text-xs text-gray-500">priority {result.effective.winner?.priority ?? winner.priority}</span>
+              <CopyableCode className="rounded bg-white px-1.5 py-0.5 text-xs">
+                {result.effective.winner?.matchedPattern ?? winner.matchedPattern}
+              </CopyableCode>
+              <MatchTypeBadge type={(result.effective.winner ?? winner).matchType} />
+              <HealthBadges candidate={result.effective.winner ?? winner} />
+              {result.source === "named" && (
+                <span
+                  className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-medium text-indigo-700"
+                  title="Rule classifier: chain head = first healthy target by priority; zero LLM cost"
+                >
+                  rule: priority
+                </span>
+              )}
+            </>
+          )}
         </div>
-        {result.source === "manual" && (
+        {result.source === "named" && (
           <p className="mt-1 text-[11px] text-blue-700">
-            Manual route: request model is rewritten to{" "}
-            <code className="text-xs">{(result.effective.winner ?? winner).matchedPattern}</code> before going upstream.
+            Named route: request model is rewritten to{" "}
+            <code className="text-xs">{(result.effective.winner ?? winner)?.matchedPattern}</code> before going upstream.
+          </p>
+        )}
+        {classifierDecides && (
+          <p className="mt-1 text-[11px] text-indigo-700">
+            Named route: the chain head is chosen per session by classifier{" "}
+            <code className="text-xs">{result.classifier!.classifierModel}</code> on{" "}
+            {result.classifier!.classifierUpstreamName} (first request), then pinned by session binding.
+            Candidates below = the target pool; the first entry is the fallback head when the
+            classifier is unavailable.
           </p>
         )}
         {result.source === "auto" && result.effective.failover && winner && (
@@ -254,8 +290,8 @@ function RouteSimulationResult({ result, model }: { result: SimRouteResult; mode
         <p className="text-[11px] text-gray-500">
           Skipped targets (disabled/missing upstream — gateway skips these):{" "}
           {result.skipped.map((s) => (
-            <span key={s.upstreamId} className="mr-2">
-              #{s.upstreamId} → {s.targetModel} ({s.reason})
+            <span key={`${s.upstreamId}-${s.targetModel}`} className="mr-2">
+              {s.upstreamId === null ? "auto" : `#${s.upstreamId}`} → {s.targetModel} ({s.reason})
             </span>
           ))}
         </p>
@@ -268,8 +304,11 @@ function RouteSimulationResult({ result, model }: { result: SimRouteResult; mode
           <div className="space-y-1">
             {result.candidates.map((c) => {
               const w = result.effective.winner;
+              const isModelVm = classifierDecides;
+              // LLM 分类器候选池无确定性 winner：priority 最小 route 标为 fallback head
               const isWinner =
-                c.upstreamId === w?.upstreamId && c.matchedPattern === w?.matchedPattern;
+                !isModelVm && c.upstreamId === w?.upstreamId && c.matchedPattern === w?.matchedPattern;
+              const isFallbackHead = isModelVm && c === result.candidates[0];
               return (
                 <div
                   key={`${c.upstreamId}:${c.matchedPattern}`}
@@ -284,6 +323,14 @@ function RouteSimulationResult({ result, model }: { result: SimRouteResult; mode
                   <CopyableCode className="rounded bg-gray-100 px-1.5 py-0.5 text-xs">{c.matchedPattern}</CopyableCode>
                   <MatchTypeBadge type={c.matchType} />
                   <HealthBadges candidate={c} />
+                  {isFallbackHead && (
+                    <span
+                      className="ml-auto rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-medium text-indigo-700"
+                      title="Priority-min route: chain head when the classifier is unavailable"
+                    >
+                      fallback head
+                    </span>
+                  )}
                   {isWinner && <span className="ml-auto text-xs font-medium text-green-700">winner</span>}
                 </div>
               );
@@ -308,7 +355,7 @@ export default function ModelsPanel() {
     result: SimRouteResult | null;
   } | null>(null);
 
-  const [selectedProtocol, setSelectedProtocol] = useState<Protocol>("openai");
+
   const [expandedModels, setExpandedModels] = useState<Set<string>>(new Set());
 
   // Models List Table（官方价参考）
@@ -325,23 +372,12 @@ export default function ModelsPanel() {
   const [savingSource, setSavingSource] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Manual Routing 表单
-  const [ruleName, setRuleName] = useState("");
-  const [ruleProtocol, setRuleProtocol] = useState<Protocol>("openai");
-  const [ruleUpstreamId, setRuleUpstreamId] = useState<number | "">("");
-  const [ruleTargetModel, setRuleTargetModel] = useState("");
-  const [rulePriority, setRulePriority] = useState("0");
-  const [rulePriorityTouched, setRulePriorityTouched] = useState(false);
-  const [showTargetSuggestions, setShowTargetSuggestions] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-
-  // 行内编辑（priority / targetModel）
-  const [editingRule, setEditingRule] = useState<{ id: number; priority: string; targetModel: string } | null>(null);
-  const [savingRule, setSavingRule] = useState(false);
-
-  const load = async () => {
-    setLoading(true);
-    setError(null);
+  // silent = 联动刷新（命名路由面板写操作后）：不闪整页 loading
+  const load = async (silent = false) => {
+    if (!silent) {
+      setLoading(true);
+      setError(null);
+    }
     try {
       const res = await apiFetch("/api/admin/models");
       const json = await res.json();
@@ -353,7 +389,7 @@ export default function ModelsPanel() {
     } catch {
       setError("Network error");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
@@ -559,121 +595,15 @@ export default function ModelsPanel() {
     }
   };
 
-  // provider 下拉选项：按所选 protocol 过滤 + enabled 过滤
-  const ruleUpstreamOptions = useMemo(() => {
-    if (!data) return [];
-    return data.upstreams.filter(
-      (u) => u.enabled && u.protocol === ruleProtocol
-    );
-  }, [data, ruleProtocol]);
-
-  // target model 候选 = 所选 upstream 的 enabledModels 非通配项
-  const ruleTargetCandidates = useMemo(() => {
-    const upstream = ruleUpstreamOptions.find((u) => u.id === ruleUpstreamId);
-    if (!upstream) return [];
-    return upstream.enabledModels.filter((m) => !m.endsWith("*"));
-  }, [ruleUpstreamOptions, ruleUpstreamId]);
-
-  const createRule = async () => {
-    if (!ruleName.trim() || !ruleUpstreamId || !ruleTargetModel.trim()) return;
-    setSubmitting(true);
-    try {
-      const res = await apiFetch("/api/admin/routing-rules", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          name: ruleName.trim(),
-          protocol: ruleProtocol,
-          upstreamId: ruleUpstreamId,
-          targetModel: ruleTargetModel.trim(),
-          priority: rulePriority.trim() === "" ? 0 : Number(rulePriority),
-        }),
-      });
-      const json = await res.json();
-      if (json.success) {
-        setRuleName("");
-        setRuleUpstreamId("");
-        setRuleTargetModel("");
-        setRulePriority("0");
-        setRulePriorityTouched(false);
-        await load();
-      } else {
-        setError(json.error || "Failed to create routing rule");
-      }
-    } catch {
-      setError("Network error");
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const updateRule = async () => {
-    if (!editingRule) return;
-    const priority = Number(editingRule.priority);
-    if (!Number.isInteger(priority) || priority < 0) {
-      setError("Priority must be a non-negative integer");
-      return;
-    }
-    if (!editingRule.targetModel.trim()) {
-      setError("Target model cannot be empty");
-      return;
-    }
-    setSavingRule(true);
-    try {
-      const res = await apiFetch(`/api/admin/routing-rules/${editingRule.id}`, {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          priority,
-          targetModel: editingRule.targetModel.trim(),
-        }),
-      });
-      const json = await res.json();
-      if (json.success) {
-        setEditingRule(null);
-        await load();
-      } else {
-        setError(json.error || "Failed to update routing rule");
-      }
-    } catch {
-      setError("Network error");
-    } finally {
-      setSavingRule(false);
-    }
-  };
-
-  const deleteRule = async (rule: ManualRouteInfo) => {
-    if (!window.confirm(`Delete manual route "${rule.name}" → ${rule.targetModel}?`)) return;
-    try {
-      const res = await apiFetch(`/api/admin/routing-rules/${rule.id}`, { method: "DELETE" });
-      const json = await res.json();
-      if (json.success) {
-        await load();
-      } else {
-        setError(json.error || "Failed to delete routing rule");
-      }
-    } catch {
-      setError("Network error");
-    }
-  };
-
   const runSimulation = () => {
     const model = modelInput.trim();
     const path = pathInput.trim() || DEFAULT_PATH;
     if (!model || !data) return;
     const protocol = detectRequestProtocol(path);
-    const rules: SimManualRule[] = data.manualRoutes.map((m) => ({
-      id: m.id,
-      name: m.name,
-      protocol: m.protocol,
-      upstreamId: m.upstreamId,
-      targetModel: m.targetModel,
-      priority: m.priority,
-    }));
     setSimulatorResult({
       protocol,
       model,
-      result: simulateRoute(model, protocol, data.upstreams, rules),
+      result: simulateRoute(model, protocol, data.upstreams, data.namedRoutes ?? []),
     });
   };
 
@@ -689,14 +619,13 @@ export default function ModelsPanel() {
     });
   };
 
-  const routesForProtocol = useMemo(() => {
+  // 单一全量表（原 protocol tab 合并）：protocol 由列展示，按 model 字典序排序
+  const allRoutes = useMemo(() => {
     if (!data) return [];
-    return data.resolvedRoutes.filter((r) => r.protocol === selectedProtocol);
-  }, [data, selectedProtocol]);
-
-  const wildcardPatterns = useMemo(() => {
-    return data?.wildcardPatternsByProtocol[selectedProtocol] ?? [];
-  }, [data, selectedProtocol]);
+    return [...data.resolvedRoutes].sort(
+      (a, b) => a.model.localeCompare(b.model) || a.protocol.localeCompare(b.protocol)
+    );
+  }, [data]);
 
   if (loading) {
     return (
@@ -767,8 +696,8 @@ export default function ModelsPanel() {
               {simulatorResult.result && (
                 <span className="text-xs text-gray-500">
                   via{" "}
-                  {simulatorResult.result.source === "manual" ? (
-                    <MatchTypeBadge type="manual" />
+                  {simulatorResult.result.source === "named" ? (
+                    <MatchTypeBadge type="named" />
                   ) : (
                     <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-600">auto</span>
                   )}
@@ -784,382 +713,34 @@ export default function ModelsPanel() {
         )}
       </div>
 
-      {/* 手动路由规则 */}
-      <AdminTableCard
-        title={<h2 className="text-base font-semibold">Manual Routing</h2>}
-        actions={
-          <p className="text-xs text-gray-400">
-            Manual rules completely replace automatic routing. Multiple targets fail over by priority; all fail → 502.
-          </p>
-        }
-      >
+      <NamedRoutesPanel onChanged={() => load(true)} />
 
-        {/* 新增行：name / protocol / provider / target model / priority */}
-        <div className="grid grid-cols-1 md:grid-cols-[1fr_130px_1fr_1fr_90px_auto] gap-3">
-          <div>
-            <label className="mb-1 block text-xs font-medium text-gray-700">New Model Name</label>
-            <input
-              value={ruleName}
-              onChange={(e) => setRuleName(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && createRule()}
-              placeholder="Virtual name clients request"
-              className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            />
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-gray-700">Protocol</label>
-            <select
-              value={ruleProtocol}
-              onChange={(e) => {
-                setRuleProtocol(e.target.value as Protocol);
-                setRuleUpstreamId("");
-                setRuleTargetModel("");
-                if (!rulePriorityTouched) setRulePriority("0");
-              }}
-              className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            >
-              {data?.protocols.map((p) => (
-                <option key={p} value={p}>{p}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-gray-700">Provider</label>
-            <select
-              value={ruleUpstreamId}
-              onChange={(e) => {
-                const id = e.target.value === "" ? "" : Number(e.target.value);
-                setRuleUpstreamId(id);
-                setRuleTargetModel("");
-                if (!rulePriorityTouched) {
-                  const upstream = ruleUpstreamOptions.find((u) => u.id === id);
-                  setRulePriority(String(upstream?.priority ?? 0));
-                }
-              }}
-              className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            >
-              <option value="">Select upstream…</option>
-              {ruleUpstreamOptions.map((u) => (
-                <option key={u.id} value={u.id}>{u.name}</option>
-              ))}
-            </select>
-            {ruleUpstreamOptions.length === 0 && (
-              <p className="mt-1 text-[11px] text-gray-400">
-                No enabled {ruleProtocol} upstreams
-              </p>
-            )}
-          </div>
-          <div className="relative">
-            <label className="mb-1 block text-xs font-medium text-gray-700">Target Model</label>
-            <input
-              value={ruleTargetModel}
-              onChange={(e) => {
-                setRuleTargetModel(e.target.value);
-                setShowTargetSuggestions(true);
-              }}
-              onFocus={() => setShowTargetSuggestions(true)}
-              onBlur={() => setTimeout(() => setShowTargetSuggestions(false), 150)}
-              onKeyDown={(e) => e.key === "Enter" && createRule()}
-              placeholder="Real model on upstream"
-              disabled={!ruleUpstreamId}
-              className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50"
-            />
-            {showTargetSuggestions && ruleTargetCandidates.length > 0 && (
-              <div className="absolute z-10 mt-1 max-h-48 w-full overflow-y-auto rounded border border-gray-200 bg-white shadow-lg">
-                {ruleTargetCandidates.map((m) => (
-                  <button
-                    key={m}
-                    type="button"
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      setRuleTargetModel(m);
-                      setShowTargetSuggestions(false);
-                    }}
-                    className="flex w-full items-center justify-between px-3 py-1.5 text-left text-sm hover:bg-gray-50"
-                  >
-                    <span>{m}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-gray-700">Priority</label>
-            <input
-              value={rulePriority}
-              onChange={(e) => {
-                setRulePriority(e.target.value);
-                setRulePriorityTouched(true);
-              }}
-              onKeyDown={(e) => e.key === "Enter" && createRule()}
-              type="number"
-              min={0}
-              placeholder="0"
-              className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            />
-          </div>
-          <div className="flex items-end">
-            <button
-              type="button"
-              onClick={createRule}
-              disabled={!ruleName.trim() || !ruleUpstreamId || !ruleTargetModel.trim() || submitting}
-              className="w-full rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 md:w-auto"
-            >
-              {submitting ? "Adding…" : "Add Rule"}
-            </button>
-          </div>
-        </div>
-
-        {/* 规则列表 */}
-        {data && data.manualRoutes.length > 0 && (
-          <div className="mt-4">
-            <AdminTable>
-              <AdminTableHead
-                columns={[
-                  { label: "Name" },
-                  { label: "Protocol" },
-                  { label: "Provider" },
-                  { label: "Target Model" },
-                  { label: "Priority" },
-                  { label: "", align: "right" },
-                ]}
-              />
-              <AdminTableBody>
-                {data.manualRoutes.map((rule) => {
-                  const editing = editingRule?.id === rule.id;
-                  return (
-                    <tr key={rule.id}>
-                      <AdminTd>
-                        <CopyableCode className="text-xs">{rule.name}</CopyableCode>
-                      </AdminTd>
-                      <AdminTd>
-                        <span className={`rounded border px-1.5 py-0.5 text-[10px] ${protocolBadgeClass(rule.protocol)}`}>
-                          {rule.protocol}
-                        </span>
-                      </AdminTd>
-                      <AdminTd>
-                        <span className="font-medium">{rule.upstreamName}</span>
-                        <span className={`ml-1.5 rounded border px-1.5 py-0.5 text-[10px] ${protocolBadgeClass(rule.upstreamProtocol)}`}>
-                          {rule.upstreamProtocol}
-                        </span>
-                      </AdminTd>
-                      <AdminTd>
-                        {editing ? (
-                          <input
-                            value={editingRule!.targetModel}
-                            onChange={(e) => setEditingRule({ ...editingRule!, targetModel: e.target.value })}
-                            className="w-40 rounded border border-gray-300 px-2 py-1 text-xs focus:border-blue-500 focus:outline-none"
-                          />
-                        ) : (
-                          <CopyableCode className="text-xs">{rule.targetModel}</CopyableCode>
-                        )}
-                      </AdminTd>
-                      <AdminTd>
-                        {editing ? (
-                          <input
-                            value={editingRule!.priority}
-                            onChange={(e) => setEditingRule({ ...editingRule!, priority: e.target.value })}
-                            type="number"
-                            min={0}
-                            className="w-16 rounded border border-gray-300 px-2 py-1 text-xs focus:border-blue-500 focus:outline-none"
-                          />
-                        ) : (
-                          <span className="inline-flex items-center rounded bg-gray-50 px-1.5 py-0.5 text-xs text-gray-600">
-                            p{rule.priority}
-                          </span>
-                        )}
-                      </AdminTd>
-                      <AdminTd align="right" className="whitespace-nowrap">
-                        {editing ? (
-                          <>
-                            <button
-                              type="button"
-                              onClick={updateRule}
-                              disabled={savingRule}
-                              className="text-xs font-medium text-blue-600 hover:text-blue-800 disabled:opacity-50"
-                            >
-                              {savingRule ? "Saving…" : "Save"}
-                            </button>
-                            {" · "}
-                            <button
-                              type="button"
-                              onClick={() => setEditingRule(null)}
-                              className="text-xs text-gray-500 hover:text-gray-700"
-                            >
-                              Cancel
-                            </button>
-                          </>
-                        ) : (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setEditingRule({
-                                  id: rule.id,
-                                  priority: String(rule.priority),
-                                  targetModel: rule.targetModel,
-                                })
-                              }
-                              className="text-xs text-gray-600 hover:text-gray-800"
-                            >
-                              Edit
-                            </button>
-                            {" · "}
-                            <button
-                              type="button"
-                              onClick={() => deleteRule(rule)}
-                              className="text-xs text-red-500 hover:text-red-700"
-                            >
-                              Delete
-                            </button>
-                          </>
-                        )}
-                      </AdminTd>
-                    </tr>
-                  );
-                })}
-              </AdminTableBody>
-            </AdminTable>
-            <AdminMobileCards>
-              {data.manualRoutes.map((rule) => (
-                <AdminMobileCard key={rule.id}>
-                  <div className="flex justify-between items-start gap-2 mb-3">
-                    <div className="min-w-0">
-                      <p className="text-xs text-gray-500">Name</p>
-                      <CopyableCode className="text-xs">{rule.name}</CopyableCode>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-2">
-                      <span className="rounded bg-gray-50 px-1.5 py-0.5 text-xs text-gray-600">
-                        p{rule.priority}
-                      </span>
-                      {editingRule?.id === rule.id ? (
-                        <>
-                          <button
-                            type="button"
-                            onClick={updateRule}
-                            disabled={savingRule}
-                            className="rounded border border-blue-200 bg-blue-50 px-2 py-1 text-xs text-blue-600 disabled:opacity-50"
-                          >
-                            {savingRule ? "Saving…" : "Save"}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setEditingRule(null)}
-                            className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-500"
-                          >
-                            Cancel
-                          </button>
-                        </>
-                      ) : (
-                        <>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setEditingRule({
-                                id: rule.id,
-                                priority: String(rule.priority),
-                                targetModel: rule.targetModel,
-                              })
-                            }
-                            className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-600"
-                          >
-                            Edit
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => deleteRule(rule)}
-                            className="rounded border border-red-200 px-2 py-1 text-xs text-red-500"
-                          >
-                            Delete
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <p className="text-xs text-gray-500">Protocol</p>
-                      <span className={`rounded border px-1.5 py-0.5 text-[10px] ${protocolBadgeClass(rule.protocol)}`}>
-                        {rule.protocol}
-                      </span>
-                    </div>
-                    <div>
-                      <p className="text-xs text-gray-500">Provider</p>
-                      <p className="text-sm font-medium">{rule.upstreamName}</p>
-                      <span className={`rounded border px-1.5 py-0.5 text-[10px] ${protocolBadgeClass(rule.upstreamProtocol)}`}>
-                        {rule.upstreamProtocol}
-                      </span>
-                    </div>
-                    <div className="col-span-2">
-                      <p className="text-xs text-gray-500">Target Model</p>
-                      {editingRule?.id === rule.id ? (
-                        <input
-                          value={editingRule.targetModel}
-                          onChange={(e) => setEditingRule({ ...editingRule, targetModel: e.target.value })}
-                          className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 text-sm focus:border-blue-500 focus:outline-none"
-                        />
-                      ) : (
-                        <CopyableCode className="text-xs">{rule.targetModel}</CopyableCode>
-                      )}
-                    </div>
-                    {editingRule?.id === rule.id && (
-                      <div className="col-span-2">
-                        <p className="text-xs text-gray-500">Priority</p>
-                        <input
-                          value={editingRule.priority}
-                          onChange={(e) => setEditingRule({ ...editingRule, priority: e.target.value })}
-                          type="number"
-                          min={0}
-                          className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 text-sm focus:border-blue-500 focus:outline-none"
-                        />
-                      </div>
-                    )}
-                  </div>
-                </AdminMobileCard>
-              ))}
-            </AdminMobileCards>
-          </div>
-        )}
-      </AdminTableCard>
 
       {/* 静态路由表 */}
       <AdminTableCard
         title={<h2 className="text-base font-semibold">Model Routing Table</h2>}
-        actions={
-          <div className="flex overflow-x-auto overflow-y-hidden scrollbar-hide rounded-md border border-gray-300">
-            {data?.protocols.map((p) => (
-              <button
-                key={p}
-                type="button"
-                onClick={() => setSelectedProtocol(p)}
-                className={`shrink-0 whitespace-nowrap px-3 py-1.5 text-xs font-medium transition-colors min-h-[40px] md:min-h-0 ${
-                  selectedProtocol === p
-                    ? "bg-blue-600 text-white"
-                    : "bg-white text-gray-600 hover:bg-gray-50"
-                }`}
-              >
-                {p}
-              </button>
-            ))}
-          </div>
-        }
       >
 
-        {wildcardPatterns.length > 0 && (
-          <div className="mb-3 rounded border border-purple-100 bg-purple-50/50 p-2 text-xs text-purple-700">
-            <span className="font-medium">Wildcard patterns configured: </span>
-            {wildcardPatterns.map((w, i) => (
-              <span key={`${w.upstreamId}-${w.pattern}`}>
-                <CopyableCode className="rounded bg-white px-1 py-0.5">{w.pattern}</CopyableCode> ({w.name}, p{w.priority})
-                {i < wildcardPatterns.length - 1 ? ", " : ""}
-              </span>
-            ))}
-          </div>
-        )}
+        {/* 通配模式按 protocol 分组展示（替代原 tab 的按协议切换） */}
+        {data?.protocols.map((p) => {
+          const patterns = data.wildcardPatternsByProtocol[p] ?? [];
+          if (patterns.length === 0) return null;
+          return (
+            <div key={p} className="mb-3 rounded border border-purple-100 bg-purple-50/50 p-2 text-xs text-purple-700">
+              <span className="font-medium">Wildcard patterns ({p}): </span>
+              {patterns.map((w, i) => (
+                <span key={`${w.upstreamId}-${w.pattern}`}>
+                  <CopyableCode className="rounded bg-white px-1 py-0.5">{w.pattern}</CopyableCode> ({w.name}, p{w.priority})
+                  {i < patterns.length - 1 ? ", " : ""}
+                </span>
+              ))}
+            </div>
+          );
+        })}
 
-        {routesForProtocol.length === 0 ? (
+        {allRoutes.length === 0 ? (
           <div className="py-8 text-center text-sm text-gray-400">
-            No concrete models configured for {selectedProtocol}.
+            No routes configured.
           </div>
         ) : (
           <>
@@ -1167,6 +748,7 @@ export default function ModelsPanel() {
               <AdminTableHead
                 columns={[
                   { label: "Model" },
+                  { label: "Protocol" },
                   { label: "Winner Upstream" },
                   { label: "Priority" },
                   { label: "Pattern" },
@@ -1176,7 +758,7 @@ export default function ModelsPanel() {
                 ]}
               />
               <AdminTableBody>
-                {routesForProtocol.map((route) => {
+                {allRoutes.map((route) => {
                   const key = `${route.protocol}:${route.model}`;
                   const expanded = expandedModels.has(key);
                   const hasConflict = route.candidates.length > 1;
@@ -1194,35 +776,74 @@ export default function ModelsPanel() {
                           {route.overridden && (
                             <span
                               className="ml-1.5 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500"
-                              title="Automatic routing is shadowed by a manual route with the same name; manual route fully replaces automatic routing"
+                              title="Automatic routing is shadowed by a named route with the same name; the named route fully replaces automatic routing"
                             >
                               overridden
                             </span>
                           )}
                         </AdminTd>
+                        <AdminTd>
+                          <span
+                            className={`rounded border px-1.5 py-0.5 text-[10px] ${protocolBadgeClass(route.protocol)}`}
+                            title="Request protocol: clients must call this model in this style (independent of the model's provider family)"
+                          >
+                            {route.protocol}
+                          </span>
+                        </AdminTd>
                         <AdminTd className="font-medium">
-                          {route.effective.winner ? (
+                          {classifierDecides(route) ? (
+                            <span
+                              className="text-indigo-700"
+                              title="Chain head is chosen by the classifier at request time (first request per session), then pinned by session binding"
+                            >
+                              {route.classifier!.classifierModel}
+                              <span className="ml-1.5 text-[11px] font-normal text-gray-500">
+                                classifier decides
+                              </span>
+                            </span>
+                          ) : route.effective.winner ? (
                             <>
                               <span className="mr-1.5">{route.effective.winner.name}</span>
                               <EffectiveBadge effective={route.effective} />
+                              {route.source === "named" && (
+                                <span
+                                  className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-medium text-indigo-700"
+                                  title="Rule classifier: chain head = first healthy target by priority; zero LLM cost"
+                                >
+                                  rule: priority
+                                </span>
+                              )}
                             </>
+                          ) : route.namedRouteUnavailable ? (
+                            <span
+                              className="rounded bg-red-50 px-1.5 py-0.5 text-[10px] font-medium text-red-700"
+                              title="Named route has no valid targets; requests get 502 named_route_unavailable"
+                            >
+                              no valid targets
+                            </span>
                           ) : (
                             <span className="text-gray-400">—</span>
                           )}
                         </AdminTd>
                         <AdminTd className="text-xs text-gray-500">
-                          {route.effective.winner ? route.effective.winner.priority : "—"}
+                          {classifierDecides(route)
+                            ? "—"
+                            : route.effective.winner
+                              ? route.effective.winner.priority
+                              : "—"}
                         </AdminTd>
                         <AdminTd>
-                          {route.effective.winner ? (
+                          {classifierDecides(route) ? (
+                            <span className="text-gray-400">—</span>
+                          ) : route.effective.winner ? (
                             <CopyableCode className="text-xs">{route.effective.winner.matchedPattern}</CopyableCode>
                           ) : (
                             <span className="text-gray-400">—</span>
                           )}
                         </AdminTd>
                         <AdminTd>
-                          {route.source === "manual" ? (
-                            <MatchTypeBadge type="manual" />
+                          {route.source === "named" ? (
+                            <MatchTypeBadge type="named" />
                           ) : route.effective.winner ? (
                             <MatchTypeBadge type={route.effective.winner.matchType} />
                           ) : (
@@ -1238,8 +859,22 @@ export default function ModelsPanel() {
                       </tr>
                       {expanded && (
                         <tr key={`${key}-detail`}>
-                          <AdminTd colSpan={7}>
+                          <AdminTd colSpan={8}>
                             <div className="rounded border border-gray-200 bg-gray-50 p-2 text-xs">
+                              {route.classifier && (
+                                <p className="mb-2 text-[11px] text-indigo-700">
+                                  {route.classifier!.kind === "priority" ? (
+                                    <>Rule classifier: chain head = first healthy target by priority
+                                    (zero LLM cost); pinned per session by binding.</>
+                                  ) : (
+                                    <>Classifier: <code>{route.classifier!.classifierModel}</code> on{" "}
+                                    {route.classifier!.classifierUpstreamName} — the chain head is chosen
+                                    at request time (first request per session), then pinned by
+                                    session binding; the first pool entry is the fallback head used
+                                    when the classifier is unavailable.</>
+                                  )}
+                                </p>
+                              )}
                                 <div className="mb-2 font-medium text-gray-600">
                                   All matching upstreams
                                 </div>
@@ -1248,6 +883,14 @@ export default function ModelsPanel() {
                                     const w = route.effective.winner;
                                     const isWinner =
                                       c.upstreamId === w?.upstreamId && c.matchedPattern === w?.matchedPattern;
+                                    // 命名路由目标池（LLM 分类器）：priority 最小目标 = 分类器不可用时的回退链首（非确定性 winner）
+                                    const fallbackHead = classifierDecides(route)
+                                      ? route.candidates[0]
+                                      : null;
+                                    const isFallbackHead =
+                                      fallbackHead != null &&
+                                      c.upstreamId === fallbackHead.upstreamId &&
+                                      c.matchedPattern === fallbackHead.matchedPattern;
                                     return (
                                       <div
                                         key={`${c.upstreamId}:${c.matchedPattern}`}
@@ -1264,6 +907,14 @@ export default function ModelsPanel() {
                                         <CopyableCode className="rounded bg-gray-100 px-1 py-0.5">{c.matchedPattern}</CopyableCode>
                                         <MatchTypeBadge type={c.matchType} />
                                         <HealthBadges candidate={c} />
+                                        {isFallbackHead && (
+                                          <span
+                                            className="ml-auto rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-medium text-indigo-700"
+                                            title="Priority-min route: chain head when the classifier is unavailable"
+                                          >
+                                            fallback head
+                                          </span>
+                                        )}
                                         {isWinner && (
                                           <span className="ml-auto font-medium text-green-700">winner</span>
                                         )}
@@ -1291,7 +942,7 @@ export default function ModelsPanel() {
                                       ))}
                                     </div>
                                     <p className="mt-1 text-[11px] text-gray-500">
-                                      Manual route fully replaces automatic routing for this model name.
+                                      Named route fully replaces automatic routing for this model name.
                                     </p>
                                   </div>
                                 )}
@@ -1313,7 +964,7 @@ export default function ModelsPanel() {
 
             {/* 移动端卡片 */}
             <AdminMobileCards>
-              {routesForProtocol.map((route) => {
+              {allRoutes.map((route) => {
                 const key = `${route.protocol}:${route.model}`;
                 const expanded = expandedModels.has(key);
                 const hasConflict = route.candidates.length > 1;
@@ -1327,20 +978,47 @@ export default function ModelsPanel() {
                       <div className="flex items-center justify-between gap-2">
                         <div className="min-w-0">
                           <CopyableCode className="text-xs">{route.model}</CopyableCode>
+                          <span
+                            className={`ml-1.5 rounded border px-1.5 py-0.5 text-[10px] ${protocolBadgeClass(route.protocol)}`}
+                          >
+                            {route.protocol}
+                          </span>
                           {route.overridden && (
                             <span
                               className="ml-1.5 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500"
-                              title="Automatic routing is shadowed by a manual route with the same name; manual route fully replaces automatic routing"
+                              title="Automatic routing is shadowed by a named route with the same name; the named route fully replaces automatic routing"
                             >
                               overridden
                             </span>
                           )}
                           <div className="mt-1 text-sm font-medium text-gray-900">
-                            {route.effective.winner ? (
+                            {classifierDecides(route) ? (
+                              <span
+                                className="text-indigo-700"
+                                title="Chain head is chosen by the classifier at request time (first request per session), then pinned by session binding"
+                              >
+                                {route.classifier!.classifierModel}
+                                <span className="ml-1.5 text-[11px] font-normal text-gray-500">
+                                  classifier decides
+                                </span>
+                              </span>
+                            ) : route.effective.winner ? (
                               <>
                                 <span className="mr-1.5">{route.effective.winner.name}</span>
                                 <EffectiveBadge effective={route.effective} />
+                                {route.source === "named" && (
+                                  <span
+                                    className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-medium text-indigo-700"
+                                    title="Rule classifier: chain head = first healthy target by priority; zero LLM cost"
+                                  >
+                                    rule: priority
+                                  </span>
+                                )}
                               </>
+                            ) : route.namedRouteUnavailable ? (
+                              <span className="rounded bg-red-50 px-1.5 py-0.5 text-[10px] font-medium text-red-700">
+                                no valid targets
+                              </span>
                             ) : (
                               <span className="text-gray-400">—</span>
                             )}
@@ -1355,8 +1033,8 @@ export default function ModelsPanel() {
                             <CopyableCode className="rounded bg-gray-100 px-1 py-0.5">{route.effective.winner.matchedPattern}</CopyableCode>
                           </>
                         )}
-                        {route.source === "manual" ? (
-                          <MatchTypeBadge type="manual" />
+                        {route.source === "named" ? (
+                          <MatchTypeBadge type="named" />
                         ) : route.effective.winner ? (
                           <MatchTypeBadge type={route.effective.winner.matchType} />
                         ) : (
@@ -1367,6 +1045,20 @@ export default function ModelsPanel() {
                     </button>
                     {expanded && (
                       <div className="border-t border-gray-100 bg-gray-50 p-3 text-xs">
+                        {route.classifier && (
+                          <p className="mb-2 text-[11px] text-indigo-700">
+                            {route.classifier!.kind === "priority" ? (
+                              <>Rule classifier: chain head = first healthy target by priority (zero
+                              LLM cost); pinned per session by binding.</>
+                            ) : (
+                              <>Classifier: <code>{route.classifier!.classifierModel}</code> on{" "}
+                              {route.classifier!.classifierUpstreamName} — the chain head is chosen at
+                              request time (first request per session), then pinned by session
+                              binding; the first pool entry is the fallback head used when the
+                              classifier is unavailable.</>
+                            )}
+                          </p>
+                        )}
                         <div className="mb-2 font-medium text-gray-600">
                           All matching upstreams
                         </div>
@@ -1375,6 +1067,14 @@ export default function ModelsPanel() {
                             const w = route.effective.winner;
                             const isWinner =
                               c.upstreamId === w?.upstreamId && c.matchedPattern === w?.matchedPattern;
+                            // 命名路由目标池（LLM 分类器）：priority 最小目标 = 分类器不可用时的回退链首（非确定性 winner）
+                            const fallbackHead = classifierDecides(route)
+                              ? route.candidates[0]
+                              : null;
+                            const isFallbackHead =
+                              fallbackHead != null &&
+                              c.upstreamId === fallbackHead.upstreamId &&
+                              c.matchedPattern === fallbackHead.matchedPattern;
                             return (
                               <div
                                 key={`${c.upstreamId}:${c.matchedPattern}`}
@@ -1391,6 +1091,14 @@ export default function ModelsPanel() {
                                 <CopyableCode className="rounded bg-gray-100 px-1 py-0.5">{c.matchedPattern}</CopyableCode>
                                 <MatchTypeBadge type={c.matchType} />
                                 <HealthBadges candidate={c} />
+                                {isFallbackHead && (
+                                  <span
+                                    className="ml-auto rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-medium text-indigo-700"
+                                    title="Priority-min route: chain head when the classifier is unavailable"
+                                  >
+                                    fallback head
+                                  </span>
+                                )}
                                 {isWinner && (
                                   <span className="ml-auto font-medium text-green-700">winner</span>
                                 )}
@@ -1418,7 +1126,7 @@ export default function ModelsPanel() {
                               ))}
                             </div>
                             <p className="mt-1 text-[11px] text-gray-500">
-                              Manual route fully replaces automatic routing for this model name.
+                              Named route fully replaces automatic routing for this model name.
                             </p>
                           </div>
                         )}
@@ -1710,6 +1418,14 @@ function PriceBadges({
   }
   if (row.status.removed) {
     badges.push({ key: "removed", cls: "bg-red-50 text-red-700 border-red-200", label: "removed", action: onPick });
+  }
+  if (row.status.zeroNoPrice) {
+    badges.push({
+      key: "zero-price",
+      cls: "bg-amber-50 text-amber-700 border-amber-200",
+      label: "check price",
+      title: "No official price in snapshot, but stored price is 0 — likely overwritten by an earlier force Re-fill. Confirm or delete this row.",
+    });
   }
 
   if (badges.length === 0) return null;

@@ -282,6 +282,104 @@ describe("probeModel", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("prefers a per-model probe config over the upstream-level one", async () => {
+    fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
+    const result = await probeModel(
+      {
+        protocol: "openai",
+        baseUrl: "https://api.example",
+        probeConfig: { path: "/v1/chat/completions", body: { model: "{{model}}" } },
+        modelProbeConfigs: [
+          { model: "text-embedding-3-large", path: "/v1/embeddings", body: { model: "{{model}}", input: "hi" } },
+        ],
+      },
+      "text-embedding-3-large",
+      "sk-test"
+    );
+    expect(result).toEqual({ ok: true, status: 200, style: "custom" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://api.example/v1/embeddings");
+    expect(JSON.parse(String(init.body))).toEqual({ model: "text-embedding-3-large", input: "hi" });
+  });
+
+  it("uses the upstream-level probe config for models without a per-model entry", async () => {
+    fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
+    await probeModel(
+      {
+        protocol: "openai",
+        baseUrl: "https://api.example",
+        probeConfig: { path: "/v1/responses", body: { model: "{{model}}", input: "hi" } },
+        modelProbeConfigs: [
+          { model: "text-embedding-3-large", path: "/v1/embeddings", body: { model: "{{model}}" } },
+        ],
+      },
+      "gpt-5",
+      "sk-test"
+    );
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://api.example/v1/responses");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the default styles when no probe config matches the model", async () => {
+    fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
+    const result = await probeModel(
+      {
+        protocol: "openai",
+        baseUrl: "https://api.example",
+        modelProbeConfigs: [
+          { model: "text-embedding-3-large", path: "/v1/embeddings", body: { model: "{{model}}" } },
+        ],
+      },
+      "gpt-5",
+      "sk-test"
+    );
+    expect(result.style).toBe("chat");
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://api.example/v1/chat/completions");
+  });
+
+  it("falls back to the upstream-level config when a per-model path escapes the base prefix", async () => {
+    fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
+    await probeModel(
+      {
+        protocol: "openai",
+        baseUrl: "https://api.example/v1",
+        probeConfig: { path: "/v1/responses", body: { model: "{{model}}", input: "hi" } },
+        // 手工构造（绕过 isValidProbeConfig 的段校验）
+        modelProbeConfigs: [
+          { model: "text-embedding-3-large", path: "/v1/..?x=1", body: { model: "{{model}}" } },
+        ],
+      },
+      "text-embedding-3-large",
+      "sk-test"
+    );
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://api.example/v1/responses");
+  });
+
+  it("refuses to fetch when the substituted model name escapes the base URL path prefix", async () => {
+    // model 名含 .. 段：替换进 path 后经 URL 归一化逃出 baseUrl 路径前缀，
+    // 真实 key 会发到前缀之外的端点（mid-path 的 // 不改变 origin，.. 才能越出前缀）
+    const result = await probeModel(
+      {
+        protocol: "openai",
+        baseUrl: "https://api.example.com/svc",
+        probeConfig: {
+          path: "/v1/models/{{model}}:probe",
+          body: { contents: [] },
+        },
+      },
+      "../../../admin",
+      "sk-test"
+    );
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe(0);
+    expect(result.error).toContain("escaped");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("does not fall back on 401 (key-level error)", async () => {
     fetchMock.mockResolvedValue(new Response("unauthorized", { status: 401 }));
     const result = await probeModel(

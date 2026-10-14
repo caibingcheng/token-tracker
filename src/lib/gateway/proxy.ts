@@ -7,9 +7,11 @@ import {
   modelMatchesPattern,
   parseEnabledModels,
   detectRequestProtocol,
-  findRoutingRules,
+  findNamedRoute,
+  sortNamedRouteTargets,
+  expandNamedRouteTargets,
 } from "./model-router";
-import type { UpstreamRoute, ModelCandidate, RoutingRule } from "./model-router";
+import type { UpstreamRoute, ModelCandidate, NamedRoute as NamedRouteConfig } from "./model-router";
 import { buildAuthHeaders, isEdgeBlockStatus } from "./upstream-client";
 import { joinUrlPath, sanitizePathSegments } from "./url-utils";
 import { buildSessionId } from "./session";
@@ -27,6 +29,8 @@ import { rewriteModelNonStreaming, createSseModelRewriter } from "./response-rew
 import { getProxyDispatcher } from "./proxy-dispatcher";
 import { applyHeaderTransforms } from "./header-transforms";
 import type { HeaderTransform, HeaderTransformContext } from "./header-transforms";
+import { parseClassifierModels } from "./classifier/types";
+import type { ClassifierKind, ClassifierModelEntry, ClassifierUsage } from "./classifier/types";
 
 export const MAX_RETRY = 2; // 每个 key 内最多尝试次数
 const NON_STREAMING_TIMEOUT_MS = 60_000;
@@ -105,6 +109,37 @@ export interface RecordUsageMeta {
   requestModel?: string | null; // 客户端原始请求名（虚拟名路由场景可追溯）
 }
 
+// 命名路由配置（named_routes 表行）：自带目标池与可选分类器，命中后目标池整体构成 failover 链
+export interface NamedRouteInfo {
+  id: number;
+  name: string;
+  protocol: Protocol;
+  instruction: string;
+  classifierUpstreamId: number; // kind='priority' 时为占位 0
+  classifierModel: string; // kind='priority' 时为占位 ''
+  classifierKind: ClassifierKind; // 'priority' = 规则分类器（按优先级+可用性选链首）| 'model' = LLM 分类器
+  enabled: boolean;
+}
+
+// 命名路由的目标（named_route_targets 表行）；upstreamId = null → 无 provider 目标，按路由解析
+export interface NamedRouteTargetInfo {
+  id: number;
+  upstreamId: number | null;
+  targetModel: string;
+  description: string | null;
+  priority: number;
+}
+
+// 分类器决策调用（由 proxy-deps 装配真实实现；测试可 mock）
+export type RunClassifierFn = (opts: {
+  upstream: UpstreamRoute;
+  entry: ClassifierModelEntry;
+  instruction: string;
+  routes: { routeId: number; targetModel: string; description: string | null }[];
+  bodyJson: unknown;
+  protocol: Protocol;
+}) => Promise<{ routeId: number | null; usage: ClassifierUsage | null }>;
+
 export interface ProxyDeps {
   // 虚拟 key 校验：全表解密比对
   resolveVirtualKey: (token: string) => Promise<VirtualKeyInfo | null>;
@@ -112,8 +147,12 @@ export interface ProxyDeps {
   resolveUpstreamKeys: (upstreamId: number) => Promise<string[]>;
   // 加载所有启用的上游（含 enabledModels）
   loadUpstreams: () => Promise<UpstreamRoute[]>;
-  // 加载全部手动路由规则（可选；未实现则手动路由不生效）
-  loadRoutingRules?: () => Promise<RoutingRule[]>;
+  // 加载全部命名路由（可选；未实现则命名路由不生效）
+  loadNamedRoutes?: () => Promise<NamedRouteInfo[]>;
+  // 加载某条命名路由的目标池（可选；空数组 = 该路由无有效目标）
+  loadNamedRouteTargets?: (namedRouteId: number) => Promise<NamedRouteTargetInfo[]>;
+  // 分类器决策（可选；kind='model' 的命名路由才启用）
+  runClassifier?: RunClassifierFn;
   // usage 解析完成回调（写库）
   onUsage?: (meta: RecordUsageMeta) => Promise<void>;
   // 请求完成回调（更新 last_used_at 等）
@@ -127,7 +166,7 @@ export interface ProxyDeps {
   // 会话粘性 binding（跨 upstream failover 时保存/查询；可选，缺省则无粘性）
   session?: {
     getBinding: (sessionId: string) => SessionBinding | undefined;
-    setBinding: (sessionId: string, upstreamId: number) => void;
+    setBinding: (sessionId: string, upstreamId: number, targetModel?: string) => void;
   };
   // upstream / model 健康状态（可选，缺省视为全部健康且不标记）
   health?: {
@@ -317,15 +356,16 @@ export async function handleProxyRequest(
     return proxyError(401, "Invalid or revoked virtual key", "authentication_error");
   }
 
-  // GET /v1/models：返回所有启用上游模型的并集 + 手动路由虚拟名（按请求协议过滤，均过 vk allowlist）
+  // GET /v1/models：返回所有启用上游模型的并集 + 命名路由虚拟名（按请求协议过滤，均过 vk allowlist）
   if (request.method === "GET" && path.endsWith("/models")) {
     const upstreams = await deps.loadUpstreams();
     const protocol = detectRequestProtocol(path);
-    const rules = deps.loadRoutingRules ? await deps.loadRoutingRules() : [];
-    const manualNames = rules
-      .filter((r) => r.protocol === protocol)
+    const routes = deps.loadNamedRoutes ? await deps.loadNamedRoutes() : [];
+    // disabled 路由与请求时 findNamedRoute 口径一致：不进模型列表（命中即 404/自动路由）
+    const namedNames = routes
+      .filter((r) => r.protocol === protocol && r.enabled)
       .map((r) => r.name);
-    const models = collectEnabledModels(upstreams, manualNames).filter((id) =>
+    const models = collectEnabledModels(upstreams, namedNames).filter((id) =>
       isModelAllowedByVirtualKey(virtualKey, id)
     );
     return Response.json(
@@ -383,63 +423,242 @@ export async function handleProxyRequest(
   const upstreams = await deps.loadUpstreams();
   const protocol = detectRequestProtocol(path);
 
-  // 手动路由短路：命中即走多目标 failover 链（完全替代自动路由，不回退）；
-  // 规则组内每个目标独立 resolve，禁用/不存在的目标跳过并记日志；
-  // 无有效目标 → 502 manual_route_unavailable
-  // hop 目标配对按链内 upstream 对象引用（非 upstream id）：同名规则允许同 upstream 挂多个
-  // 不同 targetModel（UNIQUE 含 targetModel），链内同一 upstream 可多次出现，
-  // 健康重排 / session 重排均保持对象引用不变，引用级 Map 天然对齐
-  let manualRoute: { virtualName: string; hopTargetModel: Map<UpstreamRoute, string> } | null = null;
-  let chain: UpstreamRoute[] = [];
-  // 健康过滤时被跳过的不健康候选（兜底成功时自愈清除标记，手动/自动统一）
+  // ---- 命名路由解析：命中后目标池整体构成 failover 链（同名自动路由完全失效） ----
+  // 链首：session binding 预选 > 分类器（kind='model'）> 首个健康目标（按 priority）；
+  // 其余目标按 priority 接链尾；健康者在前，degraded 排尾（兜底成功走统一自愈）。
+  type RouteHop = { upstream: UpstreamRoute; targetModel: string };
+
+  let namedRoute: { name: string } | null = null;
+  // 健康过滤时被跳过的目标（兜底成功时自愈清除标记，命名/自动路由统一）
   const degradedUpstreams = new Set<number>();
-  if (deps.loadRoutingRules) {
-    const rules = await deps.loadRoutingRules();
-    const matched = findRoutingRules(model, protocol, rules);
-    if (matched.length > 0) {
-      const hopTargetModel = new Map<UpstreamRoute, string>();
-      for (const rule of matched) {
-        const target = upstreams.find((u) => u.id === rule.upstreamId);
-        if (!target) {
-          deps.log?.(
-            `[gateway] manual route target upstream (id=${rule.upstreamId}) is disabled or does not exist; skipping`
+  // 命名路由决策需要会话指纹（failover 重绑复用同一值）
+  let sessionId: string | null = null;
+  // 本次请求决策选中的目标 hop（路由内 failover 落点漂移时用于重绑 binding）
+  let decisionHop: RouteHop | null = null;
+  let hops: RouteHop[] = [];
+
+  const hopHealth = async (hop: RouteHop): Promise<boolean> => {
+    const upDown = deps.health && !(await deps.health.isHealthy(hop.upstream.id));
+    const modelDown =
+      deps.health?.isModelHealthy &&
+      !(await deps.health.isModelHealthy(hop.upstream.id, hop.targetModel));
+    return !(upDown || modelDown);
+  };
+
+  {
+    const allRoutes = deps.loadNamedRoutes ? await deps.loadNamedRoutes() : [];
+    const route = findNamedRoute(model, protocol, allRoutes);
+    if (route) {
+      namedRoute = { name: model };
+
+      // 预取目标池：本路由 + auto 目标嵌套可达的路由（visited 防环）
+      const targetsByRouteId = new Map<number, NamedRouteTargetInfo[]>();
+      const loadTargetsDeep = async (routeId: number, visited: Set<number>): Promise<void> => {
+        if (visited.has(routeId)) return;
+        visited.add(routeId);
+        const targets = deps.loadNamedRouteTargets ? await deps.loadNamedRouteTargets(routeId) : [];
+        targetsByRouteId.set(routeId, targets);
+        for (const t of targets) {
+          if (t.upstreamId !== null) continue;
+          const nested = allRoutes.find(
+            (r) => r.enabled && r.protocol === protocol && r.name === t.targetModel
           );
-          continue;
+          if (nested && !visited.has(nested.id)) await loadTargetsDeep(nested.id, visited);
         }
-        hopTargetModel.set(target, rule.targetModel);
-        chain.push(target);
-      }
-      if (hopTargetModel.size === 0 || chain.length === 0) {
+      };
+      await loadTargetsDeep(route.id, new Set());
+
+      // 顶层目标池 → 展开 hop 链（显式目标单 hop；auto 目标嵌套命名路由 > 自动路由候选池）
+      const toPoolEntry = (routeId: number) => (t: NamedRouteTargetInfo) => ({
+        id: t.id,
+        namedRouteId: routeId,
+        upstreamId: t.upstreamId,
+        upstreamModel: t.targetModel,
+        description: t.description,
+        priority: t.priority,
+      });
+      const expandTarget = (t: NamedRouteTargetInfo): RouteHop[] =>
+        expandNamedRouteTargets({
+          protocol,
+          upstreams,
+          routes: allRoutes,
+          targets: [toPoolEntry(route.id)(t)],
+          resolveTargets: (id) => (targetsByRouteId.get(id) ?? []).map(toPoolEntry(id)),
+          rootRouteId: route.id,
+          log: deps.log,
+        }).map((p) => ({ upstream: p.upstream, targetModel: p.targetModel }));
+
+      const targets = sortNamedRouteTargets(targetsByRouteId.get(route.id) ?? []);
+      if (targets.length === 0) {
+        // 命名路由存在但目标池为空 → 502，不回退自动路由
         return proxyError(
           502,
-          "Manual route target unavailable: no valid upstream targets",
-          "manual_route_unavailable"
+          "Named route target unavailable: no valid upstream targets",
+          "named_route_unavailable"
         );
       }
-      // 健康排序对齐自动路由：健康目标在链首，unhealthy / model 级不可用目标排尾（兜底尝试）；
-      // 不健康目标记入 degradedUpstreams，兜底成功时统一自愈清除健康标记
-      const healthyChain: UpstreamRoute[] = [];
-      const fallbackChain: UpstreamRoute[] = [];
-      for (const target of chain) {
-        const targetModel = hopTargetModel.get(target)!;
-        const upDown = deps.health && !(await deps.health.isHealthy(target.id));
-        const modelDown =
-          deps.health?.isModelHealthy &&
-          !(await deps.health.isModelHealthy(target.id, targetModel));
-        if (upDown || modelDown) {
-          degradedUpstreams.add(target.id);
-          fallbackChain.push(target);
-        } else {
-          healthyChain.push(target);
+      const hopsByTarget = new Map<number, RouteHop[]>();
+      for (const t of targets) hopsByTarget.set(t.id, expandTarget(t));
+      // 全部目标都解析不出 hop（upstream 全禁用/删除、auto 名不可解析、嵌套成环）→ 502
+      const expandable = targets.filter((t) => (hopsByTarget.get(t.id)?.length ?? 0) > 0);
+      if (expandable.length === 0) {
+        return proxyError(
+          502,
+          "Named route target unavailable: no valid upstream targets",
+          "named_route_unavailable"
+        );
+      }
+
+      // session 粘性（目标粒度决策、hop 粒度匹配）：binding 命中某目标展开链内的一跳
+      let preselected: NamedRouteTargetInfo | null = null;
+      let boundHop: RouteHop | null = null;
+      if (deps.session && expandable.length > 1) {
+        sessionId = buildSessionId(bodyJson, model, virtualKey.id, protocol);
+        const binding = deps.session.getBinding(sessionId);
+        // named-route binding 必带 targetModel（成功路径总是写 hop 粒度）；
+        // undefined = 旧自动路由粒度的残留 binding，不让它通配命名路由目标
+        if (binding && binding.targetModel !== undefined) {
+          for (const t of expandable) {
+            const hit = hopsByTarget.get(t.id)!.find(
+              (h) => h.upstream.id === binding.upstreamId && h.targetModel === binding.targetModel
+            );
+            if (hit) {
+              preselected = t;
+              boundHop = hit;
+              break;
+            }
+          }
         }
       }
-      chain = [...healthyChain, ...fallbackChain];
-      manualRoute = { virtualName: model, hopTargetModel };
+
+      // 链首目标：binding 预选 > LLM 分类器（kind='model'）> 首个有健康 hop 的目标（规则分类器，
+      // 零 LLM 开销）；决策/回退结果写 binding（hop 粒度）。pinHop = 链首目标内置顶的 hop
+      //（binding 命中跳 / 规则分类器健康跳），组链时排在该目标 hops 最前
+      let selected: NamedRouteTargetInfo | null = preselected;
+      let pinHop: RouteHop | null = boundHop;
+      if (!selected && expandable.length > 1) {
+        const headHopOf = (t: NamedRouteTargetInfo) => hopsByTarget.get(t.id)![0];
+        const writeBinding = (t: NamedRouteTargetInfo, hop?: RouteHop) => {
+          if (sessionId && deps.session) {
+            const h = hop ?? headHopOf(t);
+            deps.session.setBinding(sessionId, h.upstream.id, h.targetModel);
+          }
+        };
+        if (route.classifierKind === "model" && deps.runClassifier && sessionId && deps.session) {
+          const classifierUpstream = upstreams.find((u) => u.id === route.classifierUpstreamId);
+          // 已声明的 classifier_models 条目优先（保留存量 chat 类型/path 覆盖/预算配置）；
+          // 未声明的一律按 jev-systemone 决策模型处理（POST /v1/systemone）
+          const entry = classifierUpstream
+            ? (parseClassifierModels(classifierUpstream.classifierModels).find(
+                (e) => e.model === route.classifierModel
+              ) ?? { model: route.classifierModel, type: "jev-systemone" as const })
+            : undefined;
+          if (classifierUpstream && entry) {
+            const classifierStart = Date.now();
+            const result = await deps.runClassifier({
+              upstream: classifierUpstream,
+              entry,
+              instruction: route.instruction,
+              routes: expandable.map((t) => ({
+                routeId: t.id,
+                targetModel: t.targetModel,
+                description: t.description,
+              })),
+              bodyJson,
+              protocol,
+            });
+            if (result.routeId !== null) {
+              selected = expandable.find((t) => t.id === result.routeId) ?? null;
+            }
+            // 分类器消耗的 token 记一条（成本可见）；失败也记（status=classifier）
+            if (deps.onUsage) {
+              deps
+                .onUsage({
+                  model: route.classifierModel,
+                  provider: classifierUpstream.name,
+                  agent: virtualKey.name,
+                  inputTokens: result.usage?.inputTokens ?? 0,
+                  outputTokens: result.usage?.outputTokens ?? 0,
+                  cacheRead: 0,
+                  cacheWrite: 0,
+                  status: "classifier",
+                  latencyMs: Date.now() - classifierStart,
+                  virtualKeyId: virtualKey.id,
+                  userAgent,
+                  sessionId: clientSessionId,
+                  requestModel: model,
+                })
+                .catch(() => {});
+            }
+          } else {
+            deps.log?.(
+              `[gateway] named route "${model}": classifier upstream/entry not configured or unavailable; falling back to priority order`
+            );
+          }
+          selected ??= expandable[0];
+          writeBinding(selected);
+        } else {
+          if (route.classifierKind === "model") {
+            deps.log?.(
+              `[gateway] named route "${model}": classifier unavailable (deps/session); falling back to priority order`
+            );
+          }
+          // 规则分类器：链首 = 首个有健康 hop 的目标（availability），全不健康回退 priority 最小
+          let healthyHead: NamedRouteTargetInfo | null = null;
+          let healthyHop: RouteHop | null = null;
+          for (const t of expandable) {
+            for (const h of hopsByTarget.get(t.id)!) {
+              if (await hopHealth(h)) {
+                healthyHead = t;
+                healthyHop = h;
+                break;
+              }
+            }
+            if (healthyHead) break;
+          }
+          selected = healthyHead ?? expandable[0];
+          pinHop = healthyHop;
+          deps.log?.(
+            `[gateway] named route "${model}": rule classifier (priority) picked target ${selected.id} → ${selected.targetModel}`
+          );
+          writeBinding(selected, healthyHop ?? undefined);
+        }
+      }
+      const head = selected ?? expandable[0];
+
+      // 组链：链首目标的 hops 在前（binding 命中跳置顶），其余按 priority 接链尾
+      const chain: RouteHop[] = [];
+      const pushTarget = (t: NamedRouteTargetInfo) => {
+        const list = [...(hopsByTarget.get(t.id) ?? [])];
+        if (pinHop && t.id === head.id) {
+          const idx = list.findIndex(
+            (h) => h.upstream.id === pinHop!.upstream.id && h.targetModel === pinHop!.targetModel
+          );
+          if (idx > 0) list.unshift(list.splice(idx, 1)[0]);
+        }
+        chain.push(...list);
+      };
+      pushTarget(head);
+      for (const t of expandable) if (t.id !== head.id) pushTarget(t);
+      decisionHop = chain[0] ?? null;
+
+      // hop 级健康重排：健康在前，degraded 排尾（兜底成功走统一自愈）
+      const healthyHops: RouteHop[] = [];
+      const fallbackHops: RouteHop[] = [];
+      for (const hop of chain) {
+        if (await hopHealth(hop)) {
+          healthyHops.push(hop);
+        } else {
+          degradedUpstreams.add(hop.upstream.id);
+          fallbackHops.push(hop);
+        }
+      }
+      hops = [...healthyHops, ...fallbackHops];
     }
   }
 
-  if (!manualRoute) {
-    // 按协议路由：获取所有匹配候选（exact 优先，priority 升序）
+  if (!namedRoute) {
+    // 自动路由：按协议路由获取所有匹配候选（exact 优先，priority 升序）
     const { candidates } = routeModelByProtocol(model, protocol, upstreams);
     if (candidates.length === 0) {
       // 保留原语义：model 仅配置在其他协议的 upstream 上 → 400 protocol_mismatch
@@ -454,7 +673,6 @@ export async function handleProxyRequest(
       }
       return proxyError(404, `No upstream configured for model: ${model}`, "model_not_found");
     }
-
     // 候选去重（同一 upstream 可因 exact + wildcard 命中多次）+ 过滤 unhealthy（upstream 级 + model 级）；
     // 无健康候选时兜底：回退全部候选（unhealthy 也尝试），不留 502
     const allCandidates = dedupeByUpstreamId(candidates);
@@ -465,29 +683,27 @@ export async function handleProxyRequest(
         !(await deps.health.isModelHealthy(candidate.id, model));
       if (upDown || modelDown) degradedUpstreams.add(candidate.id);
       if (upDown || modelDown) continue;
-      chain.push(candidate);
+      hops.push({ upstream: candidate, targetModel: model });
     }
-    if (chain.length === 0) {
+    if (hops.length === 0) {
       deps.log?.(
         `[gateway] no healthy candidates for model: ${model}; falling back to unhealthy upstreams`
       );
-      chain = allCandidates;
+      hops = allCandidates.map((u) => ({ upstream: u, targetModel: model }));
     }
   }
 
-  // 默认 upstream = 排序后第一个
-  const defaultUpstream = chain[0];
+  const defaultHop: RouteHop = hops[0];
+  const defaultUpstream = defaultHop.upstream;
 
-  // 多候选时计算 session 粘性：binding 存在且仍可用（启用/协议/健康/模型匹配均已由链过滤）
-  // 则把 sticky upstream 提到链首；单候选跳过 session 计算
-  let sessionId: string | null = null;
-  if (chain.length > 1 && deps.session) {
+  // 自动路由的多候选 session 粘性（upstream 粒度；命名路由的粘性已在组装时按 route 粒度处理）
+  if (!namedRoute && hops.length > 1 && deps.session) {
     sessionId = buildSessionId(bodyJson, model, virtualKey.id, protocol);
     const binding = deps.session.getBinding(sessionId);
-    if (binding && chain.some((u) => u.id === binding.upstreamId)) {
-      const bound = chain.filter((u) => u.id === binding.upstreamId);
-      const rest = chain.filter((u) => u.id !== binding.upstreamId);
-      chain = [...bound, ...rest];
+    if (binding && hops.some((h) => h.upstream.id === binding.upstreamId)) {
+      const bound = hops.filter((h) => h.upstream.id === binding.upstreamId);
+      const rest = hops.filter((h) => h.upstream.id !== binding.upstreamId);
+      hops = [...bound, ...rest];
     }
   }
 
@@ -522,20 +738,21 @@ export async function handleProxyRequest(
   let lastError: { status: number; text?: string } | null = null;
   let lastResponse: Response | null = null;
   let successUpstream: UpstreamRoute | null = null;
+  let successHop: RouteHop | null = null;
   // 全部候选均对该 model 返回 4xx 业务错误（404/403）时，透传最后一个原始响应
   let fallbackBusinessResponse: Response | null = null;
 
-  // 跨 upstream 故障转移链：按链序遍历 upstream，每个 upstream 内遍历 key，
-  // 每个 key 内重试 MAX_RETRY 次；只在收到响应头之前允许重试/切换（流式输出开始后不可重试）
-  for (const upstream of chain) {
-    // per-hop 改写：手动路由多目标各自 targetModel 不同，
+  // 跨 upstream 故障转移链：hop 按序遍历（命名路由 = 目标池链，自动路由 = 候选链），
+  // 每个 upstream 内遍历 key，每个 key 内重试 MAX_RETRY 次；
+  // 只在收到响应头之前允许重试/切换（流式输出开始后不可重试）
+  hopLoop: for (const hop of hops) {
+    const upstream = hop.upstream;
+    // per-hop 改写：命名路由多目标各自 targetModel 不同，
     // body / path 改写按当跳 upstream 计算，改用真实 model 名（与自动路由路径一致）
-    const hopModel = manualRoute
-      ? manualRoute.hopTargetModel.get(upstream) ?? model
-      : model;
+    const hopModel = namedRoute ? hop.targetModel : model;
     let hopPath = path;
     let hopBodyBuffer = bodyBuffer;
-    if (manualRoute) {
+    if (namedRoute) {
       if (protocol === "gemini") {
         hopPath = path.replace(
           /^(\/v1(?:\/?beta)?\/models\/)[^/:]+/,
@@ -642,6 +859,7 @@ export async function handleProxyRequest(
           }
           lastResponse = upstreamResponse; // 成功（含其他 4xx 业务错误）：直接透传
           successUpstream = upstream;
+          successHop = hop;
           upstreamFailed = false;
           break;
         } catch (err) {
@@ -676,7 +894,7 @@ export async function handleProxyRequest(
       // 后续候选成功：释放未透传的业务错误 body，避免连接泄漏
       await fallbackBusinessResponse?.body?.cancel().catch(() => {});
       fallbackBusinessResponse = null;
-      break;
+      break hopLoop;
     }
     if (modelNotFound) continue; // model 级不可用：不标记 upstream unhealthy，继续下一个
     // 该 upstream 全部 key 均失败 → 标记 unhealthy，继续下一个 upstream
@@ -708,9 +926,7 @@ export async function handleProxyRequest(
     deps.onComplete?.({ virtualKeyId: virtualKey.id }).catch(() => {});
     if (fallbackBusinessResponse) {
       const meta: RecordUsageMeta = {
-        model: manualRoute
-          ? manualRoute.hopTargetModel.get(defaultUpstream) ?? model
-          : model,
+        model: namedRoute ? defaultHop.targetModel : model,
         provider: defaultUpstream.name,
         agent: virtualKey.name,
         inputTokens: 0,
@@ -728,21 +944,21 @@ export async function handleProxyRequest(
         bodyJson,
         protocol,
         virtualKeyId: virtualKey.id,
-        virtualModelName: manualRoute?.virtualName,
+        virtualModelName: namedRoute?.name,
         clientSignal: request.signal,
       });
     }
-    if (manualRoute) {
-      // 手动路由多目标链全部失败 → 502（不回退自动路由）。
+    if (namedRoute) {
+      // 命名路由目标链全部失败 → 502（不回退自动路由）。
       // 不回显 lastError.text（可能含内网地址等内部细节），仅日志保留
       if (lastError?.text) {
-        deps.log?.(`[gateway] manual route failed: ${lastError.text}`);
+        deps.log?.(`[gateway] named route failed: ${lastError.text}`);
       }
       const detail =
         lastError && lastError.status > 0
           ? `upstream returned status ${lastError.status}`
           : "upstream request failed";
-      return proxyError(502, `Manual route target unavailable: ${detail}`, "manual_route_unavailable");
+      return proxyError(502, `Named route target unavailable: ${detail}`, "named_route_unavailable");
     }
     if (lastError && lastError.status > 0) {
       return new Response(
@@ -759,23 +975,40 @@ export async function handleProxyRequest(
   }
 
   // 成功落点不是默认 upstream 时保存 session binding（粘性绑定）；仅 2xx 落点生效
+  // manual/virtual route 落点带 targetModel（route 粒度），自动路由为 upstream 粒度；
+  // vm 候选的决策 route 与实际落点漂移（vm 内 failover）时也重绑
   if (
     sessionId &&
     deps.session &&
     lastResponse.status >= 200 &&
     lastResponse.status < 300 &&
     successUpstream &&
-    successUpstream.id !== defaultUpstream.id
+    successHop
   ) {
-    deps.session.setBinding(sessionId, successUpstream.id);
+    const vmDrifted =
+      decisionHop !== null &&
+      (successUpstream.id !== decisionHop.upstream.id ||
+        successHop.targetModel !== decisionHop.targetModel);
+    if (namedRoute) {
+      if (successUpstream.id !== defaultUpstream.id || successHop.targetModel !== defaultHop.targetModel || vmDrifted) {
+        // 值未变不重写（binding 预选/决策落点与既有 binding 一致时避免每请求重复 set）
+        const existing = deps.session.getBinding(sessionId);
+        if (
+          existing?.upstreamId !== successUpstream.id ||
+          existing?.targetModel !== successHop.targetModel
+        ) {
+          deps.session.setBinding(sessionId, successUpstream.id, successHop.targetModel);
+        }
+      }
+    } else if (successUpstream.id !== defaultUpstream.id) {
+      deps.session.setBinding(sessionId, successUpstream.id);
+    }
   }
 
   const latencyMs = Date.now() - startTime;
   const successModel = successUpstream ?? defaultUpstream;
   const meta: RecordUsageMeta = {
-    model: manualRoute
-      ? manualRoute.hopTargetModel.get(successModel) ?? model
-      : model,
+    model: namedRoute ? (successHop ?? defaultHop).targetModel : model,
     provider: successModel.name,
     agent: virtualKey.name,
     inputTokens: 0,
@@ -795,7 +1028,7 @@ export async function handleProxyRequest(
         bodyJson,
         protocol,
         virtualKeyId: virtualKey.id,
-        virtualModelName: manualRoute?.virtualName,
+        virtualModelName: namedRoute?.name,
         startTime,
         clientSignal: request.signal,
       });
@@ -1034,7 +1267,7 @@ async function handleSubresourcePassthrough(
 }
 
 // 透传上游响应（单 reader，边透传边累积副本），usage 解析与写库由 deps 完成；
-// 仅手动路由命中时启用响应 model 回写（virtualModelName），正常流量零开销
+// 仅命名路由命中时启用响应 model 回写（virtualModelName），正常流量零开销
 async function passthroughResponse(
   upstreamResponse: Response,
   opts: {

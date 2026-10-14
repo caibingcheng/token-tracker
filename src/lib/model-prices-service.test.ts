@@ -93,13 +93,18 @@ async function insertRemoteInstance(instanceName: string, lastRecordId = 5) {
 
 async function insertPrice(
   model: string,
-  opts: { source?: string; modelsDevId?: string | null } = {}
+  opts: {
+    source?: string;
+    modelsDevId?: string | null;
+    inputPrice?: number;
+    outputPrice?: number;
+  } = {}
 ) {
   await withSkipCache(async () => {
     await db.insert(modelPricesTable).values({
       model,
-      inputPrice: 1,
-      outputPrice: 2,
+      inputPrice: opts.inputPrice ?? 1,
+      outputPrice: opts.outputPrice ?? 2,
       cacheReadPrice: null,
       cacheWritePrice: null,
       source: opts.source ?? "manual",
@@ -107,6 +112,33 @@ async function insertPrice(
       updatedAt: new Date().toISOString(),
     });
   });
+}
+
+// 临时写入指定快照形状并恢复默认空快照，供需要特定快照的用例使用
+async function withSnapshot(
+  data: Record<string, unknown>,
+  fn: () => Promise<void>,
+  source: "models.dev" | "github" = "models.dev"
+) {
+  const snapshotPath = join(dir, "models-dev-cache.json");
+  writeFileSync(
+    snapshotPath,
+    JSON.stringify({ fetchedAt: new Date().toISOString(), source, data })
+  );
+  resetSnapshotCache();
+  try {
+    await fn();
+  } finally {
+    writeFileSync(
+      snapshotPath,
+      JSON.stringify({
+        fetchedAt: new Date().toISOString(),
+        source: "models.dev",
+        data: { p1: { id: "p1", models: {} } },
+      })
+    );
+    resetSnapshotCache();
+  }
 }
 
 const daysAgo = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString();
@@ -401,5 +433,114 @@ describe("model prices badge semantics (inactive / removed)", () => {
       );
       resetSnapshotCache();
     }
+  });
+});
+
+describe("model prices badge semantics (zeroNoPrice / 无价候选)", () => {
+  it("快照条目只提供 input → 按无价处理（不标 hasUpdate）", async () => {
+    await withSnapshot(
+      { p1: { id: "p1", models: { partial: { id: "partial", cost: { input: 1 } } } } },
+      async () => {
+        await insertUpstream("up-a", ["partial-model"]);
+        await insertPrice("partial-model", { source: "models.dev", modelsDevId: "p1/partial" });
+
+        const rows = await getModelPricesList();
+        const row = rows.find((r) => r.model === "partial-model")!;
+        // 旧实现把缺失的 output 兜底成 0 → 与已存价 2 不同 → 误标 hasUpdate/diff
+        expect(row.status.hasUpdate).toBe(false);
+        expect(row.status.diff).toBeNull();
+        expect(row.status.removed).toBe(false);
+        expect(row.status.zeroNoPrice).toBe(false);
+      }
+    );
+  });
+
+  it("快照无官方价 + 已定价为 0 → zeroNoPrice；非 0 价 / 快照有价（显式 0/0）→ false", async () => {
+    await withSnapshot(
+      {
+        p1: {
+          id: "p1",
+          models: {
+            costless: { id: "costless" },
+            free: { id: "free", cost: { input: 0, output: 0 } },
+          },
+        },
+      },
+      async () => {
+        await insertUpstream("up-a", ["zero-row", "free-row", "nonzero-row"]);
+        // 早期 force 覆盖遗留：快照无价但库里存了 0
+        await insertPrice("zero-row", {
+          source: "models.dev",
+          modelsDevId: "p1/costless",
+          inputPrice: 0,
+          outputPrice: 0,
+        });
+        await insertPrice("nonzero-row", { source: "models.dev", modelsDevId: "p1/costless" });
+        // 快照显式 0/0 = 有官方价（免费模型），不得警示
+        await insertPrice("free-row", {
+          source: "models.dev",
+          modelsDevId: "p1/free",
+          inputPrice: 0,
+          outputPrice: 0,
+        });
+
+        const rows = await getModelPricesList();
+        expect(rows.find((r) => r.model === "zero-row")!.status.zeroNoPrice).toBe(true);
+        expect(rows.find((r) => r.model === "nonzero-row")!.status.zeroNoPrice).toBe(false);
+        expect(rows.find((r) => r.model === "free-row")!.status.zeroNoPrice).toBe(false);
+        // zeroNoPrice 不干扰既有语义
+        const zero = rows.find((r) => r.model === "zero-row")!;
+        expect(zero.status.hasUpdate).toBe(false);
+        expect(zero.status.removed).toBe(false);
+        expect(zero.status.unmatched).toBe(false);
+      }
+    );
+  });
+
+  it("未定价行：候选全无价 → unmatched；有价多候选不同价 → confirm", async () => {
+    await withSnapshot(
+      {
+        p1: {
+          id: "p1",
+          models: {
+            "m-costless": { id: "m-costless" },
+            partial: { id: "partial", cost: { input: 0.15 } },
+            dup: { id: "dup", cost: { input: 1, output: 2 } },
+          },
+        },
+        p2: { id: "p2", models: { dup: { id: "dup", cost: { input: 3, output: 4 } } } },
+      },
+      async () => {
+        await insertUpstream("up-a", ["m-costless", "partial", "dup", "unknown"]);
+
+        const rows = await getModelPricesList();
+        const find = (m: string) => rows.find((r) => r.model === m)!;
+        // 无价候选不再被当成合法 0/0 候选：与 auto-fill 的 unmatched 口径一致
+        expect(find("m-costless").status.unmatched).toBe(true);
+        expect(find("m-costless").status.pending).toBe(false);
+        expect(find("partial").status.unmatched).toBe(true);
+        expect(find("partial").status.pending).toBe(false);
+        expect(find("dup").status.pending).toBe(true);
+        expect(find("dup").status.unmatched).toBe(false);
+        expect(find("unknown").status.unmatched).toBe(true);
+      }
+    );
+  });
+
+  it("未定价行：单候选有价 + 其余无价 → 既不标 confirm 也不标 unmatched", async () => {
+    await withSnapshot(
+      {
+        p1: { id: "p1", models: { solo: { id: "solo" } } },
+        p2: { id: "p2", models: { solo: { id: "solo", cost: { input: 1, output: 2 } } } },
+      },
+      async () => {
+        await insertUpstream("up-a", ["solo"]);
+
+        const rows = await getModelPricesList();
+        const row = rows.find((r) => r.model === "solo")!;
+        expect(row.status.unmatched).toBe(false);
+        expect(row.status.pending).toBe(false);
+      }
+    );
   });
 });

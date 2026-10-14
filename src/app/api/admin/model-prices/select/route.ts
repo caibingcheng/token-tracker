@@ -3,6 +3,7 @@ import { withAuth } from "@/lib/auth/guard";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 import { selectModelsDevPrice } from "@/lib/model-prices-service";
 import { getSnapshot, isFiniteNonNegative } from "@/lib/models-dev/snapshot";
+import { hasPriceData } from "@/lib/models-dev/match";
 import { loadModelsDevSource } from "@/lib/auth/settings-models-dev-source";
 
 // 从候选选定价格落库（source='models.dev'，记录 models_dev_id）。
@@ -47,9 +48,16 @@ export const POST = withAuth(async (request: NextRequest) => {
     );
   }
   const target = snapshot.data[providerId]?.models[modelId];
-  if (!target?.cost) {
+  if (!target) {
     return NextResponse.json(
       { success: false, error: "Candidate not found in models.dev snapshot" },
+      { status: 404 }
+    );
+  }
+  // D1 谓词：仅提供 input 或 output 其中一个字段的条目视为无价，不得据此写库（会写出 0）
+  if (!hasPriceData(target.cost)) {
+    return NextResponse.json(
+      { success: false, error: "Candidate has no official price in models.dev snapshot" },
       { status: 404 }
     );
   }
@@ -58,8 +66,8 @@ export const POST = withAuth(async (request: NextRequest) => {
   await selectModelsDevPrice({
     model,
     modelsDevId,
-    inputPrice: isFiniteNonNegative(cost.input) ? cost.input : 0,
-    outputPrice: isFiniteNonNegative(cost.output) ? cost.output : 0,
+    inputPrice: cost.input,
+    outputPrice: cost.output,
     cacheReadPrice: isFiniteNonNegative(cost.cache_read)
       ? cost.cache_read
       : null,

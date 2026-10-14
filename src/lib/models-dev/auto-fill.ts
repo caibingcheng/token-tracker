@@ -5,7 +5,10 @@ import { matchModelsDevModel } from "./match";
 // - fill 模式（默认）：只填空行，永不覆盖已有价格
 // - force 模式（overwrite=true）：覆盖所有非 manual 已定价行；
 //   source='manual' 的行永不被任何自动流程触碰（isPriced → skipped，isManual → skipped）。
-// 未定价行在两种模式下行为一致（匹配到就填 filled）。
+// - 价格来源：只有快照条目确实提供 input + output 官方价（hasCost，见 hasPriceData）才写库；
+//   无价条目（cost 缺失 / 只有其中一个字段）在两种模式下都计入 unmatched、绝不写库，
+//   避免把已有价格覆盖为 0。
+// 未定价行在两种模式下行为一致（匹配到且有价就填 filled）。
 
 export interface AutoFillModelPrice {
   model: string;
@@ -22,7 +25,7 @@ export interface AutoFillResult {
   filled: string[];
   updated: string[]; // 覆盖写入的已定价行（fill 模式恒为空数组）
   skipped: string[]; // 已定价未覆盖 / manual 保护跳过
-  unmatched: string[]; // 无候选（含 fill 模式已定价——保持向后兼容命名）
+  unmatched: string[]; // 无候选或无官方价（含 fill 模式已定价——保持向后兼容命名）
 }
 
 export interface AutoFillOptions {
@@ -58,7 +61,8 @@ export async function autoFillModelPrices(
       continue;
     }
     const { matched } = matchModelsDevModel(m, opts.snapshot.data);
-    if (!matched) {
+    if (!matched || !matched.hasCost) {
+      // 无价条目与无候选同处理：不写库（否则会把已有价格覆盖为 0），归入 unmatched
       result.unmatched.push(m);
       continue;
     }

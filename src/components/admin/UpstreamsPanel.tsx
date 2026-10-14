@@ -9,7 +9,8 @@ import { CopyableCode } from "./CopyableCode";
 import ActionMenu from "./ActionMenu";
 import type { HeaderTransform } from "@/lib/gateway/header-transforms";
 import { PROBE_PRESETS } from "@/lib/gateway/probe-config";
-import type { ProbeConfig } from "@/lib/gateway/probe-config";
+import type { ModelProbeConfig, ProbeConfig } from "@/lib/gateway/probe-config";
+import type { ClassifierModelEntry } from "@/lib/gateway/classifier/types";
 
 export interface UpstreamProbeStatus {
   lastAt: number; // 0 = 尚未探测
@@ -39,6 +40,8 @@ export interface UpstreamItem {
   proxyDisplay: string | null;
   headerTransforms: HeaderTransform[];
   probeConfig: ProbeConfig | null;
+  modelProbeConfigs: ModelProbeConfig[];
+  classifierModels: ClassifierModelEntry[];
   createdAt: string;
 }
 
@@ -51,7 +54,14 @@ export interface UpstreamKeyItem {
   createdAt: string;
 }
 
-const PROTOCOLS = ["openai", "anthropic", "gemini"];
+// upstream.protocol 的 UI 展示：选项值仍是 openai/anthropic/gemini（存储/API 不变），
+// 标签直接写认证头——这是三个选项之间唯一可观察的差异，避免 "protocol" 的歧义
+const PROTOCOL_OPTIONS = [
+  { value: "openai", label: "Authorization: Bearer" },
+  { value: "anthropic", label: "x-api-key" },
+  { value: "gemini", label: "x-goog-api-key" },
+];
+const PROTOCOL_LABELS = new Map(PROTOCOL_OPTIONS.map((p) => [p.value, p.label]));
 
 interface FormState {
   name: string;
@@ -122,6 +132,10 @@ export default function UpstreamsPanel() {
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [formKeys, setFormKeys] = useState<string[]>([""]);
   const [formTransforms, setFormTransforms] = useState<HeaderTransform[]>([]);
+  // per-model 探活端点表单（body 以 JSON 字符串暂存，提交时解析）
+  const [formModelProbes, setFormModelProbes] = useState<
+    { model: string; path: string; body: string }[]
+  >([]);
   const [formKeyTests, setFormKeyTests] = useState<Record<number, FormKeyTestResult | null>>({});
   const [formKeyShown, setFormKeyShown] = useState<Record<number, boolean>>({});
   const [modelPicker, setModelPicker] = useState<ModelPickerState | null>(null);
@@ -171,6 +185,39 @@ export default function UpstreamsPanel() {
     [form.probePath, form.probeBody]
   );
   const probePresetValue = probeCustom ? "custom" : derivedProbePreset;
+
+  // per-model probe 的 model 可编辑 selector 候选：取表单里已填的 enabled models
+  //（datalist 允许自由输入，未配置的 model 名仍可手填）
+  const modelProbeModelOptions = useMemo(
+    () =>
+      form.enabledModels
+        .split(",")
+        .map((m) => m.trim())
+        .filter(Boolean),
+    [form.enabledModels]
+  );
+
+  // per-model 行内的预置下拉：内容与预置一致时回显该预置，否则 custom/placeholder
+  const applyModelProbePreset = (index: number, value: string) => {
+    if (value === "" || value === "custom") {
+      // custom：path 为空时预填占位，使 body 输入框出现
+      setFormModelProbes((prev) =>
+        prev.map((x, i) =>
+          i === index && x.path.trim() === ""
+            ? { ...x, path: "/", body: x.body.trim() || "{}" }
+            : x
+        )
+      );
+      return;
+    }
+    const preset = PROBE_PRESETS.find((p) => p.id === value);
+    if (!preset) return;
+    setFormModelProbes((prev) =>
+      prev.map((x, i) =>
+        i === index ? { ...x, path: preset.path, body: JSON.stringify(preset.body, null, 2) } : x
+      )
+    );
+  };
 
   const applyProbePreset = (value: string) => {
     if (value === "auto") {
@@ -262,6 +309,33 @@ export default function UpstreamsPanel() {
     } else if (editingId) {
       payload.probeConfig = null;
     }
+    // per-model 探活端点：model 与 path 成对必填（半行视为输入错误），全空行丢弃；
+    // 编辑态清空全部行 = 显式 null 移除
+    const modelProbeConfigs: ModelProbeConfig[] = [];
+    for (const p of formModelProbes) {
+      const model = p.model.trim();
+      const path = p.path.trim();
+      if (model === "" && path === "") continue;
+      if (model === "" || path === "") {
+        setError(`Per-model probe: model and path are both required (row: ${model || path})`);
+        setSaving(false);
+        return;
+      }
+      let body: unknown;
+      try {
+        body = p.body.trim() === "" ? {} : JSON.parse(p.body);
+      } catch {
+        setError(`Probe body for model "${model}" is not valid JSON`);
+        setSaving(false);
+        return;
+      }
+      modelProbeConfigs.push({ model, path, body: body as Record<string, unknown> });
+    }
+    if (modelProbeConfigs.length > 0) {
+      payload.modelProbeConfigs = modelProbeConfigs;
+    } else if (editingId) {
+      payload.modelProbeConfigs = null;
+    }
     const newKeys = formKeys.map((k) => k.trim()).filter(Boolean);
     try {
       const res = editingId
@@ -304,6 +378,7 @@ export default function UpstreamsPanel() {
       setForm(EMPTY_FORM);
       setFormKeys([""]);
       setFormTransforms([]);
+      setFormModelProbes([]);
       setFormKeyTests({});
       setFormKeyShown({});
       setEditingId(null);
@@ -340,6 +415,13 @@ export default function UpstreamsPanel() {
     setFormKeys([""]);
     // 浅拷贝数组 + 展开条目，避免直接改列表缓存
     setFormTransforms(u.headerTransforms.map((t) => ({ ...t })));
+    setFormModelProbes(
+      (u.modelProbeConfigs ?? []).map((p) => ({
+        model: p.model,
+        path: p.path,
+        body: JSON.stringify(p.body, null, 2),
+      }))
+    );
     setFormKeyTests({});
     setFormKeyShown({});
     setPendingKeyEnabled({});
@@ -777,14 +859,22 @@ export default function UpstreamsPanel() {
             )}
           </div>
           <div>
-            <label className="mb-1 block text-xs text-gray-600">Protocol</label>
+            <label className="mb-1 block text-xs text-gray-600">
+              Auth Header{" "}
+              <span
+                className="cursor-help text-gray-400"
+                title={"Which header carries the upstream API key — the real difference between the options. It also sets default probe endpoints and accepted request styles: anthropic adds the anthropic-version header; gemini speaks /v1beta paths (model in the URL). Relays serving anthropic/gemini models via OpenAI-compatible endpoints use 'Authorization: Bearer' (default); per-model probe overrides below cover their endpoint styles."}
+              >
+                (?)
+              </span>
+            </label>
             <select
               value={form.protocol}
               onChange={(e) => setForm({ ...form, protocol: e.target.value })}
               className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             >
-              {PROTOCOLS.map((p) => (
-                <option key={p} value={p}>{p}</option>
+              {PROTOCOL_OPTIONS.map((p) => (
+                <option key={p.value} value={p.value}>{p.label}</option>
               ))}
             </select>
           </div>
@@ -797,7 +887,8 @@ export default function UpstreamsPanel() {
               className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>
-          <div className="md:col-span-3">
+          <div className="md:col-span-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+          <div>
             <label className="mb-1 block text-xs text-gray-600">Base URL</label>
             <input
               value={form.baseUrl}
@@ -807,13 +898,10 @@ export default function UpstreamsPanel() {
               className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>
-          <div className="md:col-span-3">
+          <div>
             <div className="mb-1 flex items-center justify-between gap-2">
               <label className="min-w-0 text-xs text-gray-600">
-                Proxy URL (optional){" "}
-                <span className="hidden md:inline text-gray-400">
-                  HTTP(S) CONNECT proxy; existing value cannot be re-read
-                </span>
+                Proxy URL <span className="hidden md:inline text-gray-400">(optional)</span>
               </label>
               {editingId && hasProxyForEditing && (
                 <label className="flex shrink-0 cursor-pointer items-center gap-1.5 text-xs text-gray-500">
@@ -841,6 +929,7 @@ export default function UpstreamsPanel() {
                 Configured proxy: {editingProxyDisplay ?? "yes"}. Leave blank to keep it, or tick &quot;Clear proxy&quot; to remove.
               </p>
             )}
+          </div>
           </div>
           <div className="md:col-span-3">
             <label className="mb-1 block text-xs text-gray-600">
@@ -1018,7 +1107,7 @@ export default function UpstreamsPanel() {
               plain text — avoid putting credentials here.
             </p>
           </div>
-          <div className="md:col-span-3">
+          <div className="md:col-span-2">
             <div className="mb-1 flex items-center justify-between gap-2">
               <label className="min-w-0 text-xs text-gray-600">
                 Enabled Models{" "}
@@ -1042,17 +1131,30 @@ export default function UpstreamsPanel() {
               className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>
-          <div className="md:col-span-3">
-            <label className="mb-1 block text-xs text-gray-600">
-              Health Check Model{" "}
-              <span className="text-gray-400">(optional, used for probing unhealthy upstream)</span>
-            </label>
+          <div className="md:col-span-1">
+            {/* min-h 与左侧 Enabled Models 行的 Fetch Models 按钮同高（text-xs + py-1 + border），
+                保证两侧 input 顶边对齐 */}
+            <div className="mb-1 flex min-h-[26px] items-center">
+              <label className="text-xs text-gray-600">Health Check Model</label>
+            </div>
             <input
+              list="health-check-models"
               value={form.healthCheckModel}
               onChange={(e) => setForm({ ...form, healthCheckModel: e.target.value })}
               placeholder="deepseek-chat"
+              autoComplete="off"
               className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
+            <datalist id="health-check-models">
+              {modelProbeModelOptions
+                .filter((m) => !m.endsWith("*"))
+                .map((m) => (
+                  <option key={m} value={m} />
+                ))}
+            </datalist>
+            <p className="mt-1 hidden text-[10px] text-gray-400 md:block">
+              optional; probes unhealthy upstream
+            </p>
           </div>
           <div className="md:col-span-3">
             <label className="mb-1 block text-xs text-gray-600">
@@ -1092,8 +1194,107 @@ export default function UpstreamsPanel() {
               />
             )}
             <p className="mt-1 text-[10px] text-gray-400">
-              Body is JSON; {"{{model}}"} is replaced with the probed model name. Configured
-              probe endpoint is used as-is (no fallback to the second style).
+              Body is JSON; {"{{model}}"} is replaced with the probed model name in both path and
+              body. Configured probe endpoint is used as-is (no fallback to the second style).
+            </p>
+          </div>
+          {/* per-model 探活端点：同一 upstream 混用 chat / embeddings 等不同端点风格时，
+              按真实 model 名精确匹配各自的探活端点，优先级高于上面的 upstream 级配置 */}
+          <div className="md:col-span-3">
+            <label className="mb-1 block text-xs text-gray-600">
+              Per-model Probe Endpoints{" "}
+              <span className="text-gray-400">
+                (optional; exact model name match, takes precedence over the upstream-level probe
+                config above)
+              </span>
+            </label>
+            <datalist id="model-probe-models">
+              {modelProbeModelOptions.map((m) => (
+                <option key={m} value={m} />
+              ))}
+            </datalist>
+            {formModelProbes.map((p, index) => {
+              // 内容与预置一致时回显该预置，否则 custom；path 为空时显示占位
+              const derived =
+                p.path.trim() === "" ? "" : deriveProbePreset(p.path, p.body);
+              return (
+                <div key={index} className="mb-2">
+                  <div className="grid grid-cols-1 gap-2 md:grid-cols-[1fr_220px_1fr_auto]">
+                    <input
+                      list="model-probe-models"
+                      value={p.model}
+                      onChange={(e) =>
+                        setFormModelProbes((prev) =>
+                          prev.map((x, i) => (i === index ? { ...x, model: e.target.value } : x))
+                        )
+                      }
+                      placeholder="model name (pick from enabled models or type)"
+                      autoComplete="off"
+                      className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                    />
+                    <select
+                      value={derived}
+                      onChange={(e) => applyModelProbePreset(index, e.target.value)}
+                      className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                    >
+                      <option value="">apply preset…</option>
+                      {PROBE_PRESETS.map((preset) => (
+                        <option key={preset.id} value={preset.id}>{preset.label}</option>
+                      ))}
+                      <option value="custom">custom</option>
+                    </select>
+                    <input
+                      value={p.path}
+                      onChange={(e) =>
+                        setFormModelProbes((prev) =>
+                          prev.map((x, i) => (i === index ? { ...x, path: e.target.value } : x))
+                        )
+                      }
+                      placeholder="/v1/embeddings"
+                      autoComplete="off"
+                      className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setFormModelProbes((prev) => prev.filter((_, i) => i !== index))}
+                      className="shrink-0 rounded border border-gray-300 px-3 py-2 text-xs text-gray-600 hover:bg-gray-50"
+                      title="Remove model probe"
+                    >
+                      −
+                    </button>
+                  </div>
+                  {p.path.trim() !== "" && (
+                    <textarea
+                      value={p.body}
+                      onChange={(e) =>
+                        setFormModelProbes((prev) =>
+                          prev.map((x, i) => (i === index ? { ...x, body: e.target.value } : x))
+                        )
+                      }
+                      rows={3}
+                      spellCheck={false}
+                      placeholder='{"model":"{{model}}","input":"hi"}'
+                      className="mt-2 w-full rounded border border-gray-300 px-3 py-2 font-mono text-xs focus:border-blue-500 focus:outline-none"
+                    />
+                  )}
+                </div>
+              );
+            })}
+            <button
+              type="button"
+              onClick={() =>
+                setFormModelProbes((prev) => [...prev, { model: "", path: "", body: "" }])
+              }
+              className="mt-2 rounded border border-dashed border-gray-300 px-3 py-1.5 text-xs text-gray-500 hover:bg-gray-50"
+            >
+              + Add per-model probe
+            </button>
+            <p className="mt-1 text-[10px] text-gray-400">
+              Lets one upstream mix endpoint styles (chat / responses / embeddings / rerank /
+              anthropic messages / gemini generateContent / …) without splitting into multiple
+              entries. {"{{model}}"} works in both path and body. Each entry probes that model via
+              its own endpoint (no fallback to the second style); models without an entry use the
+              upstream-level config above.
             </p>
           </div>
           <div className="md:col-span-3 flex items-center gap-2">
@@ -1112,7 +1313,9 @@ export default function UpstreamsPanel() {
                   setForm(EMPTY_FORM);
                   setFormKeys([""]);
                   setFormTransforms([]);
+                  setFormModelProbes([]);
                   setFormKeyTests({});
+                  setFormKeyShown({});
                   setClearProxy(false);
                   setProbeCustom(false);
                   setPendingKeyEnabled({});
@@ -1339,13 +1542,17 @@ export default function UpstreamsPanel() {
                     no active keys
                   </span>
                 )}
-                <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-600">{u.protocol}</span>
+                <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-600">{PROTOCOL_LABELS.get(u.protocol) ?? u.protocol}</span>
                 <span className="text-xs text-gray-400 truncate max-w-[200px]">{u.baseUrl}</span>
                 <span className="text-xs text-gray-400" title="Active / total API keys (disabled keys are excluded from routing)">
                   {u.enabledModels.length} models · {u.activeKeyCount}/{u.keyCount} keys · p{u.priority}
                   {u.headerTransforms.length > 0 &&
                     ` · ${u.headerTransforms.filter((t) => t.enabled).length}/${u.headerTransforms.length} header transforms`}
                   {u.probeConfig && ` · probe ${u.probeConfig.path}`}
+                  {u.modelProbeConfigs?.length > 0 &&
+                    ` · ${u.modelProbeConfigs.length} model probe${u.modelProbeConfigs.length > 1 ? "s" : ""}`}
+                  {u.classifierModels && u.classifierModels.length > 0 &&
+                    ` · classifier: ${u.classifierModels.map((c) => c.model).join(", ")}`}
                 </span>
                 {u.unhealthy && (
                   <span

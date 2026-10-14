@@ -1,7 +1,19 @@
-import { isFiniteNonNegative, type ModelsDevData, type ModelsDevModel } from "./snapshot";
+import {
+  isFiniteNonNegative,
+  type ModelsDevCost,
+  type ModelsDevData,
+  type ModelsDevModel,
+} from "./snapshot";
 
 // models.dev 匹配管线：精确 → 归一化 → 日期变体归并。
 // 多 provider 同名冲突按原厂优先级表自动预选，全部候选返回供 UI 切换。
+
+// D1 有价判定谓词（唯一真源）：快照条目只有同时提供 input 与 output 官方价才算「有价」。
+// 显式 0 合法（算有价）；只提供其中一个字段 = 无价，与 cost 整体缺失同处理。
+// cache_read / cache_write 缺失不算无价（DB 列可 NULL，pricing 层回退 input_price）。
+export function hasPriceData(cost: ModelsDevCost | undefined): boolean {
+  return isFiniteNonNegative(cost?.input) && isFiniteNonNegative(cost?.output);
+}
 
 export interface PriceCandidate {
   providerId: string;
@@ -11,6 +23,7 @@ export interface PriceCandidate {
   outputPrice: number;
   cacheReadPrice: number | null;
   cacheWritePrice: number | null;
+  hasCost: boolean; // 快照条目是否确实提供 input + output 官方价（见 hasPriceData）
   lastUpdated?: string;
   modelsDevId: string; // `${providerId}/${modelId}`
 }
@@ -64,19 +77,22 @@ function toCandidate(
   providerName: string | undefined,
   model: ModelsDevModel
 ): PriceCandidate {
-  const cost = model.cost ?? { input: 0, output: 0 };
+  const cost = model.cost;
+  const input = cost?.input;
+  const output = cost?.output;
   return {
     providerId,
     providerName: providerName ?? providerId,
     modelId: model.id,
-    inputPrice: isFiniteNonNegative(cost.input) ? cost.input : 0,
-    outputPrice: isFiniteNonNegative(cost.output) ? cost.output : 0,
-    cacheReadPrice: isFiniteNonNegative(cost.cache_read)
+    inputPrice: isFiniteNonNegative(input) ? input : 0,
+    outputPrice: isFiniteNonNegative(output) ? output : 0,
+    cacheReadPrice: isFiniteNonNegative(cost?.cache_read)
       ? cost.cache_read
       : null,
-    cacheWritePrice: isFiniteNonNegative(cost.cache_write)
+    cacheWritePrice: isFiniteNonNegative(cost?.cache_write)
       ? cost.cache_write
       : null,
+    hasCost: hasPriceData(cost),
     lastUpdated:
       typeof model.last_updated === "string" ? model.last_updated : undefined,
     modelsDevId: `${providerId}/${model.id}`,
@@ -154,13 +170,20 @@ export function matchModelsDevModel(
   return { matched, candidates };
 }
 
-// 冲突消解：价格不同才视为冲突 → 按优先级取最高；价格相同直接取任一
+// 冲突消解：有价候选恒优先，价格只在同「有价性」之间比较。
+// 注意冲突短路分支：显式 {input:0,output:0}（有价）与无价条目的 0/0 兜底价格相同，
+// 只看价格会判为「无冲突」而直接取首个候选 → 无价条目可能胜出，故 hasCost 必须参与判定。
 function pickMatched(candidates: PriceCandidate[]): PriceCandidate | null {
   if (candidates.length === 0) return null;
-  const hasConflict = candidates.some((c) => !samePrice(c, candidates[0]));
-  if (!hasConflict) return candidates[0];
+  const first = candidates[0];
+  const hasConflict = candidates.some(
+    (c) => c.hasCost !== first.hasCost || !samePrice(c, first)
+  );
+  if (!hasConflict) return first;
   return [...candidates].sort(
-    (a, b) => providerPriority(a.providerId) - providerPriority(b.providerId)
+    (a, b) =>
+      Number(b.hasCost) - Number(a.hasCost) ||
+      providerPriority(a.providerId) - providerPriority(b.providerId)
   )[0];
 }
 

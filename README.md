@@ -67,7 +67,7 @@ flowchart LR
 - 健康自检自愈：upstream / model 级不可用标记，定时探活自动恢复
 - 会话粘性：同会话请求锁定同一 upstream，故障时平滑迁移
 - HTTP CONNECT 代理：可选为 upstream 配置代理出口（AES-256-GCM 加密存储）
-- 手动路由规则：虚拟模型名 → 目标 upstream + 真实模型名映射
+- 命名路由：请求的虚拟模型名 → 目标池（upstream + 真实模型名，按 priority failover）；可选 LLM 分类器每 session 选链首
 
 **记账与统计**
 
@@ -80,7 +80,7 @@ flowchart LR
 
 **管理面板**
 
-- upstreams / 虚拟 keys / 手动路由规则 / 模型定价 / 审计日志
+- upstreams / 虚拟 keys / 命名路由 / 模型定价 / 审计日志
 - 模型别名归一化（展示层聚合）、Provider 匿名化分组、Hidden Sources（隐藏/剔除两维度独立）
 - 公开 Status 面板：可选开启，只暴露聚合用量，不泄露模型名与成本明细
 

@@ -18,8 +18,9 @@ export function AdminTableCard({
     <div className="rounded-lg bg-white p-4 shadow">
       {(title != null || actions != null) && (
         <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          {title}
-          {actions}
+          {/* title 不允许被 actions 压缩（长描述文本会把 flex 子项按比例挤扁） */}
+          {title != null && <div className="shrink-0">{title}</div>}
+          {actions != null && <div className="min-w-0">{actions}</div>}
         </div>
       )}
       {children}

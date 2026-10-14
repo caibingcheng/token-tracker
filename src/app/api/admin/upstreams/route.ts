@@ -18,10 +18,18 @@ import {
 } from "@/lib/gateway/header-transforms";
 import type { HeaderTransform } from "@/lib/gateway/header-transforms";
 import {
+  isValidModelProbeConfigs,
   isValidProbeConfig,
+  parseModelProbeConfigs,
   parseProbeConfig,
+  serializeModelProbeConfigs,
   serializeProbeConfig,
 } from "@/lib/gateway/probe-config";
+import {
+  isValidClassifierModelEntry,
+  parseClassifierModels,
+  MAX_CLASSIFIER_MODELS_PER_UPSTREAM,
+} from "@/lib/gateway/classifier/types";
 import { healthTracker, decryptProxyUrl } from "@/lib/gateway/proxy-deps";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 import { isReservedRemoteName, REMOTE_NAME_PREFIX } from "@/lib/ingest/validate";
@@ -83,6 +91,8 @@ export const GET = withAuth(async () => {
         proxyDisplay: proxyUrl ? sanitizeProxyUrlForDisplay(proxyUrl) : null,
         headerTransforms: parseHeaderTransforms(row.headerTransforms),
         probeConfig: parseProbeConfig(row.probeConfig),
+        modelProbeConfigs: parseModelProbeConfigs(row.modelProbeConfigs),
+        classifierModels: parseClassifierModels(row.classifierModels),
         createdAt: row.createdAt,
       });
     }
@@ -177,6 +187,35 @@ export const POST = withAuth(async (request: NextRequest) => {
       probeConfig = serializeProbeConfig(body.probeConfig);
     }
 
+    // per-model 探活端点（省略 = 无）：数组，每条 {model, path, body}，model 精确匹配
+    let modelProbeConfigs: string | null = null;
+    if (body.modelProbeConfigs !== undefined && body.modelProbeConfigs !== null) {
+      if (!isValidModelProbeConfigs(body.modelProbeConfigs)) {
+        return NextResponse.json(
+          { success: false, error: "Invalid modelProbeConfigs" },
+          { status: 400 }
+        );
+      }
+      modelProbeConfigs = serializeModelProbeConfigs(body.modelProbeConfigs);
+    }
+
+    // 分类器模型声明（省略 = 无）：数组，每条 {model, type, maxInputTokens?, path?}
+    let classifierModels: string | null = null;
+    if (body.classifierModels !== undefined && body.classifierModels !== null) {
+      if (
+        !Array.isArray(body.classifierModels) ||
+        body.classifierModels.length > MAX_CLASSIFIER_MODELS_PER_UPSTREAM ||
+        !body.classifierModels.every(isValidClassifierModelEntry)
+      ) {
+        return NextResponse.json(
+          { success: false, error: "Invalid classifierModels" },
+          { status: 400 }
+        );
+      }
+      classifierModels =
+        body.classifierModels.length > 0 ? JSON.stringify(body.classifierModels) : null;
+    }
+
     try {
       const result = await db
         .insert(upstreamsTable)
@@ -191,6 +230,8 @@ export const POST = withAuth(async (request: NextRequest) => {
           proxyUrlEncrypted,
           headerTransforms: JSON.stringify(normalizeHeaderTransforms(headerTransforms)),
           probeConfig,
+          modelProbeConfigs,
+          classifierModels,
         })
         .returning();
       const { ip, userAgent } = extractClientInfo(request);

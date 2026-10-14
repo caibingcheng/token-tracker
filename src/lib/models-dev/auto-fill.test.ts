@@ -119,3 +119,74 @@ describe("autoFillModelPrices", () => {
     expect(result.updated).toEqual([]);
   });
 });
+
+// 快照保留无价条目（cost 缺失 / 只提供部分字段）——这些条目绝不得参与写库
+const COSTLESS_SNAPSHOT: ModelsDevSnapshot = {
+  fetchedAt: "2026-08-01T00:00:00.000Z",
+  source: "models.dev",
+  data: {
+    openai: {
+      id: "openai",
+      name: "OpenAI",
+      models: {
+        "gpt-4o": { id: "gpt-4o" } as any,
+        "gpt-4o-mini": { id: "gpt-4o-mini", cost: { input: 0.15 } } as any,
+        "gpt-free": { id: "gpt-free", cost: { input: 0, output: 0 } },
+      },
+    },
+  },
+};
+
+describe("autoFillModelPrices 无价条目保护（D1/D3）", () => {
+  it("force 模式：无价条目与部分字段条目都不写库，计入 unmatched", async () => {
+    const opts = mkOptions({
+      snapshot: COSTLESS_SNAPSHOT,
+      overwrite: true,
+      // 两行均已定价（正是会被旧实现覆盖成 0 的场景）
+      isPriced: vi.fn(async (m: string) => m !== "gpt-free"),
+      isManual: vi.fn(async () => false),
+    });
+    const result = await autoFillModelPrices(["gpt-4o", "gpt-4o-mini", "gpt-free"], opts);
+    expect(result.unmatched).toEqual(["gpt-4o", "gpt-4o-mini"]);
+    expect(result.updated).toEqual([]);
+    expect(result.skipped).toEqual([]);
+    expect(opts.write).toHaveBeenCalledTimes(1);
+    expect(opts.write).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "gpt-free", inputPrice: 0, outputPrice: 0 })
+    );
+  });
+
+  it("fill 模式：无价条目同样计入 unmatched（且不写库）", async () => {
+    const opts = mkOptions({ snapshot: COSTLESS_SNAPSHOT });
+    const result = await autoFillModelPrices(["gpt-4o", "gpt-4o-mini", "gpt-free"], opts);
+    expect(result.unmatched).toEqual(["gpt-4o", "gpt-4o-mini"]);
+    expect(result.filled).toEqual(["gpt-free"]);
+    expect(opts.write).toHaveBeenCalledTimes(1);
+  });
+
+  it("显式 cost {input:0,output:0} 算有价，仍写入", async () => {
+    const opts = mkOptions({ snapshot: COSTLESS_SNAPSHOT });
+    const result = await autoFillModelPrices(["gpt-free"], opts);
+    expect(result.filled).toEqual(["gpt-free"]);
+    expect(opts.write).toHaveBeenCalledWith(
+      expect.objectContaining({ inputPrice: 0, outputPrice: 0, cacheReadPrice: null })
+    );
+  });
+
+  it("多 provider 同名时选中价格完整的有价条目（无价条目不得胜出）", async () => {
+    const snapshot: ModelsDevSnapshot = {
+      fetchedAt: "2026-08-01T00:00:00.000Z",
+      source: "models.dev",
+      data: {
+        anthropic: { id: "anthropic", name: "Anthropic", models: { "kimi-k3": { id: "kimi-k3" } as any } },
+        openrouter: { id: "openrouter", name: "OpenRouter", models: { "kimi-k3": { id: "kimi-k3", cost: { input: 0, output: 0 } } } },
+      },
+    };
+    const opts = mkOptions({ snapshot, overwrite: true, isPriced: vi.fn(async () => true), isManual: vi.fn(async () => false) });
+    const result = await autoFillModelPrices(["kimi-k3"], opts);
+    expect(result.updated).toEqual(["kimi-k3"]);
+    expect(opts.write).toHaveBeenCalledWith(
+      expect.objectContaining({ modelsDevId: "openrouter/kimi-k3" })
+    );
+  });
+});

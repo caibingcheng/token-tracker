@@ -3,7 +3,8 @@
 #   从 ghcr 拉取：docker compose -f docker-compose.local.yml up -d
 #   本地源码构建：docker compose -f docker-compose.local.yml up -d --build
 # 数据与自动生成的 GATEWAY_SECRET 均位于 ~/.token-tracker/（权限 600），本文件不含任何机密
-# 登录：首次访问 http://localhost:39001 出现设置向导，设置 admin key 后正常使用
+# 登录：免密码直接获得 admin（LOCAL_ADMIN_BYPASS=1，仅在端口绑定 127.0.0.1 且 Host 为
+# loopback 时生效；如将本文件用于非本机部署，务必删除该环境变量并改用设置向导创建 admin key）
 services:
   token-tracker-local:
     image: ghcr.io/caibingcheng/token-tracker:latest
@@ -15,6 +16,8 @@ services:
       - "127.0.0.1:39001:3000"
     environment:
       - SQLITE_DATABASE_PATH=/app/data/token-tracker.db
+      # 本地免密码 admin 直通，仅限本机 loopback 访问，禁止用于任何对外暴露的部署
+      - LOCAL_ADMIN_BYPASS=1
     volumes:
       - ${HOME}/.token-tracker:/app/data
       - ./scripts/local-entrypoint.sh:/usr/local/bin/local-entrypoint.sh:ro

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import Database from "better-sqlite3";
-import { migrateColumns, migrateTokenRecordsModelColumns, migrateRoutingRulesTable, migrateSyncInstancesTable, migrateIngestTokensTable } from "./migrate";
+import { migrateColumns, migrateTokenRecordsModelColumns, migrateNamedRoutesTables, migrateNamedRouteTargetsNullableUpstream, migrateSyncInstancesTable, migrateIngestTokensTable } from "./migrate";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -37,6 +37,7 @@ const TABLES = [
     columns: [
       { name: "balance", definition: "balance TEXT" },
       { name: "balance_updated_at", definition: "balance_updated_at TEXT" },
+      { name: "classifier_models", definition: "classifier_models TEXT" },
     ],
   },
 ];
@@ -108,7 +109,7 @@ describe("migrateColumns", () => {
       ])
     );
     expect(tableColumns("upstreams")).toEqual(
-      expect.arrayContaining(["balance", "balance_updated_at"])
+      expect.arrayContaining(["balance", "balance_updated_at", "classifier_models"])
     );
   });
 
@@ -213,16 +214,10 @@ describe("migrateTokenRecordsModelColumns", () => {
   });
 });
 
-describe("migrateRoutingRulesTable", () => {
-  let dir3: string;
-  let db3: InstanceType<typeof Database>;
-
-  beforeAll(() => {
-    dir3 = mkdtempSync(join(tmpdir(), "tt-migrate-rr-"));
-    db3 = new Database(join(dir3, "test.db"));
-    // 模拟旧 schema：UNIQUE(name, protocol) 单目标结构（无 priority 列）
-    db3.exec(`
-      CREATE TABLE upstreams (
+describe("migrateNamedRoutesTables", () => {
+  function createBaseTables(db: InstanceType<typeof Database>) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS upstreams (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL UNIQUE,
         protocol TEXT NOT NULL,
@@ -230,131 +225,346 @@ describe("migrateRoutingRulesTable", () => {
         priority INTEGER NOT NULL DEFAULT 0,
         enabled INTEGER NOT NULL DEFAULT 1
       );
-      CREATE TABLE routing_rules (
+      CREATE TABLE IF NOT EXISTS named_routes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
         protocol TEXT NOT NULL,
-        upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
-        target_model TEXT NOT NULL,
-        created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-        UNIQUE(name, protocol)
+        instruction TEXT NOT NULL DEFAULT '',
+        classifier_upstream_id INTEGER NOT NULL DEFAULT 0,
+        classifier_model TEXT NOT NULL DEFAULT '',
+        classifier_kind TEXT NOT NULL DEFAULT 'priority',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
       );
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_named_routes_name_protocol ON named_routes(name, protocol);
+      CREATE TABLE IF NOT EXISTS named_route_targets (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        named_route_id INTEGER NOT NULL REFERENCES named_routes(id) ON DELETE CASCADE,
+        upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
+        upstream_model TEXT NOT NULL,
+        description TEXT,
+        priority INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_named_route_targets_route_upstream_model
+        ON named_route_targets(named_route_id, upstream_id, upstream_model);
       INSERT INTO upstreams (name, protocol, base_url) VALUES
         ('up-a', 'openai', 'https://a.example'),
-        ('up-b', 'openai', 'https://b.example');
-      INSERT INTO routing_rules (name, protocol, upstream_id, target_model) VALUES
-        ('my-alias', 'openai', 1, 'gpt-4o-real'),
-        ('other-alias', 'openai', 2, 'deepseek-chat');
+        ('up-b', 'openai', 'https://b.example'),
+        ('typesafe', 'openai', 'https://api.typesafe.ai');
     `);
+  }
+
+  function withTempDb(
+    legacySql: string,
+    fn: (db: InstanceType<typeof Database>) => void
+  ) {
+    const dir = mkdtempSync(join(tmpdir(), "tt-migrate-nr-"));
+    const db = new Database(join(dir, "test.db"));
+    createBaseTables(db);
+    db.exec(legacySql);
+    try {
+      fn(db);
+    } finally {
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  const legacyRoutingRules = `
+    CREATE TABLE routing_rules (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      protocol TEXT NOT NULL,
+      upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
+      target_model TEXT NOT NULL,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      UNIQUE(name, protocol)
+    );
+  `;
+
+  it("folds legacy routing_rules into a priority-classifier named route", () => {
+    withTempDb(
+      `${legacyRoutingRules}
+       INSERT INTO routing_rules (name, protocol, upstream_id, target_model) VALUES
+         ('my-alias', 'openai', 1, 'gpt-4o-real'),
+         ('other-alias', 'openai', 2, 'deepseek-chat');`,
+      (db) => {
+        migrateNamedRoutesTables(db);
+
+        const routes: any[] = db
+          .prepare(`SELECT name, classifier_kind, classifier_upstream_id, classifier_model, enabled FROM named_routes ORDER BY name`)
+          .all();
+        expect(routes).toEqual([
+          { name: "my-alias", classifier_kind: "priority", classifier_upstream_id: 0, classifier_model: "", enabled: 1 },
+          { name: "other-alias", classifier_kind: "priority", classifier_upstream_id: 0, classifier_model: "", enabled: 1 },
+        ]);
+
+        const targets: any[] = db
+          .prepare(
+            `SELECT r.name, t.upstream_id, t.upstream_model, t.priority FROM named_route_targets t JOIN named_routes r ON r.id = t.named_route_id ORDER BY r.name`
+          )
+          .all();
+        expect(targets).toEqual([
+          { name: "my-alias", upstream_id: 1, upstream_model: "gpt-4o-real", priority: 0 },
+          { name: "other-alias", upstream_id: 2, upstream_model: "deepseek-chat", priority: 0 },
+        ]);
+
+        // 旧表已删除
+        const tables: string[] = db
+          .prepare(`SELECT name FROM sqlite_master WHERE type='table'`)
+          .all()
+          .map((r: any) => r.name);
+        expect(tables).not.toContain("routing_rules");
+
+        // 幂等：再跑不报错、不重复写入
+        migrateNamedRoutesTables(db);
+        expect((db.prepare(`SELECT COUNT(*) AS c FROM named_routes`).get() as any).c).toBe(2);
+        expect((db.prepare(`SELECT COUNT(*) AS c FROM named_route_targets`).get() as any).c).toBe(2);
+      }
+    );
   });
 
-  afterAll(() => {
-    db3.close();
-    rmSync(dir3, { recursive: true, force: true });
-  });
+  it("keeps rule priorities and merges same-name rules into one route", () => {
+    withTempDb(
+      `CREATE TABLE routing_rules (
+         id INTEGER PRIMARY KEY AUTOINCREMENT,
+         name TEXT NOT NULL,
+         protocol TEXT NOT NULL,
+         upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
+         target_model TEXT NOT NULL,
+         priority INTEGER NOT NULL DEFAULT 0,
+         created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+       );
+       INSERT INTO routing_rules (name, protocol, upstream_id, target_model, priority) VALUES
+         ('my-alias', 'openai', 1, 'gpt-4o-real', 2),
+         ('my-alias', 'openai', 2, 'gpt-4o-alt', 1);`,
+      (db) => {
+        migrateNamedRoutesTables(db);
 
-  it("adds priority column, rebuilds table with new unique key and preserves data", () => {
-    migrateRoutingRulesTable(db3);
-
-    expect(db3.prepare(`PRAGMA table_info(routing_rules)`).all().map((c: any) => c.name)).toEqual(
-      expect.arrayContaining(["priority"])
-    );
-
-    const rows: any[] = db3
-      .prepare(`SELECT name, protocol, upstream_id, target_model, priority FROM routing_rules ORDER BY id`)
-      .all();
-    expect(rows).toEqual([
-      { name: "my-alias", protocol: "openai", upstream_id: 1, target_model: "gpt-4o-real", priority: 0 },
-      { name: "other-alias", protocol: "openai", upstream_id: 2, target_model: "deepseek-chat", priority: 0 },
-    ]);
-
-    // 新约束：同名同协议不同 upstream 允许插入
-    db3.exec(
-      `INSERT INTO routing_rules (name, protocol, upstream_id, target_model, priority) VALUES ('my-alias', 'openai', 2, 'gpt-4o-other', 1)`
-    );
-    const inserted: any = db3
-      .prepare(`SELECT upstream_id, priority FROM routing_rules WHERE name = 'my-alias' AND upstream_id = 2`)
-      .get();
-    expect(inserted).toEqual({ upstream_id: 2, priority: 1 });
-
-    // 同 upstream + 不同 targetModel 允许（链内 model 级 failover）
-    db3.exec(
-      `INSERT INTO routing_rules (name, protocol, upstream_id, target_model, priority) VALUES ('my-alias', 'openai', 1, 'gpt-4o-alt', 1)`
-    );
-    const insertedAlt: any = db3
-      .prepare(`SELECT target_model, priority FROM routing_rules WHERE name = 'my-alias' AND upstream_id = 1 AND target_model = 'gpt-4o-alt'`)
-      .get();
-    expect(insertedAlt).toEqual({ target_model: 'gpt-4o-alt', priority: 1 });
-
-    // 完全相同四元组 (name, protocol, upstream, target_model) → 约束拒绝
-    expect(() =>
-      db3.exec(
-        `INSERT INTO routing_rules (name, protocol, upstream_id, target_model) VALUES ('my-alias', 'openai', 1, 'gpt-4o-real')`
-      )
-    ).toThrow(/UNIQUE/i);
-  });
-
-  it("is idempotent on re-run and preserves data written after first migration", () => {
-    migrateRoutingRulesTable(db3);
-    migrateRoutingRulesTable(db3);
-    const count: any = db3.prepare(`SELECT COUNT(*) AS c FROM routing_rules`).get();
-    expect(count.c).toBe(4); // 2 条旧数据 + 2 条迁移后插入
-    expect(db3.prepare(`PRAGMA table_info(routing_rules)`).all().map((c: any) => c.name)).toEqual(
-      expect.arrayContaining(["priority"])
+        expect((db.prepare(`SELECT COUNT(*) AS c FROM named_routes`).get() as any).c).toBe(1);
+        const targets: any[] = db
+          .prepare(`SELECT upstream_model, priority FROM named_route_targets ORDER BY priority`)
+          .all();
+        expect(targets).toEqual([
+          { upstream_model: "gpt-4o-alt", priority: 1 },
+          { upstream_model: "gpt-4o-real", priority: 2 },
+        ]);
+      }
     );
   });
 
-  it("migrates a current-version DB (old named unique index) to the 4-column constraint", () => {
-    // 模拟 drizzle 建的当前版本库：priority 已存在，但唯一索引仍是旧的 3 列命名索引
-    const dir = mkdtempSync(join(tmpdir(), "tt-migrate-rr2-"));
+  it("folds virtual_models + virtual_model_routes preserving classifier and target metadata", () => {
+    withTempDb(
+      `CREATE TABLE virtual_models (
+         id INTEGER PRIMARY KEY AUTOINCREMENT,
+         name TEXT NOT NULL,
+         protocol TEXT NOT NULL,
+         instruction TEXT NOT NULL DEFAULT '',
+         classifier_upstream_id INTEGER NOT NULL,
+         classifier_model TEXT NOT NULL,
+         classifier_kind TEXT NOT NULL DEFAULT 'model',
+         priority INTEGER NOT NULL DEFAULT 0,
+         enabled INTEGER NOT NULL DEFAULT 1,
+         created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+         UNIQUE(name, protocol)
+       );
+       CREATE TABLE virtual_model_routes (
+         id INTEGER PRIMARY KEY AUTOINCREMENT,
+         virtual_model_id INTEGER NOT NULL REFERENCES virtual_models(id) ON DELETE CASCADE,
+         upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
+         upstream_model TEXT NOT NULL,
+         description TEXT,
+         priority INTEGER NOT NULL DEFAULT 0,
+         created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+         UNIQUE(virtual_model_id, upstream_id, upstream_model)
+       );
+       INSERT INTO virtual_models (name, protocol, instruction, classifier_upstream_id, classifier_model, classifier_kind, enabled)
+         VALUES ('cheap', 'openai', 'pick the cheapest', 3, 'jev-latest', 'model', 0);
+       INSERT INTO virtual_model_routes (virtual_model_id, upstream_id, upstream_model, description, priority)
+         VALUES (1, 1, 'gpt-4o-mini', 'cheap tier', 1), (1, 2, 'gpt-5', 'complex tier', 0);`,
+      (db) => {
+        migrateNamedRoutesTables(db);
+
+        const route: any = db
+          .prepare(`SELECT name, instruction, classifier_upstream_id, classifier_model, classifier_kind, enabled FROM named_routes`)
+          .get();
+        expect(route).toEqual({
+          name: "cheap",
+          instruction: "pick the cheapest",
+          classifier_upstream_id: 3,
+          classifier_model: "jev-latest",
+          classifier_kind: "model",
+          enabled: 0,
+        });
+
+        const targets: any[] = db
+          .prepare(`SELECT upstream_id, upstream_model, description, priority FROM named_route_targets ORDER BY priority`)
+          .all();
+        expect(targets).toEqual([
+          { upstream_id: 2, upstream_model: "gpt-5", description: "complex tier", priority: 0 },
+          { upstream_id: 1, upstream_model: "gpt-4o-mini", description: "cheap tier", priority: 1 },
+        ]);
+
+        const tables: string[] = db
+          .prepare(`SELECT name FROM sqlite_master WHERE type='table'`)
+          .all()
+          .map((r: any) => r.name);
+        expect(tables).not.toContain("virtual_models");
+        expect(tables).not.toContain("virtual_model_routes");
+      }
+    );
+  });
+
+  it("merges a same-name manual rule and virtual model into one route (virtual classifier wins)", () => {
+    withTempDb(
+      `${legacyRoutingRules}
+       CREATE TABLE virtual_models (
+         id INTEGER PRIMARY KEY AUTOINCREMENT,
+         name TEXT NOT NULL,
+         protocol TEXT NOT NULL,
+         instruction TEXT NOT NULL DEFAULT '',
+         classifier_upstream_id INTEGER NOT NULL,
+         classifier_model TEXT NOT NULL,
+         classifier_kind TEXT NOT NULL DEFAULT 'model',
+         priority INTEGER NOT NULL DEFAULT 0,
+         enabled INTEGER NOT NULL DEFAULT 1,
+         created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+         UNIQUE(name, protocol)
+       );
+       CREATE TABLE virtual_model_routes (
+         id INTEGER PRIMARY KEY AUTOINCREMENT,
+         virtual_model_id INTEGER NOT NULL REFERENCES virtual_models(id) ON DELETE CASCADE,
+         upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
+         upstream_model TEXT NOT NULL,
+         description TEXT,
+         priority INTEGER NOT NULL DEFAULT 0,
+         created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+         UNIQUE(virtual_model_id, upstream_id, upstream_model)
+       );
+       INSERT INTO routing_rules (name, protocol, upstream_id, target_model) VALUES ('auto', 'openai', 2, 'claude-sonnet');
+       INSERT INTO virtual_models (name, protocol, instruction, classifier_upstream_id, classifier_model, classifier_kind)
+         VALUES ('auto', 'openai', 'decide by complexity', 3, 'jev-latest', 'model');
+       INSERT INTO virtual_model_routes (virtual_model_id, upstream_id, upstream_model, description, priority)
+         VALUES (1, 1, 'gpt-4o-mini', 'cheap tier', 0);`,
+      (db) => {
+        migrateNamedRoutesTables(db);
+
+        expect((db.prepare(`SELECT COUNT(*) AS c FROM named_routes`).get() as any).c).toBe(1);
+        const route: any = db
+          .prepare(`SELECT instruction, classifier_kind, classifier_model FROM named_routes`)
+          .get();
+        expect(route).toEqual({
+          instruction: "decide by complexity",
+          classifier_kind: "model",
+          classifier_model: "jev-latest",
+        });
+
+        const models: string[] = db
+          .prepare(`SELECT upstream_model FROM named_route_targets ORDER BY upstream_model`)
+          .all()
+          .map((r: any) => r.upstream_model);
+        expect(models).toEqual(["claude-sonnet", "gpt-4o-mini"]);
+      }
+    );
+  });
+});
+
+describe("migrateNamedRouteTargetsNullableUpstream", () => {
+  function withTempDb(
+    targetSql: string,
+    fn: (db: InstanceType<typeof Database>) => void
+  ) {
+    const dir = mkdtempSync(join(tmpdir(), "tt-migrate-nrt-"));
     const db = new Database(join(dir, "test.db"));
     db.exec(`
       CREATE TABLE upstreams (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
         protocol TEXT NOT NULL,
-        base_url TEXT NOT NULL,
-        priority INTEGER NOT NULL DEFAULT 0,
-        enabled INTEGER NOT NULL DEFAULT 1
+        base_url TEXT NOT NULL
       );
       INSERT INTO upstreams (name, protocol, base_url) VALUES ('up-a', 'openai', 'https://a.example');
-      CREATE TABLE routing_rules (
+      CREATE TABLE named_routes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
         protocol TEXT NOT NULL,
-        upstream_id INTEGER NOT NULL,
-        target_model TEXT NOT NULL,
-        priority INTEGER NOT NULL DEFAULT 0,
+        instruction TEXT NOT NULL DEFAULT '',
+        classifier_upstream_id INTEGER NOT NULL DEFAULT 0,
+        classifier_model TEXT NOT NULL DEFAULT '',
+        classifier_kind TEXT NOT NULL DEFAULT 'priority',
+        enabled INTEGER NOT NULL DEFAULT 1,
         created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
       );
-      CREATE UNIQUE INDEX uq_routing_rules_name_protocol_upstream
-        ON routing_rules(name, protocol, upstream_id);
-      INSERT INTO routing_rules (name, protocol, upstream_id, target_model, priority) VALUES
-        ('my-alias', 'openai', 1, 'gpt-4o-real', 0);
+      INSERT INTO named_routes (name, protocol) VALUES ('r', 'openai');
     `);
+    db.exec(targetSql);
+    try {
+      fn(db);
+    } finally {
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
 
-    migrateRoutingRulesTable(db);
+  const notNullTable = `
+    CREATE TABLE named_route_targets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      named_route_id INTEGER NOT NULL REFERENCES named_routes(id) ON DELETE CASCADE,
+      upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
+      upstream_model TEXT NOT NULL,
+      description TEXT,
+      priority INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+    INSERT INTO named_route_targets (named_route_id, upstream_id, upstream_model, description, priority)
+      VALUES (1, 1, 'gpt-4o-mini', 'cheap', 2);
+  `;
 
-    // 新 4 列唯一索引已建立，旧命名索引已随表重建消失
-    const indexNames: string[] = db.prepare(`PRAGMA index_list(routing_rules)`).all().map((i: any) => i.name);
-    expect(indexNames).toContain("uq_routing_rules_name_protocol_upstream_model");
-    expect(indexNames).not.toContain("uq_routing_rules_name_protocol_upstream");
+  it("rebuilds a NOT NULL upstream_id table into nullable, preserving rows", () => {
+    withTempDb(notNullTable, (db) => {
+      migrateNamedRouteTargetsNullableUpstream(db);
 
-    // 数据保留；同 upstream 不同 targetModel 允许；四元组重复拒绝
-    const row: any = db.prepare(`SELECT target_model, priority FROM routing_rules WHERE name = 'my-alias'`).get();
-    expect(row).toEqual({ target_model: "gpt-4o-real", priority: 0 });
-    db.exec(`INSERT INTO routing_rules (name, protocol, upstream_id, target_model, priority) VALUES ('my-alias', 'openai', 1, 'gpt-4o-alt', 1)`);
-    expect(() =>
-      db.exec(`INSERT INTO routing_rules (name, protocol, upstream_id, target_model) VALUES ('my-alias', 'openai', 1, 'gpt-4o-real')`)
-    ).toThrow(/UNIQUE/i);
+      const notnull = (db
+        .prepare(`PRAGMA table_info(named_route_targets)`)
+        .all() as any[]).find((c) => c.name === "upstream_id").notnull;
+      expect(notnull).toBe(0);
 
-    // 幂等：再次运行不重建、不丢数据
-    migrateRoutingRulesTable(db);
-    const count: any = db.prepare(`SELECT COUNT(*) AS c FROM routing_rules`).get();
-    expect(count.c).toBe(2);
+      const row: any = db
+        .prepare(`SELECT named_route_id, upstream_id, upstream_model, description, priority FROM named_route_targets`)
+        .get();
+      expect(row).toEqual({
+        named_route_id: 1,
+        upstream_id: 1,
+        upstream_model: "gpt-4o-mini",
+        description: "cheap",
+        priority: 2,
+      });
 
-    db.close();
-    rmSync(dir, { recursive: true, force: true });
+      // 可空生效：auto 目标（upstream_id NULL）可写入
+      db.prepare(
+        `INSERT INTO named_route_targets (named_route_id, upstream_id, upstream_model) VALUES (1, NULL, 'claude-sonnet')`
+      ).run();
+      expect(
+        (db.prepare(`SELECT COUNT(*) AS c FROM named_route_targets WHERE upstream_id IS NULL`).get() as any).c
+      ).toBe(1);
+
+      // 幂等：二次调用不再重建（rowid 保留）
+      migrateNamedRouteTargetsNullableUpstream(db);
+      expect((db.prepare(`SELECT COUNT(*) AS c FROM named_route_targets`).get() as any).c).toBe(2);
+    });
+  });
+
+  it("is a no-op when upstream_id is already nullable", () => {
+    withTempDb(
+      notNullTable.replace(/INTEGER NOT NULL REFERENCES upstreams\(id\)/, "INTEGER REFERENCES upstreams(id)"),
+      (db) => {
+        const before: any = db.prepare(`SELECT * FROM named_route_targets`).get();
+        migrateNamedRouteTargetsNullableUpstream(db);
+        const after: any = db.prepare(`SELECT * FROM named_route_targets`).get();
+        expect(after).toEqual(before);
+      }
+    );
   });
 });
 

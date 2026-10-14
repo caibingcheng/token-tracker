@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -57,6 +58,9 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
   const [previewPublic, setPreviewPublic] = useState(false);
   // Dashboard 注册到桌面侧栏底部的操作组节点（仅 Dashboard 页存在）
   const [sidebarActions, setSidebarActions] = useState<ReactNode>(null);
+  // 本地免密码直通（服务端 LOCAL_ADMIN_BYPASS + loopback Host 生效）：直接获得 admin，
+  // 此模式下 logout / 401 跳转均为 no-op（用 ref 避免 callback 依赖问题）
+  const localBypassRef = useRef(false);
 
   const previewContextValue = useMemo(
     () => ({
@@ -67,6 +71,7 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
   );
 
   const handleUnauthorized = useCallback(() => {
+    if (localBypassRef.current) return;
     setError("Invalid or missing session");
     setHasKey(false);
     setGateView("public");
@@ -75,7 +80,13 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
 
   useEffect(() => {
     setHasKey(getApiKey() !== null);
-    apiSetup().then(({ setupRequired }) => setSetupRequired(setupRequired));
+    apiSetup().then(({ setupRequired, authDisabled }) => {
+      setSetupRequired(setupRequired);
+      if (authDisabled) {
+        localBypassRef.current = true;
+        setHasKey(true);
+      }
+    });
   }, []);
 
   useEffect(() => {
@@ -114,6 +125,7 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
   };
 
   const handleLogout = () => {
+    if (localBypassRef.current) return;
     clearApiKey();
     setInputKey("");
     setTotpCode("");

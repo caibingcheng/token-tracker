@@ -651,6 +651,112 @@ describe("/api/admin/upstreams - probe config", () => {
   });
 });
 
+describe("/api/admin/upstreams - model probe configs", () => {
+  const MPC = [
+    { model: "text-embedding-3-large", path: "/v1/embeddings", body: { model: "{{model}}", input: "hi" } },
+    { model: "jev-latest", path: "/v1/systemone", body: { model: "{{model}}", state: "hi" } },
+  ];
+
+  it("POST 带 modelProbeConfigs 落库并 GET 返回解析列表", async () => {
+    const token = await makeToken();
+    const res = await LIST_POST(
+      req("/api/admin/upstreams", "POST", token, {
+        name: "up-mpc",
+        protocol: "openai",
+        baseUrl: "https://8.8.8.8",
+        modelProbeConfigs: MPC,
+      }), { params: {} });
+    expect(res.status).toBe(201);
+
+    const list = await LIST_GET(req("/api/admin/upstreams", "GET", token), { params: {} });
+    const json = await list.json();
+    const row = json.data.find((u: { name: string }) => u.name === "up-mpc");
+    expect(row.modelProbeConfigs).toEqual(MPC);
+  });
+
+  it("POST 省略 modelProbeConfigs 时落库 NULL 且 GET 返回 []", async () => {
+    const token = await makeToken();
+    await LIST_POST(
+      req("/api/admin/upstreams", "POST", token, {
+        name: "up-mpc-none",
+        protocol: "openai",
+        baseUrl: "https://8.8.8.8",
+      }), { params: {} });
+    const rows = await withSkipCache(async () =>
+      db.select().from(upstreamsTable).where(eq(upstreamsTable.name, "up-mpc-none"))
+    );
+    expect(rows[0]!.modelProbeConfigs).toBeNull();
+
+    const list = await LIST_GET(req("/api/admin/upstreams", "GET", token), { params: {} });
+    const json = await list.json();
+    const row = json.data.find((u: { name: string }) => u.name === "up-mpc-none");
+    expect(row.modelProbeConfigs).toEqual([]);
+  });
+
+  it("POST 非法 modelProbeConfigs 400（空 model / 逃逸 path / 重复 model / 非数组）", async () => {
+    const token = await makeToken();
+    const bad = [
+      [{ model: "", path: "/v1/embeddings", body: {} }],
+      [{ model: "m1", path: "/../internal", body: {} }],
+      [MPC[0], MPC[0]],
+      { model: "m1", path: "/v1/x", body: {} },
+    ];
+    for (const modelProbeConfigs of bad) {
+      const res = await LIST_POST(
+        req("/api/admin/upstreams", "POST", token, {
+          name: `up-mpc-bad-${Math.random().toString(36).slice(2, 8)}`,
+          protocol: "openai",
+          baseUrl: "https://8.8.8.8",
+          modelProbeConfigs,
+        }), { params: {} }
+      );
+      expect(res.status).toBe(400);
+    }
+  });
+
+  it("PATCH 全量替换 modelProbeConfigs，null 清除，省略保持不变", async () => {
+    const token = await makeToken();
+    await LIST_POST(
+      req("/api/admin/upstreams", "POST", token, {
+        name: "up-mpc-patch",
+        protocol: "openai",
+        baseUrl: "https://8.8.8.8",
+        modelProbeConfigs: MPC,
+      }), { params: {} });
+    const rows = await withSkipCache(async () =>
+      db.select().from(upstreamsTable).where(eq(upstreamsTable.name, "up-mpc-patch"))
+    );
+    const id = rows[0]!.id;
+
+    const next = [MPC[0]];
+    await PATCH(req(`/api/admin/upstreams/${id}`, "PATCH", token, { modelProbeConfigs: next }), {
+      params: { id: String(id) },
+    });
+    let get = await ITEM_GET(req(`/api/admin/upstreams/${id}`, "GET", token), {
+      params: { id: String(id) },
+    });
+    expect((await get.json()).data.modelProbeConfigs).toEqual(next);
+
+    // 省略 → 保持不变
+    await PATCH(req(`/api/admin/upstreams/${id}`, "PATCH", token, { priority: 3 }), {
+      params: { id: String(id) },
+    });
+    get = await ITEM_GET(req(`/api/admin/upstreams/${id}`, "GET", token), {
+      params: { id: String(id) },
+    });
+    expect((await get.json()).data.modelProbeConfigs).toEqual(next);
+
+    // null → 清除
+    await PATCH(req(`/api/admin/upstreams/${id}`, "PATCH", token, { modelProbeConfigs: null }), {
+      params: { id: String(id) },
+    });
+    get = await ITEM_GET(req(`/api/admin/upstreams/${id}`, "GET", token), {
+      params: { id: String(id) },
+    });
+    expect((await get.json()).data.modelProbeConfigs).toEqual([]);
+  });
+});
+
 describe("/api/admin/upstreams - key counts", () => {
   it("GET 列表 keyCount 为全量、activeKeyCount 只数启用的 key", async () => {
     const token = await makeToken();

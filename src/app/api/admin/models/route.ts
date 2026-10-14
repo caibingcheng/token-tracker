@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { db, initDatabase, upstreamsTable, routingRulesTable } from "@/lib/db";
+import { eq } from "drizzle-orm";
+import { db, initDatabase, namedRouteTargetsTable, namedRoutesTable, upstreamsTable } from "@/lib/db";
 import { withAuth } from "@/lib/auth/guard";
 import {
   isProtocol,
@@ -8,6 +9,8 @@ import {
   type Protocol,
   VALID_PROTOCOLS,
 } from "@/lib/gateway/model-router";
+import { simulateRoute } from "@/lib/gateway/simulate-route";
+import type { SimNamedRoute, SimClassifierInfo } from "@/lib/gateway/simulate-route";
 import type { UpstreamRoute } from "@/lib/gateway/model-router";
 import { healthTracker } from "@/lib/gateway/proxy-deps";
 
@@ -42,21 +45,19 @@ interface EffectiveRoute {
 interface ResolvedRoute {
   protocol: Protocol;
   model: string;
-  source: "manual" | "auto";
+  source: "named" | "auto";
   winner: CandidateInfo | null;
   candidates: CandidateInfo[];
   effective: EffectiveRoute;
-  overridden?: boolean; // 同名自动路由被手动规则覆盖（合并行：手动链生效，自动候选见 shadowedCandidates）
-  shadowedCandidates?: CandidateInfo[]; // 被手动路由覆盖的自动候选（仅同名合并行存在）
+  overridden?: boolean; // 同名自动路由被命名路由覆盖（合并行：命名链生效，自动候选见 shadowedCandidates）
+  shadowedCandidates?: CandidateInfo[]; // 被命名路由覆盖的自动候选（仅同名合并行存在）
+  namedRouteUnavailable?: boolean; // 命名路由存在但目标全部失效（upstream 禁用/删除）→ 网关 502
+  classifier?: SimClassifierInfo | null; // 命名路由的分类器（kind='model' 请求时决策链首）
 }
 
-interface ManualRouteInfo {
+interface NamedTargetInfo {
   id: number;
-  name: string;
-  protocol: Protocol;
-  upstreamId: number;
-  upstreamName: string;
-  upstreamProtocol: Protocol;
+  upstreamId: number | null; // null = auto 目标（按路由解析）
   targetModel: string;
   priority: number;
 }
@@ -114,37 +115,50 @@ export const GET = withAuth(async () => {
   }));
 
   const upstreamRoutes = rows.map(toUpstreamRoute);
-
-  // 手动路由规则（join upstream 供 UI 展示）
-  const ruleRows = await db
-    .select()
-    .from(routingRulesTable)
-    .orderBy(routingRulesTable.name, routingRulesTable.protocol, routingRulesTable.priority);
   const upstreamById = new Map<number, any>(rows.map((r: any) => [r.id, r]));
-  const manualRoutes: ManualRouteInfo[] = ruleRows.map((r: any) => {
-    const u = upstreamById.get(r.upstreamId);
-    return {
-      id: r.id,
-      name: r.name,
-      protocol: isProtocol(r.protocol) ? r.protocol : "openai",
-      upstreamId: r.upstreamId,
-      upstreamName: u?.name ?? "(deleted)",
-      upstreamProtocol: u && isProtocol(u.protocol) ? u.protocol : "openai",
-      targetModel: r.targetModel,
-      priority: r.priority ?? 0,
-    };
+
+  // 命名路由 + 目标池（join upstream 取 classifier 名供 UI 展示）
+  const routeRows = await db
+    .select({ route: namedRoutesTable, upstream: upstreamsTable })
+    .from(namedRoutesTable)
+    .leftJoin(upstreamsTable, eq(namedRoutesTable.classifierUpstreamId, upstreamsTable.id));
+  const targetRows = await db.select().from(namedRouteTargetsTable);
+  const targetsByRoute = new Map<number, NamedTargetInfo[]>();
+  for (const row of targetRows as any[]) {
+    const list = targetsByRoute.get(row.namedRouteId) ?? [];
+    list.push({
+      id: row.id,
+      upstreamId: row.upstreamId,
+      targetModel: row.upstreamModel,
+      priority: row.priority ?? 0,
+    });
+    targetsByRoute.set(row.namedRouteId, list);
+  }
+  Array.from(targetsByRoute.values()).forEach((list) => {
+    list.sort((a, b) => a.priority - b.priority || a.id - b.id);
   });
-  // 同名同协议可挂多条（多目标 failover 链），Map 值改为数组
-  const manualByKey = new Map<string, ManualRouteInfo[]>();
-  for (const m of manualRoutes) {
-    const key = `${m.protocol}:${m.name}`;
-    const list = manualByKey.get(key) ?? [];
-    list.push(m);
-    manualByKey.set(key, list);
+
+  // 模拟器数据源：含 disabled（前端按 enabled 过滤），路由不过滤 upstream 状态（simulateRoute 自己判）
+  const namedRoutes: SimNamedRoute[] = routeRows.map((row: any) => ({
+    id: row.route.id,
+    name: row.route.name,
+    protocol: isProtocol(row.route.protocol) ? row.route.protocol : "openai",
+    enabled: row.route.enabled === 1,
+    classifierUpstreamName: row.upstream?.name ?? "(deleted)",
+    classifierModel: row.route.classifierModel ?? "",
+    classifierKind: row.route.classifierKind === "model" ? "model" : "priority",
+    targets: targetsByRoute.get(row.route.id) ?? [],
+  }));
+  // 解析/列表共用：enabled 且至少一条目标的命名路由，按 protocol:name 索引（运行时 upstream 过滤在消费侧）
+  const namedByKey = new Map<string, SimNamedRoute>();
+  for (const r of namedRoutes) {
+    if (r.enabled && r.targets.length > 0) {
+      namedByKey.set(`${r.protocol}:${r.name}`, r);
+    }
   }
 
   // 实际路由 = 健康过滤后链首；全部不健康时兜底 = 静态 priority 链首（与 proxy 兜底行为一致）。
-  // 健康判定由调用方注入：自动路由按 upstream/model 级检查，手动路由按候选自身健康字段
+  // 健康判定由调用方注入：自动路由按 upstream/model 级检查，命名路由按候选自身健康字段
   const computeEffective = (
     candidates: CandidateInfo[],
     isHealthy: (c: CandidateInfo) => boolean
@@ -174,29 +188,38 @@ export const GET = withAuth(async () => {
     modelUnavailable: upstreamModelUnhealthy.get(c.upstreamId)?.has(model) ?? false,
   });
 
-  // 手动路由 resolve 行：多目标 failover 链（按 rule priority 排序），
-  // model 级健康按各目标自己的 targetModel 检查（proxy 标记也是真实名）
-  const buildManualRoute = (list: ManualRouteInfo[]): ResolvedRoute => {
-    const sorted = list
-      .slice()
-      .sort((a, b) => a.priority - b.priority || a.id - b.id);
-    const candidates: CandidateInfo[] = sorted.map((m) => ({
-      upstreamId: m.upstreamId,
-      name: m.upstreamName,
-      priority: m.priority,
-      matchedPattern: m.targetModel,
-      matchType: "exact",
-      upstreamUnhealthy: upstreamUnhealthy.has(m.upstreamId),
-      modelUnavailable:
-        upstreamModelUnhealthy.get(m.upstreamId)?.has(m.targetModel) ?? false,
+  // 命名路由 resolve 行：候选池 = 目标池展开（显式目标单 hop；auto 目标按命名路由嵌套 >
+  // 自动路由候选池展开，与 proxy 同一 simulateRoute 逻辑）。
+  // LLM 分类器（kind=model，多目标）：真实链首请求时决策，静态无确定性 winner——winner 置 null，
+  // 由 UI 在候选池标注 priority 最小目标为 fallback head；
+  // 规则分类器（kind=priority，或单目标）：链首 = 首个健康目标（按优先级+可用性），静态 winner 即真实链首
+  const buildNamedRoute = (route: SimNamedRoute, protocol: Protocol): ResolvedRoute => {
+    const sim = simulateRoute(route.name, protocol, upstreams, namedRoutes);
+    const candidates: CandidateInfo[] = sim.candidates.map((c) => ({
+      upstreamId: c.upstreamId,
+      name: c.name,
+      priority: c.priority,
+      matchedPattern: c.matchedPattern,
+      matchType: c.matchType,
+      upstreamUnhealthy: c.upstreamUnhealthy,
+      modelUnavailable: c.modelUnavailable,
     }));
+    const ruleBased = route.classifierKind !== "model" || candidates.length <= 1;
     return {
-      protocol: sorted[0].protocol,
-      model: sorted[0].name,
-      source: "manual",
-      winner: candidates[0] ?? null,
+      protocol,
+      model: route.name,
+      source: "named",
+      winner: ruleBased ? candidates[0] ?? null : null,
       candidates,
-      effective: computeEffective(candidates, (c) => !c.upstreamUnhealthy && !c.modelUnavailable),
+      effective: ruleBased
+        ? computeEffective(candidates, (c) => !c.upstreamUnhealthy && !c.modelUnavailable)
+        : { winner: null, failover: false, allUnhealthy: false },
+      namedRouteUnavailable: sim.namedRouteUnavailable,
+      classifier: {
+        classifierUpstreamName: route.classifierUpstreamName,
+        classifierModel: route.classifierModel,
+        kind: route.classifierKind,
+      },
     };
   };
 
@@ -227,17 +250,19 @@ export const GET = withAuth(async () => {
 
   const resolvedRoutes: ResolvedRoute[] = [];
   for (const protocol of VALID_PROTOCOLS) {
-    const models = concreteModelsByProtocol.get(protocol);
-    if (!models) continue;
+    // 无该协议 upstream 时也要继续走 namedOnly/brokenNamed 分支：
+    // 否则纯虚拟名命名路由（如全部 upstream 都是 openai 时的 anthropic 命名路由）
+    // 永远不会出现在 routing table 里
+    const models = concreteModelsByProtocol.get(protocol) ?? new Set<string>();
     const sortedModels = Array.from(models).sort((a, b) => a.localeCompare(b));
     for (const model of sortedModels) {
-      const manualList = manualByKey.get(`${protocol}:${model}`);
-      if (manualList) {
-        // 同名手动路由复用自动行（不另起一行）：单行展示手动 failover 链（实际生效路由），
+      const route = namedByKey.get(`${protocol}:${model}`);
+      if (route) {
+        // 同名命名路由复用自动行（不另起一行）：单行展示命名 failover 链（实际生效路由），
         // 被覆盖的自动候选保留在 shadowedCandidates 供展开详情溯源
         const { candidates: shadowed } = routeModelByProtocol(model, protocol, upstreamRoutes);
         resolvedRoutes.push({
-          ...buildManualRoute(manualList),
+          ...buildNamedRoute(route, protocol),
           shadowedCandidates: shadowed.map((c) =>
             toCandidate(
               {
@@ -287,20 +312,21 @@ export const GET = withAuth(async () => {
         effective: computeEffective(candidateInfos, (c) => isCandidateHealthy(c.upstreamId, model)),
       });
     }
-    // 未配置在任何 upstream 的纯手动路由名（如仅用于手动转发的虚拟名）；
-    // 按 (protocol, name) 分组，同名多目标合并为一条链
-    const manualOnly: ManualRouteInfo[][] = [];
-    const seenKeys = new Set<string>();
-    for (const m of manualRoutes) {
-      if (m.protocol !== protocol || models.has(m.name)) continue;
-      const key = `${m.protocol}:${m.name}`;
-      if (seenKeys.has(key)) continue;
-      seenKeys.add(key);
-      manualOnly.push(manualByKey.get(key)!);
+
+    // 未配置在任何 upstream 的命名路由名（虚拟名转发场景）；按 (protocol, name) 分组
+    const namedOnly = Array.from(namedByKey.values())
+      .filter((r) => r.protocol === protocol && !models.has(r.name))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    for (const route of namedOnly) {
+      resolvedRoutes.push(buildNamedRoute(route, protocol));
     }
-    manualOnly.sort((a, b) => a[0].name.localeCompare(b[0].name));
-    for (const list of manualOnly) {
-      resolvedRoutes.push(buildManualRoute(list));
+
+    // 目标全部失效的命名路由（enabled 但无有效目标）也列出，UI 标 namedRouteUnavailable
+    const brokenNamed = namedRoutes
+      .filter((r) => r.protocol === protocol && r.enabled && r.targets.length === 0 && !models.has(r.name))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    for (const route of brokenNamed) {
+      resolvedRoutes.push(buildNamedRoute(route, protocol));
     }
   }
 
@@ -323,7 +349,7 @@ export const GET = withAuth(async () => {
       protocols: VALID_PROTOCOLS,
       resolvedRoutes,
       wildcardPatternsByProtocol: wildcardPatterns,
-      manualRoutes,
+      namedRoutes,
     },
   });
 });

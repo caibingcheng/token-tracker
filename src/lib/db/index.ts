@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm";
 import { wrapDatabaseClient } from "./cache";
 import { offsetMinutesToSqlModifiers } from "@/lib/timezone-utils";
-import { migrateColumns, migrateTokenRecordsModelColumns, migrateRoutingRulesTable, migrateSyncInstancesTable, migrateIngestTokensTable } from "./migrate";
+import { migrateColumns, migrateTokenRecordsModelColumns, migrateNamedRoutesTables, migrateNamedRouteTargetsNullableUpstream, migrateSyncInstancesTable, migrateIngestTokensTable } from "./migrate";
 
 let db: any;
 let tokenRecords: any;
@@ -11,7 +11,8 @@ let virtualKeysTable: any;
 let settingsTable: any;
 let adminAuditLogsTable: any;
 let upstreamModelHealthTable: any;
-let routingRulesTable: any;
+let namedRoutesTable: any;
+let namedRouteTargetsTable: any;
 let modelPricesTable: any;
 let ingestTokensTable: any;
 let syncInstancesTable: any;
@@ -49,7 +50,8 @@ async function ensureClient() {
   settingsTable = sqliteModule.settings;
   adminAuditLogsTable = sqliteModule.adminAuditLogs;
   upstreamModelHealthTable = sqliteModule.upstreamModelHealth;
-  routingRulesTable = sqliteModule.routingRules;
+  namedRoutesTable = sqliteModule.namedRoutes;
+  namedRouteTargetsTable = sqliteModule.namedRouteTargets;
   modelPricesTable = sqliteModule.modelPrices;
   ingestTokensTable = sqliteModule.ingestTokens;
   syncInstancesTable = sqliteModule.syncInstances;
@@ -131,17 +133,31 @@ async function ensureClient() {
       updated_at TEXT NOT NULL,
       PRIMARY KEY (upstream_id, model)
     );
-    CREATE TABLE IF NOT EXISTS routing_rules (
+    CREATE TABLE IF NOT EXISTS named_routes (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       protocol TEXT NOT NULL,
-      upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
-      target_model TEXT NOT NULL,
-      priority INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-      UNIQUE(name, protocol, upstream_id)
+      instruction TEXT NOT NULL DEFAULT '',
+      classifier_upstream_id INTEGER NOT NULL DEFAULT 0,
+      classifier_model TEXT NOT NULL DEFAULT '',
+      classifier_kind TEXT NOT NULL DEFAULT 'priority',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     );
-    CREATE INDEX IF NOT EXISTS idx_routing_rules_protocol_name ON routing_rules(protocol, name);
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_named_routes_name_protocol ON named_routes(name, protocol);
+    CREATE INDEX IF NOT EXISTS idx_named_routes_protocol_name ON named_routes(protocol, name);
+    CREATE TABLE IF NOT EXISTS named_route_targets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      named_route_id INTEGER NOT NULL REFERENCES named_routes(id) ON DELETE CASCADE,
+      upstream_id INTEGER REFERENCES upstreams(id) ON DELETE CASCADE, -- NULL = 无 provider 目标（按路由解析）
+      upstream_model TEXT NOT NULL,
+      description TEXT,
+      priority INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_named_route_targets_route_upstream_model
+      ON named_route_targets(named_route_id, upstream_id, upstream_model);
+    CREATE INDEX IF NOT EXISTS idx_named_route_targets_named_route ON named_route_targets(named_route_id);
     CREATE TABLE IF NOT EXISTS model_prices (
       model TEXT PRIMARY KEY,
       input_price REAL NOT NULL,
@@ -206,6 +222,8 @@ async function ensureClient() {
         { name: "proxy_url_encrypted", definition: "proxy_url_encrypted TEXT" },
         { name: "header_transforms", definition: "header_transforms TEXT" },
         { name: "probe_config", definition: "probe_config TEXT" },
+        { name: "model_probe_configs", definition: "model_probe_configs TEXT" },
+        { name: "classifier_models", definition: "classifier_models TEXT" },
       ],
     },
   ]);
@@ -213,8 +231,12 @@ async function ensureClient() {
   // token_records 专用迁移：model 列改为真实名 + request_model 回填 + target_model 删除
   migrateTokenRecordsModelColumns(client);
 
-  // routing_rules 专用迁移：旧 UNIQUE(name, protocol) 结构 → 多目标结构（priority 列 + 新唯一约束）
-  migrateRoutingRulesTable(client);
+  // 命名路由迁移：把存量 routing_rules / virtual_models + virtual_model_routes
+  // 折叠进 named_routes + named_route_targets，然后删旧表（幂等，全新库无旧表自动跳过）
+  migrateNamedRoutesTables(client);
+
+  // named_route_targets.upstream_id 放宽可空（无 provider 目标）：NOT NULL 存量表重建（幂等）
+  migrateNamedRouteTargetsNullableUpstream(client);
 
   // 多实例同步表专用迁移（幂等，全新库无旧结构自动跳过）：
   // - sync_instances：instance 主键 → uid 主键 + instance_name（旧行丢弃）
@@ -283,5 +305,5 @@ export function getDateGroupExpr(
   return sql<string>`strftime('%Y-%m-%d', ${tokenRecords.createdAt}, ${modifiers[0]}, ${modifiers[1]})`;
 }
 
-export { db, tokenRecords, upstreamsTable, upstreamKeysTable, virtualKeysTable, settingsTable, adminAuditLogsTable, upstreamModelHealthTable, routingRulesTable, modelPricesTable, ingestTokensTable, syncInstancesTable };
-export type { TokenRecord, NewTokenRecord } from "./schema-sqlite";
+export { db, tokenRecords, upstreamsTable, upstreamKeysTable, virtualKeysTable, settingsTable, adminAuditLogsTable, upstreamModelHealthTable, namedRoutesTable, namedRouteTargetsTable, modelPricesTable, ingestTokensTable, syncInstancesTable };
+export type { TokenRecord, NewTokenRecord, NamedRoute, NewNamedRoute, NamedRouteTarget, NewNamedRouteTarget } from "./schema-sqlite";

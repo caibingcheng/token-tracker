@@ -7,8 +7,12 @@ import { joinUrlPath } from "./url-utils";
 import { getProxyDispatcher } from "./proxy-dispatcher";
 import { applyHeaderTransforms } from "./header-transforms";
 import type { HeaderTransform } from "./header-transforms";
-import { buildProbeRequestFromConfig, isProbePathInsideBase } from "./probe-config";
-import type { ProbeConfig } from "./probe-config";
+import {
+  buildProbeRequestFromConfig,
+  isProbePathInsideBase,
+  isProbeUrlInsideBase,
+} from "./probe-config";
+import type { ModelProbeConfig, ProbeConfig } from "./probe-config";
 
 export interface ProbeTarget {
   protocol: Protocol;
@@ -17,6 +21,7 @@ export interface ProbeTarget {
   headerTransforms?: HeaderTransform[]; // upstream 出站 header 变换（与真实链路同一份配置）
   upstreamName?: string; // ${var.upstream} 的取值（探测上下文）
   probeConfig?: ProbeConfig | null; // 自定义探活端点；null/undefined = 默认 chat → responses 双风格
+  modelProbeConfigs?: ModelProbeConfig[] | null; // per-model 探活端点（精确匹配），命中时优先于 probeConfig
 }
 
 // chat / responses = openai 协议双风格；custom = upstream 自定义探活端点
@@ -46,22 +51,26 @@ function createProbeSessionId(): string {
   return `probe-${randomBytes(4).toString("hex")}`;
 }
 
-// 配置是否可用：不仅非空，还要在 URL 归一化后仍落在 baseUrl 路径前缀内
+// 解析当次探测用哪个自定义端点：per-model 精确命中 → upstream 级 probeConfig → 无（默认双风格）。
+// 配置不仅非空，还要在 URL 归一化后仍落在 baseUrl 路径前缀内
 // （纵深防御，见 probe-config.ts 的 isProbePathInsideBase）；不可用即当作 auto
-function hasUsableProbeConfig(target: ProbeTarget): boolean {
-  const config = target.probeConfig;
-  if (!config) return false;
-  return isProbePathInsideBase(target.baseUrl, config.path);
+function resolveUsableProbeConfig(target: ProbeTarget, model: string): ProbeConfig | null {
+  const perModel = target.modelProbeConfigs?.find((c) => c.model === model);
+  if (perModel && isProbePathInsideBase(target.baseUrl, perModel.path)) return perModel;
+  const upstream = target.probeConfig;
+  if (upstream && isProbePathInsideBase(target.baseUrl, upstream.path)) return upstream;
+  return null;
 }
 
-// 探活请求来源：配了可用自定义端点走配置，否则按协议 + 风格构造
+// 探活请求来源：解析到可用自定义端点走配置，否则按协议 + 风格构造
 function resolveProbeRequest(
   target: ProbeTarget,
   model: string,
   apiStyle: ProbeStyle
 ): { url: string; body: Record<string, unknown> } {
-  if (hasUsableProbeConfig(target)) {
-    return buildProbeRequestFromConfig(target.baseUrl, model, target.probeConfig!);
+  const config = resolveUsableProbeConfig(target, model);
+  if (config) {
+    return buildProbeRequestFromConfig(target.baseUrl, model, config);
   }
   return buildProbeRequest(target.protocol, target.baseUrl, model, apiStyle);
 }
@@ -139,6 +148,16 @@ async function probeOnce(
   opts: { timeoutMs?: number; signal?: AbortSignal } = {}
 ): Promise<ProbeResult> {
   const { url, body } = resolveProbeRequest(target, model, apiStyle);
+  // {{model}} 替换进 path 后复核最终 URL（model 名含 // / .. 时可能逃出 baseUrl 前缀，
+  // 绝不能让真实 key 发到 baseUrl 之外）
+  if (!isProbeUrlInsideBase(target.baseUrl, url)) {
+    return {
+      ok: false,
+      status: 0,
+      error: "Probe URL escaped the upstream base URL",
+      style: apiStyle,
+    };
+  }
   const controller = new AbortController();
   const timeoutMs = opts.timeoutMs ?? PROBE_TIMEOUT_MS;
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -199,9 +218,9 @@ export async function probeModel(
   apiKey: string,
   opts: { timeoutMs?: number; signal?: AbortSignal } = {}
 ): Promise<ProbeResult> {
-  // 自定义探活端点：只打配置的端点一次，不补发第二种风格（显式配置即真相，
-  // 否则「embeddings 失败后去试 /v1/responses」会引入与风格无关的假信号）
-  if (hasUsableProbeConfig(target)) {
+  // 自定义探活端点（per-model 或 upstream 级）：只打配置的端点一次，不补发第二种风格
+  //（显式配置即真相，否则「embeddings 失败后去试 /v1/responses」会引入与风格无关的假信号）
+  if (resolveUsableProbeConfig(target, model)) {
     return probeOnce(target, model, apiKey, "custom", opts);
   }
   const chatResult = await probeOnce(target, model, apiKey, "chat", opts);

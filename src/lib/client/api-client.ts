@@ -74,13 +74,22 @@ export async function apiLogin(
 }
 
 // 首次设置：探测是否需设置向导，以及提交初始 admin key 换取会话 token
-export async function apiSetup(): Promise<{ setupRequired: boolean }> {
+export async function apiSetup(): Promise<{
+  setupRequired: boolean;
+  authDisabled: boolean;
+}> {
   const res = await fetch("/api/auth/setup");
   if (res.ok) {
-    const json = (await res.json()) as { setupRequired?: boolean };
-    return { setupRequired: json.setupRequired === true };
+    const json = (await res.json()) as {
+      setupRequired?: boolean;
+      authDisabled?: boolean;
+    };
+    return {
+      setupRequired: json.setupRequired === true,
+      authDisabled: json.authDisabled === true,
+    };
   }
-  return { setupRequired: false };
+  return { setupRequired: false, authDisabled: false };
 }
 
 export async function apiSetupSubmit(

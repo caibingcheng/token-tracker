@@ -37,6 +37,12 @@ const AUTO_REFRESH_INTERVAL_MS = 15000;
 function StatusBadge({ status }: { status?: string | null }) {
   if (!status) return <span className="text-gray-400">-</span>;
   switch (status) {
+    case "classifier":
+      return (
+        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-indigo-100 text-indigo-800">
+          Classifier
+        </span>
+      );
     case "no_usage":
       return (
         <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800">
