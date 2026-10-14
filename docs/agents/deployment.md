@@ -6,7 +6,7 @@
 
 - **安全响应头**（`next.config.js` 全局 header，`:path*`）：`X-Frame-Options: DENY`（点击劫持）、`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、`Permissions-Policy`（禁 camera/mic/geolocation）、CSP：`default-src 'self'` + `script-src 'self' 'unsafe-inline'`（**dev 模式额外放行 `unsafe-eval`**，生产不放松；`unsafe-inline` 因 Next bootstrap/styled-jsx 需要）+ `frame-ancestors 'none'` + `object-src 'none'`；`poweredByHeader: false`（不暴露 x-powered-by 框架身份）
 - **PWA 可安装性**：`src/app/manifest.ts`（manifest + 图标），无 Service Worker（离线能力未启用）；移动端底栏 `MobileTabBar.tsx`（`md:hidden`）
-- **Docker 构建**：Dockerfile `output: 'standalone'` + base `node:22-slim` + `ENV NODE_OPTIONS=--max-old-space-size=256 --expose-gc --max-semi-space-size=8`（生产内存控制：收紧 old space 上限 + young gen 双 semi-space 从 32MB 降到 16MB + `src/instrumentation.ts` instrumentationHook 每 5 分钟 RSS>64MB 时 full GC 归还内存）+ `ENV MALLOC_ARENA_MAX=2`（限制 glibc malloc arena 数，减少 native 分配碎片导致的 RSS 高位驻留）；docker-compose.example.yml 含 `TRUSTED_PROXY` 与可选 `deploy.memory` 注释
+- **Docker 构建**：Dockerfile `output: 'standalone'` + base `node:22-slim` + `ENV NODE_OPTIONS=--max-old-space-size=256 --expose-gc --max-semi-space-size=8`（生产内存控制：收紧 old space 上限 + young gen 双 semi-space 从 32MB 降到 16MB + `src/instrumentation.ts` instrumentationHook 每 5 分钟 RSS>64MB 时 full GC 归还内存）+ jemalloc（`LD_PRELOAD` 替换 glibc malloc，native 分配回收更彻底，防长跑 RSS 碎片爬升；构建期软链到架构无关路径）；docker-compose.example.yml 含 `TRUSTED_PROXY` 与可选 `deploy.memory` 注释
 - **TOTP 绑定二维码**：`qrcode.react`（^4.2.0）渲染 otpauth:// URI
 - **`scripts/test_gateway.py`**：手动端到端网关测试脚本（虚拟 key → 代理请求 → 校验透传/写库），不入 vitest，仅供本地联调
 

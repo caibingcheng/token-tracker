@@ -34,14 +34,16 @@ ENV HOSTNAME=0.0.0.0
 # - expose-gc：配合 src/instrumentation.ts 每 5 分钟在 RSS 偏高时触发 full GC，空闲后主动归还内存
 # - max-semi-space-size=8：默认 16MB 双 semi-space 常驻 32MB，低 QPS 场景 8MB 足够，省 ~16MB
 ENV NODE_OPTIONS="--max-old-space-size=256 --expose-gc --max-semi-space-size=8"
-# glibc 默认 malloc arena 数 = 8×核数，native 分配（better-sqlite3/OpenSSL/undici buffer）
-# 散落多 arena 释放后难归还 OS，是长期运行 RSS 挂高位的主因；单线程 Node 2 个 arena 足够
-ENV MALLOC_ARENA_MAX=2
+# jemalloc 替换 glibc malloc：V8 之外的 native 分配（better-sqlite3/OpenSSL/undici buffer）
+# 在 glibc 多 arena 下释放后难归还 OS，是长期运行 RSS 挂高位的主因；jemalloc 回收更彻底。
+# 构建期建固定路径软链，LD_PRELOAD 与架构无关（ghcr 当前仅 amd64，未来加 arm64 无需改）
+ENV LD_PRELOAD=/usr/local/lib/libjemalloc.so
 
 RUN set -eux; \
   apt-get update; \
-  apt-get install -y --no-install-recommends ca-certificates wget; \
+  apt-get install -y --no-install-recommends ca-certificates wget libjemalloc2; \
   rm -rf /var/lib/apt/lists/*; \
+  ln -s "/usr/lib/$(uname -m)-linux-gnu/libjemalloc.so.2" /usr/local/lib/libjemalloc.so; \
   dpkgArch="$(dpkg --print-architecture | awk -F- '{ print $NF }')"; \
   wget -O /usr/local/bin/gosu "https://github.com/tianon/gosu/releases/download/1.19/gosu-$dpkgArch"; \
   chmod +x /usr/local/bin/gosu; \
