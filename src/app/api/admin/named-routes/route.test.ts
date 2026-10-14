@@ -47,6 +47,12 @@ beforeEach(async () => {
         classifierModels: JSON.stringify([{ model: "jev-latest", type: "jev-systemone" }]),
       },
       { name: "up-anthropic", protocol: "anthropic", baseUrl: "https://b.example" },
+      {
+        name: "up-chat-cls",
+        protocol: "anthropic",
+        baseUrl: "https://d.example",
+        classifierModels: JSON.stringify([{ model: "claude-decider", type: "chat" }]),
+      },
     ]);
   });
   await deleteSetting("token_epoch").catch(() => {});
@@ -137,13 +143,15 @@ describe("/api/admin/named-routes", () => {
     expect(json.data).toEqual(expect.objectContaining({ name: "cheap", protocol: "openai" }));
   });
 
-  it("rejects an invalid protocol and an undeclared classifier model", async () => {
+  it("rejects an invalid protocol; accepts any model as classifier; rejects a declared chat classifier on non-openai upstream", async () => {
     const token = await makeToken();
     const classifierUpstreamId = await upstreamIdByName("up-classifier");
+    const chatClsUpstreamId = await upstreamIdByName("up-chat-cls");
     expect(
       (await POST(req("/api/admin/named-routes", "POST", token, { name: "x", protocol: "grpc" }))).status
     ).toBe(400);
-    const res = await POST(
+    // 未声明的模型也可作分类器（运行时默认 jev-systemone）
+    const accepted = await POST(
       req("/api/admin/named-routes", "POST", token, {
         name: "x",
         protocol: "openai",
@@ -152,8 +160,19 @@ describe("/api/admin/named-routes", () => {
         classifierModel: "not-declared",
       })
     );
+    expect(accepted.status).toBe(201);
+    // 存量声明为 chat 的分类器仍要求 openai 协议 upstream
+    const res = await POST(
+      req("/api/admin/named-routes", "POST", token, {
+        name: "y",
+        protocol: "openai",
+        classifierKind: "model",
+        classifierUpstreamId: chatClsUpstreamId,
+        classifierModel: "claude-decider",
+      })
+    );
     expect(res.status).toBe(400);
-    expect((await res.json()).error).toContain("not declared as a classifier");
+    expect((await res.json()).error).toContain("openai-protocol");
   });
 
   it("accepts a declared LLM classifier and switches back to the rule classifier", async () => {

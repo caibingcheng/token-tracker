@@ -3,7 +3,7 @@
 // Named Routes 管理：一个命名路由 = 虚拟名 + 协议 → 目标池（多目标 failover 链）+ 可选分类器。
 // classifierKind='priority' = 无 LLM 分类器（链首 = 首个健康目标，按 priority，零 LLM 开销）；
 // 'model' = LLM 分类器从目标池选链首（每 session 一次）。与同名自动路由互斥：命名路由完全替代它。
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { apiFetch } from "@/lib/client/api-client";
 import type { Protocol } from "@/lib/gateway/model-router";
 import { CopyableCode } from "./CopyableCode";
@@ -42,23 +42,14 @@ interface NamedRouteRow {
   createdAt: string;
 }
 
-// 规则分类器选项的内置 key（非 upstream:classifierModel 格式）
-const RULE_CLASSIFIER_KEY = "rule:priority";
-
-interface ClassifierOption {
-  upstreamId: number;
-  upstreamName: string;
-  model: string;
-  type: string;
-  maxInputTokens?: number;
-}
+// 规则分类器选项的内置 key（非 upstreamId 格式）
+const RULE_CLASSIFIER = "rule";
 
 interface UpstreamRow {
   id: number;
   name: string;
   protocol: Protocol;
   enabled: boolean;
-  classifierModels: { model: string; type: string; maxInputTokens?: number }[];
   enabledModels?: string[];
 }
 
@@ -78,7 +69,6 @@ const protocolBadgeClass = (protocol: Protocol): string =>
 
 export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void }) {
   const [rows, setRows] = useState<NamedRouteRow[]>([]);
-  const [classifierOptions, setClassifierOptions] = useState<ClassifierOption[]>([]);
   const [routeTargets, setRouteTargets] = useState<RouteTargetOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -86,7 +76,11 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
   const [name, setName] = useState("");
   const [protocol, setProtocol] = useState<Protocol>("openai");
   const [instruction, setInstruction] = useState("");
-  const [classifierKey, setClassifierKey] = useState(RULE_CLASSIFIER_KEY);
+  // 分类器："rule" = 规则分类器（无 LLM）；否则 = 所选 upstream id（模型可自由输入）
+  const [classifierUpstreamId, setClassifierUpstreamId] = useState<number | typeof RULE_CLASSIFIER>(
+    RULE_CLASSIFIER
+  );
+  const [classifierModel, setClassifierModel] = useState("");
   const [submitting, setSubmitting] = useState(false);
   // 新建时可一并给出首个目标（无分类器命名路由的一步到位路径）
   const [firstUpstreamId, setFirstUpstreamId] = useState<number | "">("");
@@ -123,25 +117,14 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
       if (routeJson.success) setRows(routeJson.data);
       if (upJson.success) {
         const ups = upJson.data as UpstreamRow[];
-        const classifiers: ClassifierOption[] = [];
         const targets: RouteTargetOption[] = [];
         for (const u of ups) {
           if (!u.enabled) continue;
-          for (const cm of u.classifierModels ?? []) {
-            classifiers.push({
-              upstreamId: u.id,
-              upstreamName: u.name,
-              model: cm.model,
-              type: cm.type,
-              maxInputTokens: cm.maxInputTokens,
-            });
-          }
           for (const m of u.enabledModels ?? []) {
             if (m.endsWith("*")) continue;
             targets.push({ upstreamId: u.id, upstreamName: u.name, upstreamProtocol: u.protocol, model: m });
           }
         }
-        setClassifierOptions(classifiers);
         setRouteTargets(targets);
       }
       setError(null);
@@ -156,11 +139,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
     load();
   }, [load]);
 
-  const selectedClassifier = useMemo(
-    () => classifierOptions.find((o) => `${o.upstreamId}:${o.model}` === classifierKey) ?? null,
-    [classifierOptions, classifierKey]
-  );
-  const isRuleClassifier = classifierKey === RULE_CLASSIFIER_KEY;
+  const isRuleClassifier = classifierUpstreamId === RULE_CLASSIFIER;
 
   // 不按协议过滤：管理员可为 openai 路由选 anthropic family 的上游（如 relay 同时接受
   // 多种风格），协议不一致由选项里的家族标注提示（软提示，不拦截）
@@ -177,7 +156,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
   };
 
   const createRoute = async () => {
-    if (!name.trim() || (!isRuleClassifier && !selectedClassifier)) return;
+    if (!name.trim() || (!isRuleClassifier && !classifierModel.trim())) return;
     if (firstUpstreamId !== "" && !firstModel.trim()) {
       setError("Target model is required when a provider is selected");
       return;
@@ -192,8 +171,8 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
         ...(isRuleClassifier
           ? {}
           : {
-              classifierUpstreamId: selectedClassifier!.upstreamId,
-              classifierModel: selectedClassifier!.model,
+              classifierUpstreamId: classifierUpstreamId as number,
+              classifierModel: classifierModel.trim(),
             }),
       };
       if (firstModel.trim()) {
@@ -214,7 +193,8 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
       if (json.success) {
         setName("");
         setInstruction("");
-        setClassifierKey(RULE_CLASSIFIER_KEY);
+        setClassifierUpstreamId(RULE_CLASSIFIER);
+        setClassifierModel("");
         setFirstUpstreamId("");
         setFirstModel("");
         setFirstDescription("");
@@ -422,7 +402,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
       {error && <p className="mb-3 text-sm text-red-600">{error}</p>}
 
       {/* 新建命名路由 */}
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-[1.4fr_110px_1.6fr]">
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-[1.4fr_100px_1fr_1.4fr]">
         <div>
           <label className="mb-1 block text-xs font-medium text-gray-700">Route Name</label>
           <input
@@ -449,23 +429,45 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
           </select>
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium text-gray-700">Classifier</label>
+          <label className="mb-1 block text-xs font-medium text-gray-700">Classifier Provider</label>
           <select
-            value={classifierKey}
-            onChange={(e) => setClassifierKey(e.target.value)}
+            value={classifierUpstreamId}
+            onChange={(e) => {
+              const v = e.target.value;
+              setClassifierUpstreamId(v === RULE_CLASSIFIER ? RULE_CLASSIFIER : Number(v));
+              setClassifierModel("");
+            }}
             className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
           >
-            <option value={RULE_CLASSIFIER_KEY}>Rule — priority &amp; availability (no LLM)</option>
-            {classifierOptions.map((o) => (
-              <option key={`${o.upstreamId}:${o.model}`} value={`${o.upstreamId}:${o.model}`}>
-                {o.upstreamName} / {o.model} ({o.type}
-                {o.maxInputTokens ? `, ≤${o.maxInputTokens}` : ""})
+            <option value={RULE_CLASSIFIER}>Rule — priority &amp; availability (no LLM)</option>
+            {upstreamOptionsForProtocol(protocol).map((t) => (
+              <option key={t.upstreamId} value={t.upstreamId}>
+                {t.upstreamName}
+                {t.upstreamProtocol !== protocol && ` [${t.upstreamProtocol}]`}
               </option>
             ))}
           </select>
-          {classifierOptions.length === 0 && (
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-medium text-gray-700">Classifier Model</label>
+          <input
+            value={classifierModel}
+            onChange={(e) => setClassifierModel(e.target.value)}
+            disabled={isRuleClassifier}
+            placeholder="e.g. typesafe/jev-latest"
+            list="named-route-classifier-models"
+            autoComplete="off"
+            className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-400"
+          />
+          <datalist id="named-route-classifier-models">
+            {modelCandidatesFor(isRuleClassifier ? "" : classifierUpstreamId).map((m) => (
+              <option key={m} value={m} />
+            ))}
+          </datalist>
+          {!isRuleClassifier && (
             <p className="mt-1 text-[11px] text-gray-400">
-              No LLM classifiers declared (optional — the rule classifier needs none).
+              Requires a decision model (e.g. typesafe/jev-*): the classifier sends a typed choice
+              request to the upstream&apos;s /v1/systemone endpoint.
             </p>
           )}
         </div>
@@ -549,7 +551,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
           <button
             type="button"
             onClick={createRoute}
-            disabled={!name.trim() || (!isRuleClassifier && !selectedClassifier) || submitting}
+            disabled={!name.trim() || (!isRuleClassifier && !classifierModel.trim()) || submitting}
             className="w-full rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 md:w-auto"
           >
             {submitting ? "Adding…" : "Add Route"}

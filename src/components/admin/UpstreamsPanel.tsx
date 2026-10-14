@@ -132,10 +132,6 @@ export default function UpstreamsPanel() {
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [formKeys, setFormKeys] = useState<string[]>([""]);
   const [formTransforms, setFormTransforms] = useState<HeaderTransform[]>([]);
-  // 分类器模型声明表单（maxInputTokens / path 以字符串暂存，提交时转换）
-  const [formClassifiers, setFormClassifiers] = useState<
-    { model: string; type: string; maxInputTokens: string; path: string }[]
-  >([]);
   // per-model 探活端点表单（body 以 JSON 字符串暂存，提交时解析）
   const [formModelProbes, setFormModelProbes] = useState<
     { model: string; path: string; body: string }[]
@@ -297,23 +293,6 @@ export default function UpstreamsPanel() {
     }
     // header transforms 全量替换（前端数组操作后整体提交）
     payload.headerTransforms = formTransforms;
-    // 分类器模型声明：全量替换；编辑态清空 = 显式 null 移除
-    const classifierModels = formClassifiers
-      .filter((c) => c.model.trim() !== "")
-      .map((c) => {
-        const entry: Record<string, unknown> = { model: c.model.trim(), type: c.type };
-        const max = Number(c.maxInputTokens);
-        if (c.maxInputTokens.trim() !== "" && Number.isFinite(max) && max > 0) {
-          entry.maxInputTokens = Math.floor(max);
-        }
-        if (c.path.trim() !== "") entry.path = c.path.trim();
-        return entry;
-      });
-    if (classifierModels.length > 0) {
-      payload.classifierModels = classifierModels;
-    } else if (editingId) {
-      payload.classifierModels = null;
-    }
     // 自定义探活端点：path 为空 = 不配置（回落默认 chat → responses 双风格）；
     // 编辑态清空 path 则显式下发 null 移除配置
     const probePath = form.probePath.trim();
@@ -399,7 +378,6 @@ export default function UpstreamsPanel() {
       setForm(EMPTY_FORM);
       setFormKeys([""]);
       setFormTransforms([]);
-      setFormClassifiers([]);
       setFormModelProbes([]);
       setFormKeyTests({});
       setFormKeyShown({});
@@ -437,14 +415,6 @@ export default function UpstreamsPanel() {
     setFormKeys([""]);
     // 浅拷贝数组 + 展开条目，避免直接改列表缓存
     setFormTransforms(u.headerTransforms.map((t) => ({ ...t })));
-    setFormClassifiers(
-      (u.classifierModels ?? []).map((c) => ({
-        model: c.model,
-        type: c.type,
-        maxInputTokens: c.maxInputTokens !== undefined ? String(c.maxInputTokens) : "",
-        path: c.path ?? "",
-      }))
-    );
     setFormModelProbes(
       (u.modelProbeConfigs ?? []).map((p) => ({
         model: p.model,
@@ -917,7 +887,8 @@ export default function UpstreamsPanel() {
               className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>
-          <div className="md:col-span-3">
+          <div className="md:col-span-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+          <div>
             <label className="mb-1 block text-xs text-gray-600">Base URL</label>
             <input
               value={form.baseUrl}
@@ -927,13 +898,10 @@ export default function UpstreamsPanel() {
               className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>
-          <div className="md:col-span-3">
+          <div>
             <div className="mb-1 flex items-center justify-between gap-2">
               <label className="min-w-0 text-xs text-gray-600">
-                Proxy URL (optional){" "}
-                <span className="hidden md:inline text-gray-400">
-                  HTTP(S) CONNECT proxy; existing value cannot be re-read
-                </span>
+                Proxy URL <span className="hidden md:inline text-gray-400">(optional)</span>
               </label>
               {editingId && hasProxyForEditing && (
                 <label className="flex shrink-0 cursor-pointer items-center gap-1.5 text-xs text-gray-500">
@@ -961,6 +929,7 @@ export default function UpstreamsPanel() {
                 Configured proxy: {editingProxyDisplay ?? "yes"}. Leave blank to keep it, or tick &quot;Clear proxy&quot; to remove.
               </p>
             )}
+          </div>
           </div>
           <div className="md:col-span-3">
             <label className="mb-1 block text-xs text-gray-600">
@@ -1138,7 +1107,7 @@ export default function UpstreamsPanel() {
               plain text — avoid putting credentials here.
             </p>
           </div>
-          <div className="md:col-span-3">
+          <div className="md:col-span-2">
             <div className="mb-1 flex items-center justify-between gap-2">
               <label className="min-w-0 text-xs text-gray-600">
                 Enabled Models{" "}
@@ -1162,17 +1131,30 @@ export default function UpstreamsPanel() {
               className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>
-          <div className="md:col-span-3">
-            <label className="mb-1 block text-xs text-gray-600">
-              Health Check Model{" "}
-              <span className="text-gray-400">(optional, used for probing unhealthy upstream)</span>
-            </label>
+          <div className="md:col-span-1">
+            {/* min-h 与左侧 Enabled Models 行的 Fetch Models 按钮同高（text-xs + py-1 + border），
+                保证两侧 input 顶边对齐 */}
+            <div className="mb-1 flex min-h-[26px] items-center">
+              <label className="text-xs text-gray-600">Health Check Model</label>
+            </div>
             <input
+              list="health-check-models"
               value={form.healthCheckModel}
               onChange={(e) => setForm({ ...form, healthCheckModel: e.target.value })}
               placeholder="deepseek-chat"
+              autoComplete="off"
               className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
+            <datalist id="health-check-models">
+              {modelProbeModelOptions
+                .filter((m) => !m.endsWith("*"))
+                .map((m) => (
+                  <option key={m} value={m} />
+                ))}
+            </datalist>
+            <p className="mt-1 hidden text-[10px] text-gray-400 md:block">
+              optional; probes unhealthy upstream
+            </p>
           </div>
           <div className="md:col-span-3">
             <label className="mb-1 block text-xs text-gray-600">
@@ -1314,87 +1296,6 @@ export default function UpstreamsPanel() {
               upstream-level config above.
             </p>
           </div>
-          {/* 分类器模型声明：命名路由的 LLM 分类器只能从这里声明的条目里选 */}
-          <div className="md:col-span-3">
-            <label className="mb-1 block text-xs text-gray-600">
-              Classifier Models{" "}
-              <span className="text-gray-400">
-                (optional; models on this upstream usable as virtual-model classifiers)
-              </span>
-            </label>
-            {formClassifiers.map((c, index) => (
-              <div key={index} className="mb-2 grid grid-cols-1 gap-2 md:grid-cols-[1fr_150px_140px_1fr_auto]">
-                <input
-                  value={c.model}
-                  onChange={(e) =>
-                    setFormClassifiers((prev) =>
-                      prev.map((x, i) => (i === index ? { ...x, model: e.target.value } : x))
-                    )
-                  }
-                  placeholder="jev-latest"
-                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-                />
-                <select
-                  value={c.type}
-                  onChange={(e) =>
-                    setFormClassifiers((prev) =>
-                      prev.map((x, i) => (i === index ? { ...x, type: e.target.value } : x))
-                    )
-                  }
-                  className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-                >
-                  <option value="jev-systemone">jev-systemone</option>
-                  <option value="chat">chat</option>
-                </select>
-                <input
-                  value={c.maxInputTokens}
-                  onChange={(e) =>
-                    setFormClassifiers((prev) =>
-                      prev.map((x, i) => (i === index ? { ...x, maxInputTokens: e.target.value } : x))
-                    )
-                  }
-                  type="number"
-                  min={256}
-                  placeholder="max input tok"
-                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-                />
-                <input
-                  value={c.path}
-                  onChange={(e) =>
-                    setFormClassifiers((prev) =>
-                      prev.map((x, i) => (i === index ? { ...x, path: e.target.value } : x))
-                    )
-                  }
-                  placeholder="path override (e.g. /alpha/decisions)"
-                  autoComplete="off"
-                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-                />
-                <button
-                  type="button"
-                  onClick={() => setFormClassifiers((prev) => prev.filter((_, i) => i !== index))}
-                  className="rounded border border-gray-300 px-3 py-2 text-sm text-gray-500 hover:bg-gray-50"
-                >
-                  Remove
-                </button>
-              </div>
-            ))}
-            <button
-              type="button"
-              onClick={() =>
-                setFormClassifiers((prev) => [
-                  ...prev,
-                  { model: "", type: "jev-systemone", maxInputTokens: "", path: "" },
-                ])
-              }
-              className="rounded border border-dashed border-gray-300 px-3 py-1.5 text-xs text-gray-500 hover:bg-gray-50"
-            >
-              + Add classifier model
-            </button>
-            <p className="mt-1 text-[10px] text-gray-400">
-              type = wire format (jev-systemone: POST /v1/systemone typed decisions; chat: OpenAI chat
-              completions). max input tokens defaults to models.dev context window, then 4096.
-            </p>
-          </div>
           <div className="md:col-span-3 flex items-center gap-2">
             <button
               type="submit"
@@ -1411,8 +1312,9 @@ export default function UpstreamsPanel() {
                   setForm(EMPTY_FORM);
                   setFormKeys([""]);
                   setFormTransforms([]);
-                  setFormClassifiers([]);
+                  setFormModelProbes([]);
                   setFormKeyTests({});
+                  setFormKeyShown({});
                   setClearProxy(false);
                   setProbeCustom(false);
                   setPendingKeyEnabled({});

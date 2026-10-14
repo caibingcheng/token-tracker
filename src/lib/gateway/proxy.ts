@@ -546,10 +546,12 @@ export async function handleProxyRequest(
         };
         if (route.classifierKind === "model" && deps.runClassifier && sessionId && deps.session) {
           const classifierUpstream = upstreams.find((u) => u.id === route.classifierUpstreamId);
+          // 已声明的 classifier_models 条目优先（保留存量 chat 类型/path 覆盖/预算配置）；
+          // 未声明的一律按 jev-systemone 决策模型处理（POST /v1/systemone）
           const entry = classifierUpstream
-            ? parseClassifierModels(classifierUpstream.classifierModels).find(
+            ? (parseClassifierModels(classifierUpstream.classifierModels).find(
                 (e) => e.model === route.classifierModel
-              )
+              ) ?? { model: route.classifierModel, type: "jev-systemone" as const })
             : undefined;
           if (classifierUpstream && entry) {
             const classifierStart = Date.now();

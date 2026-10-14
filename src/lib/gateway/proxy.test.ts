@@ -3298,6 +3298,29 @@ describe("handleProxyRequest - named route routing (LLM classifier)", () => {
     );
   });
 
+  it("classifier model not declared on upstream defaults to a jev-systemone entry", async () => {
+    fetchMock.mockResolvedValue(okJson("gpt-5"));
+    const session = mkMemorySession();
+    // upstream 9 不再声明 classifier_models：未声明的模型按 jev-systemone 决策模型处理
+    const deps = mkNamedDeps({
+      session,
+      loadUpstreams: vi.fn(async () => [
+        mkUpstream({ id: 1, name: "cheap-up", baseUrl: "https://cheap.example", enabledModels: ["gpt-4o-mini"] }),
+        mkUpstream({ id: 2, name: "precise-up", baseUrl: "https://precise.example", enabledModels: ["gpt-5"] }),
+        mkUpstream({ id: 9, name: "typesafe", baseUrl: "https://api.typesafe.ai", enabledModels: ["jev-latest"] }),
+      ]),
+    });
+    const res = await handleProxyRequest(vmRequest(), deps);
+    await res.text();
+
+    expect(res.status).toBe(200);
+    expect(deps.runClassifier).toHaveBeenCalledTimes(1);
+    expect((deps.runClassifier as ReturnType<typeof vi.fn>).mock.calls[0][0].entry).toEqual({
+      model: "jev-latest",
+      type: "jev-systemone",
+    });
+  });
+
   it("second request in same session sticks to binding without calling classifier", async () => {
     fetchMock.mockImplementation(() => Promise.resolve(okJson("gpt-5")));
     const session = mkMemorySession();
