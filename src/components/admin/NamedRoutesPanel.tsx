@@ -328,6 +328,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
 
   const toggleExpanded = (id: number) => {
     setExpandedRouteId((prev) => (prev === id ? null : id));
+    setEditingInstructionId(null);
     setEditingTarget(null);
     setTargetUpstreamId("");
     setTargetModel("");
@@ -340,9 +341,11 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
     const btn = compact
       ? "min-h-[40px] rounded border px-3 py-1.5 text-xs"
       : "text-xs";
+    // 桌面端按钮靠最右（与 Model Pricing 一致）；移动端卡片内保持左对齐
+    const wrap = compact ? "flex flex-wrap items-center gap-2" : "flex items-center justify-end gap-2";
     if (editing) {
       return (
-        <div className="flex flex-wrap items-center gap-2">
+        <div className={wrap}>
           <button
             type="button"
             onClick={() => saveTarget(row)}
@@ -362,7 +365,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
       );
     }
     return (
-      <div className="flex flex-wrap items-center gap-2">
+      <div className={wrap}>
         <button
           type="button"
           onClick={() =>
@@ -612,17 +615,6 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
-                      setEditingInstructionId(row.id);
-                      setInstructionDraft(row.instruction);
-                    }}
-                    className="text-xs text-gray-600 hover:text-gray-800"
-                  >
-                    Edit
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
                       deleteRoute(row);
                     }}
                     className="text-xs text-red-500 hover:text-red-700"
@@ -641,46 +633,58 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
                   </span>
                 )}
               </div>
-              {editingInstructionId === row.id && (
-                <div className="flex items-start gap-2 border-t border-gray-100 px-4 py-2">
-                  <textarea
-                    value={instructionDraft}
-                    onChange={(e) => setInstructionDraft(e.target.value)}
-                    rows={2}
-                    className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => saveInstruction(row)}
-                    disabled={busyId === row.id}
-                    className="shrink-0 rounded bg-blue-600 px-3 py-1.5 text-xs text-white disabled:opacity-50"
-                  >
-                    Save
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setEditingInstructionId(null)}
-                    className="shrink-0 rounded border border-gray-300 px-3 py-1.5 text-xs text-gray-500"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              )}
-
               {/* 目标池编辑区 */}
               {expandedRouteId === row.id && (
                 <div className="border-t border-gray-100 px-4 py-3">
-                  {row.instruction && (
-                    <div className="mb-3">
-                      <p className="mb-1 text-xs font-medium text-gray-700">
+                  <div className="mb-3">
+                    <div className="mb-1 flex items-center justify-between gap-2">
+                      <p className="text-xs font-medium text-gray-700">
                         Instruction{" "}
                         <span className="font-normal text-gray-400">(decision prompt for the classifier)</span>
                       </p>
-                      <p className="whitespace-pre-wrap break-words rounded border border-gray-100 bg-gray-50 px-3 py-2 text-xs leading-relaxed text-gray-600">
-                        {row.instruction}
-                      </p>
+                      {editingInstructionId !== row.id && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingInstructionId(row.id);
+                            setInstructionDraft(row.instruction);
+                          }}
+                          className="text-xs text-gray-600 hover:text-gray-800"
+                        >
+                          Edit
+                        </button>
+                      )}
                     </div>
-                  )}
+                    {editingInstructionId === row.id ? (
+                      <div className="flex items-start gap-2">
+                        <textarea
+                          value={instructionDraft}
+                          onChange={(e) => setInstructionDraft(e.target.value)}
+                          rows={2}
+                          className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => saveInstruction(row)}
+                          disabled={busyId === row.id}
+                          className="shrink-0 rounded bg-blue-600 px-3 py-1.5 text-xs text-white disabled:opacity-50"
+                        >
+                          Save
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditingInstructionId(null)}
+                          className="shrink-0 rounded border border-gray-300 px-3 py-1.5 text-xs text-gray-500"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <p className="whitespace-pre-wrap break-words rounded border border-gray-100 bg-gray-50 px-3 py-2 text-xs leading-relaxed text-gray-600">
+                        {row.instruction || "—"}
+                      </p>
+                    )}
+                  </div>
                   {row.targets.length === 0 && (
                     <p className="rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-700">
                       No targets: requests to this name return 502 named_route_unavailable. Add at least one.
