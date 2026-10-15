@@ -11,6 +11,10 @@ RUN npm ci
 FROM node:22-slim AS builder
 WORKDIR /app
 
+# 版本号由 CI 传 tag（v1.3.0）；手动构建不传则为 dev。build 阶段内联进 bundle
+ARG APP_VERSION=dev
+ENV NEXT_PUBLIC_APP_VERSION=$APP_VERSION
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
   python3 make g++ \
   && rm -rf /var/lib/apt/lists/*

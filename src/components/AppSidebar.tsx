@@ -268,10 +268,13 @@ export default function AppSidebar({
 
   return (
     <aside className="hidden md:flex fixed inset-y-0 left-0 z-40 w-56 flex-col border-r border-gray-200 bg-white">
-      <div className="px-4 pt-5 pb-3">
+      <div className="px-4 pt-5 pb-3 flex items-baseline gap-2">
         <Link href="/" className="text-lg font-bold text-gray-900">
           Token Tracker
         </Link>
+        <span className="text-[11px] leading-none text-gray-400 select-all">
+          {process.env.NEXT_PUBLIC_APP_VERSION || "dev"}
+        </span>
       </div>
 
       <nav className="flex-1 overflow-y-auto px-3 py-2 space-y-1" aria-label="Main navigation">

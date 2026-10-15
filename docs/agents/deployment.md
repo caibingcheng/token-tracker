@@ -84,3 +84,7 @@ docker compose up -d
 | tag `v*.*.*`（如 `v1.3.0`） | `ghcr.io/caibingcheng/token-tracker:vX.Y.Z` + `:<short-sha>` | 生产发布 |
 | tag `v*.*.*-dev*`（如 `v1.3.0-dev.1`） | 同上 + `:dev` | 开发版发布 |
 | `workflow_dispatch` | 同上 | 手动重建 |
+
+构建时 CI 传 `--build-arg APP_VERSION=${{ github.ref_name }}`（tag 构建即 `v1.3.0`），Dockerfile builder 阶段
+转为 `NEXT_PUBLIC_APP_VERSION`，`next.config.js` 的 `env` 将其内联进客户端 bundle，侧栏底部展示。
+不传参（本地 `npm run build`、`docker compose --build`）回退 `dev`；`workflow_dispatch` 在分支上触发时显示分支名。
