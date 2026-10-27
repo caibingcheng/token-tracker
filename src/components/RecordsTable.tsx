@@ -26,13 +26,15 @@ export interface Record {
 interface RecordsTableProps {
   selectedProvider?: string;
   selectedModel?: string;
-  selectedModelName?: string;
   selectedAgent?: string;
+  pageSize?: number;
+  autoRefresh?: boolean;
   refreshKey?: number;
-  showHeader?: boolean;
+  onRefreshingChange?: (refreshing: boolean) => void;
 }
 
 const AUTO_REFRESH_INTERVAL_MS = 15000;
+const DEFAULT_PAGE_SIZE = 100;
 
 function StatusBadge({ status }: { status?: string | null }) {
   if (!status) return <span className="text-gray-400">-</span>;
@@ -68,55 +70,6 @@ function StatusBadge({ status }: { status?: string | null }) {
         </span>
       );
   }
-}
-
-interface ToolbarProps {
-  onRefresh: () => void;
-  refreshing: boolean;
-  autoRefresh: boolean;
-  onToggleAutoRefresh: () => void;
-}
-
-function Toolbar({ onRefresh, refreshing, autoRefresh, onToggleAutoRefresh }: ToolbarProps) {
-  return (
-    <div className="flex items-center justify-end px-6 py-3">
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={onRefresh}
-          disabled={refreshing}
-          className={`inline-flex items-center justify-center px-3 h-10 md:h-8 text-sm md:text-xs font-medium rounded transition-colors bg-gray-100 disabled:cursor-default ${
-            refreshing ? "text-blue-600 animate-pulse" : "text-gray-600 hover:bg-gray-200"
-          }`}
-          title="Refresh"
-        >
-          Refresh
-        </button>
-        <button
-          type="button"
-          onClick={onToggleAutoRefresh}
-          aria-pressed={autoRefresh}
-          className={`inline-flex items-center justify-center px-3 h-10 md:h-8 text-sm md:text-xs font-medium rounded transition-colors ${
-            autoRefresh
-              ? "text-blue-700 bg-blue-100"
-              : "text-gray-600 bg-gray-100 hover:bg-gray-200"
-          }`}
-          title={autoRefresh ? "Auto refresh every 15s: on" : "Auto refresh every 15s: off"}
-        >
-          Auto 15s
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function FilterHint({ selectedModelName }: { selectedModelName?: string }) {
-  if (!selectedModelName || selectedModelName === "all") return null;
-  return (
-    <p className="text-xs text-gray-400 mt-1">
-      Filtered by {selectedModelName}
-    </p>
-  );
 }
 
 interface PagerButtonProps {
@@ -175,29 +128,43 @@ function IconNext() {
   );
 }
 
-export default function RecordsTable({ selectedProvider = "all", selectedModel = "all", selectedModelName, selectedAgent = "all", refreshKey = 0, showHeader = true }: RecordsTableProps) {
+export default function RecordsTable({
+  selectedProvider = "all",
+  selectedModel = "all",
+  selectedAgent = "all",
+  pageSize = DEFAULT_PAGE_SIZE,
+  autoRefresh = false,
+  refreshKey = 0,
+  onRefreshingChange,
+}: RecordsTableProps) {
   const [records, setRecords] = useState<Record[]>([]);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [autoRefresh, setAutoRefresh] = useState(false);
   const [pageInput, setPageInput] = useState("1");
 
   const [queryKey, setQueryKey] = useState(0);
   const { compact } = useNumberFormat();
 
-  // 首次加载才切换骨架屏；后续刷新（手动 / 自动 / 父级 refreshKey）保持表格挂载，静默替换数据
+  // 首次加载才切换骨架屏；后续刷新（手动 / 自动）保持表格挂载，静默替换数据
   const loadedOnceRef = useRef(false);
   // 请求序号：慢响应晚到时不覆盖更新的结果
   const requestSeqRef = useRef(0);
-
-  // Reset page and bump queryKey when filters change
+  // 刷新中状态上抛：Refresh 按钮已搬到页面顶栏，需要按钮侧反馈
   useEffect(() => {
+    onRefreshingChange?.(refreshing);
+  }, [refreshing, onRefreshingChange]);
+
+  // 筛选或行数变化就回到第 1 页：在 render 阶段同步 state（React 会丢弃本次渲染并立即重渲染），
+  // 避免「条件变化 → 先用旧页码请求一次 → reset effect 再请求一次」的重复请求
+  const conditionKey = `${selectedProvider}|${selectedModel}|${selectedAgent}|${pageSize}`;
+  const [lastConditionKey, setLastConditionKey] = useState(conditionKey);
+  if (lastConditionKey !== conditionKey) {
+    setLastConditionKey(conditionKey);
     setPage(1);
-    setQueryKey(k => k + 1);
-  }, [selectedProvider, selectedModel, selectedAgent]);
+  }
 
   // 自动刷新（15s），页面不可见时跳过
   useEffect(() => {
@@ -221,7 +188,7 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
 
     const url = new URL("/api/records", window.location.origin);
     url.searchParams.set("page", String(page));
-    url.searchParams.set("limit", "20");
+    url.searchParams.set("limit", String(pageSize));
     if (selectedProvider !== "all") {
       url.searchParams.set("provider", selectedProvider);
     }
@@ -262,24 +229,13 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
         setLoading(false);
         setRefreshing(false);
       });
-  }, [page, queryKey, refreshKey, selectedProvider, selectedModel, selectedAgent]);
+  }, [page, queryKey, pageSize, refreshKey, selectedProvider, selectedModel, selectedAgent]);
 
   useEffect(() => {
     setPageInput(String(page));
   }, [page]);
 
   const formatDate = (date: string) => new Date(date).toLocaleString();
-
-  const handleRefresh = () => {
-    setQueryKey((prev) => prev + 1);
-  };
-
-  const handleToggleAutoRefresh = () => {
-    if (!autoRefresh) {
-      setQueryKey((prev) => prev + 1);
-    }
-    setAutoRefresh((prev) => !prev);
-  };
 
   const commitPageInput = () => {
     const parsed = parseInt(pageInput, 10);
@@ -302,19 +258,6 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
 
   return (
     <div className="bg-white rounded-lg shadow overflow-hidden">
-      <Toolbar
-        onRefresh={handleRefresh}
-        refreshing={refreshing}
-        autoRefresh={autoRefresh}
-        onToggleAutoRefresh={handleToggleAutoRefresh}
-      />
-      {showHeader && (
-        <div className="p-6 pb-0">
-          <h3 className="text-lg font-semibold">Recent Records</h3>
-          <FilterHint selectedModelName={selectedModelName} />
-        </div>
-      )}
-
       {error && hasRecords && (
         <div className="mx-4 md:mx-6 mt-3 px-3 py-2 rounded border border-red-200 bg-red-50 text-sm text-red-700">
           Refresh failed: {error}
