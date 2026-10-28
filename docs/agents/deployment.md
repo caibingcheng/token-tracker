@@ -15,7 +15,8 @@
 - 任何 UI 改动必须同时考虑移动端（<768px）：新表格必须做「桌面 table + `md:hidden` 卡片」双轨；
   新弹窗移动端全屏（`w-full h-full md:...`）；新导航/按钮触摸区 ≥40px；input 移动端字号 ≥16px
 - 移动端专属 UI 一律 `md:hidden` 门控，桌面端 DOM 只新增不修改
-- **Admin 面板表格统一使用共享组件 `src/components/admin/table.tsx`**（`AdminTableCard` / `AdminTable` / `AdminTableHead` / `AdminTableBody` / `AdminTd` / `AdminTableEmptyRow` / `AdminMobileCards` / `AdminMobileCard` / `AdminMobileEmpty`），新增/修改 Admin 表格禁止手写 `<table>`——以 ModelsPanel 表格形式为基准：桌面 `hidden md:block overflow-x-auto`、数字列 `text-right font-mono text-xs`（`AdminTd align="right" mono`）、操作列 `text-right whitespace-nowrap`、移动端卡片 `border border-gray-200 rounded-lg p-3`（双 checkbox 行保留 `h-5 w-5`）。徽标语义各异不抽公共组件，各面板局部实现；`RecordsTable.tsx`（Dashboard）独立旧风格不受此约束
+- **桌面侧栏可收起**：`AppSidebar`（`w-56`）/ 内容区（`md:pl-56`）由 `ApiKeyGate` 的 `sidebarCollapsed` 同步切换为 `w-16` / `md:pl-16`；偏好存 `localStorage` key `tt:sidebar-collapsed`（设备级 UI 状态，不进 settings 表）；收起时只留图标（`title` 提示）、隐藏版本号 / Dashboard 锤点 / Admin 子项 / 侧栏底部操作组（含 NumberFormatToggle）；`<md` 侧栏本就 `hidden`，移动端不受影响
+- **Admin 面板表格统一使用共享组件 `src/components/admin/table.tsx`**（`AdminTableCard` / `AdminTable` / `AdminTableHead` / `AdminTableBody` / `AdminTd` / `AdminTableEmptyRow` / `AdminMobileCards` / `AdminMobileCard` / `AdminMobileEmpty`），新增/修改 Admin 表格禁止手写 `<table>`——以 ModelsPanel 表格形式为基准：桌面 `hidden md:block overflow-x-auto`、数字列 `text-right font-mono text-xs`（`AdminTd align="right" mono`）、操作列 `text-right whitespace-nowrap`、移动端卡片 `border border-gray-200 rounded-lg p-3`（双 checkbox 行保留 `h-5 w-5`）。徽标语义各异不抽公共组件，各面板局部实现；`RecordsTable.tsx`（`/records` 页）独立旧风格不受此约束
 - 复用现有范式：RecordsTable 双轨、ActionMenu、FiltersModal、PriceSimulatorModal
 - 提交前自检：375px 视口无横向溢出，桌面端视觉无回归
 
@@ -84,3 +85,7 @@ docker compose up -d
 | tag `v*.*.*`（如 `v1.3.0`） | `ghcr.io/caibingcheng/token-tracker:vX.Y.Z` + `:<short-sha>` | 生产发布 |
 | tag `v*.*.*-dev*`（如 `v1.3.0-dev.1`） | 同上 + `:dev` | 开发版发布 |
 | `workflow_dispatch` | 同上 | 手动重建 |
+
+构建时 CI 传 `--build-arg APP_VERSION=${{ github.ref_name }}`（tag 构建即 `v1.3.0`），Dockerfile builder 阶段
+转为 `NEXT_PUBLIC_APP_VERSION`，`next.config.js` 的 `env` 将其内联进客户端 bundle，侧栏底部展示。
+不传参（本地 `npm run build`、`docker compose --build`）回退 `dev`；`workflow_dispatch` 在分支上触发时显示分支名。

@@ -6,6 +6,11 @@ const scriptSrc = `'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ''}`;
 
 const nextConfig = {
   output: 'standalone',
+  // 版本号在构建期内联进客户端 bundle：Docker 构建传 ARG APP_VERSION（CI 用 git tag），
+  // 本地 npm run dev / 未传参构建回退 dev
+  env: {
+    NEXT_PUBLIC_APP_VERSION: process.env.NEXT_PUBLIC_APP_VERSION || 'dev',
+  },
   // 不暴露框架身份（x-powered-by: Next.js 属信息泄露）
   poweredByHeader: false,
   // instrumentation hook：启动时调用 src/instrumentation.ts 的 register()（周期性内存归还）

@@ -903,6 +903,78 @@ describe("handleProxyRequest - usage capture & write-back", () => {
     expect(deps.onUsage).toHaveBeenCalledWith(expect.objectContaining({ sessionId: null }));
   });
 
+  it("falls back to gateway session fingerprint when no session header is present", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ usage: { prompt_tokens: 10, completion_tokens: 5 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+
+    const deps = mkDeps();
+    const body = {
+      model: "gpt-4o",
+      messages: [
+        { role: "system", content: "be brief" },
+        { role: "user", content: "hi" },
+      ],
+    };
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body,
+      }),
+      deps
+    );
+    await res.text();
+
+    expect(deps.onUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: buildSessionId(body, "gpt-4o", 1, "openai") })
+    );
+  });
+
+  it("client session header wins over the gateway fingerprint", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ usage: { prompt_tokens: 10, completion_tokens: 5 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+
+    const deps = mkDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good", "session_id": "conv-42" },
+        body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    await res.text();
+
+    expect(deps.onUsage).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "conv-42" }));
+  });
+
+  it("keeps sessionId null when the body has no messages (gemini / non-chat paths)", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ usage: { prompt_tokens: 10, completion_tokens: 5 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+
+    const deps = mkDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", messages: [] },
+      }),
+      deps
+    );
+    await res.text();
+
+    expect(deps.onUsage).toHaveBeenCalledWith(expect.objectContaining({ sessionId: null }));
+  });
+
   it("carries sessionId on the streaming usage write path", async () => {
     const sse =
       'data: {"id":"1","choices":[],"usage":{"prompt_tokens":50,"completion_tokens":20}}\n\n' +

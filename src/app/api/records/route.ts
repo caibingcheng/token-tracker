@@ -150,6 +150,7 @@ export const GET = withAuth(async (request: NextRequest) => {
           ttftMs: tokenRecords.ttftMs,
           status: tokenRecords.status,
           requestModel: tokenRecords.requestModel,
+          sessionId: tokenRecords.sessionId,
           createdAt: tokenRecords.createdAt,
         })
         .from(tokenRecords)
@@ -161,6 +162,7 @@ export const GET = withAuth(async (request: NextRequest) => {
         id: record.id,
         model: record.model,
         agent: resolveAgentName(record.userAgent, agentAliases),
+        userAgent: record.userAgent,
         keyName: record.agent,
         inputTokens: record.inputTokens,
         outputTokens: record.outputTokens,
@@ -170,6 +172,7 @@ export const GET = withAuth(async (request: NextRequest) => {
         ttftMs: record.ttftMs,
         status: record.status,
         requestModel: record.requestModel,
+        sessionId: record.sessionId,
         createdAt: record.createdAt,
         providerName: record.provider
           ? anonymizeProvider(record.provider, [], groups)

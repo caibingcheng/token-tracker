@@ -19,6 +19,7 @@ export default function MobileTabBar({
 }: MobileTabBarProps) {
   const pathname = usePathname();
   const isAdmin = pathname?.startsWith("/admin") ?? false;
+  const isRecords = pathname === "/records" || pathname?.startsWith("/records/") === true;
   // Logout 二次确认：首次点击进入确认态，3 秒内再点才退出，超时自动复位
   const [confirmingLogout, setConfirmingLogout] = useState(false);
   const logoutTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -49,13 +50,28 @@ export default function MobileTabBar({
     {
       href: "/",
       label: "Dashboard",
-      active: !isAdmin && !previewActive,
+      active: !isAdmin && !isRecords && !previewActive,
       icon: (
         <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <rect x="3" y="3" width="7" height="9" rx="1" />
           <rect x="14" y="3" width="7" height="5" rx="1" />
           <rect x="14" y="12" width="7" height="9" rx="1" />
           <rect x="3" y="16" width="7" height="5" rx="1" />
+        </svg>
+      ),
+    },
+    {
+      href: "/records",
+      label: "Records",
+      active: isRecords && !previewActive,
+      icon: (
+        <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <line x1="8" y1="6" x2="21" y2="6" />
+          <line x1="8" y1="12" x2="21" y2="12" />
+          <line x1="8" y1="18" x2="21" y2="18" />
+          <line x1="3" y1="6" x2="3.01" y2="6" />
+          <line x1="3" y1="12" x2="3.01" y2="12" />
+          <line x1="3" y1="18" x2="3.01" y2="18" />
         </svg>
       ),
     },
@@ -83,22 +99,18 @@ export default function MobileTabBar({
       aria-label="Mobile navigation"
     >
       <div className="flex">
-        <Link
-          href={tabs[0]!.href}
-          onClick={previewActive ? onPreviewToggle : undefined}
-          className={tabClass(tabs[0]!.active)}
-        >
-          {tabs[0]!.icon}
-          {tabs[0]!.label}
-        </Link>
-        <Link
-          href={tabs[1]!.href}
-          onClick={previewActive ? onPreviewToggle : undefined}
-          className={tabClass(tabs[1]!.active)}
-        >
-          {tabs[1]!.icon}
-          {tabs[1]!.label}
-        </Link>
+        {tabs.map((tab) => (
+          <Link
+            key={tab.href}
+            href={tab.href}
+            onClick={previewActive ? onPreviewToggle : undefined}
+            className={tabClass(tab.active)}
+            aria-current={tab.active ? "page" : undefined}
+          >
+            {tab.icon}
+            {tab.label}
+          </Link>
+        ))}
         <button
           type="button"
           onClick={handleLogoutTap}

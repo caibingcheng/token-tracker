@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import StatsCards, { Stats } from "./StatsCards";
-import RecordsTable from "./RecordsTable";
 import DailyUsageChart, {
   DailyData,
   LatencyModelStat,
@@ -98,11 +97,9 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
 
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [refreshDuration, setRefreshDuration] = useState<number | null>(null);
-  const [recordsRefreshKey, setRecordsRefreshKey] = useState(0);
 
   const [, setTick] = useState(0);
 
-  const [recordsVisible, setRecordsVisible] = useState(false);
   const [isSimulatorOpen, setIsSimulatorOpen] = useState(false);
 
   // 桌面侧栏底部操作组：仅 Dashboard 页注册，Admin 页不挂载自动消失
@@ -234,7 +231,6 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
   const fetchDashboard = useCallback(
     async (options?: {
       skipLoading?: boolean;
-      skipRecordsRefresh?: boolean;
       signal?: AbortSignal;
       onDataReady?: (endTime: number) => void;
     }) => {
@@ -445,9 +441,6 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
         if (!aborted && !options?.skipLoading) {
           setLoading(false);
         }
-        if (!aborted && !options?.skipRecordsRefresh) {
-          setRecordsRefreshKey((k) => k + 1);
-        }
       }
     },
     [buildDashboardUrl, clientTimezoneOffsetMinutes]
@@ -468,7 +461,6 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
   const refreshAll = useCallback(
     async (options?: {
       skipLoading?: boolean;
-      skipRecordsRefresh?: boolean;
       signal?: AbortSignal;
     }) => {
       const startTime = performance.now();
@@ -495,7 +487,7 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
   );
 
   const scheduleRefresh = useCallback(
-    (options?: { skipLoading?: boolean; skipRecordsRefresh?: boolean }) => {
+    (options?: { skipLoading?: boolean }) => {
       if (!isVisibleRef.current) return;
 
       if (abortControllerRef.current) {
@@ -585,7 +577,7 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
   useEffect(() => {
     const interval = setInterval(() => {
       if (document.visibilityState === "visible") {
-        refreshAll({ skipLoading: true, skipRecordsRefresh: true });
+        refreshAll({ skipLoading: true });
       }
     }, 120000);
     return () => clearInterval(interval);
@@ -595,7 +587,7 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
     const handleVisibilityChange = () => {
       isVisibleRef.current = document.visibilityState === "visible";
       if (document.visibilityState === "visible") {
-        refreshAll({ skipLoading: true, skipRecordsRefresh: true });
+        refreshAll({ skipLoading: true });
       }
     };
     document.addEventListener("visibilitychange", handleVisibilityChange);
@@ -609,16 +601,6 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
     }, 1000);
     return () => clearInterval(interval);
   }, []);
-
-  const selectedModelName = useMemo(
-    () => models.find((m) => m.id === selectedModel)?.name || selectedModel,
-    [models, selectedModel]
-  );
-
-  const selectedAgentName = useMemo(
-    () => agents.find((a) => a.id === selectedAgent)?.name || selectedAgent,
-    [agents, selectedAgent]
-  );
 
   return (
     <main className="min-h-screen bg-gray-50 p-4 pb-20 md:p-8 md:pb-8">
@@ -636,12 +618,6 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
           </div>
         </div>
         <div className="hidden md:block max-w-7xl mx-auto">
-          {lastActiveAt && (
-            <p className="text-xs text-gray-400 mb-3">
-              Last active token at {lastActiveAt.toLocaleString()}
-            </p>
-          )}
-
           <div className="sticky top-0 z-20 -mx-8 bg-gray-50 px-8 py-3 mb-6">
             <div className="flex flex-wrap items-center gap-2">
               <select
@@ -681,6 +657,11 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
                 ))}
               </select>
             </div>
+            {lastActiveAt && (
+              <p className="text-xs text-gray-400 mt-2">
+                Last active token at {lastActiveAt.toLocaleString()}
+              </p>
+            )}
           </div>
 
         <section id="heatmap-section" className="scroll-mt-28">
@@ -739,43 +720,6 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
             dailyLatencyByModel={dailyLatencyByModel}
             timezoneOffsetMinutes={timezoneOffsetMinutes}
           />
-        </section>
-
-        <section id="records-section" className="scroll-mt-28">
-          <div className="bg-white rounded-lg shadow overflow-hidden mb-8">
-            <button
-              onClick={() => setRecordsVisible(!recordsVisible)}
-              className="w-full px-6 py-4 flex justify-between items-center hover:bg-gray-50 transition-colors"
-            >
-              <div className="text-left">
-                <h2 className="text-lg font-semibold">Recent Records</h2>
-                <div className="flex flex-wrap gap-x-3 text-xs text-gray-400 mt-1">
-                  {selectedAgent !== "all" && (
-                    <span>Agent: {selectedAgentName}</span>
-                  )}
-                  {selectedModel !== "all" && (
-                    <span>Model: {selectedModelName}</span>
-                  )}
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-gray-400">
-                  {recordsVisible ? "▼" : "▶"}
-                </span>
-              </div>
-            </button>
-
-            {recordsVisible && (
-              <RecordsTable
-                selectedProvider={selectedProvider}
-                selectedModel={selectedModel}
-                selectedModelName={selectedModelName}
-                selectedAgent={selectedAgent}
-                refreshKey={recordsRefreshKey}
-                showHeader={false}
-              />
-            )}
-          </div>
         </section>
 
         <div className="mt-8 py-4 border-t border-gray-200 flex flex-col md:flex-row justify-between items-start md:items-center gap-2 text-sm text-gray-500">

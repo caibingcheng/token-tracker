@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { formatNumber, formatLatencyMs } from "@/lib/number-utils";
+import { formatNumber, formatFullNumber, formatLatencyMs } from "@/lib/number-utils";
 import { useNumberFormat } from "./NumberFormatContext";
 import { apiFetch } from "@/lib/client/api-client";
+import { DEFAULT_RECORD_COLUMNS, type RecordColumnId } from "@/lib/records-columns";
 
 export interface Record {
   id: number;
@@ -11,12 +12,14 @@ export interface Record {
   normalizedModel: string;
   providerName?: string | null;
   agent: string;
+  userAgent?: string | null;
   keyName: string;
   inputTokens: number;
   outputTokens: number;
   cacheRead: number;
   cacheWrite: number;
   requestModel?: string | null;
+  sessionId?: string | null;
   latencyMs?: number | null;
   ttftMs?: number | null;
   status?: string | null;
@@ -26,13 +29,16 @@ export interface Record {
 interface RecordsTableProps {
   selectedProvider?: string;
   selectedModel?: string;
-  selectedModelName?: string;
   selectedAgent?: string;
+  pageSize?: number;
+  autoRefresh?: boolean;
   refreshKey?: number;
-  showHeader?: boolean;
+  visibleColumns?: RecordColumnId[];
+  onRefreshingChange?: (refreshing: boolean) => void;
 }
 
 const AUTO_REFRESH_INTERVAL_MS = 15000;
+const DEFAULT_PAGE_SIZE = 100;
 
 function StatusBadge({ status }: { status?: string | null }) {
   if (!status) return <span className="text-gray-400">-</span>;
@@ -68,55 +74,6 @@ function StatusBadge({ status }: { status?: string | null }) {
         </span>
       );
   }
-}
-
-interface ToolbarProps {
-  onRefresh: () => void;
-  refreshing: boolean;
-  autoRefresh: boolean;
-  onToggleAutoRefresh: () => void;
-}
-
-function Toolbar({ onRefresh, refreshing, autoRefresh, onToggleAutoRefresh }: ToolbarProps) {
-  return (
-    <div className="flex items-center justify-end px-6 py-3">
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={onRefresh}
-          disabled={refreshing}
-          className={`inline-flex items-center justify-center px-3 h-10 md:h-8 text-sm md:text-xs font-medium rounded transition-colors bg-gray-100 disabled:cursor-default ${
-            refreshing ? "text-blue-600 animate-pulse" : "text-gray-600 hover:bg-gray-200"
-          }`}
-          title="Refresh"
-        >
-          Refresh
-        </button>
-        <button
-          type="button"
-          onClick={onToggleAutoRefresh}
-          aria-pressed={autoRefresh}
-          className={`inline-flex items-center justify-center px-3 h-10 md:h-8 text-sm md:text-xs font-medium rounded transition-colors ${
-            autoRefresh
-              ? "text-blue-700 bg-blue-100"
-              : "text-gray-600 bg-gray-100 hover:bg-gray-200"
-          }`}
-          title={autoRefresh ? "Auto refresh every 15s: on" : "Auto refresh every 15s: off"}
-        >
-          Auto 15s
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function FilterHint({ selectedModelName }: { selectedModelName?: string }) {
-  if (!selectedModelName || selectedModelName === "all") return null;
-  return (
-    <p className="text-xs text-gray-400 mt-1">
-      Filtered by {selectedModelName}
-    </p>
-  );
 }
 
 interface PagerButtonProps {
@@ -175,29 +132,46 @@ function IconNext() {
   );
 }
 
-export default function RecordsTable({ selectedProvider = "all", selectedModel = "all", selectedModelName, selectedAgent = "all", refreshKey = 0, showHeader = true }: RecordsTableProps) {
+export default function RecordsTable({
+  selectedProvider = "all",
+  selectedModel = "all",
+  selectedAgent = "all",
+  pageSize = DEFAULT_PAGE_SIZE,
+  autoRefresh = false,
+  refreshKey = 0,
+  visibleColumns = DEFAULT_RECORD_COLUMNS,
+  onRefreshingChange,
+}: RecordsTableProps) {
   const [records, setRecords] = useState<Record[]>([]);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [autoRefresh, setAutoRefresh] = useState(false);
   const [pageInput, setPageInput] = useState("1");
 
   const [queryKey, setQueryKey] = useState(0);
   const { compact } = useNumberFormat();
+  const visibleSet = new Set(visibleColumns);
+  const show = (column: RecordColumnId) => visibleSet.has(column);
 
-  // 首次加载才切换骨架屏；后续刷新（手动 / 自动 / 父级 refreshKey）保持表格挂载，静默替换数据
+  // 首次加载才切换骨架屏；后续刷新（手动 / 自动）保持表格挂载，静默替换数据
   const loadedOnceRef = useRef(false);
   // 请求序号：慢响应晚到时不覆盖更新的结果
   const requestSeqRef = useRef(0);
-
-  // Reset page and bump queryKey when filters change
+  // 刷新中状态上抛：Refresh 按钮已搬到页面顶栏，需要按钮侧反馈
   useEffect(() => {
+    onRefreshingChange?.(refreshing);
+  }, [refreshing, onRefreshingChange]);
+
+  // 筛选或行数变化就回到第 1 页：在 render 阶段同步 state（React 会丢弃本次渲染并立即重渲染），
+  // 避免「条件变化 → 先用旧页码请求一次 → reset effect 再请求一次」的重复请求
+  const conditionKey = `${selectedProvider}|${selectedModel}|${selectedAgent}|${pageSize}`;
+  const [lastConditionKey, setLastConditionKey] = useState(conditionKey);
+  if (lastConditionKey !== conditionKey) {
+    setLastConditionKey(conditionKey);
     setPage(1);
-    setQueryKey(k => k + 1);
-  }, [selectedProvider, selectedModel, selectedAgent]);
+  }
 
   // 自动刷新（15s），页面不可见时跳过
   useEffect(() => {
@@ -221,7 +195,7 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
 
     const url = new URL("/api/records", window.location.origin);
     url.searchParams.set("page", String(page));
-    url.searchParams.set("limit", "20");
+    url.searchParams.set("limit", String(pageSize));
     if (selectedProvider !== "all") {
       url.searchParams.set("provider", selectedProvider);
     }
@@ -262,23 +236,70 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
         setLoading(false);
         setRefreshing(false);
       });
-  }, [page, queryKey, refreshKey, selectedProvider, selectedModel, selectedAgent]);
+  }, [page, queryKey, pageSize, refreshKey, selectedProvider, selectedModel, selectedAgent]);
 
   useEffect(() => {
     setPageInput(String(page));
   }, [page]);
 
   const formatDate = (date: string) => new Date(date).toLocaleString();
+  // Date 显示本地时间，hover 给 ISO（与 upstream 日志/运营侧对时间用）
+  const dateTitle = (date: string) => {
+    const d = new Date(date);
+    return Number.isNaN(d.getTime()) ? String(date) : d.toISOString();
+  };
+  // TTFT / Latency 显示 `123ms` / `1.2s`，hover 精确到毫秒
+  const latencyTitle = (ms: number | null | undefined) =>
+    ms === null || ms === undefined || !Number.isFinite(ms) ? "-" : `${Math.round(ms)}ms`;
 
-  const handleRefresh = () => {
-    setQueryKey((prev) => prev + 1);
+  // Model 列只显示原始名（发往 upstream 的真实 model 名），hover 才看 manual 名（alias 归一后的展示名）与
+  // 客户端原始请求名（命名路由虚拟名）
+  const modelTitle = (record: Record): string => {
+    const lines: string[] = [];
+    if (record.normalizedModel && record.normalizedModel !== record.model) {
+      lines.push(`Manual: ${record.normalizedModel}`);
+    }
+    lines.push(`Raw: ${record.model}`);
+    if (record.requestModel && record.requestModel !== record.model) {
+      lines.push(`Requested: ${record.requestModel}`);
+    }
+    return lines.join("\n");
   };
 
-  const handleToggleAutoRefresh = () => {
-    if (!autoRefresh) {
-      setQueryKey((prev) => prev + 1);
+  // Agent 列显示派生工具名（按 user_agent 解析），hover 才看原始 UA 与 Key（agent 列原值）
+  const agentTitle = (record: Record): string =>
+    [
+      `Agent: ${record.agent}`,
+      `User-Agent: ${record.userAgent?.trim() || "-"}`,
+      `Key: ${record.keyName || "-"}`,
+    ].join("\n");
+
+  // Tokens 列：`in / out · xx% cached`（in = uncached + cache，口径对齐"Total Input 含 cache"），
+  // 完整明细走 hover（同 LiteLLM / Langfuse 的单列 + 明细约定）
+  const promptTotal = (record: Record) => record.inputTokens + record.cacheRead;
+  const cacheRate = (record: Record): number | null => {
+    const total = promptTotal(record);
+    return total > 0 ? (record.cacheRead / total) * 100 : null;
+  };
+  const tokensText = (record: Record): string => {
+    const base = `${formatNumber(promptTotal(record), compact)} / ${formatNumber(record.outputTokens, compact)}`;
+    const rate = cacheRate(record);
+    return rate === null ? base : `${base} · ${Math.round(rate)}%`;
+  };
+  const tokensTitle = (record: Record): string => {
+    const rate = cacheRate(record);
+    const lines = [
+      `Prompt: ${formatFullNumber(promptTotal(record))}`,
+      `  uncached: ${formatFullNumber(record.inputTokens)}`,
+      `  cached: ${formatFullNumber(record.cacheRead)}`,
+      `Cache rate: ${rate === null ? "-" : `${rate.toFixed(1)}%`}`,
+      `Output: ${formatFullNumber(record.outputTokens)}`,
+    ];
+    // cache write 只有 Anthropic 系 prompt caching 会产生，绝大多数行为 0，非零才展示
+    if (record.cacheWrite > 0) {
+      lines.push(`Cache write: ${formatFullNumber(record.cacheWrite)}`);
     }
-    setAutoRefresh((prev) => !prev);
+    return lines.join("\n");
   };
 
   const commitPageInput = () => {
@@ -302,19 +323,6 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
 
   return (
     <div className="bg-white rounded-lg shadow overflow-hidden">
-      <Toolbar
-        onRefresh={handleRefresh}
-        refreshing={refreshing}
-        autoRefresh={autoRefresh}
-        onToggleAutoRefresh={handleToggleAutoRefresh}
-      />
-      {showHeader && (
-        <div className="p-6 pb-0">
-          <h3 className="text-lg font-semibold">Recent Records</h3>
-          <FilterHint selectedModelName={selectedModelName} />
-        </div>
-      )}
-
       {error && hasRecords && (
         <div className="mx-4 md:mx-6 mt-3 px-3 py-2 rounded border border-red-200 bg-red-50 text-sm text-red-700">
           Refresh failed: {error}
@@ -337,66 +345,115 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
             <table className="w-full">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Model</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Provider</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Agent</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Key</th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Input (Uncached)</th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Input (Cached)</th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Output</th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">TTFT</th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Latency</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                  {show("date") && (
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
+                  )}
+                  {show("model") && (
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Model</th>
+                  )}
+                  {show("provider") && (
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Provider</th>
+                  )}
+                  {show("agent") && (
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Agent</th>
+                  )}
+                  {show("key") && (
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Key</th>
+                  )}
+                  {show("session") && (
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Session</th>
+                  )}
+                  {show("tokens") && (
+                    <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Tokens</th>
+                  )}
+                  {show("ttft") && (
+                    <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">TTFT</th>
+                  )}
+                  {show("latency") && (
+                    <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Latency</th>
+                  )}
+                  {show("status") && (
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                  )}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
                 {records.map((record) => (
                   <tr key={record.id}>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                      {formatDate(record.createdAt)}
-                    </td>
+                    {show("date") && (
+                      <td
+                        className="px-6 py-4 whitespace-nowrap text-sm text-gray-900"
+                        title={dateTitle(record.createdAt)}
+                      >
+                        {formatDate(record.createdAt)}
+                      </td>
+                    )}
+                    {show("model") && (
                     <td
                       className="px-6 py-4 whitespace-nowrap text-sm text-gray-900"
-                      title={
-                        record.requestModel && record.requestModel !== record.model
-                          ? `Requested: ${record.requestModel} → Upstream: ${record.model}`
-                          : `Model: ${record.model}`
-                      }
+                      title={modelTitle(record)}
                     >
-                      {record.normalizedModel}
-                      {record.requestModel && record.requestModel !== record.model && (
-                        <span className="ml-1.5 text-[10px] text-gray-400" title={`Original request model: ${record.requestModel}`}>
-                          ← {record.requestModel}
-                        </span>
-                      )}
+                      {record.model}
                     </td>
+                    )}
+                    {show("provider") && (
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                       {record.providerName || "-"}
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                    )}
+                    {show("agent") && (
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900" title={agentTitle(record)}>
                       {record.agent}
                     </td>
+                    )}
+                    {show("key") && (
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                       {record.keyName || "-"}
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
-                      {formatNumber(record.inputTokens, compact)}
+                    )}
+                    {show("session") && (
+                    <td
+                      className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 font-mono"
+                      title={record.sessionId ?? undefined}
+                    >
+                      {record.sessionId ? (
+                        <span className="inline-block max-w-[140px] truncate align-bottom">
+                          {record.sessionId}
+                        </span>
+                      ) : (
+                        "-"
+                      )}
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
-                      {formatNumber(record.cacheRead, compact)}
+                    )}
+                    {show("tokens") && (
+                    <td
+                      className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right"
+                      title={tokensTitle(record)}
+                    >
+                      <span className="tabular-nums">{tokensText(record)}</span>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
-                      {formatNumber(record.outputTokens, compact)}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
+                    )}
+                    {show("ttft") && (
+                    <td
+                      className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right"
+                      title={latencyTitle(record.ttftMs)}
+                    >
                       {formatLatencyMs(record.ttftMs)}
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
+                    )}
+                    {show("latency") && (
+                    <td
+                      className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right"
+                      title={latencyTitle(record.latencyMs)}
+                    >
                       {formatLatencyMs(record.latencyMs)}
                     </td>
+                    )}
+                    {show("status") && (
                     <td className="px-6 py-4 whitespace-nowrap text-sm">
                       <StatusBadge status={record.status} />
                     </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -407,60 +464,74 @@ export default function RecordsTable({ selectedProvider = "all", selectedModel =
             {records.map((record) => (
               <div key={record.id} className="border border-gray-200 rounded-lg p-4">
                 <div className="flex justify-between items-start mb-3">
-                  <div>
-                    <p className="text-xs text-gray-500">Date</p>
-                    <p className="text-sm font-medium text-gray-900">{formatDate(record.createdAt)}</p>
-                  </div>
+                  {show("date") && (
+                    <div>
+                      <p className="text-xs text-gray-500">Date</p>
+                      <p className="text-sm font-medium text-gray-900" title={dateTitle(record.createdAt)}>
+                        {formatDate(record.createdAt)}
+                      </p>
+                    </div>
+                  )}
                   <div className="text-right">
-                    <p className="text-xs text-gray-500">Model</p>
-                    <p
-                      className="text-sm font-medium text-gray-900"
-                      title={
-                        record.requestModel && record.requestModel !== record.model
-                          ? `Requested: ${record.requestModel} → Upstream: ${record.model}`
-                          : `Model: ${record.model}`
-                      }
-                    >
-                      {record.normalizedModel}
-                    </p>
-                    {record.requestModel && record.requestModel !== record.model && (
-                      <p className="text-xs text-gray-400 mt-0.5" title="Original request model">
-                        ← {record.requestModel}
+                    {show("model") && (
+                      <>
+                        <p className="text-xs text-gray-500">Model</p>
+                        <p className="text-sm font-medium text-gray-900" title={modelTitle(record)}>
+                          {record.model}
+                        </p>
+                        {record.requestModel && record.requestModel !== record.model && (
+                          <p className="text-xs text-gray-400 mt-0.5">Requested: {record.requestModel}</p>
+                        )}
+                      </>
+                    )}
+                    {show("provider") && (
+                      <p className="text-xs text-gray-400 mt-0.5">{record.providerName || "-"}</p>
+                    )}
+                    {show("agent") && (
+                      <p className="text-xs text-gray-400 mt-1" title={agentTitle(record)}>{record.agent}</p>
+                    )}
+                    {show("key") && (
+                      <p className="text-xs text-gray-400 mt-0.5">Key: {record.keyName || "-"}</p>
+                    )}
+                    {show("session") && (
+                      <p
+                        className="text-xs text-gray-400 mt-0.5 font-mono break-all"
+                        title={record.sessionId ?? undefined}
+                      >
+                        Session: {record.sessionId || "-"}
                       </p>
                     )}
-                    <p className="text-xs text-gray-400 mt-0.5">{record.providerName || "-"}</p>
-                    <p className="text-xs text-gray-400 mt-1">{record.agent}</p>
-                    <p className="text-xs text-gray-400 mt-0.5">Key: {record.keyName || "-"}</p>
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <p className="text-xs text-gray-500">Input (Uncached)</p>
-                    <p className="text-sm font-semibold text-gray-900">{formatNumber(record.inputTokens, compact)}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-gray-500">Input (Cached)</p>
-                    <p className="text-sm font-semibold text-gray-900">{formatNumber(record.cacheRead, compact)}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-gray-500">Output</p>
-                    <p className="text-sm font-semibold text-gray-900">{formatNumber(record.outputTokens, compact)}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-gray-500">TTFT</p>
-                    <p className="text-sm font-semibold text-gray-900">{formatLatencyMs(record.ttftMs)}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-gray-500">Latency</p>
-                    <p className="text-sm font-semibold text-gray-900">{formatLatencyMs(record.latencyMs)}</p>
-                  </div>
+                  {show("tokens") && (
+                    <div className="col-span-2">
+                      <p className="text-xs text-gray-500">Tokens</p>
+                      <p className="text-sm font-semibold text-gray-900 tabular-nums">{tokensText(record)}</p>
+                      <p className="mt-0.5 text-xs text-gray-400 tabular-nums">{tokensTitle(record).replace(/\n\s*/g, " · ")}</p>
+                    </div>
+                  )}
+                  {show("ttft") && (
+                    <div>
+                      <p className="text-xs text-gray-500">TTFT</p>
+                      <p className="text-sm font-semibold text-gray-900" title={latencyTitle(record.ttftMs)}>{formatLatencyMs(record.ttftMs)}</p>
+                    </div>
+                  )}
+                  {show("latency") && (
+                    <div>
+                      <p className="text-xs text-gray-500">Latency</p>
+                      <p className="text-sm font-semibold text-gray-900" title={latencyTitle(record.latencyMs)}>{formatLatencyMs(record.latencyMs)}</p>
+                    </div>
+                  )}
                 </div>
-                <div className="mt-3 pt-3 border-t border-gray-100">
-                  <p className="text-xs text-gray-500">Status</p>
-                  <div className="mt-1">
-                    <StatusBadge status={record.status} />
+                {show("status") && (
+                  <div className="mt-3 pt-3 border-t border-gray-100">
+                    <p className="text-xs text-gray-500">Status</p>
+                    <div className="mt-1">
+                      <StatusBadge status={record.status} />
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
             ))}
           </div>
