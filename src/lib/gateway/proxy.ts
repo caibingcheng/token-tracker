@@ -196,6 +196,21 @@ export function extractSessionId(headers: Headers): string | null {
   return null;
 }
 
+// 记录用 session id：客户端 header 原值优先；未携带时回退网关会话指纹（与粘性路由同源，sha256 64 hex）。
+// 仅在请求体带非空 messages 数组时回退（gemini contents / 非 chat 端点的指纹退化为常量，宁可留空）
+export function resolveRecordSessionId(
+  clientSessionId: string | null,
+  bodyJson: unknown,
+  model: string,
+  virtualKeyId: number,
+  protocol: string
+): string | null {
+  if (clientSessionId) return clientSessionId;
+  const messages = (bodyJson as { messages?: unknown } | null)?.messages;
+  if (!Array.isArray(messages) || messages.length === 0) return null;
+  return buildSessionId(bodyJson, model, virtualKeyId, protocol).slice(0, MAX_SESSION_ID_LENGTH);
+}
+
 // 从请求头/query 中提取虚拟 key token
 export function extractVirtualKeyToken(
   headers: Headers,
@@ -422,6 +437,15 @@ export async function handleProxyRequest(
 
   const upstreams = await deps.loadUpstreams();
   const protocol = detectRequestProtocol(path);
+  // 记录用 session id（客户端 header 优先，否则网关会话指纹）：懒计算无收益（每次仅一次小 sha256），
+  // 且写库点分散在成功/失败/分类器多处，统一算一次
+  const recordSessionId = resolveRecordSessionId(
+    clientSessionId,
+    bodyJson,
+    model,
+    virtualKey.id,
+    protocol
+  );
 
   // ---- 命名路由解析：命中后目标池整体构成 failover 链（同名自动路由完全失效） ----
   // 链首：session binding 预选 > 分类器（kind='model'）> 首个健康目标（按 priority）；
@@ -585,7 +609,7 @@ export async function handleProxyRequest(
                   latencyMs: Date.now() - classifierStart,
                   virtualKeyId: virtualKey.id,
                   userAgent,
-                  sessionId: clientSessionId,
+                  sessionId: recordSessionId,
                   requestModel: model,
                 })
                 .catch(() => {});
@@ -935,7 +959,7 @@ export async function handleProxyRequest(
         cacheWrite: 0,
         virtualKeyId: virtualKey.id,
         userAgent,
-        sessionId: clientSessionId,
+        sessionId: recordSessionId,
         requestModel: model,
       };
       return passthroughResponse(fallbackBusinessResponse, {
@@ -1018,7 +1042,7 @@ export async function handleProxyRequest(
     latencyMs,
     virtualKeyId: virtualKey.id,
     userAgent,
-    sessionId: clientSessionId,
+    sessionId: recordSessionId,
     requestModel: model,
   };
 
