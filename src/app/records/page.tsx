@@ -7,7 +7,7 @@ export default function Records() {
     <Suspense
       fallback={
         <main className="min-h-screen bg-gray-50 p-4 md:p-8">
-          <div className="max-w-7xl mx-auto h-4 animate-pulse rounded bg-gray-200" />
+          <div className="w-full h-4 animate-pulse rounded bg-gray-200" />
         </main>
       }
     >

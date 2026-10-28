@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import RecordsTable from "./RecordsTable";
+import RecordsColumnPicker from "./RecordsColumnPicker";
+import { DEFAULT_RECORD_COLUMNS, normalizeRecordColumns, type RecordColumnId } from "@/lib/records-columns";
 import { apiFetch } from "@/lib/client/api-client";
 import { useSidebarActions, NumberFormatToggle } from "./AppSidebar";
 
@@ -33,9 +35,13 @@ export default function RecordsPage() {
     agent: [],
   });
   const [pageSize, setPageSize] = useState<number>(100);
-  const [autoRefresh, setAutoRefresh] = useState(false);
+  // 自动刷新默认开启（页面可见时每 15s 静默刷新，可手动关掉）
+  const [autoRefresh, setAutoRefresh] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
+  // 列可见性：DB 配置（records_columns），加载前先按默认全显示
+  const [visibleColumns, setVisibleColumns] = useState<RecordColumnId[]>(DEFAULT_RECORD_COLUMNS);
+  const [columnsError, setColumnsError] = useState<string | null>(null);
 
   const selected = useMemo(
     () => ({
@@ -102,6 +108,50 @@ export default function RecordsPage() {
     };
   }, []);
 
+  // 列可见性：打开页面读 DB 配置，改动即时落库；失败回退上一次成功的值
+  useEffect(() => {
+    let cancelled = false;
+    apiFetch("/api/admin/settings/records-columns")
+      .then((res) => res.json())
+      .then((json: { success?: boolean; data?: { columns?: unknown } }) => {
+        if (cancelled || !json.success) return;
+        setVisibleColumns(normalizeRecordColumns(json.data?.columns));
+      })
+      .catch(() => {
+        // 读失败保持默认全显示（不阻塞表格）
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const columnsRef = useRef<RecordColumnId[]>(DEFAULT_RECORD_COLUMNS);
+  useEffect(() => {
+    columnsRef.current = visibleColumns;
+  }, [visibleColumns]);
+
+  const changeColumns = useCallback((next: RecordColumnId[]) => {
+    const previous = columnsRef.current;
+    columnsRef.current = next;
+    setVisibleColumns(next);
+    setColumnsError(null);
+    apiFetch("/api/admin/settings/records-columns", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ columns: next }),
+    })
+      .then(async (res) => {
+        if (res.ok) return;
+        const json = (await res.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(json?.error || `HTTP ${res.status}`);
+      })
+      .catch((err: unknown) => {
+        columnsRef.current = previous;
+        setVisibleColumns(previous);
+        setColumnsError(err instanceof Error ? err.message : "Failed to save columns");
+      });
+  }, []);
+
   // URL 变更的乐观快照：连续快速修改多个下拉时，第二次不能基于上一次 render 的旧 searchParams 复制，
   // 否则会把前一次写入的参数覆盖掉
   const queryRef = useRef(searchParams.toString());
@@ -132,7 +182,7 @@ export default function RecordsPage() {
 
   return (
     <main className="min-h-screen bg-gray-50 p-4 pb-20 md:p-8 md:pb-8">
-      <div className="max-w-7xl mx-auto">
+      <div className="w-full">
         <div className="sticky top-0 z-20 -mx-4 mb-6 bg-gray-50 px-4 py-3 md:-mx-8 md:px-8">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex flex-wrap items-center gap-2">
@@ -164,6 +214,11 @@ export default function RecordsPage() {
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
+              <RecordsColumnPicker
+                value={visibleColumns}
+                onChange={changeColumns}
+                error={columnsError}
+              />
               <label className="flex items-center gap-2 text-xs text-gray-600">
                 Rows
                 <select
@@ -216,6 +271,7 @@ export default function RecordsPage() {
           pageSize={pageSize}
           autoRefresh={autoRefresh}
           refreshKey={refreshKey}
+          visibleColumns={visibleColumns}
           onRefreshingChange={handleRefreshingChange}
         />
       </div>

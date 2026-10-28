@@ -24,6 +24,9 @@ import PublicStatusView from "./PublicStatusView";
 import { NumberFormatProvider } from "./NumberFormatContext";
 
 // 登录后预览公开 Status 面板的切换开关（Dashboard / MobileTabBar 消费）
+// 侧栏收起偏好（localStorage）：true = 仅图标 16px 宽，false = 完整 56px（14rem）
+const SIDEBAR_COLLAPSED_KEY = "tt:sidebar-collapsed";
+
 interface PublicPreviewContextValue {
   previewPublic: boolean;
   togglePreview: () => void;
@@ -58,6 +61,28 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
   const [previewPublic, setPreviewPublic] = useState(false);
   // Dashboard 注册到桌面侧栏底部的操作组节点（仅 Dashboard 页存在）
   const [sidebarActions, setSidebarActions] = useState<ReactNode>(null);
+  // 桌面侧栏收起：纯本地 UI 偏好，存 localStorage（设备级，不进 DB）
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  useEffect(() => {
+    try {
+      setSidebarCollapsed(window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1");
+    } catch {
+      // 隐私模式等读不到 localStorage 时保持展开
+    }
+  }, []);
+
+  const toggleSidebarCollapsed = useCallback(() => {
+    setSidebarCollapsed((collapsed) => {
+      const next = !collapsed;
+      try {
+        window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, next ? "1" : "0");
+      } catch {
+        // 写失败不影响本次状态
+      }
+      return next;
+    });
+  }, []);
   // 本地免密码直通（服务端 LOCAL_ADMIN_BYPASS + loopback Host 生效）：直接获得 admin，
   // 此模式下 logout / 401 跳转均为 no-op（用 ref 避免 callback 依赖问题）
   const localBypassRef = useRef(false);
@@ -302,7 +327,7 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
           {/* children 用 display:none 隐藏而非卸载：切换预览时 Dashboard/AdminPanel
           不重新挂载，数据、当前 admin tab、表单状态全部保留，点击即切换 */}
           {/* 桌面端内容区左移让出侧栏宽度；preview 激活时 children 隐藏，无偏移冲突 */}
-          <div className={previewPublic ? "hidden" : "md:pl-56"}>{children}</div>
+          <div className={previewPublic ? "hidden" : sidebarCollapsed ? "md:pl-16" : "md:pl-56"}>{children}</div>
           {previewPublic && (
             <PublicStatusView
               preview
@@ -314,6 +339,8 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
           {!previewPublic && (
             <AppSidebar
               actions={sidebarActions}
+              collapsed={sidebarCollapsed}
+              onToggleCollapse={toggleSidebarCollapsed}
               onPreviewToggle={() => setPreviewPublic((v) => !v)}
             />
           )}
