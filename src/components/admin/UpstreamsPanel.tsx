@@ -18,6 +18,7 @@ export interface UpstreamProbeStatus {
   status: number; // 0 = 无 HTTP 响应（网络层失败）
   error?: string;
   nextAt: number | null;
+  givenUp?: boolean; // 已放弃兜底：不再进请求尝试链，只能靠探活/测试/重新启用恢复
 }
 
 export interface UpstreamItem {
@@ -158,10 +159,14 @@ export default function UpstreamsPanel() {
   const [probing, setProbing] = useState<Record<number, boolean>>({});
   // 探活倒计时基准时钟（unhealthy 行的 nextAt 倒计时随其刷新）
   const [now, setNow] = useState(() => Date.now());
+  // 存在 60s 内的待探活（退避首档为 30s）时每秒刷新，其余保持 30s 低频，避免整个面板无意义重渲染
+  const hasImminentProbe = upstreams.some(
+    (u) => u.probe?.nextAt != null && u.probe.nextAt > now && u.probe.nextAt - now < 60_000
+  );
   useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 30_000);
+    const t = setInterval(() => setNow(Date.now()), hasImminentProbe ? 1_000 : 30_000);
     return () => clearInterval(t);
-  }, []);
+  }, [hasImminentProbe]);
   const [pendingDelete, setPendingDelete] = useState<UpstreamItem | null>(null);
   const [hideHistory, setHideHistory] = useState(false);
   // 编辑表单中 key 启停的本地暂存（点击 Save 后才提交生效）
@@ -549,8 +554,17 @@ export default function UpstreamsPanel() {
       const err = p.error ? `: ${p.error.slice(0, 60)}` : "";
       parts.push(`last ${new Date(p.lastAt).toLocaleString()} — ${result}${err}`);
     }
+    if (p.givenUp) {
+      parts.push("given up (excluded from failover until a probe succeeds)");
+    }
     if (p.nextAt !== null) {
-      parts.push(`next in ${Math.max(0, Math.round((p.nextAt - now) / 60_000))}m`);
+      // 退避阶梯首档为秒级，剩余 <60s 时显示秒，否则显示分钟
+      const remainMs = Math.max(0, p.nextAt - now);
+      parts.push(
+        remainMs < 60_000
+          ? `next in ${Math.ceil(remainMs / 1000)}s`
+          : `next in ${Math.round(remainMs / 60_000)}m`
+      );
     }
     return parts.join(" · ");
   };

@@ -1,14 +1,27 @@
 // upstream / model 健康状态管理 + 定时探活调度（内存缓存 + DB 持久化，重启不丢失）。
 // healthy（默认）→ unhealthy：某次真实请求中该 upstream 所有 key 均失败
 // unhealthy → healthy：定时探活成功 / 手动测试成功 / 兜底真实请求 2xx 成功
+// 定时探活间隔按失败次数阶梯后退（30s → 1min → 5min → 30min 封顶），见 PROBE_BACKOFF_MS
 // unhealthy 的 upstream 不进入请求候选池（仅当存在健康候选时）；全部候选不健康时
 // 代理链路兜底尝试 unhealthy 候选（不留 502），拿到 2xx 立即 markHealthy + markModelHealthy 自愈
 
 export type UpstreamHealth = "healthy" | "unhealthy";
 
 export const DEFAULT_PROBE_INTERVAL_MS = 30 * 60 * 1000;
+// 探活退避阶梯：每失败一次进一档，30s → 1min → 5min → 30min（末档封顶 = 稳态间隔）
+// 探活成功 / markHealthy / 重新启用 → 回到首档；档位纯内存，重启归零（load 的 unhealthy 从首档重探）
+export const PROBE_BACKOFF_MS: readonly number[] = [
+  30 * 1000,
+  60 * 1000,
+  5 * 60 * 1000,
+  DEFAULT_PROBE_INTERVAL_MS,
+];
 // model 级不可用标记的 TTL：到期自动恢复，不额外探活（404 探活同样 404，无意义）
 export const MODEL_UNAVAILABLE_TTL_MS = 30 * 60 * 1000;
+// 末档（30min）内连续探活失败达该次数 → 放弃兜底：该 upstream 不再进入任何尝试链
+// （死透的 upstream 在兜底里只会白等超时），仅保留定时探活 / Probe now / Test / 重新启用；
+// 探活或手动测试成功即恢复资格。纯内存，重启归零
+export const PROBE_GIVE_UP_FAILURES = 4;
 
 // 探活结果：ok 为放宽后的最终判定（proxy-deps 侧已实现 404 放宽语义），
 // status/error 供探活状态展示（status=0 表示无 HTTP 响应，如网络错误）
@@ -29,6 +42,8 @@ export interface ProbeStatus {
   status: number; // 0 = 无 HTTP 响应（网络层失败）
   error?: string;
   nextAt: number | null; // 待执行的定时探活时间戳；null = 无
+  // 已放弃兜底（末档连续探活失败达标）：不再进尝试链，UI 需可见
+  givenUp: boolean;
 }
 
 // 健康状态持久化接口（实现见 proxy-deps，DB 读写）
@@ -54,24 +69,30 @@ export class HealthTracker {
   private modelUnavailableUntil = new Map<string, number>();
   private probeFn: ProbeFn;
   private persistence: HealthPersistence;
-  private intervalMs: number;
+  // 退避阶梯（各档间隔毫秒），末档重复使用
+  private probeBackoff: readonly number[];
+  // upstreamId -> 当前档位下标（失败一次 +1）
+  private backoffLevel = new Map<number, number>();
+  // 已放弃兜底的 upstream（末档连续探活失败达标）
+  private givenUp = new Set<number>();
   private modelTtlMs: number;
   private loaded = false;
   private loadPromise: Promise<void> | null = null;
   private probeStatus = new Map<number, ProbeStatus>();
   // 禁用（stopProbing）后阻止一切定时探活调度；重新启用/手动 Probe now 前保持停止
   private probeStopped = new Set<number>();
-  private probeInFlight = new Map<number, Promise<ProbeStatus | null>>();
+  private probeInFlight = new Map<number, Promise<void>>();
 
+  // maxIntervalMs：阶梯上限（默认 30min）。传入更小的值会逐档截断到该上限（测试用）
   constructor(
     probeFn: ProbeFn,
     persistence: HealthPersistence,
-    intervalMs = DEFAULT_PROBE_INTERVAL_MS,
+    maxIntervalMs = DEFAULT_PROBE_INTERVAL_MS,
     modelTtlMs = MODEL_UNAVAILABLE_TTL_MS
   ) {
     this.probeFn = probeFn;
     this.persistence = persistence;
-    this.intervalMs = intervalMs;
+    this.probeBackoff = PROBE_BACKOFF_MS.map((ms) => Math.min(ms, maxIntervalMs));
     this.modelTtlMs = modelTtlMs;
   }
 
@@ -127,11 +148,18 @@ export class HealthTracker {
   async markHealthy(upstreamId: number): Promise<void> {
     await this.ensureLoaded();
     this.states.delete(upstreamId);
+    this.backoffLevel.delete(upstreamId); // 恢复即回到首档，下次故障从 30s 起探
+    this.givenUp.delete(upstreamId); // 恢复健康即重新获得兜底资格
     this.clearTimer(upstreamId);
     // healthy 后不再有待执行探活（保留 lastAt 供 UI 展示上次结果）
     const status = this.probeStatus.get(upstreamId);
     if (status) status.nextAt = null;
     await this.persist("saveUpstream", upstreamId, false);
+  }
+
+  // 已放弃兜底：请求链组装时跳过（同步读内存，调用方已先走过 isHealthy/isModelHealthy 的 ensureLoaded）
+  isGivenUp(upstreamId: number): boolean {
+    return this.givenUp.has(upstreamId);
   }
 
   async isModelHealthy(upstreamId: number, model: string): Promise<boolean> {
@@ -197,16 +225,25 @@ export class HealthTracker {
     }
   }
 
+  private backoffDelayMs(upstreamId: number): number {
+    const level = this.backoffLevel.get(upstreamId) ?? 0;
+    return this.probeBackoff[Math.min(level, this.probeBackoff.length - 1)];
+  }
+
   private scheduleProbe(upstreamId: number): void {
     // 禁用（stopProbing）后不再挂任何定时探活，直到显式恢复
     if (this.probeStopped.has(upstreamId)) return;
+    // 先清旧 timer：手动探活失败会走到这里，旧 timer 不清会双倍调度、双倍推进档位
+    this.clearTimer(upstreamId);
+    const delayMs = this.backoffDelayMs(upstreamId);
     const timer = setTimeout(() => {
-      this.timers.delete(upstreamId);
+      // 只清自己的句柄：避免旧回调把新 timer 从追踪表里删掉造成泄漏
+      if (this.timers.get(upstreamId) === timer) this.timers.delete(upstreamId);
       void this.runProbe(upstreamId);
-    }, this.intervalMs);
+    }, delayMs);
     if (typeof timer.unref === "function") timer.unref();
     this.timers.set(upstreamId, timer);
-    this.setProbeNext(upstreamId, Date.now() + this.intervalMs);
+    this.setProbeNext(upstreamId, Date.now() + delayMs);
   }
 
   private setProbeNext(upstreamId: number, nextAt: number | null): void {
@@ -215,11 +252,28 @@ export class HealthTracker {
       status.nextAt = nextAt;
     } else if (nextAt !== null) {
       // 已调度但从未探测：先建占位条目（lastAt=0），UI 显示「未探测」+ 下次倒计时
-      this.probeStatus.set(upstreamId, { lastAt: 0, ok: false, status: 0, nextAt });
+      this.probeStatus.set(upstreamId, {
+        lastAt: 0,
+        ok: false,
+        status: 0,
+        nextAt,
+        givenUp: this.givenUp.has(upstreamId),
+      });
     }
   }
 
-  private async runProbe(upstreamId: number): Promise<void> {
+  // 单次探活入口：定时探活与 probeNow 共用同一个 in-flight，避免并发推进档位 / 双倍调度
+  private runProbe(upstreamId: number): Promise<void> {
+    const inFlight = this.probeInFlight.get(upstreamId);
+    if (inFlight) return inFlight;
+    const p = this.doProbe(upstreamId).finally(() => {
+      this.probeInFlight.delete(upstreamId);
+    });
+    this.probeInFlight.set(upstreamId, p);
+    return p;
+  }
+
+  private async doProbe(upstreamId: number): Promise<void> {
     let ok = false;
     let status = 0;
     let error: string | undefined;
@@ -235,35 +289,51 @@ export class HealthTracker {
       status = 0;
       error = err instanceof Error ? err.message : String(err);
     }
-    this.probeStatus.set(upstreamId, { lastAt: Date.now(), ok, status, error, nextAt: null });
+    this.probeStatus.set(upstreamId, {
+      lastAt: Date.now(),
+      ok,
+      status,
+      error,
+      nextAt: null,
+      givenUp: this.givenUp.has(upstreamId),
+    });
     if (ok) {
       await this.markHealthy(upstreamId);
     } else if (this.states.get(upstreamId) === "unhealthy") {
+      // 探活失败：进一档后退，末档封顶；末档内连续失败达标后放弃兜底（探活照旧跑）
+      const level = (this.backoffLevel.get(upstreamId) ?? 0) + 1;
+      this.backoffLevel.set(upstreamId, level);
+      if (
+        level >= this.probeBackoff.length - 1 + PROBE_GIVE_UP_FAILURES &&
+        !this.givenUp.has(upstreamId)
+      ) {
+        this.givenUp.add(upstreamId);
+        console.warn(
+          `[health] upstream ${upstreamId} given up after ${level} consecutive probe failures; excluded from failover fallback until a probe succeeds`
+        );
+      }
       this.scheduleProbe(upstreamId);
     }
   }
 
-  // 只读探活状态（供 Admin API）；从未有过记录返回 null
+  // 只读探活状态（供 Admin API）；从未有过记录返回 null。
+  // givenUp 从 Set 派生（写入时可能还没加进 Set，且恢复/重新启用会单独清 Set）
   getProbeStatus(upstreamId: number): ProbeStatus | null {
-    return this.probeStatus.get(upstreamId) ?? null;
+    const status = this.probeStatus.get(upstreamId);
+    if (!status) return null;
+    return { ...status, givenUp: this.givenUp.has(upstreamId) };
   }
 
   // 立即执行一次探活并返回最新状态；并发重入共享同一次探测。
   // 不恢复定时探活调度（resumeProbing 负责），禁用状态下失败也不会重新挂 timer。
   probeNow(upstreamId: number): Promise<ProbeStatus | null> {
-    const inFlight = this.probeInFlight.get(upstreamId);
-    if (inFlight) return inFlight;
-    const p = (async () => {
+    return (async () => {
       // 先加载持久化状态：重启后首次 probeNow 时 states 可能为空，
       // 否则探测失败后无法判断是否需要重排定时探活（会静默丢失自动恢复）
       await this.ensureLoaded();
       await this.runProbe(upstreamId);
-      return this.probeStatus.get(upstreamId) ?? null;
+      return this.getProbeStatus(upstreamId);
     })();
-    this.probeInFlight.set(upstreamId, p);
-    return p.finally(() => {
-      this.probeInFlight.delete(upstreamId);
-    });
   }
 
   // 停止定时探活（禁用 upstream）：停 timer、清 nextAt，保留 lastAt 供重新启用时展示
@@ -273,9 +343,11 @@ export class HealthTracker {
     this.setProbeNext(upstreamId, null);
   }
 
-  // 恢复定时探活调度（重新启用 upstream）
+  // 恢复定时探活调度（重新启用 upstream）：档位归零、恢复兜底资格，按新故障对待
   resumeProbing(upstreamId: number): void {
     this.probeStopped.delete(upstreamId);
+    this.backoffLevel.delete(upstreamId);
+    this.givenUp.delete(upstreamId);
   }
 
   // 移除 upstream 的全部内存态（DB 残留清理由调用方负责）
@@ -283,6 +355,8 @@ export class HealthTracker {
     this.clearTimer(upstreamId);
     this.probeStopped.delete(upstreamId);
     this.states.delete(upstreamId);
+    this.backoffLevel.delete(upstreamId);
+    this.givenUp.delete(upstreamId);
     const prefix = `${upstreamId}\u0000`;
     for (const key of Array.from(this.modelUnavailableUntil.keys())) {
       if (key.startsWith(prefix)) this.modelUnavailableUntil.delete(key);

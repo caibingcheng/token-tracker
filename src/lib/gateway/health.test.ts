@@ -113,6 +113,141 @@ describe("HealthTracker - upstream level", () => {
     expect(DEFAULT_PROBE_INTERVAL_MS).toBe(30 * 60 * 1000);
   });
 
+  it("backs off 30s → 1min → 5min → 30min and caps at 30min", async () => {
+    const probe = vi.fn(async () => probeFail());
+    const tracker = new HealthTracker(probe, mkPersistence());
+    await tracker.markUnhealthy(1);
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(probe).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(59_999); // 第二档 1min 未到
+    expect(probe).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(probe).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(probe).toHaveBeenCalledTimes(3);
+
+    await vi.advanceTimersByTimeAsync(30 * 60_000);
+    expect(probe).toHaveBeenCalledTimes(4);
+
+    await vi.advanceTimersByTimeAsync(30 * 60_000); // 末档封顶
+    expect(probe).toHaveBeenCalledTimes(5);
+    expect(await tracker.isHealthy(1)).toBe(false);
+  });
+
+  it("exposes the ladder in probe nextAt", async () => {
+    const tracker = new HealthTracker(vi.fn(async () => probeFail()), mkPersistence());
+    await tracker.markUnhealthy(1);
+    const first = tracker.getProbeStatus(1)?.nextAt ?? 0;
+    expect(first - Date.now()).toBe(30_000); // 首档 30s
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    const second = tracker.getProbeStatus(1)?.nextAt ?? 0;
+    expect(second - Date.now()).toBe(60_000); // 失败一次 → 1min
+  });
+
+  it("resets the ladder to the first step after recovery", async () => {
+    let probeOkNow = false;
+    const probe = vi.fn(async () => (probeOkNow ? probeOk() : probeFail()));
+    const tracker = new HealthTracker(probe, mkPersistence());
+    await tracker.markUnhealthy(1);
+
+    await vi.advanceTimersByTimeAsync(30_000); // 第一档失败 → 进 1min 档
+    await vi.advanceTimersByTimeAsync(60_000); // 第二档失败 → 进 5min 档
+    expect(probe).toHaveBeenCalledTimes(2);
+
+    probeOkNow = true;
+    await vi.advanceTimersByTimeAsync(5 * 60_000); // 5min 档探活成功 → 恢复
+    expect(await tracker.isHealthy(1)).toBe(true);
+
+    probeOkNow = false;
+    await tracker.markUnhealthy(1); // 再次故障：回到首档 30s
+    expect((tracker.getProbeStatus(1)?.nextAt ?? 0) - Date.now()).toBe(30_000);
+  });
+
+  it("gives up the fallback slot after the ladder caps and keeps probing", async () => {
+    const probe = vi.fn(async () => probeFail());
+    const tracker = new HealthTracker(probe, mkPersistence());
+    await tracker.markUnhealthy(1);
+
+    await vi.advanceTimersByTimeAsync(30_000); // 第 1 次失败
+    await vi.advanceTimersByTimeAsync(60_000); // 2
+    await vi.advanceTimersByTimeAsync(5 * 60_000); // 3
+    for (let i = 0; i < 3; i++) await vi.advanceTimersByTimeAsync(30 * 60_000); // 4-6（末档）
+    expect(probe).toHaveBeenCalledTimes(6);
+    expect(tracker.isGivenUp(1)).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(30 * 60_000); // 7：末档内第 4 次失败 → 放弃兜底
+    expect(probe).toHaveBeenCalledTimes(7);
+    expect(tracker.isGivenUp(1)).toBe(true);
+    expect(tracker.getProbeStatus(1)?.givenUp).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(30 * 60_000); // 探活不因放弃而停止
+    expect(probe).toHaveBeenCalledTimes(8);
+    expect(await tracker.isHealthy(1)).toBe(false);
+  });
+
+  it("clears the give-up flag once a probe succeeds", async () => {
+    let probeOkNow = false;
+    const probe = vi.fn(async () => (probeOkNow ? probeOk() : probeFail()));
+    const tracker = new HealthTracker(probe, mkPersistence(), 1000);
+    await tracker.markUnhealthy(1);
+
+    await vi.advanceTimersByTimeAsync(7000); // 档位 1000ms × 7 次失败
+    expect(tracker.isGivenUp(1)).toBe(true);
+    expect(tracker.getProbeStatus(1)?.givenUp).toBe(true);
+
+    probeOkNow = true;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(tracker.isGivenUp(1)).toBe(false);
+    expect(tracker.getProbeStatus(1)?.givenUp).toBe(false); // 状态对象不残留旧值
+    expect(await tracker.isHealthy(1)).toBe(true);
+  });
+
+  it("does not double-schedule timers when a manual probe fails while a timer is pending", async () => {
+    const probe = vi.fn(async () => probeFail());
+    const tracker = new HealthTracker(probe, mkPersistence(), 1000);
+    await tracker.markUnhealthy(1);
+
+    await tracker.probeNow(1); // 手动探活失败：档位 1，重排定时器（旧 timer 需被清掉）
+    expect(probe).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(probe).toHaveBeenCalledTimes(2); // 只有一次定时探活
+  });
+
+  it("shares one in-flight probe between concurrent probeNow calls", async () => {
+    let resolveProbe: ((o: ProbeOutcome) => void) | undefined;
+    const probe = vi.fn(
+      () =>
+        new Promise<ProbeOutcome>((resolve) => {
+          resolveProbe = resolve;
+        })
+    );
+    const tracker = new HealthTracker(probe, mkPersistence(), 1000);
+    const first = tracker.probeNow(1);
+    const second = tracker.probeNow(1);
+    while (!resolveProbe) await vi.advanceTimersByTimeAsync(0); // 等 ensureLoaded 完成
+
+    resolveProbe(probeFail());
+    await Promise.all([first, second]);
+    expect(probe).toHaveBeenCalledTimes(1); // 单飞：两次 probeNow 只探一次
+  });
+
+  it("resumeProbing clears the give-up flag so a re-enabled upstream is retried", async () => {
+    const tracker = new HealthTracker(vi.fn(async () => probeFail()), mkPersistence(), 1000);
+    await tracker.markUnhealthy(1);
+    await vi.advanceTimersByTimeAsync(7000);
+    expect(tracker.isGivenUp(1)).toBe(true);
+
+    tracker.stopProbing(1);
+    expect(tracker.isGivenUp(1)).toBe(true); // 仅停探活，不改兜底资格
+    tracker.resumeProbing(1);
+    expect(tracker.isGivenUp(1)).toBe(false);
+  });
+
   it("probes each upstream independently", async () => {
     const probe = vi.fn(async () => probeOk());
     const tracker = new HealthTracker(probe, mkPersistence(), 1000);
