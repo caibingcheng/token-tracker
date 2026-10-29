@@ -1,23 +1,23 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import {
-  RECORD_COLUMNS,
-  RECORD_COLUMN_IDS,
-  type RecordColumnId,
-} from "@/lib/records-columns";
+import type { ColumnDef } from "@/lib/columns";
 
-interface RecordsColumnPickerProps {
-  value: RecordColumnId[];
-  onChange: (next: RecordColumnId[]) => void;
+// 表格列可见性下拉（Records / Audit 共用）：勾选即回调，至少保留一列。
+// 提交顺序恒为 columns 定义顺序，与点击顺序无关。
+interface ColumnPickerProps<T extends string> {
+  columns: readonly ColumnDef<T>[];
+  value: T[];
+  onChange: (next: T[]) => void;
   error?: string | null;
 }
 
-export default function RecordsColumnPicker({
+export default function ColumnPicker<T extends string>({
+  columns,
   value,
   onChange,
   error,
-}: RecordsColumnPickerProps) {
+}: ColumnPickerProps<T>) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -31,8 +31,9 @@ export default function RecordsColumnPicker({
   }, [open]);
 
   const visible = new Set(value);
+  const ids = columns.map((column) => column.id);
 
-  const toggle = (id: RecordColumnId) => {
+  const toggle = (id: T) => {
     const next = new Set(visible);
     if (next.has(id)) {
       if (next.size === 1) return; // 至少保留一列
@@ -41,7 +42,7 @@ export default function RecordsColumnPicker({
       next.add(id);
     }
     // 始终按定义顺序提交，展示顺序与点击顺序无关
-    onChange(RECORD_COLUMN_IDS.filter((columnId) => next.has(columnId)));
+    onChange(ids.filter((columnId) => next.has(columnId)));
   };
 
   return (
@@ -58,14 +59,14 @@ export default function RecordsColumnPicker({
       >
         Columns
         <span className="tabular-nums text-xs opacity-70">
-          {value.length}/{RECORD_COLUMN_IDS.length}
+          {value.length}/{ids.length}
         </span>
       </button>
 
       {open && (
         <div className="absolute right-0 z-30 mt-2 w-64 max-h-[70vh] overflow-y-auto rounded-lg border border-gray-200 bg-white p-2 shadow-lg">
           <p className="px-2 py-1 text-xs font-medium uppercase text-gray-500">Visible columns</p>
-          {RECORD_COLUMNS.map((column) => {
+          {columns.map((column) => {
             const checked = visible.has(column.id);
             const isLastVisible = checked && value.length === 1;
             return (

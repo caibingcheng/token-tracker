@@ -37,6 +37,7 @@
   - `src/lib/agent-utils` / `src/lib/auth/settings-agent-aliases`：UA token 提取、内置映射、手动 alias 优先级与大小写、unknown、反找（多 UA→一 agent、无匹配）；parse/isValid 边界、load 回退、set 后 invalidateQueryCache
   - `src/app/api/admin/settings/agent-aliases/route.test`：401/400/往返（withSkipCache 立即可读、loadAgentAliases 同源）
   - `src/lib/records-columns` / `src/app/api/admin/settings/records-columns/route.test`：可见列 id 列表（默认全列、已知 id 校验、非空/无重复、读侧丢弃未知 id 并按定义序归一、坏 JSON/空数组回退全列）；路由 401、默认 GET 全列、PUT 落库明文 JSON 往返、非法输入 400 不改存量、存量坏值回退默认
+  - `src/lib/audit-columns`：审计日志表可见列 id 列表（默认全列、已知 id 校验、按定义序归一、坏 JSON/空值回退全列）
   - `src/lib/status-query`：元素联动（hourly→daily）+ 按需查询断言（cost/topModels 关闭不执行 model 级查询）+ 响应裁剪（不泄露模型名）+ 隐私裁剪断言（无 firstActiveAt/lastActiveAt、无 costPerMillion*、无嵌套 cost 对象，保留 totalCost）+ 响应缓存失效 + 60 req/min 限流
   - `src/lib/gateway/probe`：探活请求构造（三协议 + responses 双风格）+ 出站头（基线常量 + 注入 key + transforms 应用，override/fill/disabled、变量展开含单次探测内恒定的临时 sessionId）+ 双风格回退判定 + 3xx 不跟随（redirect manual）
   - `src/lib/gateway/quota`：配额窗口计算与超限判定（rpm/tpm/daily/monthly）
