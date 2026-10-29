@@ -1,27 +1,58 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { Stats } from "./StatsCards";
 import { TodayData } from "./TodayOverview";
 import { DailyData } from "./DailyUsageChart";
-import { type ModelPricing, calculateCost } from "@/lib/cost-utils";
+import { type ModelPricing } from "@/lib/cost-utils";
+import {
+  parseCacheRateInput,
+  parsePriceInput,
+  simulatePricing,
+} from "@/lib/price-simulation";
 import { formatNumber, toNum } from "@/lib/number-utils";
 import { useNumberFormat } from "./NumberFormatContext";
-import { localDateKeyFromUtcDate } from "@/lib/timezone-utils";
+import {
+  getClientTimezoneOffsetMinutes,
+  localDateKeyFromUtcDate,
+} from "@/lib/timezone-utils";
 import { apiFetch } from "@/lib/client/api-client";
+
+interface FilterOption {
+  id: string;
+  name: string;
+}
 
 interface PriceSimulatorModalProps {
   isOpen: boolean;
   onClose: () => void;
-  stats: Stats | null;
-  todayData: TodayData | null;
-  dailyData: DailyData[];
-  totalDays: number;
-  loading: boolean;
-  timezoneOffsetMinutes?: number;
+  /** 打开时的默认数据过滤（同步 dashboard 当前状态） */
+  defaultAgent: string;
+  defaultProvider: string;
+  defaultModel: string;
+  agents: FilterOption[];
+  providers: FilterOption[];
+  models: FilterOption[];
+}
+
+interface RangeBucket {
+  totalInput: number;
+  totalOutput: number;
+  totalInputCached: number;
+  totalInputUncached: number;
+  totalCacheWrite: number;
+  totalCost: number;
 }
 
 interface SectionData {
+  id: string;
   title: string;
   totalInput: number;
   totalOutput: number;
@@ -30,6 +61,8 @@ interface SectionData {
   totalCacheWrite: number;
   actualCost: number;
   simulatedCost: number;
+  actualCacheRate: number;
+  simulatedCacheRate: number;
 }
 
 interface ModelOption {
@@ -47,7 +80,34 @@ interface ModelsDevProvider {
   name: string;
 }
 
+interface DashboardSnapshot {
+  total: Stats | null;
+  today: TodayData | null;
+  daily: DailyData[];
+  totalDays: number;
+}
+
+interface SectionSource {
+  id: string;
+  title: string;
+  data: RangeBucket | null;
+}
+
 const UNCATEGORIZED = "Uncategorized";
+const RANGE_OPTIONS = [3, 7, 14, 30];
+const PRICE_FIELDS = [
+  { key: "input", label: "Input" },
+  { key: "cacheRead", label: "Cache Read" },
+  { key: "cacheWrite", label: "Cache Write" },
+  { key: "output", label: "Output" },
+] as const;
+
+type PriceField = (typeof PRICE_FIELDS)[number]["key"];
+type PriceDraft = Record<PriceField, string>;
+
+function emptyPriceDraft(): PriceDraft {
+  return { input: "", cacheRead: "", cacheWrite: "", output: "" };
+}
 
 function formatCost(num: number): string {
   const n = toNum(num);
@@ -55,59 +115,42 @@ function formatCost(num: number): string {
   return `$${n.toFixed(4)}`;
 }
 
-function extractInputs(
-  data: Pick<
-    Stats | TodayData | DailyData,
-    "totalInput" | "totalInputCached" | "totalCacheWrite" | "totalOutput"
-  >
-): {
-  inputTokens: number;
-  cacheRead: number;
-  cacheWrite: number;
-  outputTokens: number;
-} {
-  const totalInput = toNum(data.totalInput);
-  const totalInputCached = toNum(data.totalInputCached);
-  return {
-    inputTokens: totalInput - totalInputCached,
-    cacheRead: totalInputCached,
-    cacheWrite: toNum(data.totalCacheWrite),
-    outputTokens: toNum(data.totalOutput),
-  };
+function formatRate(rate: number): string {
+  return `${(toNum(rate) * 100).toFixed(1)}%`;
 }
 
-function computeSection(
-  title: string,
-  data:
-    | (Pick<
-        Stats | TodayData | DailyData,
-        | "totalInput"
-        | "totalInputCached"
-        | "totalInputUncached"
-        | "totalCacheWrite"
-        | "totalOutput"
-        | "totalCost"
-      >)
-    | null,
-  pricing: ModelPricing | null
+function buildSection(
+  source: SectionSource,
+  pricing: ModelPricing | null,
+  cacheRate: number | null
 ): SectionData | null {
-  if (!data) return null;
+  if (!source.data) return null;
 
-  const inputs = extractInputs(data);
-  const actualCost = toNum(data.totalCost);
-  const simulatedCost = pricing
-    ? calculateCost({ ...inputs, pricing })
-    : 0;
+  const totalInput = toNum(source.data.totalInput);
+  const cacheRead = toNum(source.data.totalInputCached);
+  const cacheWrite = toNum(source.data.totalCacheWrite);
+  const outputTokens = toNum(source.data.totalOutput);
+  const simulated = simulatePricing({
+    totalInput,
+    cacheRead,
+    cacheWrite,
+    outputTokens,
+    pricing,
+    cacheRate,
+  });
 
   return {
-    title,
-    totalInput: toNum(data.totalInput),
-    totalOutput: toNum(data.totalOutput),
-    totalInputCached: toNum(data.totalInputCached),
-    totalInputUncached: toNum(data.totalInputUncached),
-    totalCacheWrite: toNum(data.totalCacheWrite),
-    actualCost,
-    simulatedCost,
+    id: source.id,
+    title: source.title,
+    totalInput,
+    totalOutput: outputTokens,
+    totalInputCached: cacheRead,
+    totalInputUncached: toNum(source.data.totalInputUncached),
+    totalCacheWrite: cacheWrite,
+    actualCost: toNum(source.data.totalCost),
+    simulatedCost: simulated.cost,
+    actualCacheRate: simulated.actualCacheRate,
+    simulatedCacheRate: simulated.simulatedCacheRate,
   };
 }
 
@@ -115,14 +158,7 @@ function aggregateDailyDataForRange(
   data: DailyData[],
   days: number,
   timezoneOffsetMinutes: number
-): Pick<
-  SectionData,
-  | "totalInput"
-  | "totalOutput"
-  | "totalInputCached"
-  | "totalInputUncached"
-  | "totalCacheWrite"
-> & { totalCost: number } | null {
+): RangeBucket | null {
   if (!data || data.length === 0) return null;
 
   const today = new Date();
@@ -131,10 +167,7 @@ function aggregateDailyDataForRange(
     timezoneOffsetMinutes
   );
 
-  const filtered = data.filter((item) => {
-    return item.group >= cutoffKey;
-  });
-
+  const filtered = data.filter((item) => item.group >= cutoffKey);
   if (filtered.length === 0) return null;
 
   return filtered.reduce(
@@ -157,8 +190,6 @@ function aggregateDailyDataForRange(
     }
   );
 }
-
-const RANGE_OPTIONS = [3, 7, 14, 30];
 
 function groupModelsByProvider(models: ModelPricing[]): ProviderGroup[] {
   const map = new Map<string, ModelOption[]>();
@@ -203,7 +234,9 @@ function DiffCell({
 
   return (
     <div className="flex flex-col">
-      <span className={`font-medium ${isSaving ? "text-green-600" : "text-red-600"}`}>
+      <span
+        className={`font-medium ${isSaving ? "text-green-600" : "text-red-600"}`}
+      >
         {isSaving ? "−" : "+"}
         {formatCost(Math.abs(diff))}
       </span>
@@ -238,6 +271,46 @@ function AvgCostCell({
   );
 }
 
+function CacheRateCell({
+  section,
+  draft,
+  onChange,
+}: {
+  section: SectionData;
+  draft: string;
+  onChange: (sectionId: string, value: string) => void;
+}) {
+  const isOverride = draft !== "";
+  const value = isOverride ? draft : formatRate(section.actualCacheRate).replace("%", "");
+
+  return (
+    <div className="flex flex-col items-end gap-0.5">
+      <div className="flex items-center gap-1">
+        <input
+          type="number"
+          min={0}
+          max={100}
+          step={0.5}
+          value={value}
+          onChange={(e) => onChange(section.id, e.target.value)}
+          aria-label={`Simulated cache rate for ${section.title}`}
+          className={`w-20 rounded border px-2 py-1 text-right text-sm focus:outline-none focus:ring-1 ${
+            isOverride
+              ? "border-blue-400 bg-blue-50/40 font-medium text-blue-700 focus:border-blue-500 focus:ring-blue-500"
+              : "border-gray-200 text-gray-600 focus:border-blue-500 focus:ring-blue-500"
+          }`}
+        />
+        <span className="text-xs text-gray-400">%</span>
+      </div>
+      {isOverride && (
+        <span className="text-xs text-gray-400">
+          actual {formatRate(section.actualCacheRate)}
+        </span>
+      )}
+    </div>
+  );
+}
+
 const SIMULATION_PROVIDER_KEY = "token-tracker-simulation-provider";
 const SIMULATION_MODEL_KEY = "token-tracker-simulation-model";
 const SEARCH_DEBOUNCE_MS = 300;
@@ -245,22 +318,36 @@ const SEARCH_DEBOUNCE_MS = 300;
 export default function PriceSimulatorModal({
   isOpen,
   onClose,
-  stats,
-  todayData,
-  dailyData,
-  totalDays,
-  loading,
-  timezoneOffsetMinutes = 0,
+  defaultAgent,
+  defaultProvider,
+  defaultModel,
+  agents,
+  providers,
+  models,
 }: PriceSimulatorModalProps) {
   const { compact } = useNumberFormat();
   const dialogRef = useRef<HTMLDivElement>(null);
   const searchBoxRef = useRef<HTMLDivElement>(null);
+
+  // 数据过滤（独立于 dashboard，默认同步 dashboard 状态）
+  const [filterAgent, setFilterAgent] = useState(defaultAgent);
+  const [filterProvider, setFilterProvider] = useState(defaultProvider);
+  const [filterModel, setFilterModel] = useState(defaultModel);
+
+  const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
+  const [dataLoading, setDataLoading] = useState(false);
+  const [dataError, setDataError] = useState<string | null>(null);
 
   const [allModels, setAllModels] = useState<ModelPricing[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [selectedProvider, setSelectedProvider] = useState<string>("");
   const [selectedModelId, setSelectedModelId] = useState<string>("");
+  const [priceDraft, setPriceDraft] = useState<PriceDraft | null>(null);
+
+  const [cacheRateDrafts, setCacheRateDrafts] = useState<Record<string, string>>(
+    {}
+  );
 
   const [modelsDevProviders, setModelsDevProviders] = useState<
     ModelsDevProvider[]
@@ -274,6 +361,14 @@ export default function PriceSimulatorModal({
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [searchActive, setSearchActive] = useState(false);
+
+  // 打开时同步 dashboard 当前过滤（用 ref 避免把 default* 放进 effect 依赖）
+  const defaultsRef = useRef({ agent: defaultAgent, provider: defaultProvider, model: defaultModel });
+  defaultsRef.current = {
+    agent: defaultAgent,
+    provider: defaultProvider,
+    model: defaultModel,
+  };
 
   const updateSelection = (provider: string, modelId: string) => {
     setSelectedProvider(provider);
@@ -297,6 +392,15 @@ export default function PriceSimulatorModal({
   useEffect(() => {
     if (!isOpen) return;
 
+    setFilterAgent(defaultsRef.current.agent);
+    setFilterProvider(defaultsRef.current.provider);
+    setFilterModel(defaultsRef.current.model);
+    setCacheRateDrafts({});
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
     setModelsLoading(true);
     setModelsError(null);
     setSearchQuery("");
@@ -306,11 +410,11 @@ export default function PriceSimulatorModal({
     loadedProvidersRef.current.clear();
     loadingProvidersRef.current.clear();
 
-    let defaultProvider = "";
-    let defaultModel = "";
+    let defaultProviderId = "";
+    let defaultModelId = "";
     try {
-      defaultProvider = localStorage.getItem(SIMULATION_PROVIDER_KEY) || "";
-      defaultModel = localStorage.getItem(SIMULATION_MODEL_KEY) || "";
+      defaultProviderId = localStorage.getItem(SIMULATION_PROVIDER_KEY) || "";
+      defaultModelId = localStorage.getItem(SIMULATION_MODEL_KEY) || "";
     } catch {
       // ignore storage errors
     }
@@ -327,16 +431,16 @@ export default function PriceSimulatorModal({
           // Validate defaults against loaded models
           const groups = groupModelsByProvider(json.data);
           const providerExists = groups.some(
-            (g) => g.provider === defaultProvider
+            (g) => g.provider === defaultProviderId
           );
           const modelExists = providerExists
             ? groups
-                .find((g) => g.provider === defaultProvider)
-                ?.models.some((m) => m.canonicalId === defaultModel)
+                .find((g) => g.provider === defaultProviderId)
+                ?.models.some((m) => m.canonicalId === defaultModelId)
             : false;
 
-          setSelectedProvider(providerExists ? defaultProvider : "");
-          setSelectedModelId(modelExists ? defaultModel : "");
+          setSelectedProvider(providerExists ? defaultProviderId : "");
+          setSelectedModelId(modelExists ? defaultModelId : "");
         } else {
           setModelsError(json.error || "Failed to load models");
         }
@@ -351,6 +455,100 @@ export default function PriceSimulatorModal({
       });
   }, [isOpen]);
 
+  // 数据区间数据：独立按模拟器内的过滤拉取 dashboard 聚合（range 固定 30d 覆盖所有区间）
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const controller = new AbortController();
+    const url = new URL("/api/dashboard", window.location.origin);
+    url.searchParams.set("range", "30d");
+    url.searchParams.set(
+      "tzOffset",
+      String(getClientTimezoneOffsetMinutes())
+    );
+    if (filterProvider !== "all") {
+      url.searchParams.set("provider", filterProvider);
+    }
+    if (filterModel !== "all") {
+      url.searchParams.set("model", filterModel);
+    }
+    if (filterAgent !== "all") {
+      url.searchParams.set("agent", filterAgent);
+    }
+
+    setDataLoading(true);
+    setDataError(null);
+
+    apiFetch(url.toString(), { signal: controller.signal })
+      .then((res) => res.json())
+      .then((json) => {
+        if (controller.signal.aborted) return;
+        if (!json.success) {
+          setDataError(json.error || "Failed to load data");
+          setSnapshot(null);
+          return;
+        }
+        const data = json.data ?? {};
+        const totalRow = Array.isArray(data.total) ? data.total[0] : null;
+        setSnapshot({
+          total: totalRow
+            ? {
+                totalInput: Number(totalRow.totalInput || 0),
+                totalOutput: Number(totalRow.totalOutput || 0),
+                totalInputCached: Number(totalRow.totalInputCached || 0),
+                totalInputUncached: Number(totalRow.totalInputUncached || 0),
+                totalCacheWrite: Number(totalRow.totalCacheWrite || 0),
+                count: Number(totalRow.count || 0),
+                totalCost: Number(totalRow.totalCost || 0),
+                costPerMillionTokens: Number(totalRow.costPerMillionTokens || 0),
+                costPerMillionInput: Number(totalRow.costPerMillionInput || 0),
+                costPerMillionCacheRead: Number(
+                  totalRow.costPerMillionCacheRead || 0
+                ),
+                costPerMillionCacheWrite: Number(
+                  totalRow.costPerMillionCacheWrite || 0
+                ),
+                costPerMillionOutput: Number(totalRow.costPerMillionOutput || 0),
+              }
+            : null,
+          today: data.today
+            ? {
+                totalInput: Number(data.today.totalInput || 0),
+                totalOutput: Number(data.today.totalOutput || 0),
+                totalInputCached: Number(data.today.totalInputCached || 0),
+                totalInputUncached: Number(data.today.totalInputUncached || 0),
+                totalCacheWrite: Number(data.today.totalCacheWrite || 0),
+                count: Number(data.today.count || 0),
+                totalCost: Number(data.today.totalCost || 0),
+                costPerMillionTokens: Number(data.today.costPerMillionTokens || 0),
+                costPerMillionInput: Number(data.today.costPerMillionInput || 0),
+                costPerMillionCacheRead: Number(
+                  data.today.costPerMillionCacheRead || 0
+                ),
+                costPerMillionCacheWrite: Number(
+                  data.today.costPerMillionCacheWrite || 0
+                ),
+                costPerMillionOutput: Number(data.today.costPerMillionOutput || 0),
+              }
+            : null,
+          daily: Array.isArray(data.daily) ? data.daily : [],
+          totalDays: Number(data.totalDays) || 0,
+        });
+      })
+      .catch((err) => {
+        if (controller.signal.aborted) return;
+        setDataError(
+          err instanceof Error ? err.message : "Failed to load data"
+        );
+        setSnapshot(null);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setDataLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [isOpen, filterAgent, filterProvider, filterModel]);
+
   useEffect(() => {
     if (!isOpen) return;
 
@@ -359,10 +557,7 @@ export default function PriceSimulatorModal({
     };
 
     const handleClickOutside = (e: MouseEvent) => {
-      if (
-        dialogRef.current &&
-        !dialogRef.current.contains(e.target as Node)
-      ) {
+      if (dialogRef.current && !dialogRef.current.contains(e.target as Node)) {
         onClose();
       }
     };
@@ -432,24 +627,6 @@ export default function PriceSimulatorModal({
     };
   }, [isOpen, searchQuery]);
 
-  const selectSearchResult = (model: ModelPricing) => {
-    setAllModels((prev) =>
-      prev.some((m) => m.canonicalId === model.canonicalId)
-        ? prev
-        : [...prev, model]
-    );
-    const slashIndex = model.canonicalId.indexOf("/");
-    const provider =
-      slashIndex >= 0 ? model.canonicalId.slice(0, slashIndex) : "";
-    updateSelection(provider, model.canonicalId);
-    // 同步懒加载该 provider 全量模型，避免模型下拉只剩搜索选中的单个模型
-    loadProviderModels(provider);
-    setSearchQuery("");
-    setSearchResults([]);
-    setSearchError(null);
-    setSearchActive(false);
-  };
-
   const providerGroups = useMemo(
     () => groupModelsByProvider(allModels),
     [allModels]
@@ -506,6 +683,24 @@ export default function PriceSimulatorModal({
       });
   }, []);
 
+  const selectSearchResult = (model: ModelPricing) => {
+    setAllModels((prev) =>
+      prev.some((m) => m.canonicalId === model.canonicalId)
+        ? prev
+        : [...prev, model]
+    );
+    const slashIndex = model.canonicalId.indexOf("/");
+    const provider =
+      slashIndex >= 0 ? model.canonicalId.slice(0, slashIndex) : "";
+    updateSelection(provider, model.canonicalId);
+    // 同步懒加载该 provider 全量模型，避免模型下拉只剩搜索选中的单个模型
+    loadProviderModels(provider);
+    setSearchQuery("");
+    setSearchResults([]);
+    setSearchError(null);
+    setSearchActive(false);
+  };
+
   // 选中未加载的 models.dev provider → 懒加载该 provider 全部模型
   useEffect(() => {
     if (!isOpen || !selectedProvider) return;
@@ -535,96 +730,164 @@ export default function PriceSimulatorModal({
     }
   }, [selectedProvider, availableModels, selectedModelId]);
 
-  const sections = useMemo<SectionData[]>(() => {
-    if (!selectedModel) return [];
+  // 切换目标模型 → 手动价草稿回到官方价
+  useEffect(() => {
+    setPriceDraft(null);
+  }, [selectedModelId]);
 
-    const result: SectionData[] = [];
+  const modelPriceDraft = useMemo<PriceDraft | null>(() => {
+    if (!selectedModel) return null;
+    return {
+      input: String(selectedModel.inputPrice),
+      cacheRead: String(selectedModel.cacheReadPrice),
+      cacheWrite: String(selectedModel.cacheWritePrice),
+      output: String(selectedModel.outputPrice),
+    };
+  }, [selectedModel]);
 
-    const totalSection = computeSection(
-      `Total Summary (${totalDays} Day${totalDays !== 1 ? "s" : ""})`,
-      stats,
-      selectedModel
-    );
-    if (totalSection) result.push(totalSection);
+  const priceValues = priceDraft ?? modelPriceDraft;
 
-    const todaySection = computeSection("Today", todayData, selectedModel);
-    if (todaySection) result.push(todaySection);
+  const priceDirty = Boolean(
+    priceDraft &&
+      modelPriceDraft &&
+      PRICE_FIELDS.some((f) => priceDraft[f.key] !== modelPriceDraft[f.key])
+  );
+
+  // 手动价覆盖官方价；非法输入（空/负/NaN）回退官方价
+  const simulatedModel = useMemo<ModelPricing | null>(() => {
+    if (!selectedModel) return null;
+    if (!priceValues) return selectedModel;
+    return {
+      canonicalId: selectedModel.canonicalId,
+      displayName: selectedModel.displayName,
+      inputPrice:
+        parsePriceInput(priceValues.input) ?? selectedModel.inputPrice,
+      cacheReadPrice:
+        parsePriceInput(priceValues.cacheRead) ?? selectedModel.cacheReadPrice,
+      cacheWritePrice:
+        parsePriceInput(priceValues.cacheWrite) ??
+        selectedModel.cacheWritePrice,
+      outputPrice:
+        parsePriceInput(priceValues.output) ?? selectedModel.outputPrice,
+    };
+  }, [selectedModel, priceValues]);
+
+  const sectionSources = useMemo<SectionSource[]>(() => {
+    if (!snapshot) return [];
+    const tz = getClientTimezoneOffsetMinutes();
+    const sources: SectionSource[] = [
+      {
+        id: "total",
+        title: `Total Summary (${snapshot.totalDays} Day${
+          snapshot.totalDays !== 1 ? "s" : ""
+        })`,
+        data: snapshot.total,
+      },
+      { id: "today", title: "Today", data: snapshot.today },
+    ];
 
     for (const days of RANGE_OPTIONS) {
-      const rangeData = aggregateDailyDataForRange(
-        dailyData,
-        days,
-        timezoneOffsetMinutes
-      );
-      const rangeSection = computeSection(
-        `Last ${days} Days`,
-        rangeData,
-        selectedModel
-      );
-      if (rangeSection) result.push(rangeSection);
+      sources.push({
+        id: `${days}d`,
+        title: `Last ${days} Days`,
+        data: aggregateDailyDataForRange(snapshot.daily, days, tz),
+      });
     }
+    return sources;
+  }, [snapshot]);
 
-    return result;
-  }, [stats, todayData, dailyData, selectedModel, totalDays, timezoneOffsetMinutes]);
+  const sections = useMemo<SectionData[]>(() => {
+    return sectionSources
+      .map((source) =>
+        buildSection(
+          source,
+          simulatedModel,
+          parseCacheRateInput(cacheRateDrafts[source.id] ?? "")
+        )
+      )
+      .filter((section): section is SectionData => section !== null);
+  }, [sectionSources, simulatedModel, cacheRateDrafts]);
 
-  const hasData = stats !== null || todayData !== null || dailyData.length > 0;
-
-  const rows = useMemo(
-    () => [
-      {
-        label: "Total Input",
-        key: "totalInput" as const,
-        isCost: false,
-      },
-      {
-        label: "Cache Read",
-        key: "totalInputCached" as const,
-        isCost: false,
-      },
-      {
-        label: "Cache Write",
-        key: "totalCacheWrite" as const,
-        isCost: false,
-      },
-      {
-        label: "Output",
-        key: "totalOutput" as const,
-        isCost: false,
-      },
-      {
-        label: "Actual cost",
-        key: "actualCost" as const,
-        isCost: true,
-      },
-      {
-        label: "Simulated cost",
-        key: "simulatedCost" as const,
-        isCost: true,
-        highlight: true,
-      },
-      {
-        label: "Difference",
-        render: (section: SectionData) => (
-          <DiffCell actual={section.actualCost} simulated={section.simulatedCost} />
-        ),
-      },
-      {
-        label: "Avg cost / 1M tokens",
-        render: (section: SectionData) => {
-          const effectiveTokens =
-            section.totalInput + section.totalCacheWrite + section.totalOutput;
-          return (
-            <AvgCostCell
-              actualCost={section.actualCost}
-              simulatedCost={section.simulatedCost}
-              effectiveTokens={effectiveTokens}
-            />
-          );
-        },
-      },
-    ],
+  const setSectionCacheRate = useCallback(
+    (sectionId: string, value: string) => {
+      setCacheRateDrafts((prev) => ({ ...prev, [sectionId]: value }));
+    },
     []
   );
+
+  const resetCacheRates = useCallback(() => {
+    setCacheRateDrafts({});
+  }, []);
+
+  const hasOverrides = Object.values(cacheRateDrafts).some(
+    (value) => value.trim() !== ""
+  );
+
+  const syncFiltersFromDashboard = () => {
+    setFilterAgent(defaultsRef.current.agent);
+    setFilterProvider(defaultsRef.current.provider);
+    setFilterModel(defaultsRef.current.model);
+  };
+
+  const hasData = Boolean(
+    snapshot &&
+      (snapshot.total ||
+        snapshot.today ||
+        snapshot.daily.length > 0)
+  );
+
+  const rows: Array<{
+    label: string;
+    key?: keyof SectionData;
+    isCost?: boolean;
+    highlight?: boolean;
+    render?: (section: SectionData) => ReactNode;
+  }> = [
+    { label: "Total Input", key: "totalInput" },
+    { label: "Cache Read", key: "totalInputCached" },
+    { label: "Cache Write", key: "totalCacheWrite" },
+    { label: "Output", key: "totalOutput" },
+    {
+      label: "Cache rate",
+      render: (section) => (
+        <CacheRateCell
+          section={section}
+          draft={cacheRateDrafts[section.id] ?? ""}
+          onChange={setSectionCacheRate}
+        />
+      ),
+    },
+    { label: "Actual cost", key: "actualCost", isCost: true },
+    {
+      label: "Simulated cost",
+      key: "simulatedCost",
+      isCost: true,
+      highlight: true,
+    },
+    {
+      label: "Difference",
+      render: (section) => (
+        <DiffCell
+          actual={section.actualCost}
+          simulated={section.simulatedCost}
+        />
+      ),
+    },
+    {
+      label: "Avg cost / 1M tokens",
+      render: (section) => {
+        const effectiveTokens =
+          section.totalInput + section.totalCacheWrite + section.totalOutput;
+        return (
+          <AvgCostCell
+            actualCost={section.actualCost}
+            simulatedCost={section.simulatedCost}
+            effectiveTokens={effectiveTokens}
+          />
+        );
+      },
+    },
+  ];
 
   if (!isOpen) return null;
 
@@ -632,9 +895,9 @@ export default function PriceSimulatorModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-0 md:p-4">
       <div
         ref={dialogRef}
-        className="w-full h-full md:h-auto md:w-full md:max-w-4xl md:max-h-[90vh] md:rounded-lg bg-white shadow-xl flex flex-col"
+        className="w-full h-full md:h-auto md:w-full md:max-w-7xl md:max-h-[92vh] md:rounded-lg bg-white shadow-xl flex flex-col"
       >
-        <div className="flex items-center justify-between p-4 border-b border-gray-100">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
           <h2 className="text-lg font-semibold">Price Simulation</h2>
           <button
             type="button"
@@ -646,171 +909,326 @@ export default function PriceSimulatorModal({
           </button>
         </div>
 
-        <div className="p-4 overflow-y-auto flex-1">
-          <div ref={searchBoxRef} className="relative mb-6">
-            <label
-              htmlFor="simulator-search"
-              className="block text-sm font-medium text-gray-700 mb-2"
-            >
-              Search models.dev
-            </label>
-            <div className="relative">
-              <input
-                id="simulator-search"
-                type="text"
-                value={searchQuery}
-                onChange={(e) => {
-                  setSearchQuery(e.target.value);
-                  setSearchActive(true);
-                }}
-                onFocus={() => setSearchActive(true)}
-                placeholder="Search any model, e.g. claude, gpt, gemini, deepseek..."
-                className="w-full rounded border border-gray-300 bg-white pl-9 pr-9 py-2 text-base md:text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-              />
-              <svg
-                className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth={2}
+        <div className="px-6 py-5 overflow-y-auto flex-1">
+          {/* 数据过滤：独立于 dashboard */}
+          <section className="mb-6">
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <h3 className="text-sm font-semibold text-gray-800">Data Scope</h3>
+              <button
+                type="button"
+                onClick={syncFiltersFromDashboard}
+                className="text-xs text-blue-600 hover:text-blue-700 hover:underline"
               >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M21 21l-4.35-4.35M17 10.5a6.5 6.5 0 11-13 0 6.5 6.5 0 0113 0z"
-                />
-              </svg>
-              {searchQuery && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSearchQuery("");
-                    setSearchResults([]);
-                    setSearchError(null);
-                    setSearchActive(false);
-                  }}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center text-gray-400 hover:text-gray-600"
-                  aria-label="Clear search"
+                Sync from dashboard
+              </button>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label
+                  htmlFor="simulator-filter-agent"
+                  className="block text-xs font-medium text-gray-500 mb-1"
                 >
-                  ✕
-                </button>
+                  Agent
+                </label>
+                <select
+                  id="simulator-filter-agent"
+                  value={filterAgent}
+                  onChange={(e) => setFilterAgent(e.target.value)}
+                  className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                >
+                  <option value="all">All Agents</option>
+                  {agents.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label
+                  htmlFor="simulator-filter-provider"
+                  className="block text-xs font-medium text-gray-500 mb-1"
+                >
+                  Provider
+                </label>
+                <select
+                  id="simulator-filter-provider"
+                  value={filterProvider}
+                  onChange={(e) => setFilterProvider(e.target.value)}
+                  className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                >
+                  <option value="all">All Providers</option>
+                  {providers.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label
+                  htmlFor="simulator-filter-model"
+                  className="block text-xs font-medium text-gray-500 mb-1"
+                >
+                  Model
+                </label>
+                <select
+                  id="simulator-filter-model"
+                  value={filterModel}
+                  onChange={(e) => setFilterModel(e.target.value)}
+                  className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                >
+                  <option value="all">All Models</option>
+                  {models.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </section>
+
+          {/* 目标模型（定价来源） */}
+          <section className="mb-6">
+            <h3 className="text-sm font-semibold text-gray-800 mb-2">
+              Target Model
+            </h3>
+
+            <div ref={searchBoxRef} className="relative mb-4">
+              <div className="relative">
+                <input
+                  id="simulator-search"
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => {
+                    setSearchQuery(e.target.value);
+                    setSearchActive(true);
+                  }}
+                  onFocus={() => setSearchActive(true)}
+                  placeholder="Search models.dev, e.g. claude, gpt, gemini, deepseek..."
+                  className="w-full rounded border border-gray-300 bg-white pl-9 pr-9 py-2 text-base md:text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+                <svg
+                  className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M21 21l-4.35-4.35M17 10.5a6.5 6.5 0 11-13 0 6.5 6.5 0 0113 0z"
+                  />
+                </svg>
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSearchQuery("");
+                      setSearchResults([]);
+                      setSearchError(null);
+                      setSearchActive(false);
+                    }}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center text-gray-400 hover:text-gray-600"
+                    aria-label="Clear search"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+
+              {searchActive && searchQuery.trim() && (
+                <div className="absolute left-0 right-0 z-10 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-72 overflow-y-auto">
+                  {searching && (
+                    <p className="px-4 py-3 text-sm text-gray-500">
+                      Searching...
+                    </p>
+                  )}
+                  {!searching && searchError && (
+                    <p className="px-4 py-3 text-sm text-red-600">
+                      {searchError}
+                    </p>
+                  )}
+                  {!searching &&
+                    !searchError &&
+                    searchResults.length === 0 && (
+                      <p className="px-4 py-3 text-sm text-gray-500">
+                        No models found.
+                      </p>
+                    )}
+                  {!searching &&
+                    !searchError &&
+                    searchResults.map((m) => {
+                      const slashIndex = m.canonicalId.indexOf("/");
+                      const provider =
+                        slashIndex >= 0
+                          ? m.canonicalId.slice(0, slashIndex)
+                          : UNCATEGORIZED;
+                      return (
+                        <button
+                          key={m.canonicalId}
+                          type="button"
+                          onClick={() => selectSearchResult(m)}
+                          className="w-full text-left px-4 py-2.5 hover:bg-blue-50 border-b border-gray-100 last:border-b-0"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-sm text-gray-900 break-all">
+                              <span className="inline-block bg-gray-100 text-gray-600 text-xs font-medium rounded px-1.5 py-0.5 mr-2">
+                                {provider}
+                              </span>
+                              {m.displayName}
+                            </span>
+                          </div>
+                          <div className="text-xs text-gray-500 mt-1">
+                            in ${m.inputPrice} · out ${m.outputPrice}
+                            {m.cacheReadPrice !== m.inputPrice && (
+                              <> · cacheRead ${m.cacheReadPrice}</>
+                            )}
+                            {m.cacheWritePrice !== m.inputPrice && (
+                              <> · cacheWrite ${m.cacheWritePrice}</>
+                            )}
+                            /1M
+                          </div>
+                        </button>
+                      );
+                    })}
+                </div>
               )}
             </div>
 
-            {searchActive && searchQuery.trim() && (
-              <div className="absolute left-0 right-0 z-10 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-72 overflow-y-auto">
-                {searching && (
-                  <p className="px-4 py-3 text-sm text-gray-500">
-                    Searching...
-                  </p>
-                )}
-                {!searching && searchError && (
-                  <p className="px-4 py-3 text-sm text-red-600">
-                    {searchError}
-                  </p>
-                )}
-                {!searching && !searchError && searchResults.length === 0 && (
-                  <p className="px-4 py-3 text-sm text-gray-500">
-                    No models found.
-                  </p>
-                )}
-                {!searching &&
-                  !searchError &&
-                  searchResults.map((m) => {
-                    const slashIndex = m.canonicalId.indexOf("/");
-                    const provider =
-                      slashIndex >= 0
-                        ? m.canonicalId.slice(0, slashIndex)
-                        : UNCATEGORIZED;
-                    return (
-                      <button
-                        key={m.canonicalId}
-                        type="button"
-                        onClick={() => selectSearchResult(m)}
-                        className="w-full text-left px-4 py-2.5 hover:bg-blue-50 border-b border-gray-100 last:border-b-0"
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-sm text-gray-900 break-all">
-                            <span className="inline-block bg-gray-100 text-gray-600 text-xs font-medium rounded px-1.5 py-0.5 mr-2">
-                              {provider}
-                            </span>
-                            {m.displayName}
-                          </span>
-                        </div>
-                        <div className="text-xs text-gray-500 mt-1">
-                          in ${m.inputPrice} · out ${m.outputPrice}
-                          {m.cacheReadPrice !== m.inputPrice && (
-                            <>
-                              {" "}
-                              · cacheRead ${m.cacheReadPrice}
-                            </>
-                          )}
-                          {m.cacheWritePrice !== m.inputPrice && (
-                            <>
-                              {" "}
-                              · cacheWrite ${m.cacheWritePrice}
-                            </>
-                          )}
-                          /1M
-                        </div>
-                      </button>
-                    );
-                  })}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
+              <div>
+                <label
+                  htmlFor="simulator-provider"
+                  className="block text-xs font-medium text-gray-500 mb-1"
+                >
+                  Provider
+                </label>
+                <select
+                  id="simulator-provider"
+                  value={selectedProvider}
+                  onChange={(e) => updateSelection(e.target.value, "")}
+                  disabled={
+                    modelsLoading ||
+                    (providerGroups.length === 0 &&
+                      modelsDevProviders.length === 0)
+                  }
+                  className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-100 disabled:text-gray-500"
+                >
+                  <option value="">Select provider</option>
+                  {providerOptions.map((id) => (
+                    <option key={id} value={id}>
+                      {providerLabel(id)}
+                    </option>
+                  ))}
+                </select>
               </div>
+
+              <div>
+                <label
+                  htmlFor="simulator-model"
+                  className="block text-xs font-medium text-gray-500 mb-1"
+                >
+                  Model
+                </label>
+                <select
+                  id="simulator-model"
+                  value={selectedModelId}
+                  onChange={(e) =>
+                    updateSelection(selectedProvider, e.target.value)
+                  }
+                  disabled={!selectedProvider || availableModels.length === 0}
+                  className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-100 disabled:text-gray-500"
+                >
+                  <option value="">Select model</option>
+                  {availableModels.map((m) => (
+                    <option key={m.canonicalId} value={m.canonicalId}>
+                      {m.displayName}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* 手动调价 */}
+            <div className="rounded-lg border border-gray-200 bg-gray-50/60 p-3">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-medium text-gray-600">
+                  Prices ($ / 1M tokens) — editable
+                </span>
+                {priceDirty && (
+                  <button
+                    type="button"
+                    onClick={() => setPriceDraft(null)}
+                    className="text-xs text-blue-600 hover:text-blue-700 hover:underline"
+                  >
+                    Reset to model price
+                  </button>
+                )}
+              </div>
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                {PRICE_FIELDS.map((field) => {
+                  const raw = priceValues ? priceValues[field.key] : "";
+                  const invalid = raw.trim() !== "" && parsePriceInput(raw) === null;
+                  return (
+                    <div key={field.key}>
+                      <label
+                        htmlFor={`simulator-price-${field.key}`}
+                        className="block text-xs text-gray-500 mb-1"
+                      >
+                        {field.label}
+                      </label>
+                      <input
+                        id={`simulator-price-${field.key}`}
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        value={raw}
+                        disabled={!selectedModel}
+                        onChange={(e) => {
+                          const base = priceValues ?? emptyPriceDraft();
+                          setPriceDraft({
+                            ...base,
+                            [field.key]: e.target.value,
+                          });
+                        }}
+                        className={`w-full rounded border bg-white px-2 py-1.5 text-sm focus:outline-none focus:ring-1 disabled:bg-gray-100 disabled:text-gray-400 ${
+                          invalid
+                            ? "border-red-400 focus:border-red-500 focus:ring-red-500"
+                            : "border-gray-300 focus:border-blue-500 focus:ring-blue-500"
+                        }`}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+              {!selectedModel && (
+                <p className="text-xs text-gray-400 mt-2">
+                  Select a target model to load its official prices.
+                </p>
+              )}
+            </div>
+          </section>
+
+          {/* cache rate 说明 + 一键回到实际 */}
+          <section className="mb-6 flex flex-wrap items-center gap-3">
+            <p className="text-xs text-gray-400">
+              Cache rate is editable per section in the table below: Total Input
+              stays fixed, tokens are redistributed between cached / uncached.
+              Clear a cell to follow that section&apos;s actual cache rate.
+            </p>
+            {hasOverrides && (
+              <button
+                type="button"
+                onClick={resetCacheRates}
+                className="rounded border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-700 shadow-sm hover:bg-gray-50"
+              >
+                Follow actual for all
+              </button>
             )}
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
-            <div>
-              <label
-                htmlFor="simulator-provider"
-                className="block text-sm font-medium text-gray-700 mb-2"
-              >
-                Provider
-              </label>
-              <select
-                id="simulator-provider"
-                value={selectedProvider}
-                onChange={(e) => updateSelection(e.target.value, "")}
-                disabled={
-                  modelsLoading ||
-                  (providerGroups.length === 0 &&
-                    modelsDevProviders.length === 0)
-                }
-                className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-100 disabled:text-gray-500"
-              >
-                <option value="">Select provider</option>
-                {providerOptions.map((id) => (
-                  <option key={id} value={id}>
-                    {providerLabel(id)}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label
-                htmlFor="simulator-model"
-                className="block text-sm font-medium text-gray-700 mb-2"
-              >
-                Model
-              </label>
-              <select
-                id="simulator-model"
-                value={selectedModelId}
-                onChange={(e) => updateSelection(selectedProvider, e.target.value)}
-                disabled={!selectedProvider || availableModels.length === 0}
-                className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-100 disabled:text-gray-500"
-              >
-                <option value="">Select model</option>
-                {availableModels.map((m) => (
-                  <option key={m.canonicalId} value={m.canonicalId}>
-                    {m.displayName}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
+          </section>
 
           {modelsLoading && (
             <p className="text-sm text-gray-500 mb-4">Loading models...</p>
@@ -836,34 +1254,38 @@ export default function PriceSimulatorModal({
               </p>
             )}
 
-          {loading && (
+          {dataLoading && (
+            <p className="text-sm text-gray-500 mb-4">Loading data...</p>
+          )}
+
+          {dataError && (
+            <p className="text-sm text-red-600 mb-4">{dataError}</p>
+          )}
+
+          {!dataLoading && !dataError && !hasData && (
             <p className="text-sm text-gray-500 mb-4">
-              Loading dashboard data...
+              No data available for the selected scope.
             </p>
           )}
 
-          {!loading && !hasData && (
-            <p className="text-sm text-gray-500 mb-4">No data available.</p>
-          )}
-
-          {!loading && hasData && !selectedModel && (
+          {!dataLoading && hasData && !selectedModel && (
             <p className="text-sm text-gray-500">
-              Select a provider and model to see the simulated cost.
+              Select a target provider and model to see the simulated cost.
             </p>
           )}
 
-          {!loading && hasData && selectedModel && sections.length > 0 && (
-            <div className="overflow-x-auto -mx-4 px-4">
+          {!dataLoading && hasData && selectedModel && sections.length > 0 && (
+            <div className="overflow-x-auto">
               <table className="min-w-full border-collapse">
                 <thead>
                   <tr className="border-b border-gray-200">
-                    <th className="text-left text-xs font-medium text-gray-500 uppercase py-3 px-3 sticky left-0 bg-white min-w-[160px]">
+                    <th className="text-left text-xs font-medium text-gray-500 uppercase py-3 px-4 sticky left-0 bg-white min-w-[190px]">
                       Metric
                     </th>
                     {sections.map((section) => (
                       <th
-                        key={section.title}
-                        className="text-right text-xs font-medium text-gray-500 uppercase py-3 px-3 min-w-[140px]"
+                        key={section.id}
+                        className="text-right text-xs font-medium text-gray-500 uppercase py-3 px-4 min-w-[170px]"
                       >
                         {section.title}
                       </th>
@@ -873,13 +1295,13 @@ export default function PriceSimulatorModal({
                 <tbody className="divide-y divide-gray-100">
                   {rows.map((row) => (
                     <tr key={row.label} className="hover:bg-gray-50">
-                      <td className="py-3 px-3 text-sm text-gray-600 sticky left-0 bg-white">
+                      <td className="py-3 px-4 text-sm text-gray-600 sticky left-0 bg-white">
                         {row.label}
                       </td>
                       {sections.map((section) => (
                         <td
-                          key={`${row.label}-${section.title}`}
-                          className="py-3 px-3 text-sm text-right"
+                          key={`${row.label}-${section.id}`}
+                          className="py-3 px-4 text-sm text-right align-middle"
                         >
                           {row.render ? (
                             row.render(section)
@@ -892,8 +1314,8 @@ export default function PriceSimulatorModal({
                               }`}
                             >
                               {row.isCost
-                                ? formatCost(section[row.key])
-                                : formatNumber(section[row.key], compact)}
+                                ? formatCost(toNum(section[row.key!]))
+                                : formatNumber(toNum(section[row.key!]), compact)}
                             </span>
                           )}
                         </td>
