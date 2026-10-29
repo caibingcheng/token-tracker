@@ -1,23 +1,30 @@
 import type { ReactNode } from "react";
 
-// Admin 面板共享表格组件：以 ModelsPanel 表格形式为基准的双轨骨架
+// Admin 面板共享表格组件：以 Records 页（/records）的表格形式为基准的双轨骨架
 // （桌面 table + 移动端卡片）。仅固化结构与 className，不封装行内容逻辑。
 // 约定：新增 Admin 表格必须使用本文件组件。
 
 // 外层卡片 + 标题行（标题/操作区可选，均缺省时不渲染 header 行）
+// flush = 无内边距、内容满卡（表格类卡片，对齐 Records 页的卡片形式）
 export function AdminTableCard({
   title,
   actions,
+  flush,
   children,
 }: {
   title?: ReactNode;
   actions?: ReactNode;
+  flush?: boolean;
   children: ReactNode;
 }) {
   return (
-    <div className="rounded-lg bg-white p-4 shadow">
+    <div className={`rounded-lg bg-white${flush ? " overflow-hidden" : " p-4"} shadow`}>
       {(title != null || actions != null) && (
-        <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div
+          className={`${
+            flush ? "border-b border-gray-100 px-6 py-3" : "mb-3"
+          } flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between`}
+        >
           {/* title 不允许被 actions 压缩（长描述文本会把 flex 子项按比例挤扁） */}
           {title != null && <div className="shrink-0">{title}</div>}
           {actions != null && <div className="min-w-0">{actions}</div>}
@@ -37,17 +44,17 @@ export function AdminTable({ children }: { children: ReactNode }) {
   );
 }
 
-// 表头：tr.text-left.text-xs.text-gray-400，列支持 align: "left" | "right"
+// 表头：thead.bg-gray-50 > tr.text-left.text-xs.font-medium.text-gray-500.uppercase，列支持 align: "left" | "right"
 export function AdminTableHead({
   columns,
 }: {
   columns: Array<{ label: ReactNode; align?: "left" | "right" }>;
 }) {
   return (
-    <thead>
-      <tr className="text-left text-xs text-gray-400">
+    <thead className="bg-gray-50">
+      <tr className="text-left text-xs font-medium text-gray-500 uppercase">
         {columns.map((c, i) => (
-          <th key={i} className={`px-2 py-2${c.align === "right" ? " text-right" : ""}`}>
+          <th key={i} className={`px-6 py-3${c.align === "right" ? " text-right" : ""}`}>
             {c.label}
           </th>
         ))}
@@ -56,12 +63,12 @@ export function AdminTableHead({
   );
 }
 
-// tbody.divide-y.divide-gray-100
+// tbody.divide-y.divide-gray-200
 export function AdminTableBody({ children }: { children: ReactNode }) {
-  return <tbody className="divide-y divide-gray-100">{children}</tbody>;
+  return <tbody className="divide-y divide-gray-200">{children}</tbody>;
 }
 
-// 单元格：px-2 py-2，支持 align / mono / colSpan / className 追加
+// 单元格：px-6 py-4，支持 align / mono / colSpan / className 追加
 export function AdminTd({
   align,
   mono,
@@ -81,7 +88,7 @@ export function AdminTd({
     <td
       colSpan={colSpan}
       title={title}
-      className={`px-2 py-2${align === "right" ? " text-right" : ""}${mono ? " font-mono text-xs" : ""}${
+      className={`px-6 py-4${align === "right" ? " text-right" : ""}${mono ? " font-mono text-xs" : ""}${
         className ? ` ${className}` : ""
       }`}
     >
@@ -90,11 +97,11 @@ export function AdminTd({
   );
 }
 
-// 空态行：<tr><td colSpan className="px-2 py-4 text-center text-xs text-gray-400">
+// 空态行：<tr><td colSpan className="px-6 py-8 text-center text-sm text-gray-400">
 export function AdminTableEmptyRow({ colSpan, children }: { colSpan: number; children: ReactNode }) {
   return (
     <tr>
-      <td colSpan={colSpan} className="px-2 py-4 text-center text-xs text-gray-400">
+      <td colSpan={colSpan} className="px-6 py-8 text-center text-sm text-gray-400">
         {children}
       </td>
     </tr>
@@ -106,7 +113,7 @@ export function AdminMobileCards({ children }: { children: ReactNode }) {
   return <div className="md:hidden space-y-3">{children}</div>;
 }
 
-// 移动端单卡：border border-gray-200 rounded-lg p-3
+// 移动端单卡：border border-gray-200 rounded-lg p-4（与 Records 移动端卡片一致）
 export function AdminMobileCard({
   className,
   children,
@@ -115,7 +122,7 @@ export function AdminMobileCard({
   children: ReactNode;
 }) {
   return (
-    <div className={`border border-gray-200 rounded-lg p-3${className ? ` ${className}` : ""}`}>
+    <div className={`border border-gray-200 rounded-lg p-4${className ? ` ${className}` : ""}`}>
       {children}
     </div>
   );
