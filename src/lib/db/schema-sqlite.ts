@@ -46,6 +46,8 @@ export const upstreams = sqliteTable("upstreams", {
   healthUpdatedAt: text("health_updated_at"),
   balance: text("balance"),
   balanceUpdatedAt: text("balance_updated_at"),
+  // 'auto' | 'none' | BalanceProvider（见 src/lib/gateway/balance.ts）；auto = 按 baseUrl 探测
+  balanceFetchMode: text("balance_fetch_mode").notNull().default("auto"),
   proxyUrlEncrypted: text("proxy_url_encrypted"), // AES-256-GCM，NULL = 直连
   headerTransforms: text("header_transforms"), // JSON: HeaderTransform[]，出站 header 变换（最后一棒）
   probeConfig: text("probe_config"), // JSON: {path, body}，自定义探活端点；NULL = 默认 chat → responses 双风格

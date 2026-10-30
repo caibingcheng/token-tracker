@@ -733,12 +733,12 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
         <PriceSimulatorModal
           isOpen={isSimulatorOpen}
           onClose={() => setIsSimulatorOpen(false)}
-          stats={stats}
-          todayData={todayData}
-          dailyData={dailyData}
-          totalDays={totalDays}
-          loading={loading}
-          timezoneOffsetMinutes={timezoneOffsetMinutes}
+          defaultAgent={selectedAgent}
+          defaultProvider={selectedProvider}
+          defaultModel={selectedModel}
+          agents={agents}
+          providers={providers}
+          models={models}
         />
       </div>
     </main>

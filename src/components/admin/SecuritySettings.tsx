@@ -4,6 +4,11 @@ import { useCallback, useEffect, useState } from "react";
 import { apiFetch, notifyUnauthorized } from "@/lib/client/api-client";
 import { QRCodeSVG } from "qrcode.react";
 import { CopyableCode } from "./CopyableCode";
+import OtpInput from "../OtpInput";
+import {
+  getLoginKeyStrength,
+  LOGIN_KEY_STRENGTH_META,
+} from "@/lib/login-key-strength";
 
 interface TotpStatus {
   totpEnabled: boolean;
@@ -263,8 +268,8 @@ export default function SecuritySettings() {
   };
 
   const handleChangeApiKey = async () => {
-    if (newApiKey.length < 16 || busy) {
-      setError("New key must be at least 16 characters with 2 character classes");
+    if (!newApiKey.trim() || busy) {
+      setError("New key must not be empty");
       return;
     }
     if (newApiKey !== newApiKeyConfirm) {
@@ -408,14 +413,7 @@ export default function SecuritySettings() {
               all existing sessions.
             </p>
             <div className="flex flex-wrap items-center gap-2">
-              <input
-                value={rebindCode}
-                onChange={(e) => setRebindCode(e.target.value)}
-                placeholder="Current 6-digit code"
-                inputMode="numeric"
-                maxLength={6}
-                className="w-36 rounded border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-              />
+              <OtpInput value={rebindCode} onChange={setRebindCode} />
               <button
                 type="button"
                 onClick={handleRebindVerify}
@@ -450,15 +448,8 @@ export default function SecuritySettings() {
               <p className="mb-1">Or enter manually:</p>
               <code className="break-all rounded bg-gray-100 px-2 py-1">{pending.secret}</code>
             </div>
-            <div className="flex items-center gap-2">
-              <input
-                value={confirmCode}
-                onChange={(e) => setConfirmCode(e.target.value)}
-                placeholder="6-digit code"
-                inputMode="numeric"
-                maxLength={6}
-                className="w-32 rounded border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-              />
+            <div className="flex flex-wrap items-center gap-2">
+              <OtpInput value={confirmCode} onChange={setConfirmCode} />
               <button
                 type="button"
                 onClick={handleConfirmEnable}
@@ -479,15 +470,8 @@ export default function SecuritySettings() {
         )}
 
         {status?.totpEnabled && (
-          <div className="mt-2 flex items-center gap-2">
-            <input
-              value={unbindCode}
-              onChange={(e) => setUnbindCode(e.target.value)}
-              placeholder="Current 6-digit code"
-              inputMode="numeric"
-              maxLength={6}
-              className="w-36 rounded border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            />
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <OtpInput value={unbindCode} onChange={setUnbindCode} />
             <button
               type="button"
               onClick={handleDisable}
@@ -570,14 +554,7 @@ export default function SecuritySettings() {
                 codes are invalidated immediately.
               </p>
               <div className="flex flex-wrap items-center gap-2">
-                <input
-                  value={regenCode}
-                  onChange={(e) => setRegenCode(e.target.value)}
-                  placeholder="Current 6-digit code"
-                  inputMode="numeric"
-                  maxLength={6}
-                  className="w-36 rounded border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
+                <OtpInput value={regenCode} onChange={setRegenCode} />
                 <button
                   type="button"
                   onClick={handleRegenerateCodes}
@@ -615,7 +592,7 @@ export default function SecuritySettings() {
             autoComplete="new-password"
             value={newApiKey}
             onChange={(e) => setNewApiKey(e.target.value)}
-            placeholder="New API key (min 16 chars, 2 classes)"
+            placeholder="New API key"
             className="w-full sm:w-56 rounded border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
           />
           <input
@@ -627,14 +604,7 @@ export default function SecuritySettings() {
             className="w-full sm:w-56 rounded border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
           />
           {status?.totpEnabled && (
-            <input
-              value={apiKeyCode}
-              onChange={(e) => setApiKeyCode(e.target.value)}
-              placeholder="TOTP code"
-              inputMode="numeric"
-              maxLength={6}
-              className="w-full sm:w-28 rounded border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            />
+            <OtpInput value={apiKeyCode} onChange={setApiKeyCode} />
           )}
           <button
             type="button"
@@ -644,6 +614,13 @@ export default function SecuritySettings() {
           >
             Change Key
           </button>
+          {newApiKey.trim() && (
+            <span className={`text-xs ${LOGIN_KEY_STRENGTH_META[getLoginKeyStrength(newApiKey)].className}`}>
+              Strength: {LOGIN_KEY_STRENGTH_META[getLoginKeyStrength(newApiKey)].label}
+              {getLoginKeyStrength(newApiKey) !== "strong" &&
+                " — longer keys with mixed cases, digits or symbols are safer"}
+            </span>
+          )}
         </div>
       </div>
 

@@ -4,7 +4,7 @@ import { db, initDatabase, upstreamsTable, upstreamKeysTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";
 import { decryptSecret } from "@/lib/gateway/crypto";
-import { fetchBalance, detectBalanceProvider } from "@/lib/gateway/balance";
+import { fetchBalance, resolveBalanceMode, normalizeBalanceFetchMode } from "@/lib/gateway/balance";
 import { decryptProxyUrl } from "@/lib/gateway/proxy-deps";
 
 interface Params {
@@ -23,7 +23,16 @@ export const POST = withAuth(async (request: NextRequest, ctx: any) => {
       return NextResponse.json({ success: false, error: "Upstream not found" }, { status: 404 });
     }
 
-    if (!detectBalanceProvider(upstream.baseUrl)) {
+    const mode = normalizeBalanceFetchMode(upstream.balanceFetchMode);
+    // auto 同样用 name 回退探测，与 balanceAutoFetchOf / 表单跟随口径一致
+    const provider = resolveBalanceMode(upstream.baseUrl, mode, upstream.name);
+    if (mode === "none") {
+      return NextResponse.json(
+        { success: false, error: "Balance auto-fetch is disabled for this upstream" },
+        { status: 400 }
+      );
+    }
+    if (!provider) {
       return NextResponse.json(
         { success: false, error: "Balance auto-fetch is not supported for this upstream" },
         { status: 400 }
@@ -54,10 +63,12 @@ export const POST = withAuth(async (request: NextRequest, ctx: any) => {
     }
 
     try {
+      // 传入解析后的 provider，避免 fetchBalance 内部再探测一次（缺 name 会不一致）
       const result = await fetchBalance(
         upstream.baseUrl,
         plainKey,
-        decryptProxyUrl(upstream.proxyUrlEncrypted)
+        decryptProxyUrl(upstream.proxyUrlEncrypted),
+        provider
       );
       await db
         .update(upstreamsTable)

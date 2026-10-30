@@ -16,8 +16,7 @@ services:
       - "127.0.0.1:39001:3000"
     environment:
       - SQLITE_DATABASE_PATH=/app/data/token-tracker.db
-      # 本地免密码 admin 直通，仅限本机 loopback 访问，禁止用于任何对外暴露的部署
-      - LOCAL_ADMIN_BYPASS=1
+      - LOCAL_ADMIN_BYPASS=0
     volumes:
       - ${HOME}/.token-tracker:/app/data
       - ./scripts/local-entrypoint.sh:/usr/local/bin/local-entrypoint.sh:ro

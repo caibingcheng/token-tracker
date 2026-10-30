@@ -176,6 +176,8 @@ export interface ProxyDeps {
     isModelHealthy?: (upstreamId: number, model: string) => Promise<boolean>;
     markModelUnhealthy?: (upstreamId: number, model: string) => Promise<void> | void;
     markModelHealthy?: (upstreamId: number, model: string) => Promise<void> | void;
+    // 已放弃兜底（末档连续探活失败达标）：不再进尝试链，只靠探活/手动测试恢复
+    isGivenUp?: (upstreamId: number) => boolean;
   };
   log?: (message: string) => void;
 }
@@ -523,6 +525,24 @@ export async function handleProxyRequest(
       }
       const hopsByTarget = new Map<number, RouteHop[]>();
       for (const t of targets) hopsByTarget.set(t.id, expandTarget(t));
+      // 已放弃兜底的 upstream 在分类器/预选之前就从目标链剔除：
+      // 否则会先付一次 LLM 分类器成本，最终选中的目标又必然被丢
+      if (deps.health?.isGivenUp) {
+        const isGivenUp = deps.health.isGivenUp;
+        const loaded = new Set<number>();
+        for (const t of targets) {
+          const list = hopsByTarget.get(t.id) ?? [];
+          for (const h of list) {
+            if (loaded.has(h.upstream.id)) continue;
+            loaded.add(h.upstream.id);
+            await deps.health.isHealthy(h.upstream.id); // 触发 ensureLoaded，isGivenUp 只读内存
+          }
+          hopsByTarget.set(
+            t.id,
+            list.filter((h) => !isGivenUp(h.upstream.id))
+          );
+        }
+      }
       // 全部目标都解析不出 hop（upstream 全禁用/删除、auto 名不可解析、嵌套成环）→ 502
       const expandable = targets.filter((t) => (hopsByTarget.get(t.id)?.length ?? 0) > 0);
       if (expandable.length === 0) {
@@ -714,6 +734,27 @@ export async function handleProxyRequest(
         `[gateway] no healthy candidates for model: ${model}; falling back to unhealthy upstreams`
       );
       hops = allCandidates.map((u) => ({ upstream: u, targetModel: model }));
+    }
+  }
+
+  // 已放弃兜底的 upstream 从链中剔除（含命名路由目标链）：末档连续探活失败基本确认死透，
+  // 再在兜底里试一次只会白等超时（非流式单次 60s × MAX_RETRY）。
+  // 恢复途径：定时探活成功 / Probe now / Test / 重新启用（resumeProbing）
+  if (deps.health?.isGivenUp) {
+    const before = hops.length;
+    hops = hops.filter((h) => !deps.health!.isGivenUp!(h.upstream.id));
+    if (hops.length !== before) {
+      deps.log?.(
+        `[gateway] dropped ${before - hops.length} given-up upstream(s) from the attempt chain`
+      );
+    }
+    if (hops.length === 0) {
+      deps.onComplete?.({ virtualKeyId: virtualKey.id }).catch(() => {});
+      return proxyError(
+        502,
+        `No available upstream for model: ${model}`,
+        "upstream_unavailable"
+      );
     }
   }
 
@@ -1092,8 +1133,17 @@ async function handleSubresourcePassthrough(
     healthy.push(upstream);
   }
   if (healthy.length === 0) {
-    deps.log?.("[gateway] no healthy upstream available; falling back to unhealthy upstreams");
-    healthy.push(...chain);
+    // 已放弃兜底的 upstream 不再尝试（与主链同口径，避免死透的 upstream 白等超时）
+    const fallback = chain.filter((u) => !deps.health?.isGivenUp?.(u.id));
+    deps.log?.(
+      `[gateway] no healthy upstream available; falling back to ${fallback.length}/${chain.length} unhealthy upstream(s)`
+    );
+    healthy.push(...fallback);
+    if (healthy.length === 0) {
+      // 全候选均 givenUp：与主链同错误码，不发任何上游请求
+      deps.onComplete?.({ virtualKeyId: virtualKey.id }).catch(() => {});
+      return proxyError(502, "No available upstream", "upstream_unavailable");
+    }
   }
 
   // 配额检查：subresource 无 model 维度，按 vk 聚合限额（RPM/TPM/Daily/Monthly）检查；

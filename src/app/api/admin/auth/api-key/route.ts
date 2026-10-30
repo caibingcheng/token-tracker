@@ -7,7 +7,6 @@ import {
   getTotpSecret,
 } from "@/lib/auth/settings";
 import { verifyTotpCode } from "@/lib/auth/totp";
-import { isStrongLoginKey } from "@/lib/auth/setup";
 import {
   isTotpLocked,
   recordTotpFailure,
@@ -27,9 +26,9 @@ export const PATCH = withAuth(async (request: NextRequest) => {
   }
 
   const newKey = typeof body.newApiKey === "string" ? body.newApiKey.trim() : "";
-  if (!isStrongLoginKey(newKey)) {
+  if (!newKey) {
     return NextResponse.json(
-      { success: false, error: "newApiKey must be at least 16 characters and contain at least 2 character classes (upper/lower/digit/symbol)" },
+      { success: false, error: "Missing newApiKey" },
       { status: 400 }
     );
   }

@@ -4,6 +4,7 @@ import { db, initDatabase, upstreamsTable, upstreamKeysTable, upstreamModelHealt
 import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";
 import { isProtocol, parseEnabledModels } from "@/lib/gateway/model-router";
+import { isBalanceFetchMode, balanceAutoFetchOf, normalizeBalanceFetchMode } from "@/lib/gateway/balance";
 import {
   validateUpstreamBaseUrl,
   validateProxyUrl,
@@ -61,6 +62,12 @@ async function withKeys(upstream: any) {
     enabledModels: parseEnabledModels(upstream.enabledModels),
     balance: upstream.balance ?? null,
     balanceUpdatedAt: upstream.balanceUpdatedAt ?? null,
+    balanceFetchMode: upstream.balanceFetchMode,
+    balanceAutoFetch: balanceAutoFetchOf(
+      normalizeBalanceFetchMode(upstream.balanceFetchMode),
+      upstream.baseUrl,
+      upstream.name
+    ),
     hasProxy: proxyUrl !== null,
     proxyDisplay: proxyUrl ? sanitizeProxyUrlForDisplay(proxyUrl) : null,
     headerTransforms: parseHeaderTransforms(upstream.headerTransforms),
@@ -168,6 +175,16 @@ export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
       } else {
         return NextResponse.json(
           { success: false, error: "balance must be a string or null" },
+          { status: 400 }
+        );
+      }
+    }
+    if (body.balanceFetchMode !== undefined) {
+      if (isBalanceFetchMode(body.balanceFetchMode)) {
+        values.balanceFetchMode = body.balanceFetchMode;
+      } else {
+        return NextResponse.json(
+          { success: false, error: "Invalid balanceFetchMode" },
           { status: 400 }
         );
       }

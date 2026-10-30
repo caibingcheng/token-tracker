@@ -16,8 +16,8 @@
   新弹窗移动端全屏（`w-full h-full md:...`）；新导航/按钮触摸区 ≥40px；input 移动端字号 ≥16px
 - 移动端专属 UI 一律 `md:hidden` 门控，桌面端 DOM 只新增不修改
 - **桌面侧栏可收起**：`AppSidebar`（`w-56`）/ 内容区（`md:pl-56`）由 `ApiKeyGate` 的 `sidebarCollapsed` 同步切换为 `w-16` / `md:pl-16`；偏好存 `localStorage` key `tt:sidebar-collapsed`（设备级 UI 状态，不进 settings 表）；收起时只留图标（`title` 提示）、隐藏版本号 / Dashboard 锤点 / Admin 子项 / 侧栏底部操作组（含 NumberFormatToggle）；`<md` 侧栏本就 `hidden`，移动端不受影响
-- **Admin 面板表格统一使用共享组件 `src/components/admin/table.tsx`**（`AdminTableCard` / `AdminTable` / `AdminTableHead` / `AdminTableBody` / `AdminTd` / `AdminTableEmptyRow` / `AdminMobileCards` / `AdminMobileCard` / `AdminMobileEmpty`），新增/修改 Admin 表格禁止手写 `<table>`——以 ModelsPanel 表格形式为基准：桌面 `hidden md:block overflow-x-auto`、数字列 `text-right font-mono text-xs`（`AdminTd align="right" mono`）、操作列 `text-right whitespace-nowrap`、移动端卡片 `border border-gray-200 rounded-lg p-3`（双 checkbox 行保留 `h-5 w-5`）。徽标语义各异不抽公共组件，各面板局部实现；`RecordsTable.tsx`（`/records` 页）独立旧风格不受此约束
-- 复用现有范式：RecordsTable 双轨、ActionMenu、FiltersModal、PriceSimulatorModal
+- **Admin 面板表格统一使用共享组件 `src/components/admin/table.tsx`**（`AdminTableCard` / `AdminTable` / `AdminTableHead` / `AdminTableBody` / `AdminTd` / `AdminTableEmptyRow` / `AdminMobileCards` / `AdminMobileCard` / `AdminMobileEmpty`），新增/修改 Admin 表格禁止手写 `<table>`——样式以 **Records 页表格为基准**（两边视觉一致）：桌面外壳 `hidden md:block overflow-x-auto`、表头 `thead.bg-gray-50` + `tr.text-left.text-xs.font-medium.text-gray-500.uppercase` + `px-6 py-3`、单元格 `px-6 py-4`、tbody `divide-y divide-gray-200`、数字列 `text-right font-mono text-xs`（`AdminTd align="right" mono`）、操作列 `text-right whitespace-nowrap`、移动端卡片 `border border-gray-200 rounded-lg p-4`（双 checkbox 行保留 `h-5 w-5`）。`AdminTableCard` 默认带 `p-4`（含标题/操作区的面板）；`flush` 用于表格满卡（无内边距 + `overflow-hidden` + header `px-6 py-3 border-b`），`/admin/audit` 即用 `flush`。徽标语义各异不抽公共组件，各面板局部实现
+- 复用现有范式：RecordsTable 双轨、ActionMenu、FiltersModal、PriceSimulatorModal、`ColumnPicker`（列可见性下拉，`columns` 由调用方传入，Records / Audit 共用）
 - 提交前自检：375px 视口无横向溢出，桌面端视觉无回归
 
 ## 环境变量

@@ -1540,6 +1540,53 @@ describe("handleProxyRequest - cross-upstream failover & session stickiness", ()
     expect(deps.onUsage).toHaveBeenCalledWith(expect.objectContaining({ provider: "openai-alt" }));
   });
 
+  it("excludes given-up upstreams from the last-resort fallback chain", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    const { deps } = mkFailoverDeps({
+      health: {
+        isHealthy: vi.fn(async () => false),
+        markUnhealthy: vi.fn(),
+        isGivenUp: (id: number) => id === 1,
+      },
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    // 已放弃兜底的 primary 一次都不该被打
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toContain("alt.example");
+  });
+
+  it("returns 502 without touching upstreams when every candidate is given up", async () => {
+    const { deps } = mkFailoverDeps({
+      health: {
+        isHealthy: vi.fn(async () => false),
+        markUnhealthy: vi.fn(),
+        isGivenUp: () => true,
+      },
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    expect(res.status).toBe(502);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("clears health marks when last-resort attempt succeeds (2xx)", async () => {
     fetchMock.mockImplementation((url: string) =>
       url.startsWith("https://alt.example")
@@ -2735,6 +2782,27 @@ describe("handleProxyRequest - responses subresource endpoints", () => {
     fetchMock.mockReset();
   });
 
+  it("returns 502 upstream_unavailable when every candidate is given up", async () => {
+    const { deps } = mkSubDeps({
+      health: {
+        isHealthy: vi.fn(async () => false),
+        markUnhealthy: vi.fn(),
+        isGivenUp: () => true,
+      },
+    });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/responses/resp_123", {
+        method: "GET",
+        headers: { authorization: "Bearer vk-good" },
+      }),
+      deps
+    );
+    const body = await res.json();
+    expect(res.status).toBe(502);
+    expect(body.error.type).toBe("upstream_unavailable");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("passes through GET retrieve on the first healthy upstream", async () => {
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify({ id: "resp_123", object: "response", status: "completed" }), {
@@ -3344,6 +3412,25 @@ describe("handleProxyRequest - named route routing (LLM classifier)", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     fetchMock.mockReset();
+  });
+
+  it("skips the classifier and returns 502 when every target is given up", async () => {
+    const runClassifier = vi.fn(async () => ({ routeId: 102, usage: null }));
+    const deps = mkNamedDeps({
+      session: mkMemorySession(),
+      runClassifier,
+      health: {
+        isHealthy: vi.fn(async () => true),
+        markUnhealthy: vi.fn(),
+        isGivenUp: () => true,
+      },
+    });
+    const res = await handleProxyRequest(vmRequest(), deps);
+    const body = await res.json();
+    expect(res.status).toBe(502);
+    expect(body.error.type).toBe("named_route_unavailable");
+    expect(runClassifier).not.toHaveBeenCalled(); // 不为一必然被丢的目标付分类器成本
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("classifier picks route → lands on selected targetModel, binding + classifier usage recorded", async () => {

@@ -38,7 +38,6 @@ flowchart LR
 
     P --> DB[(SQLite<br>token_records)]
     DB --> W[Dashboard · Admin UI]
-    DB --> S[Public Status page<br>optional]
 ```
 
 ## Why this project · Who it's for
@@ -82,14 +81,13 @@ I've tried a number of existing solutions (LiteLLM, NEW API, OmniRoute — all g
 
 - Upstreams / virtual keys / named routes / model pricing / audit logs
 - Model alias normalization (display-level rollup), provider anonymization groups, hidden sources (hide vs exclude are independent dimensions)
-- Public status page: opt-in, aggregate usage only — never leaks model names or cost details
 
 **Security**
 
 - TOTP two-factor auth + one-time recovery codes (hashes only)
 - All secrets stored AES-256-GCM encrypted; a DB leak doesn't leak plaintext
 - SSRF protection (private/loopback/metadata addresses rejected), XFF spoofing protection, rate-limited login/setup
-- Audit log for every admin action; setup wizard is fail-open, public page is fail-closed
+- Audit log for every admin action; setup wizard is fail-open
 
 ## Quick Start (Docker)
 

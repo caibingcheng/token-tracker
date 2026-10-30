@@ -4,7 +4,7 @@ import { db, initDatabase, adminAuditLogsTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";
 
-// 只读审计日志分页查询：created_at 倒序，支持按 action 过滤
+// 只读审计日志分页查询：created_at 倒序，支持按 action 过滤；同时返回库里出现过的 action 列表（供筛选下拉）
 export const GET = withAuth(async (request: NextRequest) => {
   return withSkipCache(async () => {
     await initDatabase();
@@ -54,6 +54,15 @@ export const GET = withAuth(async (request: NextRequest) => {
       };
     });
 
+    const actions = (
+      await db
+        .selectDistinct({ action: adminAuditLogsTable.action })
+        .from(adminAuditLogsTable)
+        .orderBy(adminAuditLogsTable.action)
+    )
+      .map((row: { action: string | null }) => row.action)
+      .filter((action: string | null): action is string => Boolean(action));
+
     return NextResponse.json({
       success: true,
       data: {
@@ -62,6 +71,7 @@ export const GET = withAuth(async (request: NextRequest) => {
         page,
         pageSize,
         totalPages: Math.max(1, Math.ceil(total / pageSize)),
+        actions,
       },
     });
   });

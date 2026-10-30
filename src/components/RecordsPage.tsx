@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import RecordsTable from "./RecordsTable";
-import RecordsColumnPicker from "./RecordsColumnPicker";
-import { DEFAULT_RECORD_COLUMNS, normalizeRecordColumns, type RecordColumnId } from "@/lib/records-columns";
+import ColumnPicker from "./ColumnPicker";
+import { DEFAULT_RECORD_COLUMNS, RECORD_COLUMNS, normalizeRecordColumns, type RecordColumnId } from "@/lib/records-columns";
 import { apiFetch } from "@/lib/client/api-client";
 import { useSidebarActions, NumberFormatToggle } from "./AppSidebar";
 
@@ -214,7 +214,8 @@ export default function RecordsPage() {
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
-              <RecordsColumnPicker
+              <ColumnPicker
+                columns={RECORD_COLUMNS}
                 value={visibleColumns}
                 onChange={changeColumns}
                 error={columnsError}

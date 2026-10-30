@@ -37,6 +37,7 @@ const TABLES = [
     columns: [
       { name: "balance", definition: "balance TEXT" },
       { name: "balance_updated_at", definition: "balance_updated_at TEXT" },
+      { name: "balance_fetch_mode", definition: "balance_fetch_mode TEXT NOT NULL DEFAULT 'auto'" },
       { name: "classifier_models", definition: "classifier_models TEXT" },
     ],
   },
@@ -109,7 +110,7 @@ describe("migrateColumns", () => {
       ])
     );
     expect(tableColumns("upstreams")).toEqual(
-      expect.arrayContaining(["balance", "balance_updated_at", "classifier_models"])
+      expect.arrayContaining(["balance", "balance_updated_at", "balance_fetch_mode", "classifier_models"])
     );
   });
 

@@ -2,7 +2,11 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { canRunSetup, runSetup, isValidSetupKey, checkSetupRateLimit } from "./setup";
+import { canRunSetup, runSetup, checkSetupRateLimit } from "./setup";
+import {
+  getLoginKeyStrength,
+  LOGIN_KEY_STRENGTH_META,
+} from "@/lib/login-key-strength";
 import { getAdminApiKey, getTokenEpoch } from "./settings";
 import { signSessionToken, verifySessionToken, keyFingerprint } from "./session";
 import { recordAuditLog } from "@/lib/admin/audit";
@@ -131,14 +135,21 @@ describe("runSetup 写入与并发安全", () => {
   });
 });
 
-describe("key 强度与限流", () => {
-  it("isValidSetupKey：≥16 字符且至少 2 种字符类别才通过", () => {
-    expect(isValidSetupKey("")).toBe(false);
-    expect(isValidSetupKey("short")).toBe(false);
-    expect(isValidSetupKey("1234567890123456")).toBe(false); // 16 位纯数字：仅 1 类
-    expect(isValidSetupKey("abcdefghijklmnop")).toBe(false); // 16 位纯小写：仅 1 类
-    expect(isValidSetupKey("Abcdefghijklmnop1")).toBe(true);
-    expect(isValidSetupKey("  Abcdefghijklmnop1  ")).toBe(true);
+describe("key 强度提示（仅提示，不强制）", () => {
+  it("getLoginKeyStrength：按长度 + 字符类别数分级", () => {
+    expect(getLoginKeyStrength("")).toBe("weak");
+    expect(getLoginKeyStrength("short")).toBe("weak"); // <8 字符
+    expect(getLoginKeyStrength("1234567890123456")).toBe("weak"); // 16 位纯数字：仅 1 类
+    expect(getLoginKeyStrength("abcdefghijklmnop")).toBe("weak"); // 16 位纯小写：仅 1 类
+    expect(getLoginKeyStrength("Abcdefg1")).toBe("fair"); // 8-15 字符 + 2 类
+    expect(getLoginKeyStrength("Abcdefghijklmnop1")).toBe("strong"); // ≥16 + 2 类
+    expect(getLoginKeyStrength("  Abcdefghijklmnop1  ")).toBe("strong"); // 首尾空白 trim
+  });
+
+  it("LOGIN_KEY_STRENGTH_META 三档齐全", () => {
+    expect(LOGIN_KEY_STRENGTH_META.weak.label).toBe("Weak");
+    expect(LOGIN_KEY_STRENGTH_META.fair.label).toBe("Fair");
+    expect(LOGIN_KEY_STRENGTH_META.strong.label).toBe("Strong");
   });
 
   it("checkSetupRateLimit：超过 10 次窗口后限流", () => {

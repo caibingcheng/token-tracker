@@ -3,7 +3,6 @@ import {
   canRunSetup,
   runSetup,
   SetupNotAllowedError,
-  isValidSetupKey,
   checkSetupRateLimit,
 } from "@/lib/auth/setup";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
@@ -30,13 +29,6 @@ export async function POST(request: NextRequest) {
   const apiKey = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
   if (!apiKey) {
     return NextResponse.json({ success: false, error: "Missing apiKey" }, { status: 400 });
-  }
-  // 密钥强度校验：≥16 字符且至少 2 种字符类别
-  if (!isValidSetupKey(apiKey)) {
-    return NextResponse.json(
-      { success: false, error: "apiKey must be at least 16 characters and contain at least 2 character classes (upper/lower/digit/symbol)" },
-      { status: 400 }
-    );
   }
 
   if (checkSetupRateLimit(getRateLimitKey(request))) {

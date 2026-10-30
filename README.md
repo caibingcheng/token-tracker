@@ -38,7 +38,6 @@ flowchart LR
 
     P --> DB[(SQLite<br>token_records)]
     DB --> W[Dashboard · 管理面板]
-    DB --> S[公开 Status 面板<br>可选开启]
 ```
 
 ## 为什么做它 · 适合谁
@@ -82,14 +81,13 @@ flowchart LR
 
 - upstreams / 虚拟 keys / 命名路由 / 模型定价 / 审计日志
 - 模型别名归一化（展示层聚合）、Provider 匿名化分组、Hidden Sources（隐藏/剔除两维度独立）
-- 公开 Status 面板：可选开启，只暴露聚合用量，不泄露模型名与成本明细
 
 **安全**
 
 - TOTP 双因素认证 + 一次性恢复码（只存哈希）
 - 所有密钥 AES-256-GCM 加密落库，DB 泄露不泄露明文
 - SSRF 防护（私网/环回/元数据地址拒绝）、XFF 伪造防护、登录/设置限流
-- 审计日志记录全部管理操作；首次设置向导 fail-open、公开面板 fail-closed
+- 审计日志记录全部管理操作；首次设置向导 fail-open
 
 ## 快速开始（Docker）
 
