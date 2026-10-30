@@ -29,10 +29,6 @@ import { withSkipCache } from "@/lib/db/cache";
 import { encryptSecret } from "@/lib/gateway/crypto";
 import { executeStatsQuery } from "@/lib/stats-query";
 import { queryLatencyStats } from "@/lib/latency-query";
-import {
-  getCachedStatusData,
-  setCachedStatusData,
-} from "@/lib/status-query";
 
 const ORIG_DB = process.env.SQLITE_DATABASE_PATH;
 const ORIG_SECRET = process.env.GATEWAY_SECRET;
@@ -439,15 +435,6 @@ describe("agents dimension（默认派生工具名）/ providers / models 过滤
     const json = await res.json();
     const ids = json.data.map((m: { id: string }) => m.id);
     expect(ids).toEqual(["deepseek-chat", "gpt-4o"]);
-  });
-});
-
-describe("status 缓存失效", () => {
-  it("setHiddenSourcesSetting 主动 invalidateStatusCache", async () => {
-    setCachedStatusData("0", { timezoneOffsetMinutes: 0 } as never);
-    expect(getCachedStatusData("0")).toBeDefined();
-    await saveConfig({ upstreams: ["openai"] });
-    expect(getCachedStatusData("0")).toBeUndefined();
   });
 });
 

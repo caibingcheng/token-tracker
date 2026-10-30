@@ -5,7 +5,6 @@ import { withSkipCache } from "@/lib/db/cache";
 import { db, initDatabase, syncInstancesTable, tokenRecords } from "@/lib/db";
 import { INSTANCE_UID_RE } from "@/lib/ingest/validate";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
-import { invalidateStatusCache } from "@/lib/status-query";
 
 // 删除水位：同 uid 新实例可干净 TOFU（删除行后绑定关系由 ingest token 保留，
 // token 需要单独 unbind 才是真正干净的重置）。
@@ -61,8 +60,6 @@ export const DELETE = withAuth(
             )
           );
         deletedRecords = Number(del?.changes ?? 0);
-        // 级联删除影响公开 Status 响应级缓存，主动失效
-        invalidateStatusCache();
       }
 
       await db

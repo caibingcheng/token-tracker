@@ -35,8 +35,6 @@ interface StatsCardsProps {
   error: string | null;
   topModels?: TopModel[];
   showCost?: boolean;
-  // 单价明细（/1M 各价 + 单价 breakdown）开关：公开状态页传 false（服务端不下发单价），Dashboard 默认 true
-  costDetail?: boolean;
   showTopModels?: boolean;
 }
 
@@ -68,7 +66,7 @@ function formatValue(num: number, isCost: boolean, isRatio?: boolean, compact?: 
   return isCost ? formatCost(num) : formatNumber(num, compact ?? false);
 }
 
-export default function StatsCards({ stats, totalDays = 0, loading, error, topModels, showCost = true, costDetail = true, showTopModels = true }: StatsCardsProps) {
+export default function StatsCards({ stats, totalDays = 0, loading, error, topModels, showCost = true, showTopModels = true }: StatsCardsProps) {
   const { compact } = useNumberFormat();
   const animatedTotalInput = useAnimatedNumber(stats?.totalInput || 0, 600);
   const animatedTotalOutput = useAnimatedNumber(stats?.totalOutput || 0, 600);
@@ -76,7 +74,6 @@ export default function StatsCards({ stats, totalDays = 0, loading, error, topMo
   const animatedTotalInputUncached = useAnimatedNumber(stats?.totalInputUncached || 0, 600);
   const animatedCount = useAnimatedNumber(stats?.count || 0, 600);
   const animatedCostPerMillion = useAnimatedNumber(stats?.costPerMillionTokens || 0, 600);
-  const animatedTotalCost = useAnimatedNumber(stats?.totalCost || 0, 600);
 
   const outputRatio =
     stats && stats.totalInput + stats.totalOutput > 0
@@ -124,8 +121,7 @@ export default function StatsCards({ stats, totalDays = 0, loading, error, topMo
       ],
     },
     ...(showCost
-      ? [costDetail
-          ? {
+      ? [{
               label: "Avg cost / 1M tokens",
               value: animatedCostPerMillion,
               isCost: true,
@@ -134,14 +130,6 @@ export default function StatsCards({ stats, totalDays = 0, loading, error, topMo
                 { label: "Cache read / 1M", value: stats?.costPerMillionCacheRead || 0, isCost: true },
                 { label: "Output / 1M", value: stats?.costPerMillionOutput || 0, isCost: true },
                 { label: "Total Cost", value: stats?.totalCost || 0, isCost: true },
-              ],
-            }
-          : {
-              label: "Total Cost",
-              value: animatedTotalCost,
-              isCost: true,
-              breakdown: [
-                { label: "Avg cost / req", value: avgCostPerReq, isCost: true },
               ],
             }]
       : []),

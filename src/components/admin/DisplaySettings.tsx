@@ -17,21 +17,6 @@ interface DisplayData {
   groups: Array<{ name: string; patterns: string[] }>;
 }
 
-interface StatusPageElementsData {
-  total: boolean;
-  today: boolean;
-  daily: boolean;
-  heatmap: boolean;
-  hourly: boolean;
-  topModels: boolean;
-  cost: boolean;
-}
-
-interface StatusPageConfigData {
-  enabled: boolean;
-  elements: StatusPageElementsData;
-}
-
 interface ObservedAgentToken {
   token: string;
   name: string;
@@ -71,16 +56,6 @@ interface PutResult {
 
 const UNKNOWN_AGENT = "unknown";
 const UNKNOWN_DISPLAY = "(unknown)";
-
-const STATUS_ELEMENT_LABELS: Array<{ key: keyof StatusPageElementsData; label: string; hint?: string }> = [
-  { key: "total", label: "Total summary", hint: "All-time totals" },
-  { key: "today", label: "Today overview", hint: "Today vs yesterday" },
-  { key: "daily", label: "Daily trend chart", hint: "Last 30 days (fixed)" },
-  { key: "heatmap", label: "Heatmap", hint: "Last 365 days" },
-  { key: "hourly", label: "24h distribution", hint: "Requires daily trend" },
-  { key: "topModels", label: "Top Models", hint: "Reveals model names & costs" },
-  { key: "cost", label: "Cost amounts", hint: "Reveals USD costs" },
-];
 
 // 行级 Actions 桌面样式：文本链接 Edit · Delete / Save · Cancel（对齐 ModelsPanel routing rules）
 function DesktopActions({
@@ -232,10 +207,6 @@ export default function DisplaySettings() {
   const [editingObserved, setEditingObserved] = useState<string | null>(null);
   const [editingObservedName, setEditingObservedName] = useState("");
 
-  const [statusConfig, setStatusConfig] = useState<StatusPageConfigData | null>(null);
-  const [statusBusy, setStatusBusy] = useState(false);
-  const [statusError, setStatusError] = useState<string | null>(null);
-
   const [hiddenSources, setHiddenSources] = useState<HiddenSourcesData | null>(null);
   const [hiddenSourcesBusy, setHiddenSourcesBusy] = useState(false);
   const [hiddenSourcesError, setHiddenSourcesError] = useState<string | null>(null);
@@ -244,9 +215,8 @@ export default function DisplaySettings() {
   const [agentOptionsRaw, setAgentOptionsRaw] = useState<string[]>([]);
 
   const load = useCallback(async () => {
-    const [res, statusRes, aliasesRes, hsRes, providersRes, agentsRes, agentAliasesRes] = await Promise.all([
+    const [res, aliasesRes, hsRes, providersRes, agentsRes, agentAliasesRes] = await Promise.all([
       apiFetch("/api/admin/settings/display"),
-      apiFetch("/api/admin/settings/status"),
       apiFetch("/api/admin/settings/aliases"),
       apiFetch("/api/admin/settings/hidden-sources"),
       apiFetch("/api/providers?includeHidden=1"),
@@ -254,7 +224,6 @@ export default function DisplaySettings() {
       apiFetch("/api/admin/settings/agent-aliases"),
     ]);
     const json = await res.json();
-    const statusJson = await statusRes.json();
     const aliasesJson = await aliasesRes.json();
     const hsJson = await hsRes.json();
     const providersJson = await providersRes.json();
@@ -265,10 +234,6 @@ export default function DisplaySettings() {
       setHiddenRules(
         d.groups.map((g) => ({ name: g.name, patterns: g.patterns.join(", ") }))
       );
-    }
-    if (statusJson.success) {
-      const d = statusJson.data as { config: StatusPageConfigData };
-      setStatusConfig(d.config);
     }
     if (aliasesJson.success) {
       const rules = aliasesJson.data as Array<{ name: string; aliases: string[] }>;
@@ -595,35 +560,6 @@ export default function DisplaySettings() {
       setAgentAliasesError(result.error);
     }
     setAgentAliasesBusy(false);
-  };
-
-  // ---- Public Status Page：勾选即保存（乐观更新 + 失败回滚 + in-flight 锁）----
-  const applyStatusConfig = async (
-    mutate: (prev: StatusPageConfigData) => StatusPageConfigData
-  ) => {
-    if (!statusConfig || statusBusy) return;
-    const prev = statusConfig;
-    const next = mutate(prev);
-    setStatusConfig(next);
-    setStatusBusy(true);
-    setStatusError(null);
-    const result = await putSetting("/api/admin/settings/status", { config: next });
-    if (!result.ok) {
-      setStatusError(result.error);
-      setStatusConfig(prev);
-    }
-    setStatusBusy(false);
-  };
-
-  const toggleStatusEnabled = () => {
-    void applyStatusConfig((prev) => ({ ...prev, enabled: !prev.enabled }));
-  };
-
-  const toggleStatusElement = (key: keyof StatusPageElementsData) => {
-    void applyStatusConfig((prev) => ({
-      ...prev,
-      elements: { ...prev.elements, [key]: !prev.elements[key] },
-    }));
   };
 
   // ---- Hidden Sources：勾选即保存（乐观更新 + 失败回滚 + in-flight 锁）----
@@ -1289,119 +1225,14 @@ export default function DisplaySettings() {
 
       <div className="mt-8 border-t border-gray-100 pt-6">
         <h3 className="mb-1 text-base font-semibold text-gray-900">
-          Public Status Page
-        </h3>
-        <p className="mb-4 text-sm text-gray-500">
-          Exposes a public usage panel on the home page{" "}
-          <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">/</code>{" "}
-          for unauthenticated visitors, with no authentication. Disabled by
-          default; enable explicitly to open the endpoint. Data is cached for
-          60s and rate-limited.
-        </p>
-
-        {statusConfig && (
-          <div className="space-y-4">
-            <label className="flex items-center gap-3 min-h-[40px] cursor-pointer">
-              <input
-                type="checkbox"
-                checked={statusConfig.enabled}
-                onChange={toggleStatusEnabled}
-                disabled={statusBusy}
-                className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
-              />
-              <span className="text-sm font-medium text-gray-700">
-                Enable public status page
-              </span>
-            </label>
-
-            <div>
-              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">
-                Elements
-              </p>
-              <AdminTable>
-                <AdminTableHead
-                  columns={[
-                    { label: "Element" },
-                    { label: "Enabled", align: "right" },
-                  ]}
-                />
-                <AdminTableBody>
-                  {STATUS_ELEMENT_LABELS.map(({ key, label, hint }) => (
-                    <tr key={key}>
-                      <AdminTd>
-                        <span className="block text-sm font-medium text-gray-700">
-                          {label}
-                        </span>
-                        {hint && (
-                          <span className="block text-xs text-gray-400">
-                            {hint}
-                          </span>
-                        )}
-                      </AdminTd>
-                      <AdminTd align="right">
-                        <input
-                          type="checkbox"
-                          checked={statusConfig.elements[key]}
-                          onChange={() => toggleStatusElement(key)}
-                          disabled={statusBusy}
-                          className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
-                        />
-                      </AdminTd>
-                    </tr>
-                  ))}
-                </AdminTableBody>
-              </AdminTable>
-              <AdminMobileCards>
-                {STATUS_ELEMENT_LABELS.map(({ key, label, hint }) => (
-                  <AdminMobileCard key={key}>
-                    <label className="flex items-center gap-3 min-h-[40px] cursor-pointer">
-                      <span className="min-w-0 flex-1">
-                        <span className="block text-sm font-medium text-gray-700">
-                          {label}
-                        </span>
-                        {hint && (
-                          <span className="block text-xs text-gray-400">
-                            {hint}
-                          </span>
-                        )}
-                      </span>
-                      <input
-                        type="checkbox"
-                        checked={statusConfig.elements[key]}
-                        onChange={() => toggleStatusElement(key)}
-                        disabled={statusBusy}
-                        className="h-5 w-5 shrink-0 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
-                      />
-                    </label>
-                  </AdminMobileCard>
-                ))}
-              </AdminMobileCards>
-              <p className="mt-2 text-xs text-gray-400">
-                Default: Total summary, Today overview, Daily trend chart.
-                Top Models &amp; Cost reveal sensitive data — leave off unless
-                intended for public display.
-              </p>
-            </div>
-
-            {statusError && (
-              <div className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-600">
-                {statusError}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      <div className="mt-8 border-t border-gray-100 pt-6">
-        <h3 className="mb-1 text-base font-semibold text-gray-900">
           Hidden Sources
         </h3>
         <p className="mb-4 text-sm text-gray-500">
           Hide deprecated virtual keys / upstreams by name, and optionally
           exclude each one from aggregate totals. Hidden sources disappear
           from filters and rankings; excluded sources are removed from all
-          aggregate stats (total cards, daily, heatmap, hourly, latency,
-          public status page). The two are independent per source. No data
+          aggregate stats (total cards, daily, heatmap, hourly, latency).
+          The two are independent per source. No data
           is ever deleted — unchecking fully restores everything.
         </p>
 

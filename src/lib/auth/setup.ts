@@ -15,27 +15,6 @@ export class SetupNotAllowedError extends Error {
   }
 }
 
-// 登录 key 强度：≥16 字符且至少 2 种字符类别（大写 / 小写 / 数字 / 符号）
-const UPPER = /[A-Z]/;
-const LOWER = /[a-z]/;
-const DIGIT = /\d/;
-const SYMBOL = /[^A-Za-z0-9]/;
-
-export function isStrongLoginKey(key: string): boolean {
-  const k = typeof key === "string" ? key.trim() : "";
-  if (k.length < 16) return false;
-  let classes = 0;
-  if (UPPER.test(k)) classes++;
-  if (LOWER.test(k)) classes++;
-  if (DIGIT.test(k)) classes++;
-  if (SYMBOL.test(k)) classes++;
-  return classes >= 2;
-}
-
-export function isValidSetupKey(key: string): boolean {
-  return isStrongLoginKey(key);
-}
-
 // 内存滑动窗口限流：setup 独立 bucket（与 login 同款模式）
 const RATE_WINDOW_MS = 15 * 60 * 1000;
 const RATE_MAX_ATTEMPTS = 10;

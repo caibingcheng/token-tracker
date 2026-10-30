@@ -1,15 +1,6 @@
 "use client";
 
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   getApiKey,
   clearApiKey,
@@ -20,26 +11,15 @@ import {
 } from "@/lib/client/api-client";
 import AppSidebar, { SidebarActionsContext } from "./AppSidebar";
 import MobileTabBar from "./MobileTabBar";
-import PublicStatusView from "./PublicStatusView";
+import OtpInput from "./OtpInput";
 import { NumberFormatProvider } from "./NumberFormatContext";
+import {
+  getLoginKeyStrength,
+  LOGIN_KEY_STRENGTH_META,
+} from "@/lib/login-key-strength";
 
-// 登录后预览公开 Status 面板的切换开关（Dashboard / MobileTabBar 消费）
 // 侧栏收起偏好（localStorage）：true = 仅图标 16px 宽，false = 完整 56px（14rem）
 const SIDEBAR_COLLAPSED_KEY = "tt:sidebar-collapsed";
-
-interface PublicPreviewContextValue {
-  previewPublic: boolean;
-  togglePreview: () => void;
-}
-
-export const PublicPreviewContext = createContext<PublicPreviewContextValue>({
-  previewPublic: false,
-  togglePreview: () => {},
-});
-
-export function usePublicPreview() {
-  return useContext(PublicPreviewContext);
-}
 
 export default function ApiKeyGate({ children }: { children: React.ReactNode }) {
   // 初始 null = 未知（SSR/首帧不渲染登录表单，避免浏览器密码自动填充弹窗）；
@@ -47,6 +27,7 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
   const [hasKey, setHasKey] = useState<boolean | null>(null);
   const [inputKey, setInputKey] = useState("");
   const [totpCode, setTotpCode] = useState("");
+  const [useRecovery, setUseRecovery] = useState(false);
   const [showTotp, setShowTotp] = useState(false);
   const [loggingIn, setLoggingIn] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,11 +35,6 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
   const [setupKey, setSetupKey] = useState("");
   const [setupConfirm, setSetupConfirm] = useState("");
   const [settingUp, setSettingUp] = useState(false);
-  // 未登录视图：public = 公开面板（status_page_config 启用时），login = 登录表单
-  const [gateView, setGateView] = useState<"public" | "login">("public");
-  const [statusEnabled, setStatusEnabled] = useState(true);
-  // 登录后预览公开面板（替代 children 渲染 PublicStatusView）
-  const [previewPublic, setPreviewPublic] = useState(false);
   // Dashboard 注册到桌面侧栏底部的操作组节点（仅 Dashboard 页存在）
   const [sidebarActions, setSidebarActions] = useState<ReactNode>(null);
   // 桌面侧栏收起：纯本地 UI 偏好，存 localStorage（设备级，不进 DB）
@@ -87,20 +63,10 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
   // 此模式下 logout / 401 跳转均为 no-op（用 ref 避免 callback 依赖问题）
   const localBypassRef = useRef(false);
 
-  const previewContextValue = useMemo(
-    () => ({
-      previewPublic,
-      togglePreview: () => setPreviewPublic((v) => !v),
-    }),
-    [previewPublic]
-  );
-
   const handleUnauthorized = useCallback(() => {
     if (localBypassRef.current) return;
     setError("Invalid or missing session");
     setHasKey(false);
-    setGateView("public");
-    setPreviewPublic(false);
   }, []);
 
   useEffect(() => {
@@ -140,6 +106,7 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
         setInputKey("");
         setTotpCode("");
         setShowTotp(false);
+        setUseRecovery(false);
         setHasKey(true);
         return;
       }
@@ -155,15 +122,14 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
     setInputKey("");
     setTotpCode("");
     setShowTotp(false);
+    setUseRecovery(false);
     setError(null);
     setHasKey(false);
-    setGateView("public");
-    setPreviewPublic(false);
   };
 
   const handleSetup = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (setupKey.length < 16 || settingUp) return;
+    if (!setupKey.trim() || settingUp) return;
     if (setupKey !== setupConfirm) {
       setError("The two keys do not match");
       return;
@@ -205,10 +171,17 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
               autoComplete="new-password"
               value={setupKey}
               onChange={(e) => setSetupKey(e.target.value)}
-              placeholder="Admin API Key (min 16 characters)"
+              placeholder="Admin API Key"
               autoFocus
               className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
+            {setupKey.trim() && (
+              <p className={`text-xs ${LOGIN_KEY_STRENGTH_META[getLoginKeyStrength(setupKey)].className}`}>
+                Strength: {LOGIN_KEY_STRENGTH_META[getLoginKeyStrength(setupKey)].label}
+                {getLoginKeyStrength(setupKey) !== "strong" &&
+                  " — longer keys with mixed cases, digits or symbols are safer"}
+              </p>
+            )}
             <input
               type="password"
               autoComplete="new-password"
@@ -224,7 +197,7 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
             )}
             <button
               type="submit"
-              disabled={settingUp || setupKey.length < 16}
+              disabled={settingUp || !setupKey.trim()}
               className="w-full rounded bg-blue-600 py-2 text-sm font-medium text-white hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-50"
             >
               {settingUp ? "Setting up..." : "Create & Continue"}
@@ -232,18 +205,6 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
           </form>
         </div>
       </main>
-    );
-  }
-
-  if (!hasKey && gateView === "public") {
-    return (
-      <PublicStatusView
-        onDisabled={() => {
-          setStatusEnabled(false);
-          setGateView("login");
-        }}
-        onLoginRequest={() => setGateView("login")}
-      />
     );
   }
 
@@ -255,7 +216,9 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
             <h1 className="text-xl font-bold text-gray-900">Token Tracker</h1>
             <p className="mt-1 text-sm text-gray-500">
               {showTotp
-                ? "Enter your TOTP code or recovery code (leave empty if not enabled)"
+                ? useRecovery
+                  ? "Enter a recovery code"
+                  : "Enter your 6-digit TOTP code (leave empty if not enabled)"
                 : "Please enter your API Key to continue"}
             </p>
           </div>
@@ -271,15 +234,31 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
                 className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
               />
             )}
-            {showTotp && (
+            {showTotp && !useRecovery && (
+              <OtpInput value={totpCode} onChange={setTotpCode} autoFocus />
+            )}
+            {showTotp && useRecovery && (
               <input
                 type="text"
                 value={totpCode}
                 onChange={(e) => setTotpCode(e.target.value)}
-                placeholder="6-digit code or recovery code"
+                placeholder="Recovery code (XXXX-XXXX-XXXX-XXXX)"
                 autoFocus
                 className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
               />
+            )}
+            {showTotp && (
+              <button
+                type="button"
+                onClick={() => {
+                  setUseRecovery((v) => !v);
+                  setTotpCode("");
+                  setError(null);
+                }}
+                className="w-full text-center text-xs text-gray-400 hover:text-gray-600 min-h-[40px]"
+              >
+                {useRecovery ? "← Use TOTP code instead" : "Use a recovery code instead"}
+              </button>
             )}
             {error && (
               <div className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-600">
@@ -298,6 +277,8 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
                 type="button"
                 onClick={() => {
                   setShowTotp(false);
+                  setUseRecovery(false);
+                  setTotpCode("");
                   setError(null);
                 }}
                 className="w-full text-center text-xs text-gray-400 hover:text-gray-600"
@@ -306,15 +287,6 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
               </button>
             )}
           </form>
-          {statusEnabled && (
-            <button
-              type="button"
-              onClick={() => setGateView("public")}
-              className="mt-4 w-full text-center text-xs text-gray-400 hover:text-gray-600 min-h-[40px]"
-            >
-              ← Back to status
-            </button>
-          )}
         </div>
       </main>
     );
@@ -322,43 +294,24 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
 
   return (
     <NumberFormatProvider>
-      <PublicPreviewContext.Provider value={previewContextValue}>
-        <SidebarActionsContext.Provider value={{ setSidebarActions }}>
-          {/* children 用 display:none 隐藏而非卸载：切换预览时 Dashboard/AdminPanel
-          不重新挂载，数据、当前 admin tab、表单状态全部保留，点击即切换 */}
-          {/* 桌面端内容区左移让出侧栏宽度；preview 激活时 children 隐藏，无偏移冲突 */}
-          <div className={previewPublic ? "hidden" : sidebarCollapsed ? "md:pl-16" : "md:pl-56"}>{children}</div>
-          {previewPublic && (
-            <PublicStatusView
-              preview
-              onExit={() => setPreviewPublic(false)}
-              onDisabled={() => setGateView("login")}
-              onLoginRequest={() => setGateView("login")}
-            />
-          )}
-          {!previewPublic && (
-            <AppSidebar
-              actions={sidebarActions}
-              collapsed={sidebarCollapsed}
-              onToggleCollapse={toggleSidebarCollapsed}
-              onPreviewToggle={() => setPreviewPublic((v) => !v)}
-            />
-          )}
-          <MobileTabBar
-            onLogout={handleLogout}
-            previewActive={previewPublic}
-            onPreviewToggle={() => setPreviewPublic((v) => !v)}
-          />
-          <button
-            type="button"
-            onClick={handleLogout}
-            className="hidden md:block fixed bottom-4 right-4 z-50 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs text-gray-500 shadow-sm hover:bg-gray-50 hover:text-red-600 transition-colors"
-            title="Logout"
-          >
-            Logout
-          </button>
-        </SidebarActionsContext.Provider>
-      </PublicPreviewContext.Provider>
+      <SidebarActionsContext.Provider value={{ setSidebarActions }}>
+        {/* 桌面端内容区左移让出侧栏宽度 */}
+        <div className={sidebarCollapsed ? "md:pl-16" : "md:pl-56"}>{children}</div>
+        <AppSidebar
+          actions={sidebarActions}
+          collapsed={sidebarCollapsed}
+          onToggleCollapse={toggleSidebarCollapsed}
+        />
+        <MobileTabBar onLogout={handleLogout} />
+        <button
+          type="button"
+          onClick={handleLogout}
+          className="hidden md:block fixed bottom-4 right-4 z-50 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs text-gray-500 shadow-sm hover:bg-gray-50 hover:text-red-600 transition-colors"
+          title="Logout"
+        >
+          Logout
+        </button>
+      </SidebarActionsContext.Provider>
     </NumberFormatProvider>
   );
 }

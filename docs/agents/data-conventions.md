@@ -38,11 +38,11 @@
 
 ## Hidden Sources（隐藏 vk / upstream 数据源，`hidden_sources`）
 
-- **语义**：每个名字两个**独立维度**——`upstreams`/`virtualKeys` = 隐藏（从筛选器下拉、分组榜单消失但总计仍计入）；`excludedUpstreams`/`excludedVirtualKeys` = 从聚合统计（总卡片、daily、heatmap、hourly、latency、status 面板）中剔除。四态均可表达（含「剔除但没隐藏」）。数据零删除，仅查询层过滤，取消勾选立即完整恢复
+- **语义**：每个名字两个**独立维度**——`upstreams`/`virtualKeys` = 隐藏（从筛选器下拉、分组榜单消失但总计仍计入）；`excludedUpstreams`/`excludedVirtualKeys` = 从聚合统计（总卡片、daily、heatmap、hourly、latency）中剔除。四态均可表达（含「剔除但没隐藏」）。数据零删除，仅查询层过滤，取消勾选立即完整恢复
 - **匹配口径**：upstream → `token_records.provider`；vk → `token_records.agent`（均为写入时名字快照）；`'unknown'` 遗留记录永远计入总计、不列入可隐藏列表（UI 占位名 `(unknown)`）
 - **查询层**：`buildWhereClause` 第 6 参数 `exclude?: {providers, agents}`（`notInArray`，空数组跳过）；`executeStatsQuery`（stats-query.ts）与 `queryLatencyStats`（latency-query.ts，⚠️ 直接调 buildWhereClause 需自行 `loadHiddenSources()`）恒以 excluded 列表传入（与隐藏状态无关）；`/api/records` 明细不受影响
 - **distinct 路由**：`/api/agents` **默认返回派生工具名**（`user_agent` 解析，NULL UA 追加 `(unknown)`；hidden vk 过滤不适用）；`?dimension=key` 时按 `agent` 列（vk 名）返回并始终过滤隐藏 vk（不受排除状态影响，`'unknown'` 映射 `(unknown)` 显示，供 DisplaySettings vk 建议列表）；`/api/providers` 在**匿名化之前**按真实名排除（`?includeHidden=1` 跳过过滤且跳过匿名化返回真实名，供管理面板建议列表）；`/api/models` 行级过滤（provider NOT IN ∪ agent NOT IN），隐藏源独有 model 一并消失；三路由均支持 `?includeHidden=1`
-- **缓存**：settings 写入经 `withSkipCache` + 主动 `invalidateStatusCache()`（status 响应级缓存 key 只有 tzOffset）
+- **缓存**：settings 写入经 `withSkipCache`（查询缓存 TTL 10s，settings 变更必须主动失效）
 - **删除联动**：upstream/vk DELETE 接受 `?hideHistory=1`（删除确认框复选框，默认不勾），服务端追加名字进 hidden 列表（幂等去重）
 
 ## 官方价参考（`model_prices` + models.dev）
@@ -51,7 +51,7 @@
 - **定价键**：一律按真实 model 名（`model_prices.model` = 发往 upstream 的真实名）；归一化 alias 仅作展示层 roll up 分组键；虚拟名（`request_model`）仅追溯，不参与定价
 - **成本链路**：`stats-query.ts` 在 model/date-model 分组输出行上按真实名附加 `cost`（`computeModelCost`，未定价 → 全 0）→ 归一化聚合时随行合并（`mergeAggregatedCosts`）；未定价 model 成本为 0，补价后历史立即重算
 - **Price Simulation**（`src/lib/price-simulation.ts`，纯逻辑 + `simulatePricing`）：只试算不写库；数据范围独立于 dashboard 过滤（弹窗内 Agent/Provider/Model 自行拉 `/api/dashboard?range=30d`，打开时默认同步 dashboard 当前过滤）；调整 cache rate 时 **Total Input 不变**，只在 cached / uncached 之间重分配（cacheWrite / output 不受影响），缺省跟随各区间实际 `cache_read / total_input`；单价可手改（空/非法/负值回退官方价）；展示层 Cache rate = `cache_read / total_input`
-- **写接口**：`/api/admin/model-prices` PUT/DELETE、select、auto-fill、aliases 均须 `withSkipCache()` + `invalidatePriceCache()`（pricing.ts 内存缓存）；价格变更后 Dashboard/Status 立即反映
+- **写接口**：`/api/admin/model-prices` PUT/DELETE、select、auto-fill、aliases 均须 `withSkipCache()` + `invalidatePriceCache()`（pricing.ts 内存缓存）；价格变更后 Dashboard 立即反映
 - **models.dev 集成**（`src/lib/models-dev/`，纯逻辑可单测）：**双数据源** —— `https://models.dev/api.json`（USD/1M）+ GitHub LiteLLM `model_prices_and_context_window.json`（raw.githubusercontent 主源，jsDelivr CDN 回退；per-token → ×1e6 换算 USD/1M，`sample_spec` 剔除、`litellm_provider` 空/非字符串跳过、无 token 价条目保留为无价条目、batch/reasoning 细分价不取）；两源各自解析器统一输出 `ModelsDevData`，下游零感知；本地快照 `data/models-dev-cache.json`（`{fetchedAt, source, data}`），**单一当前快照语义**（文件 + 内存缓存不拆分，谁最后成功谁是当前快照；旧文件缺 `source` 字段回退 `"models.dev"` 零迁移），**懒刷新 7 天 TTL**（访问时超期则本次用旧快照、后台异步拉新）+ `POST /api/admin/models-dev/refresh` 强制刷新 + `POST /api/admin/models-dev/upload` 手动上传（`uploadSnapshot` 内存缓存 + 落盘立即生效；`sanitizeModelsDevData` 仅上传路径严格校验，非法条目丢弃）；拉取失败静默回退旧快照；**数值信任链兜底**：`isFiniteNonNegative`（有限非负）守卫贯穿 `toCandidate` 与 select 落库，所有快照来源（网络/手工文件/上传）的负数/NaN 价格均回退 0/null，防成本计算污染；**in-flight 竞态对策**：`runRefresh` 同源复用 promise、异源等待 settle 后串行发起（写盘顺序 = 发起顺序，无乱序覆盖）
 - **匹配管线**（`match.ts`）：精确 → 归一化（小写去 `-_.`）→ 日期变体剥离（`-\d{8}$`）；多 provider 冲突按内置原厂优先级表自动预选（anthropic > openai > google > deepseek > ...），**有价候选（hasCost）恒优先于无价候选**（冲突判定与排序均纳入 hasCost，价格相同但 hasCost 不同也算冲突），同级内价格相同不视为冲突，全部候选供 Price Picker Modal 切换。候选集 = 名字命中的条目，**不含同系列不同名**；需要非匹配条目时用 Price Picker 搜索（`searchModelsDevModel`：model id / provider 名归一化子串匹配，上限 50）——搜索选中落库后与自动匹配完全等价（`source='models.dev'` + modelsDevId，hasUpdate/removed 检测照常）
 - **自动填充**（`auto-fill.ts`）：双模式契约——**fill 模式**（缺省）只填空行、永不覆盖已有价格；**force 模式**（`overwrite:true` + `isManual` 保护集）覆盖所有非 manual 已定价行（结果 `updated` 计数），**无价条目（见下行）不覆盖、计入 `unmatched`**；`source='manual'` 的行永不被任何自动流程触碰；触发点：upstream 保存 enabled_models 后（best-effort，只填空）+ auto-fill API 批量填充（`{mode:"fill"|"force"}`）
@@ -71,7 +71,7 @@
 - **数据源**：settings 表 `model_aliases`（Display pane 编辑）→ `loadModelAliases()`（与 `loadHiddenProviderGroups()` 同模式，调用方先 await 再注入）；**MODEL_REGISTRY_PATH / model-registry.json 已废弃删除**
 - **规则**（按优先级依次匹配）：1. 精确匹配规则 `name` → 2. 精确匹配 `aliases` 中的 `provider/model` 别名 → 3. 若 provider 被 hidden_providers 隐藏，只按 `model` 部分匹配 → 4. 精确匹配 `model` 别名 → 5. 未命中保持原始名称
 - **缓存失效**：`setModelAliasesSetting` / `setHiddenProvidersSetting` 写入时调 `invalidateModelCache()` 清空 `rawToCanonical` + `invalidateQueryCache()`
-- **用途**：Dashboard Top 5 按归一化后的 model 名称聚合；Status 页只显示归一化名（alias）
+- **用途**：Dashboard Top 5 按归一化后的 model 名称聚合
 
 ## 查询缓存
 

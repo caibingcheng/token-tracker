@@ -15,7 +15,7 @@ import { getRateLimitKey } from "@/lib/net/client-ip";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// ---- 固定窗口限流（与 status-query 同款模式，独立 bucket）----
+// ---- 固定窗口限流（与 setup/login 同款内存 bucket 模式，独立 bucket）----
 
 const RATE_WINDOW_MS = 60 * 1000;
 const RATE_MAX_REQUESTS = 60;

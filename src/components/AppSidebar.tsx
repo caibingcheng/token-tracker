@@ -82,7 +82,6 @@ interface AppSidebarProps {
   actions: ReactNode;
   collapsed: boolean;
   onToggleCollapse: () => void;
-  onPreviewToggle: () => void;
 }
 
 interface SectionNavItem {
@@ -316,7 +315,6 @@ export default function AppSidebar({
   actions,
   collapsed,
   onToggleCollapse,
-  onPreviewToggle,
 }: AppSidebarProps) {
   const pathname = usePathname();
   const isAdmin = pathname?.startsWith("/admin") ?? false;
@@ -644,20 +642,6 @@ export default function AppSidebar({
 
       <div className="border-t border-gray-200 p-3 flex flex-col gap-2">
         {!collapsed && actions}
-        <button
-          type="button"
-          onClick={onPreviewToggle}
-          className={`inline-flex items-center justify-center gap-2 rounded-md border border-gray-300 bg-white py-1.5 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 ${
-            collapsed ? "px-0 w-full" : "px-3"
-          }`}
-          title="Preview the public status page"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" />
-            <circle cx="12" cy="12" r="3" />
-          </svg>
-          {!collapsed && "Public View"}
-        </button>
       </div>
     </aside>
   );
