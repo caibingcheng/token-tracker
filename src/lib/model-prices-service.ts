@@ -392,7 +392,7 @@ export async function getModelPricesList(): Promise<ModelPriceRow[]> {
 
     rows.push({
       model,
-      upstreams: [...upstreams, ...remoteProviders, ...localProviders],
+      upstreams: Array.from(new Set([...upstreams, ...remoteProviders, ...localProviders])),
       inputPrice: price?.inputPrice ?? null,
       outputPrice: price?.outputPrice ?? null,
       cacheReadPrice: price?.cacheReadPrice ?? null,
