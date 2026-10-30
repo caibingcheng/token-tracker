@@ -8,6 +8,7 @@ import UpstreamModelsManager from "./UpstreamModelsManager";
 import { CopyableCode } from "./CopyableCode";
 import ActionMenu from "./ActionMenu";
 import type { HeaderTransform } from "@/lib/gateway/header-transforms";
+import { detectBalanceProvider } from "@/lib/gateway/balance-detect";
 import { PROBE_PRESETS } from "@/lib/gateway/probe-config";
 import type { ModelProbeConfig, ProbeConfig } from "@/lib/gateway/probe-config";
 import type { ClassifierModelEntry } from "@/lib/gateway/classifier/types";
@@ -37,6 +38,9 @@ export interface UpstreamItem {
   activeKeyCount: number;
   balance: string | null;
   balanceUpdatedAt: string | null;
+  balanceFetchMode: string;
+  // 服务端按 mode + baseUrl 解析：是否启用自动获取（auto 无识别规则 = false）
+  balanceAutoFetch: boolean;
   hasProxy: boolean;
   proxyDisplay: string | null;
   headerTransforms: HeaderTransform[];
@@ -64,6 +68,23 @@ const PROTOCOL_OPTIONS = [
 ];
 const PROTOCOL_LABELS = new Map(PROTOCOL_OPTIONS.map((p) => [p.value, p.label]));
 
+// 余额/用量获取方式：表单默认 off；baseUrl/name 可识别时跟随探测结果（auto 仅存量数据）
+const BALANCE_MODE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "none", label: "Off" },
+  { value: "auto", label: "Auto (by URL/name, off if unknown)" },
+  { value: "deepseek", label: "DeepSeek" },
+  { value: "openrouter", label: "OpenRouter" },
+  { value: "kimi", label: "Kimi (Moonshot)" },
+  { value: "kimi-coding", label: "Kimi for Coding" },
+  { value: "glm", label: "GLM (Z.ai Coding Plan)" },
+  { value: "opencode-go", label: "OpenCode Go" },
+];
+// 表单跟随探测：baseUrl/name 可识别 → 对应 provider，否则 off（none）
+const followBalanceMode = (baseUrl: string, name: string): string =>
+  detectBalanceProvider(baseUrl, name) ?? "none";
+// 自动刷新最快间隔：距上次成功刷新与上次尝试均超过该值才触发，且仅在本页面
+const BALANCE_AUTO_REFRESH_MS = 5 * 60 * 1000;
+
 interface FormState {
   name: string;
   protocol: string;
@@ -71,6 +92,7 @@ interface FormState {
   enabledModels: string;
   priority: string;
   healthCheckModel: string;
+  balanceFetchMode: string;
   proxyUrl: string;
   probePath: string;
   probeBody: string;
@@ -83,6 +105,7 @@ const EMPTY_FORM: FormState = {
   enabledModels: "",
   priority: "0",
   healthCheckModel: "",
+  balanceFetchMode: "none",
   proxyUrl: "",
   probePath: "",
   probeBody: "",
@@ -149,8 +172,19 @@ export default function UpstreamsPanel() {
   const [saving, setSaving] = useState(false);
 
   const [keysByUpstream, setKeysByUpstream] = useState<Record<number, UpstreamKeyItem[]>>({});
-  const [balanceInput, setBalanceInput] = useState<Record<number, string>>({});
+  // 刷新错误挂在对应 upstream 卡片上；lastAttempt/inflight 供自动刷新节流（最快 5min）
+  const [balanceError, setBalanceError] = useState<Record<number, string>>({});
   const [refreshingBalance, setRefreshingBalance] = useState<Record<number, boolean>>({});
+  const balanceLastAttemptRef = useRef<Record<number, number>>({});
+  const balanceInflightRef = useRef<Set<number>>(new Set());
+  // 卸载后不再写 balance 状态 / 触发 loadUpstreams（in-flight 请求自然结束，不取消）
+  const balanceMountedRef = useRef(true);
+  useEffect(() => {
+    balanceMountedRef.current = true;
+    return () => {
+      balanceMountedRef.current = false;
+    };
+  }, []);
   const [showPresets, setShowPresets] = useState(false);
   const [testResults, setTestResults] = useState<Record<number, { ok: boolean; modelCount?: number; error?: string } | null>>({});
   const [modelTests, setModelTests] = useState<Record<number, Record<string, ModelTestResult | null>>>({});
@@ -289,6 +323,7 @@ export default function UpstreamsPanel() {
         .filter(Boolean),
       priority: Number(form.priority) || 0,
       healthCheckModel: form.healthCheckModel.trim() || null,
+      balanceFetchMode: form.balanceFetchMode,
     };
     // Proxy URL 写后不可读：编辑态输入为空时省略字段（保持），除非勾选"清除代理"
     if (proxyUrl) {
@@ -407,6 +442,7 @@ export default function UpstreamsPanel() {
       enabledModels: u.enabledModels.join(", "),
       priority: String(u.priority),
       healthCheckModel: u.healthCheckModel ?? "",
+      balanceFetchMode: u.balanceFetchMode ?? "none",
       proxyUrl: "",
       probePath: u.probeConfig?.path ?? "",
       probeBody: u.probeConfig ? JSON.stringify(u.probeConfig.body, null, 2) : "",
@@ -569,42 +605,52 @@ export default function UpstreamsPanel() {
     return parts.join(" · ");
   };
 
-  const handleSaveBalance = async (u: UpstreamItem) => {
-    const value = (balanceInput[u.id] ?? "").trim();
-    const res = await apiFetch(`/api/admin/upstreams/${u.id}`, {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ balance: value === "" ? null : value }),
-    });
-    const json = await res.json();
-    if (!json.success) {
-      setError(json.error || "Failed to save balance");
-      return;
-    }
-    loadUpstreams();
-  };
-
-  const handleRefreshBalance = async (u: UpstreamItem) => {
+  // 手动 + 自动共用的刷新核心；错误挂在卡片上（balanceError），不上页面顶部
+  const refreshBalanceFor = async (u: UpstreamItem) => {
+    if (balanceInflightRef.current.has(u.id)) return;
+    balanceInflightRef.current.add(u.id);
     setRefreshingBalance((prev) => ({ ...prev, [u.id]: true }));
-    setError(null);
     try {
       const res = await apiFetch(`/api/admin/upstreams/${u.id}/balance/refresh`, { method: "POST" });
       const json = await res.json();
+      if (!balanceMountedRef.current) return; // 已离开 Upstreams 页面
       if (!json.success) {
-        setError(json.error || "Failed to refresh balance");
+        setBalanceError((prev) => ({ ...prev, [u.id]: json.error || "Failed to refresh balance" }));
       } else {
-        setBalanceInput((prev) => ({
-          ...prev,
-          [u.id]: json.data?.balance !== undefined ? String(json.data.balance) : (prev[u.id] ?? ""),
-        }));
+        setBalanceError((prev) => ({ ...prev, [u.id]: "" }));
+        loadUpstreams();
       }
-      loadUpstreams();
     } catch {
-      setError("Network error");
+      if (balanceMountedRef.current) {
+        setBalanceError((prev) => ({ ...prev, [u.id]: "Network error" }));
+      }
     } finally {
-      setRefreshingBalance((prev) => ({ ...prev, [u.id]: false }));
+      balanceInflightRef.current.delete(u.id);
+      if (balanceMountedRef.current) {
+        setRefreshingBalance((prev) => ({ ...prev, [u.id]: false }));
+      }
     }
   };
+
+  const handleRefreshBalance = (u: UpstreamItem) => {
+    balanceLastAttemptRef.current[u.id] = Date.now();
+    refreshBalanceFor(u);
+  };
+
+  // 自动刷新：仅本页面（Panel 挂载时），距上次成功刷新与上次尝试均 >5min 才触发。
+  // 依赖 now（页面 30s 时钟）：页面打开期间周期重估，离页即停
+  useEffect(() => {
+    const t = Date.now();
+    for (const u of upstreams) {
+      if (!u.balanceAutoFetch) continue;
+      const lastUpdated = u.balanceUpdatedAt ? new Date(u.balanceUpdatedAt).getTime() : 0;
+      if (t - lastUpdated <= BALANCE_AUTO_REFRESH_MS) continue;
+      if (t - (balanceLastAttemptRef.current[u.id] ?? 0) <= BALANCE_AUTO_REFRESH_MS) continue;
+      balanceLastAttemptRef.current[u.id] = t;
+      void refreshBalanceFor(u);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [upstreams, now]);
 
   const addFormKeyRow = () => {
     setFormKeys((prev) => [...prev, ""]);
@@ -838,7 +884,12 @@ export default function UpstreamsPanel() {
             <input
               value={form.name}
               onChange={(e) => {
-                setForm({ ...form, name: e.target.value });
+                const name = e.target.value;
+                setForm({
+                  ...form,
+                  name,
+                  balanceFetchMode: followBalanceMode(form.baseUrl, name),
+                });
                 setShowPresets(true);
               }}
               onFocus={() => setShowPresets(true)}
@@ -860,6 +911,7 @@ export default function UpstreamsPanel() {
                         name: p.name,
                         protocol: p.protocol,
                         baseUrl: p.baseUrl,
+                        balanceFetchMode: followBalanceMode(p.baseUrl, p.name),
                       });
                       setShowPresets(false);
                     }}
@@ -901,16 +953,39 @@ export default function UpstreamsPanel() {
               className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>
-          <div className="md:col-span-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+          <div className="md:col-span-3 grid grid-cols-1 gap-3 md:grid-cols-3">
           <div>
             <label className="mb-1 block text-xs text-gray-600">Base URL</label>
             <input
               value={form.baseUrl}
-              onChange={(e) => setForm({ ...form, baseUrl: e.target.value })}
+              onChange={(e) =>
+                setForm({
+                  ...form,
+                  baseUrl: e.target.value,
+                  balanceFetchMode: followBalanceMode(e.target.value, form.name),
+                })
+              }
               placeholder="e.g. https://api.deepseek.com"
               required
               className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-gray-600">Balance Fetch</label>
+            <select
+              value={form.balanceFetchMode}
+              onChange={(e) => setForm({ ...form, balanceFetchMode: e.target.value })}
+              className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              {BALANCE_MODE_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 hidden text-[10px] text-gray-400 md:block">
+              auto-follows Base URL / name; auto-refresh every 5 min on this page
+            </p>
           </div>
           <div>
             <div className="mb-1 flex items-center justify-between gap-2">
@@ -1584,8 +1659,33 @@ export default function UpstreamsPanel() {
                     via proxy {u.proxyDisplay ?? ""}
                   </span>
                 )}
-                {u.balance !== null && (
-                  <span className="text-xs font-medium text-gray-500">bal {u.balance}</span>
+                {(u.balance !== null || u.balanceAutoFetch) && (
+                  <span className="inline-flex flex-wrap items-center gap-1.5">
+                    <span
+                      className="font-mono text-[11px] font-medium text-gray-500"
+                      title={
+                        u.balanceUpdatedAt
+                          ? `updated ${new Date(u.balanceUpdatedAt).toLocaleString()}`
+                          : undefined
+                      }
+                    >
+                      bal {u.balance ?? "—"}
+                    </span>
+                    {u.balanceAutoFetch && (
+                      <button
+                        type="button"
+                        onClick={() => handleRefreshBalance(u)}
+                        disabled={refreshingBalance[u.id]}
+                        title="Refresh balance"
+                        className="flex h-10 w-10 items-center justify-center rounded border border-gray-300 text-xs text-gray-500 hover:bg-gray-50 disabled:opacity-40 md:h-auto md:w-auto md:px-1.5 md:py-0.5 md:text-[10px]"
+                      >
+                        {refreshingBalance[u.id] ? "..." : "↻"}
+                      </button>
+                    )}
+                    {balanceError[u.id] && (
+                      <span className="text-[10px] text-red-500">{balanceError[u.id]}</span>
+                    )}
+                  </span>
                 )}
               </div>
               <div className="hidden md:flex items-center gap-2">
@@ -1664,7 +1764,7 @@ export default function UpstreamsPanel() {
             )}
 
             <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
-              <div className="rounded border border-gray-100 bg-gray-50/60 p-2">
+              <div className="rounded border border-gray-100 bg-gray-50/60 p-2 md:col-span-2">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-xs font-medium text-gray-500">Enabled Models</span>
                   <div className="flex items-center gap-2">
@@ -1779,45 +1879,6 @@ export default function UpstreamsPanel() {
                   ) : (
                     <span className="text-amber-500">
                       No probe model — unhealthy upstream cannot auto-recover
-                    </span>
-                  )}
-                </div>
-              </div>
-
-              <div className="rounded border border-gray-100 bg-gray-50/60 p-2">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-medium text-gray-500">Balance</span>
-                  <span className="text-[10px] text-gray-300">
-                    {new Date(u.createdAt).toLocaleString()}
-                  </span>
-                </div>
-                <div className="mt-1.5 flex flex-wrap items-center gap-2">
-                  <input
-                    value={balanceInput[u.id] ?? u.balance ?? ""}
-                    onChange={(e) =>
-                      setBalanceInput((prev) => ({ ...prev, [u.id]: e.target.value }))
-                    }
-                    placeholder="0"
-                    className="w-24 rounded border border-gray-300 px-2 py-1 text-xs focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => handleSaveBalance(u)}
-                    className="rounded border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-gray-50"
-                  >
-                    Save
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleRefreshBalance(u)}
-                    disabled={refreshingBalance[u.id]}
-                    className="rounded border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40"
-                  >
-                    {refreshingBalance[u.id] ? "..." : "↻"}
-                  </button>
-                  {u.balanceUpdatedAt && (
-                    <span className="text-[10px] text-gray-300">
-                      updated {new Date(u.balanceUpdatedAt).toLocaleString()}
                     </span>
                   )}
                 </div>

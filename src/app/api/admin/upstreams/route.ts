@@ -5,6 +5,11 @@ import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";
 import { isProtocol, parseEnabledModels } from "@/lib/gateway/model-router";
 import {
+  isBalanceFetchMode,
+  balanceAutoFetchOf,
+  normalizeBalanceFetchMode,
+} from "@/lib/gateway/balance";
+import {
   validateUpstreamBaseUrl,
   validateProxyUrl,
   InvalidUpstreamUrlError,
@@ -87,6 +92,12 @@ export const GET = withAuth(async () => {
         activeKeyCount: activeCountMap.get(row.id) || 0,
         balance: row.balance ?? null,
         balanceUpdatedAt: row.balanceUpdatedAt ?? null,
+        balanceFetchMode: row.balanceFetchMode ?? "auto",
+        balanceAutoFetch: balanceAutoFetchOf(
+          normalizeBalanceFetchMode(row.balanceFetchMode),
+          row.baseUrl,
+          row.name
+        ),
         hasProxy: proxyUrl !== null,
         proxyDisplay: proxyUrl ? sanitizeProxyUrlForDisplay(proxyUrl) : null,
         headerTransforms: parseHeaderTransforms(row.headerTransforms),
@@ -148,6 +159,14 @@ export const POST = withAuth(async (request: NextRequest) => {
       typeof body.healthCheckModel === "string" && body.healthCheckModel.trim() !== ""
         ? body.healthCheckModel.trim()
         : null;
+    const balanceFetchMode = isBalanceFetchMode(body.balanceFetchMode)
+      ? body.balanceFetchMode
+      : body.balanceFetchMode === undefined
+        ? "auto"
+        : null;
+    if (balanceFetchMode === null) {
+      return NextResponse.json({ success: false, error: "Invalid balanceFetchMode" }, { status: 400 });
+    }
 
     // 可选代理：string（校验后加密落库）或 undefined/空字符串（直连）
     let proxyUrlEncrypted: string | null = null;
@@ -227,6 +246,7 @@ export const POST = withAuth(async (request: NextRequest) => {
           priority,
           enabled: enabled ? 1 : 0,
           healthCheckModel,
+          balanceFetchMode,
           proxyUrlEncrypted,
           headerTransforms: JSON.stringify(normalizeHeaderTransforms(headerTransforms)),
           probeConfig,
