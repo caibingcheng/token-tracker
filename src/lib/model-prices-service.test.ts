@@ -91,6 +91,22 @@ async function insertRemoteInstance(instanceName: string, lastRecordId = 5) {
   });
 }
 
+async function insertLocalRecord(model: string, createdAt: string, provider = "openrouter") {
+  await withSkipCache(async () => {
+    await db.insert(tokenRecords).values({
+      model,
+      provider,
+      agent: "claude-code",
+      inputTokens: 1,
+      outputTokens: 1,
+      cacheRead: 0,
+      cacheWrite: 0,
+      virtualKeyId: -1,
+      createdAt,
+    });
+  });
+}
+
 async function insertPrice(
   model: string,
   opts: {
@@ -186,6 +202,50 @@ describe("model prices visibility (近期流量)", () => {
     // 默认可见性 = active ∪ recentActivity（40 天前的推送模型默认隐藏，showInactive 可查看）
     const visible = trojan!.status.active || trojan!.recentActivity;
     expect(visible).toBe(false);
+  });
+
+  it("本机记录模型（不在 enabled_models、未定价）进入行集，upstreams 含 provider 归属", async () => {
+    await insertLocalRecord("typesafe/jev-1.13", daysAgo(60));
+
+    const rows = await getModelPricesList();
+    const jev = rows.find((r) => r.model === "typesafe/jev-1.13");
+    expect(jev).toBeDefined();
+    expect(jev!.status.active).toBe(false);
+    expect(jev!.recentActivity).toBe(false);
+    expect(jev!.status.inactive).toBe(false); // inactive 只针对已定价行
+    expect(jev!.upstreams).toContain("openrouter");
+  });
+
+  it("本机近 30 天流量 → recentActivity true（UI 默认可见）", async () => {
+    await insertLocalRecord("local-recent", daysAgo(5));
+
+    const rows = await getModelPricesList();
+    const m = rows.find((r) => r.model === "local-recent");
+    expect(m).toBeDefined();
+    expect(m!.recentActivity).toBe(true);
+  });
+
+  it("remote 行不计入本机来源：uid 非空 / remote/ 前缀（uid 迁移前旧行）均不进本机行集", async () => {
+    // 无 sync instance：remote 行不在行集；本机 loader 须严格排除，防旧行被当本机模型冒出
+    await insertRemoteRecord("uid-row", daysAgo(5));
+    await withSkipCache(async () => {
+      await db.insert(tokenRecords).values({
+        model: "legacy-remote-row",
+        provider: "remote/bing-mbp/openai",
+        agent: "remote/bing-mbp/claude-code",
+        inputTokens: 1,
+        outputTokens: 1,
+        cacheRead: 0,
+        cacheWrite: 0,
+        virtualKeyId: -1,
+        remoteInstanceUid: null,
+        createdAt: daysAgo(5),
+      });
+    });
+
+    const rows = await getModelPricesList();
+    expect(rows.find((r) => r.model === "uid-row")).toBeUndefined();
+    expect(rows.find((r) => r.model === "legacy-remote-row")).toBeUndefined();
   });
 
   it("RECENT_ACTIVITY_WINDOW_MS is 30 days", () => {

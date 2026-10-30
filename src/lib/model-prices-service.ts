@@ -13,7 +13,7 @@ import { invalidatePriceCache } from "@/lib/pricing";
 import { loadModelsDevSource } from "@/lib/auth/settings-models-dev-source";
 
 // model_prices 管理服务层：行集 = 全部 upstream enabled_models（非通配，去重）
-// ∪ 已定价 model ∪ 近期推送记录出现过的 model（可被发现、可补价），
+// ∪ 已定价 model ∪ 本机记录 ∪ 推送记录出现过的 model（可被发现、可补价），
 // 附徽标状态判定（active/inactive/待确认/未匹配/有更新/已下架）+ 近期流量可见性。
 //
 // 口径约定：
@@ -92,9 +92,17 @@ export async function loadPricedModels(): Promise<
   return withSkipCache(async () => db.select().from(modelPricesTable));
 }
 
-// ---- 近期推送来源模型：sync_instances 实例名驱动的 provider 前缀匹配（有界 distinct + 内存缓存）----
+// ---- 行集补充来源模型（有界 distinct + 内存缓存）----
+// remote：sync_instances 实例名驱动的 provider 前缀匹配
+// local：本机 token_records（remote_instance_uid 为 NULL 且 provider 非 remote/ 前缀，
+// 与 loadRemoteModelRows 严格互补，防 uid 迁移前旧行重复计入）
 
 let remoteModelCache: {
+  at: number;
+  rows: Array<{ model: string; providers: string[] }>;
+} | null = null;
+
+let localModelCache: {
   at: number;
   rows: Array<{ model: string; providers: string[] }>;
 } | null = null;
@@ -103,6 +111,40 @@ const REMOTE_MODEL_CACHE_TTL_MS = 60_000;
 
 export function invalidateRemoteModelCache(): void {
   remoteModelCache = null;
+  localModelCache = null;
+}
+
+export async function loadLocalModelRows(): Promise<
+  Array<{ model: string; providers: string[] }>
+> {
+  const now = Date.now();
+  if (localModelCache && now - localModelCache.at < REMOTE_MODEL_CACHE_TTL_MS) {
+    return localModelCache.rows;
+  }
+  await initDatabase();
+  const rows = (await withSkipCache(async () =>
+    db
+      .selectDistinct({
+        model: tokenRecords.model,
+        provider: tokenRecords.provider,
+      })
+      .from(tokenRecords)
+      .where(
+        sql`${tokenRecords.remoteInstanceUid} IS NULL AND ${tokenRecords.provider} NOT LIKE ${"remote/%"}`
+      )
+  )) as Array<{ model: string; provider: string }>;
+  const map = new Map<string, Set<string>>();
+  for (const r of rows) {
+    const set = map.get(r.model) ?? new Set<string>();
+    set.add(r.provider);
+    map.set(r.model, set);
+  }
+  const result = Array.from(map.entries()).map(([model, providers]) => ({
+    model,
+    providers: Array.from(providers),
+  }));
+  localModelCache = { at: now, rows: result };
+  return result;
 }
 
 async function loadRemoteModelRows(): Promise<
@@ -217,13 +259,15 @@ function samePrice(a: SnapshotPrice | null, b: SnapshotPrice | null): boolean {
 }
 
 export async function getModelPricesList(): Promise<ModelPriceRow[]> {
-  const [upstreamModels, priced, snapshot, remoteModels, recentActivity] = await Promise.all([
-    loadUpstreamModelRows(),
-    loadPricedModels(),
-    getSnapshot({ source: await loadModelsDevSource() }),
-    loadRemoteModelRows(),
-    loadRecentActivityModels(),
-  ]);
+  const [upstreamModels, priced, snapshot, remoteModels, localModels, recentActivity] =
+    await Promise.all([
+      loadUpstreamModelRows(),
+      loadPricedModels(),
+      getSnapshot({ source: await loadModelsDevSource() }),
+      loadRemoteModelRows(),
+      loadLocalModelRows(),
+      loadRecentActivityModels(),
+    ]);
 
   const upstreamByModel = new Map<string, string[]>();
   for (const row of upstreamModels) {
@@ -237,16 +281,22 @@ export async function getModelPricesList(): Promise<ModelPriceRow[]> {
     remoteByModel.set(row.model, row.providers);
   }
 
+  const localByModel = new Map<string, string[]>();
+  for (const row of localModels) {
+    localByModel.set(row.model, row.providers);
+  }
+
   const pricedByModel = new Map<string, (typeof priced)[number]>();
   for (const p of priced) {
     pricedByModel.set(p.model, p);
   }
 
-  // 行集 = upstream models ∪ 已定价 model ∪ 近期推送记录出现过的 model
+  // 行集 = upstream models ∪ 已定价 model ∪ 本机记录 ∪ 推送记录出现过的 model
   const models = new Set<string>([
     ...Array.from(upstreamByModel.keys()),
     ...Array.from(pricedByModel.keys()),
     ...Array.from(remoteByModel.keys()),
+    ...Array.from(localByModel.keys()),
   ]);
   const rows: ModelPriceRow[] = [];
 
@@ -254,6 +304,7 @@ export async function getModelPricesList(): Promise<ModelPriceRow[]> {
     const price = pricedByModel.get(model);
     const upstreams = upstreamByModel.get(model) ?? [];
     const remoteProviders = remoteByModel.get(model) ?? [];
+    const localProviders = localByModel.get(model) ?? [];
     const active = upstreams.length > 0;
     const hasRecentActivity = recentActivity.has(model);
 
@@ -341,7 +392,7 @@ export async function getModelPricesList(): Promise<ModelPriceRow[]> {
 
     rows.push({
       model,
-      upstreams: [...upstreams, ...remoteProviders],
+      upstreams: [...upstreams, ...remoteProviders, ...localProviders],
       inputPrice: price?.inputPrice ?? null,
       outputPrice: price?.outputPrice ?? null,
       cacheReadPrice: price?.cacheReadPrice ?? null,
@@ -487,7 +538,7 @@ function upsertPriceRow(price: AutoFillModelPrice) {
 }
 
 // 批量自动填充所有未定价行（只填空不覆盖；无快照时跳过全部）。
-// 模型集 = 本机启用 upstream 的 enabled_models ∪ remote 推送模型（存量补齐）
+// 模型集 = 本机启用 upstream 的 enabled_models ∪ 本机记录 ∪ remote 推送模型（存量补齐）
 export async function autoFillAllUnpriced(): Promise<{
   filled: string[];
   updated: string[];
@@ -495,10 +546,11 @@ export async function autoFillAllUnpriced(): Promise<{
   unmatched: string[];
 }> {
   await initDatabase();
-  const [upstreamModels, priced, remoteModels] = await Promise.all([
+  const [upstreamModels, priced, remoteModels, localModels] = await Promise.all([
     loadUpstreamModelRows(),
     loadPricedModels(),
     loadRemoteModelRows(),
+    loadLocalModelRows(),
   ]);
   const source = await loadModelsDevSource();
   const snapshot = await getSnapshot({ source });
@@ -507,6 +559,7 @@ export async function autoFillAllUnpriced(): Promise<{
     new Set([
       ...upstreamModels.map((r) => r.model),
       ...remoteModels.map((r) => r.model),
+      ...localModels.map((r) => r.model),
     ])
   );
 
@@ -528,10 +581,11 @@ export async function autoFillForceAll(): Promise<{
   unmatched: string[];
 }> {
   await initDatabase();
-  const [upstreamModels, priced, remoteModels] = await Promise.all([
+  const [upstreamModels, priced, remoteModels, localModels] = await Promise.all([
     loadUpstreamModelRows(),
     loadPricedModels(),
     loadRemoteModelRows(),
+    loadLocalModelRows(),
   ]);
   const source = await loadModelsDevSource();
   const snapshot = await getSnapshot({ source });
@@ -543,6 +597,7 @@ export async function autoFillForceAll(): Promise<{
     new Set([
       ...upstreamModels.map((r) => r.model),
       ...remoteModels.map((r) => r.model),
+      ...localModels.map((r) => r.model),
       ...priced.filter((p) => p.source !== "manual").map((p) => p.model),
     ])
   );
