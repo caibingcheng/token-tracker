@@ -11,9 +11,15 @@ import {
 import { getTokenEpoch, getAdminApiKey, getEnvAdminKeys, resolveSessionTtlMs } from "./settings";
 import { canBypassAuth } from "./local-bypass";
 
-export type RouteHandler = (
+// Next 15+ 动态路由的 `params` 是 Promise（16 的生成类型校验强制要求）；
+// 单测仍可直接传同步对象，`await` 对两者等价
+export type RouteContext<P extends Record<string, string> = Record<string, string>> = {
+  params: Promise<P> | P;
+};
+
+export type RouteHandler<P extends Record<string, string> = Record<string, string>> = (
   request: NextRequest,
-  ctx: { params: Record<string, string> }
+  ctx: RouteContext<P>
 ) => Promise<Response> | Response;
 
 export function unauthorized(message = "Invalid or missing session token") {

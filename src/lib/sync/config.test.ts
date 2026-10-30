@@ -4,6 +4,8 @@ import { tmpdir } from "os";
 import { join } from "path";
 import {
   isValidTargetUrl,
+  isSecureSyncTarget,
+  INSECURE_TARGET_MESSAGE,
   normalizeTargetUrl,
   defaultInstanceName,
   loadSyncConfig,
@@ -47,6 +49,50 @@ describe("isValidTargetUrl", () => {
     expect(isValidTargetUrl("ftp://example.com")).toBe(false);
     expect(isValidTargetUrl("not-a-url")).toBe(false);
     expect(isValidTargetUrl("")).toBe(false);
+  });
+});
+
+describe("isSecureSyncTarget（HTTP/HTTPS 兼容 + SSRF 防护）", () => {
+  it("https 公网主机放行", () => {
+    expect(isSecureSyncTarget("https://tracker.example.com/ingest/records")).toBe(true);
+    expect(isSecureSyncTarget("https://203.0.113.10:3000/ingest/records")).toBe(true);
+  });
+
+  it("非环回私网目标拒绝（与运行时 guarded dispatcher 口径一致，需 ALLOW_PRIVATE_UPSTREAMS）", () => {
+    expect(isSecureSyncTarget("https://192.168.1.10:3000/ingest/records")).toBe(false);
+    expect(isSecureSyncTarget("https://10.0.0.5/ingest/records")).toBe(false);
+    process.env.ALLOW_PRIVATE_UPSTREAMS = "true";
+    try {
+      expect(isSecureSyncTarget("https://192.168.1.10:3000/ingest/records")).toBe(true);
+    } finally {
+      delete process.env.ALLOW_PRIVATE_UPSTREAMS;
+    }
+  });
+
+  it("http 公网与环回均放行", () => {
+    expect(isSecureSyncTarget("http://localhost:3000/ingest/records")).toBe(true);
+    expect(isSecureSyncTarget("http://127.0.0.1:3000/ingest/records")).toBe(true);
+    expect(isSecureSyncTarget("http://[::1]:3000/ingest/records")).toBe(true);
+    expect(isSecureSyncTarget("http://b.localhost:3000/ingest/records")).toBe(true);
+  });
+
+  it("公网 http 放行，非环回私网与非法 URL 拒绝", () => {
+    expect(isSecureSyncTarget("http://tracker.example.com/ingest/records")).toBe(true);
+    expect(isSecureSyncTarget("http://192.168.1.10:3000/ingest/records")).toBe(false);
+    expect(isSecureSyncTarget("http://10.0.0.5/ingest/records")).toBe(false);
+    expect(isSecureSyncTarget("ftp://tracker.example.com")).toBe(false);
+    expect(isSecureSyncTarget("not-a-url")).toBe(false);
+  });
+
+  it("saveSyncConfig 接受公网 http，拒绝非环回私网", async () => {
+    await saveSyncConfig({ targetUrl: "http://tracker.example.com/ingest/records" });
+    expect((await loadSyncConfig()).targetUrl).toBe("http://tracker.example.com/ingest/records");
+    await expect(
+      saveSyncConfig({ targetUrl: "http://192.168.1.10:3000/ingest/records" })
+    ).rejects.toThrow(INSECURE_TARGET_MESSAGE);
+    // 环回 http 正常落库
+    await saveSyncConfig({ targetUrl: "http://127.0.0.1:3000/ingest/records" });
+    expect((await loadSyncConfig()).targetUrl).toBe("http://127.0.0.1:3000/ingest/records");
   });
 });
 

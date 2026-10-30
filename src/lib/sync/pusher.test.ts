@@ -11,7 +11,8 @@ import { getSetting, setSetting, deleteSetting } from "@/lib/auth/settings";
 
 const ORIG_DB = process.env.SQLITE_DATABASE_PATH;
 const ORIG_SECRET = process.env.GATEWAY_SECRET;
-const TARGET = "http://a.example.com/ingest/records";
+// HTTP/HTTPS 均允许；非允许私网目标会在推送前拦下（见 dedicated test）
+const TARGET = "https://a.example.com/ingest/records";
 const TOKEN = "it-test-pusher-token-1234567890abcdef";
 const UID = "u-0123456789abcdef0123456789abcdef";
 
@@ -221,6 +222,45 @@ describe("SyncPusher", () => {
     expect(fetchMock).not.toHaveBeenCalled();
     const c = await config();
     expect(c.cursor).toBe(0);
+  });
+
+  it("存量公网 http 配置：正常推送并推进游标", async () => {
+    await setSetting("sync_target_url", "http://legacy.example.com/ingest/records");
+    await insertRecord();
+    const fetchMock = vi.fn(async () =>
+      jsonResponse(200, { received: 1, skipped: 0, skippedInvalid: [], watermark: 1, boundUid: null })
+    );
+    const pusher = new SyncPusher({ fetchImpl: fetchMock as typeof fetch });
+    await pusher.trigger();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const c = await config();
+    expect(c.cursor).toBeGreaterThan(0);
+    expect(c.lastError).toBeNull();
+  });
+
+  it("环回 http 目标仍可推送（本机联调）", async () => {
+    await setSetting("sync_target_url", "http://127.0.0.1:3000/ingest/records");
+    await insertRecord();
+    const fetchMock = vi.fn(async () =>
+      jsonResponse(200, { received: 1, skipped: 0, skippedInvalid: [], watermark: 1, boundUid: null })
+    );
+    const pusher = new SyncPusher({ fetchImpl: fetchMock as typeof fetch });
+    await pusher.trigger();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect((await config()).cursor).toBeGreaterThan(0);
+  });
+
+  it("推送请求带 redirect: manual 与受保护 dispatcher", async () => {
+    await insertRecord();
+    let captured: RequestInit | undefined;
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      captured = init;
+      return jsonResponse(200, { received: 1, skipped: 0, skippedInvalid: [], watermark: 1, boundUid: null });
+    });
+    const pusher = new SyncPusher({ fetchImpl: fetchMock as typeof fetch });
+    await pusher.trigger();
+    expect(captured?.redirect).toBe("manual");
+    expect((captured as { dispatcher?: unknown }).dispatcher).toBeTruthy();
   });
 
   it("pushes multiple batches when more than BATCH_SIZE records exist", async () => {

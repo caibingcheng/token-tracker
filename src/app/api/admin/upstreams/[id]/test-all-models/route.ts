@@ -10,15 +10,16 @@ import { parseModelProbeConfigs, parseProbeConfig } from "@/lib/gateway/probe-co
 import { parseEnabledModels } from "@/lib/gateway/model-router";
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 // 全部模型可用性测试：遍历 enabled_models 中非通配条目，每个 model 依次用全部启用 key 探测
 export const POST = withAuth(async (request: NextRequest, ctx: any) => {
-  const { params } = ctx as Params;
+  const { params } = ctx as Params; // params 为 Promise（Next 15+ 动态路由）
+  const paramsResolved = await params;
   return withSkipCache(async () => {
     await initDatabase();
-    const upstreamId = Number(params.id);
+    const upstreamId = Number(paramsResolved.id);
     const upstream = (
       await db.select().from(upstreamsTable).where(eq(upstreamsTable.id, upstreamId))
     )[0];

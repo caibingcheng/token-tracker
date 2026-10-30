@@ -267,7 +267,7 @@ export async function getModelPricesList(): Promise<ModelPriceRow[]> {
       }
     }
 
-    let status: ModelPriceRow["status"] = {
+    const status: ModelPriceRow["status"] = {
       active,
       inactive: !!price && !active && !hasRecentActivity,
       pending: false,

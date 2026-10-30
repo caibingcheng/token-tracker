@@ -7,7 +7,7 @@ import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 import { MAX_DESCRIPTION_LENGTH, parsePriority } from "@/lib/admin/named-routes";
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 async function findNamedRouteById(id: number) {
@@ -17,10 +17,11 @@ async function findNamedRouteById(id: number) {
 
 // POST：给命名路由追加一个目标（upstream + 真实模型 + 特性描述 + 优先级）
 export const POST = withAuth(async (request: NextRequest, ctx: any) => {
-  const { params } = ctx as Params;
+  const { params } = ctx as Params; // params 为 Promise（Next 15+ 动态路由）
+  const paramsResolved = await params;
   return withSkipCache(async () => {
     await initDatabase();
-    const routeId = Number(params.id);
+    const routeId = Number(paramsResolved.id);
     const route = await findNamedRouteById(routeId);
     if (!route) {
       return NextResponse.json({ success: false, error: "Named route not found" }, { status: 404 });

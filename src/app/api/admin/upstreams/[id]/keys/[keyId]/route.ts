@@ -6,14 +6,15 @@ import { withAuth } from "@/lib/auth/guard";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 
 interface Params {
-  params: { id: string; keyId: string };
+  params: Promise<{ id: string; keyId: string }>;
 }
 
 export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
-  const { params } = ctx as Params;
+  const { params } = ctx as Params; // params 为 Promise（Next 15+ 动态路由）
+  const paramsResolved = await params;
   return withSkipCache(async () => {
     await initDatabase();
-    const keyId = Number(params.keyId);
+    const keyId = Number(paramsResolved.keyId);
     const row = (
       await db.select().from(upstreamKeysTable).where(eq(upstreamKeysTable.id, keyId))
     )[0];
@@ -54,10 +55,11 @@ export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
 });
 
 export const DELETE = withAuth(async (request: NextRequest, ctx: any) => {
-  const { params } = ctx as Params;
+  const { params } = ctx as Params; // params 为 Promise（Next 15+ 动态路由）
+  const paramsResolved = await params;
   return withSkipCache(async () => {
     await initDatabase();
-    const keyId = Number(params.keyId);
+    const keyId = Number(paramsResolved.keyId);
     const row = (
       await db.select().from(upstreamKeysTable).where(eq(upstreamKeysTable.id, keyId))
     )[0];

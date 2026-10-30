@@ -6,6 +6,8 @@ import {
   saveSyncConfig,
   deleteSyncConfig,
   isValidTargetUrl,
+  isSecureSyncTarget,
+  INSECURE_TARGET_MESSAGE,
 } from "@/lib/sync/config";
 import { isValidInstanceName } from "@/lib/ingest/validate";
 import { GatewaySecretMissingError } from "@/lib/gateway/crypto";
@@ -51,6 +53,13 @@ export const PUT = withAuth(async (request: NextRequest) => {
       if (typeof body.targetUrl !== "string" || !isValidTargetUrl(body.targetUrl)) {
         return NextResponse.json(
           { success: false, error: "targetUrl must be an http(s) URL" },
+          { status: 400 }
+        );
+      }
+      // HTTP/HTTPS 均允许；仅拦截 SSRF 策略不允许的私网目标
+      if (!isSecureSyncTarget(body.targetUrl)) {
+        return NextResponse.json(
+          { success: false, error: INSECURE_TARGET_MESSAGE },
           { status: 400 }
         );
       }

@@ -7,7 +7,7 @@ import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 import { isReservedRemoteName, REMOTE_NAME_PREFIX } from "@/lib/ingest/validate";
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 // 配额字段校验：undefined → 不传；null/0 → NULL（清除限制）；非负整数 → 值；其余 → 非法
@@ -25,10 +25,11 @@ function parseQuotaField(
 }
 
 export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
-  const { params } = ctx as Params;
+  const { params } = ctx as Params; // params 为 Promise（Next 15+ 动态路由）
+  const paramsResolved = await params;
   return withSkipCache(async () => {
     await initDatabase();
-    const id = Number(params.id);
+    const id = Number(paramsResolved.id);
     const row = (
       await db.select().from(virtualKeysTable).where(eq(virtualKeysTable.id, id))
     )[0];
@@ -119,10 +120,11 @@ export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
 });
 
 export const DELETE = withAuth(async (request: NextRequest, ctx: any) => {
-  const { params } = ctx as Params;
+  const { params } = ctx as Params; // params 为 Promise（Next 15+ 动态路由）
+  const paramsResolved = await params;
   return withSkipCache(async () => {
     await initDatabase();
-    const id = Number(params.id);
+    const id = Number(paramsResolved.id);
     const row = (
       await db.select().from(virtualKeysTable).where(eq(virtualKeysTable.id, id))
     )[0];

@@ -4,11 +4,12 @@ import { withSkipCache } from "@/lib/db/cache";
 import { updateIngestToken } from "@/lib/ingest/tokens";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 
-type RouteCtx = { params: Record<string, string> };
+// params 为 Promise（Next 15+）；同步对象兼容（单测直接传）
+type RouteCtx = { params: Promise<Record<string, string>> | Record<string, string> };
 
 export const PATCH = withAuth(async (request: NextRequest, ctx: RouteCtx) => {
   return withSkipCache(async () => {
-    const tokenId = Number(ctx.params.id);
+    const tokenId = Number((await ctx.params).id);
     if (!Number.isInteger(tokenId) || tokenId <= 0) {
       return NextResponse.json({ success: false, error: "Invalid token id" }, { status: 400 });
     }
@@ -66,7 +67,7 @@ export const PATCH = withAuth(async (request: NextRequest, ctx: RouteCtx) => {
 
 export const DELETE = withAuth(async (request: NextRequest, ctx: RouteCtx) => {
   return withSkipCache(async () => {
-    const tokenId = Number(ctx.params.id);
+    const tokenId = Number((await ctx.params).id);
     if (!Number.isInteger(tokenId) || tokenId <= 0) {
       return NextResponse.json({ success: false, error: "Invalid token id" }, { status: 400 });
     }

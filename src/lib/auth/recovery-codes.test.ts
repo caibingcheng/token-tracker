@@ -148,6 +148,32 @@ describe("verifyRecoveryCode（真实 settings 存储）", () => {
     expect(await verifyRecoveryCode(normalized)).toBe(true);
   });
 
+  it("并发复用同一码：原子事务内重读，只有一个成功", async () => {
+    const codes = generateRecoveryCodes(1);
+    await setRecoveryCodes(codes);
+    const code = codes[0]!;
+    const results = await Promise.all([
+      verifyRecoveryCode(code),
+      verifyRecoveryCode(code),
+      verifyRecoveryCode(code),
+      verifyRecoveryCode(code.toLowerCase().replace(/-/g, "")), // 归一化后同一码
+    ]);
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(await getRemainingRecoveryCodes()).toBe(0);
+    // 落库状态也已标记：后续单独验证仍然失败，不会「复活」
+    expect(await verifyRecoveryCode(code)).toBe(false);
+  });
+
+  it("并发验证不同码：互不干扰，各自成功一次", async () => {
+    const codes = generateRecoveryCodes(2);
+    await setRecoveryCodes(codes);
+    const [a, b] = [codes[0]!, codes[1]!];
+    const [ra, rb] = await Promise.all([verifyRecoveryCode(a), verifyRecoveryCode(b)]);
+    expect(ra).toBe(true);
+    expect(rb).toBe(true);
+    expect(await getRemainingRecoveryCodes()).toBe(0);
+  });
+
   it("非法输入直接失败（不触碰存储）", async () => {
     expect(await verifyRecoveryCode("not-a-code")).toBe(false);
     expect(await getRemainingRecoveryCodes()).toBe(0);

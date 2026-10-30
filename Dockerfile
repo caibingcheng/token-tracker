@@ -45,14 +45,10 @@ ENV LD_PRELOAD=/usr/local/lib/libjemalloc.so
 
 RUN set -eux; \
   apt-get update; \
-  apt-get install -y --no-install-recommends ca-certificates wget libjemalloc2; \
+  # gosu 直接用 Debian 官方包（不再 wget 未校验的 GitHub release 二进制）
+  apt-get install -y --no-install-recommends ca-certificates gosu libjemalloc2; \
   rm -rf /var/lib/apt/lists/*; \
-  ln -s "/usr/lib/$(uname -m)-linux-gnu/libjemalloc.so.2" /usr/local/lib/libjemalloc.so; \
-  dpkgArch="$(dpkg --print-architecture | awk -F- '{ print $NF }')"; \
-  wget -O /usr/local/bin/gosu "https://github.com/tianon/gosu/releases/download/1.19/gosu-$dpkgArch"; \
-  chmod +x /usr/local/bin/gosu; \
-  apt-get purge -y --auto-remove wget; \
-  rm -rf /var/lib/apt/lists/*
+  ln -s "/usr/lib/$(uname -m)-linux-gnu/libjemalloc.so.2" /usr/local/lib/libjemalloc.so
 
 RUN mkdir -p /app/data && chown node:node /app/data
 

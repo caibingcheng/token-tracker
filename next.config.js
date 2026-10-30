@@ -1,3 +1,5 @@
+const { availableParallelism } = require('node:os');
+
 /** @type {import('next').NextConfig} */
 // dev 模式 webpack 以 eval() 加载模块（eval-source-map），CSP 需放行 'unsafe-eval'；
 // 生产构建不使用 eval，保持收紧不放行
@@ -13,9 +15,10 @@ const nextConfig = {
   },
   // 不暴露框架身份（x-powered-by: Next.js 属信息泄露）
   poweredByHeader: false,
-  // instrumentation hook：启动时调用 src/instrumentation.ts 的 register()（周期性内存归还）
+  // instrumentation：15+ 已稳定，src/instrumentation.ts 自动识别（不再需要 experimental.instrumentationHook）
   experimental: {
-    instrumentationHook: true,
+    // 构建并发上限（容器/CI 上不要打满整机；本机 20 核 → 取一半以内）
+    cpus: Math.max(1, Math.floor(availableParallelism() / 2)),
   },
   async headers() {
     return [

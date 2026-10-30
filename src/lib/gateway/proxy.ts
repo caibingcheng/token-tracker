@@ -26,7 +26,8 @@ import type { ParsedUsage } from "./parsers/types";
 import { checkQuota, hasQuotaLimits } from "./quota";
 import type { QuotaUsage } from "./quota";
 import { rewriteModelNonStreaming, createSseModelRewriter } from "./response-rewriter";
-import { getProxyDispatcher } from "./proxy-dispatcher";
+import { getOutboundDispatcher } from "./proxy-dispatcher";
+import { outboundFetch } from "./outbound-fetch";
 import { applyHeaderTransforms } from "./header-transforms";
 import type { HeaderTransform, HeaderTransformContext } from "./header-transforms";
 import { parseClassifierModels } from "./classifier/types";
@@ -213,11 +214,11 @@ export function resolveRecordSessionId(
   return buildSessionId(bodyJson, model, virtualKeyId, protocol).slice(0, MAX_SESSION_ID_LENGTH);
 }
 
-// 从请求头/query 中提取虚拟 key token
-export function extractVirtualKeyToken(
-  headers: Headers,
-  searchParams: URLSearchParams
-): string | null {
+// 从请求头中提取虚拟 key token。
+// 只认三个 header：Authorization: Bearer / x-api-key / x-goog-api-key。
+// **不再支持 `?key=` query 认证**：query string 会进访问日志、反代日志、Referer、浏览器历史，
+// 虚拟 key 泄露面太大（Gemini 风格客户端请改用 x-goog-api-key header）。
+export function extractVirtualKeyToken(headers: Headers): string | null {
   const authorization = headers.get("authorization");
   if (authorization && authorization.startsWith("Bearer ")) {
     const token = authorization.slice("Bearer ".length).trim();
@@ -227,8 +228,6 @@ export function extractVirtualKeyToken(
   if (apiKey) return apiKey;
   const googKey = headers.get("x-goog-api-key");
   if (googKey) return googKey;
-  const queryKey = searchParams.get("key");
-  if (queryKey) return queryKey;
   return null;
 }
 
@@ -350,7 +349,7 @@ export async function handleProxyRequest(
   if (path === null) {
     return proxyError(400, "Invalid request path", "invalid_request_error");
   }
-  const token = extractVirtualKeyToken(request.headers, url.searchParams);
+  const token = extractVirtualKeyToken(request.headers);
 
   const rawUA = request.headers.get("user-agent");
   const userAgent = rawUA && rawUA.trim() !== "" ? rawUA.slice(0, 512) : null;
@@ -850,9 +849,9 @@ export async function handleProxyRequest(
           if (isNonStreaming) {
             timeoutHandle = setTimeout(() => controller.abort(), NON_STREAMING_TIMEOUT_MS);
           }
-          const dispatcher = getProxyDispatcher(upstream.proxyUrl);
+          const dispatcher = getOutboundDispatcher(upstream.proxyUrl);
 
-          upstreamResponse = await fetch(targetUrl, {
+          upstreamResponse = await outboundFetch(targetUrl, {
             method: request.method,
             headers: buildUpstreamHeaders(
               request.headers,
@@ -1195,9 +1194,9 @@ async function handleSubresourcePassthrough(
         try {
           const controller = new AbortController();
           timeoutHandle = setTimeout(() => controller.abort(), NON_STREAMING_TIMEOUT_MS);
-          const dispatcher = getProxyDispatcher(upstream.proxyUrl);
+          const dispatcher = getOutboundDispatcher(upstream.proxyUrl);
 
-          upstreamResponse = await fetch(targetUrl, {
+          upstreamResponse = await outboundFetch(targetUrl, {
             method: request.method,
             headers: buildUpstreamHeaders(
               request.headers,
@@ -1563,6 +1562,7 @@ function dedupeByUpstreamId(candidates: ModelCandidate[]): UpstreamRoute[] {
   return result;
 }
 
+// `?key=` 已不再作为认证方式；转发前仍剔除以防客户端把 key 混在 query 里透给上游
 function stripQueryKey(url: URL): string {
   url.searchParams.delete("key");
   const qs = url.searchParams.toString();

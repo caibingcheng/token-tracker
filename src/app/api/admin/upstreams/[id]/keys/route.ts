@@ -19,14 +19,15 @@ function gatewaySecretError() {
 }
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 export const GET = withAuth(async (request: NextRequest, ctx: any) => {
-  const { params } = ctx as Params;
+  const { params } = ctx as Params; // params 为 Promise（Next 15+ 动态路由）
+  const paramsResolved = await params;
   return withSkipCache(async () => {
     await initDatabase();
-    const upstreamId = Number(params.id);
+    const upstreamId = Number(paramsResolved.id);
     const rows = await db
       .select()
       .from(upstreamKeysTable)
@@ -47,10 +48,11 @@ export const GET = withAuth(async (request: NextRequest, ctx: any) => {
 });
 
 export const POST = withAuth(async (request: NextRequest, ctx: any) => {
-  const { params } = ctx as Params;
+  const { params } = ctx as Params; // params 为 Promise（Next 15+ 动态路由）
+  const paramsResolved = await params;
   return withSkipCache(async () => {
     await initDatabase();
-    const upstreamId = Number(params.id);
+    const upstreamId = Number(paramsResolved.id);
     const upstream = (
       await db.select().from(upstreamsTable).where(eq(upstreamsTable.id, upstreamId))
     )[0];

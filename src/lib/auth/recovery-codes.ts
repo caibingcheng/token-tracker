@@ -1,4 +1,7 @@
 import { createHash, randomBytes } from "crypto";
+import { eq } from "drizzle-orm";
+import { db, initDatabase, settingsTable } from "@/lib/db";
+import { withSkipCache } from "@/lib/db/cache";
 import { getSetting, setSetting, deleteSetting } from "./settings";
 import { safeCompare } from "@/lib/gateway/crypto";
 
@@ -68,8 +71,7 @@ export function classifySecondFactorInput(raw: string): "totp" | "recovery" | "i
   return "invalid";
 }
 
-async function readStored(): Promise<StoredRecoveryCodes | null> {
-  const raw = await getSetting(RECOVERY_CODES_KEY);
+function parseStoredValue(raw: string | null | undefined): StoredRecoveryCodes | null {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as Partial<StoredRecoveryCodes>;
@@ -86,25 +88,51 @@ async function readStored(): Promise<StoredRecoveryCodes | null> {
   }
 }
 
+async function readStored(): Promise<StoredRecoveryCodes | null> {
+  return parseStoredValue(await getSetting(RECOVERY_CODES_KEY));
+}
+
 async function writeStored(stored: StoredRecoveryCodes): Promise<void> {
   await setSetting(RECOVERY_CODES_KEY, JSON.stringify(stored));
 }
 
-// 验证并标记已用：哈希比对（safeCompare 防时序侧信道），命中未使用条目即标记并写回
+// 验证并标记已用：哈希比对（safeCompare 防时序侧信道），命中未使用条目即标记并写回。
+// 原子性：BEGIN IMMEDIATE 事务内「重读 → 比对 → 标记 → 写回」，并发复用同一码时
+// 最多一个请求能拿到 true（后到者读到 used=true 后返回 false），不存在双花窗口。
 export async function verifyRecoveryCode(code: string): Promise<boolean> {
   const normalized = parseRecoveryCodeInput(code);
   if (!normalized) return false;
-  const stored = await readStored();
-  if (!stored) return false;
   const hash = hashRecoveryCode(normalized);
-  for (let i = 0; i < stored.hashes.length; i++) {
-    if (!stored.used[i] && safeCompare(hash, stored.hashes[i]!)) {
-      stored.used[i] = true;
-      await writeStored(stored);
-      return true;
-    }
-  }
-  return false;
+  await initDatabase();
+  return withSkipCache(() =>
+    db.transaction(
+      (tx: any) => {
+        const row = tx
+          .select()
+          .from(settingsTable)
+          .where(eq(settingsTable.key, RECOVERY_CODES_KEY))
+          .get();
+        const stored = parseStoredValue(row?.value ?? null);
+        if (!stored) return false;
+        let hit = -1;
+        for (let i = 0; i < stored.hashes.length; i++) {
+          if (!stored.used[i] && safeCompare(hash, stored.hashes[i]!)) {
+            hit = i;
+            break;
+          }
+        }
+        if (hit < 0) return false;
+        stored.used[hit] = true;
+        const value = JSON.stringify(stored);
+        tx.insert(settingsTable)
+          .values({ key: RECOVERY_CODES_KEY, value })
+          .onConflictDoUpdate({ target: settingsTable.key, set: { value } })
+          .run();
+        return true;
+      },
+      { behavior: "immediate" }
+    )
+  );
 }
 
 // 剩余可用数量；从未生成返回 0

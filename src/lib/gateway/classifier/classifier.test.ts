@@ -7,6 +7,7 @@ import { parseClassifierModels, isValidClassifierModelEntry, estimateOverheadTok
 import { runClassifier } from "./index";
 import type { ClassifierRouteOption } from "./types";
 import type { UpstreamRoute } from "../model-router";
+import { setOutboundFetchImpl } from "../outbound-fetch";
 
 const options: ClassifierRouteOption[] = [
   { key: "r1", routeId: 1, label: "gpt-4o-mini — 简单问答、格式化、短文本" },
@@ -229,9 +230,12 @@ describe("classifier_models entry parsing", () => {
 
 describe("runClassifier", () => {
   const fetchMock = vi.fn();
-  beforeEach(() => vi.stubGlobal("fetch", fetchMock));
+  beforeEach(() => {
+    setOutboundFetchImpl(fetchMock);
+  });
   afterEach(() => {
     vi.unstubAllGlobals();
+    setOutboundFetchImpl(null);
     fetchMock.mockReset();
   });
 

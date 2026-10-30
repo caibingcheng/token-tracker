@@ -14,6 +14,7 @@ import {
 } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { encryptSecret } from "@/lib/gateway/crypto";
+import { setOutboundFetchImpl } from "./outbound-fetch";
 
 const ORIG_DB = process.env.SQLITE_DATABASE_PATH;
 const ORIG_SECRET = process.env.GATEWAY_SECRET;
@@ -42,6 +43,7 @@ beforeEach(async () => {
     await db.delete(upstreamsTable);
   });
   vi.unstubAllGlobals();
+  setOutboundFetchImpl(null);
 });
 
 const BASE_URL = "https://probe.example.com";
@@ -79,9 +81,7 @@ async function createUpstream(
 // mock fetch：按 Authorization 头区分 key，返回每个 key 预设的 status
 function stubFetchByKey(statusForKey: Record<string, number>) {
   const calls: string[] = [];
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async (_url: unknown, opts?: { headers?: Headers }) => {
+  setOutboundFetchImpl(vi.fn(async (_url: unknown, opts?: { headers?: Headers }) => {
       const auth = opts?.headers?.get("authorization") ?? "";
       const key = auth.replace(/^Bearer\s+/i, "");
       calls.push(key);
@@ -90,21 +90,17 @@ function stubFetchByKey(statusForKey: Record<string, number>) {
         status,
         headers: { "content-type": "application/json" },
       });
-    })
-  );
+    }));
   return calls;
 }
 
 // mock fetch：记录每次请求的 url + 解析后的 body，统一返回指定 status
 function stubFetchRecording(status: number) {
   const records: Array<{ url: string; body: unknown }> = [];
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async (url: unknown, opts?: { body?: unknown }) => {
+  setOutboundFetchImpl(vi.fn(async (url: unknown, opts?: { body?: unknown }) => {
       records.push({ url: String(url), body: JSON.parse(String(opts?.body)) });
       return new Response("{}", { status, headers: { "content-type": "application/json" } });
-    })
-  );
+    }));
   return records;
 }
 

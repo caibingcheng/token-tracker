@@ -15,15 +15,16 @@ function gatewaySecretError() {
 }
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 // 拉取上游模型列表，与手动配置的 enabled_models 合并返回
 export const GET = withAuth(async (request: NextRequest, ctx: any) => {
-  const { params } = ctx as Params;
+  const { params } = ctx as Params; // params 为 Promise（Next 15+ 动态路由）
+  const paramsResolved = await params;
   return withSkipCache(async () => {
     await initDatabase();
-    const upstreamId = Number(params.id);
+    const upstreamId = Number(paramsResolved.id);
     const upstream = (
       await db.select().from(upstreamsTable).where(eq(upstreamsTable.id, upstreamId))
     )[0];

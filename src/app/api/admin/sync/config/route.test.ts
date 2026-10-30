@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { NextRequest } from "next/server";
-import { DELETE } from "./route";
+import { DELETE, PUT } from "./route";
 import { db, initDatabase, adminAuditLogsTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import {
@@ -65,12 +65,52 @@ async function makeToken(): Promise<string> {
   return signSessionToken(epoch, keyFingerprint(ADMIN_KEY), 60_000);
 }
 
+function putReq(body: unknown, token: string): NextRequest {
+  return new NextRequest("http://localhost/api/admin/sync/config", {
+    method: "PUT",
+    headers: { "x-api-key": token, "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 function req(token?: string): NextRequest {
   return new NextRequest("http://localhost/api/admin/sync/config", {
     method: "DELETE",
     headers: { "x-api-key": token ?? "" },
   });
 }
+
+describe("PUT /api/admin/sync/config - HTTP/HTTPS 兼容", () => {
+  it("公网 http targetUrl → 200 并归一化", async () => {
+    const token = await makeToken();
+    const res = await PUT(putReq({ targetUrl: "http://tracker.example.com" }, token), {} as never);
+    expect(res.status).toBe(200);
+    expect(await getSetting("sync_target_url")).toBe(
+      "http://tracker.example.com/ingest/records"
+    );
+  });
+
+  it("https targetUrl → 200 并归一化", async () => {
+    const token = await makeToken();
+    const res = await PUT(putReq({ targetUrl: "https://tracker.example.com" }, token), {} as never);
+    expect(res.status).toBe(200);
+    expect(await getSetting("sync_target_url")).toBe(
+      "https://tracker.example.com/ingest/records"
+    );
+  });
+
+  it("环回 http targetUrl → 200（本机联调）", async () => {
+    const token = await makeToken();
+    const res = await PUT(
+      putReq({ targetUrl: "http://127.0.0.1:3000/ingest/records" }, token),
+      {} as never
+    );
+    expect(res.status).toBe(200);
+    expect(await getSetting("sync_target_url")).toBe(
+      "http://127.0.0.1:3000/ingest/records"
+    );
+  });
+});
 
 describe("DELETE /api/admin/sync/config", () => {
   it("rejects unauthenticated requests with 401", async () => {

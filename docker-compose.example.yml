@@ -4,11 +4,18 @@ services:
     container_name: token-tracker
     restart: unless-stopped
     ports:
+      # 生产：前置反向代理（HTTPS 终止）时建议改为 "127.0.0.1:3001:3000"，
+      # 只让反代能访问，避免明文 HTTP 直接暴露到公网
       - "3001:3000"
     environment:
       - SQLITE_DATABASE_PATH=/app/data/token-tracker.db
-      - ADMIN_API_KEY=${ADMIN_API_KEY:-your-api-key-here}
-      - GATEWAY_SECRET=${GATEWAY_SECRET:-your-32-byte-hex-secret}
+      # 必填，无默认值：compose 在变量缺失时直接报错退出（不再有公开的出厂默认凭证）。
+      # 个人/家庭部署允许弱 key，强度仅由前端提示；生产仍建议 openssl rand -hex 24。
+      # 已配置弱 key 也不会让首次设置向导重新打开。
+      - ADMIN_API_KEY=${ADMIN_API_KEY:?ADMIN_API_KEY is required; openssl rand -hex 24 is recommended}
+      # 必填，无默认值：AES-256-GCM 主密钥（hex 64 / base64 32B / 任意字符串派生）。
+      # 生成：openssl rand -hex 32
+      - GATEWAY_SECRET=${GATEWAY_SECRET:?GATEWAY_SECRET is required (openssl rand -hex 32)}
       - API_CACHE_DEBUG=false
       # 安全：仅当前置反代已设置 X-Real-IP（并覆盖客户端 XFF）时设为 true。
       # 默认 false 时登录/设置限流使用全局桶（防 XFF 伪造绕过），审计 IP 记为 unknown。

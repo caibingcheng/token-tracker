@@ -1,5 +1,6 @@
 import { joinUrlPath } from "./url-utils";
-import { getProxyDispatcher } from "./proxy-dispatcher";
+import { getOutboundDispatcher } from "./proxy-dispatcher";
+import { outboundFetch } from "./outbound-fetch";
 import {
   detectBalanceProvider,
   isBalanceFetchMode,
@@ -92,7 +93,7 @@ export async function fetchBalance(
   if (!provider) {
     throw new Error("Balance auto-fetch not supported for this upstream");
   }
-  const dispatcher = getProxyDispatcher(proxyUrl);
+  const dispatcher = getOutboundDispatcher(proxyUrl);
 
   switch (provider) {
     case "deepseek":
@@ -113,9 +114,9 @@ export async function fetchBalance(
 async function fetchDeepseekBalance(
   baseUrl: string,
   apiKey: string,
-  dispatcher: ReturnType<typeof getProxyDispatcher>
+  dispatcher: ReturnType<typeof getOutboundDispatcher>
 ): Promise<BalanceResult> {
-  const res = await fetch(joinUrlPath(baseUrl, "/user/balance"), {
+  const res = await outboundFetch(joinUrlPath(baseUrl, "/user/balance"), {
     headers: { Authorization: `Bearer ${apiKey}` },
     // 手动模式：3xx 视为失败，防 key 经跨源重定向泄露
     redirect: "manual",
@@ -135,9 +136,9 @@ async function fetchDeepseekBalance(
 
 async function fetchOpenrouterBalance(
   apiKey: string,
-  dispatcher: ReturnType<typeof getProxyDispatcher>
+  dispatcher: ReturnType<typeof getOutboundDispatcher>
 ): Promise<BalanceResult> {
-  const res = await fetch("https://openrouter.ai/api/v1/auth/key", {
+  const res = await outboundFetch("https://openrouter.ai/api/v1/auth/key", {
     headers: { Authorization: `Bearer ${apiKey}` },
     // 手动模式：3xx 视为失败，防 key 经跨源重定向泄露
     redirect: "manual",
@@ -166,9 +167,9 @@ async function fetchOpenrouterBalance(
 async function fetchKimiBalance(
   baseUrl: string,
   apiKey: string,
-  dispatcher: ReturnType<typeof getProxyDispatcher>
+  dispatcher: ReturnType<typeof getOutboundDispatcher>
 ): Promise<BalanceResult> {
-  const res = await fetch(joinUrlPath(baseUrl, "/v1/users/me/balance"), {
+  const res = await outboundFetch(joinUrlPath(baseUrl, "/v1/users/me/balance"), {
     headers: { Authorization: `Bearer ${apiKey}` },
     redirect: "manual",
     ...(dispatcher ? { dispatcher } : {}),
@@ -243,9 +244,9 @@ function kimiCodePercent(detail: KimiCodeUsage): number | null {
 // Kimi for Coding 套餐用量：固定 endpoint（key 与开放平台独立）；返回多窗口百分比摘要
 async function fetchKimiCodingUsage(
   apiKey: string,
-  dispatcher: ReturnType<typeof getProxyDispatcher>
+  dispatcher: ReturnType<typeof getOutboundDispatcher>
 ): Promise<BalanceResult> {
-  const res = await fetch("https://api.kimi.com/coding/v1/usages", {
+  const res = await outboundFetch("https://api.kimi.com/coding/v1/usages", {
     headers: { Authorization: `Bearer ${apiKey}` },
     redirect: "manual",
     ...(dispatcher ? { dispatcher } : {}),
@@ -305,12 +306,12 @@ interface GlmQuotaResponse {
 async function fetchGlmQuota(
   baseUrl: string,
   apiKey: string,
-  dispatcher: ReturnType<typeof getProxyDispatcher>
+  dispatcher: ReturnType<typeof getOutboundDispatcher>
 ): Promise<BalanceResult> {
   const host = baseUrl.toLowerCase().includes("bigmodel.cn")
     ? "https://open.bigmodel.cn"
     : "https://api.z.ai";
-  const res = await fetch(`${host}/api/monitor/usage/quota/limit`, {
+  const res = await outboundFetch(`${host}/api/monitor/usage/quota/limit`, {
     headers: { accept: "application/json", Authorization: apiKey },
     redirect: "manual",
     ...(dispatcher ? { dispatcher } : {}),
@@ -372,9 +373,9 @@ interface OpencodeGoUsageResponse {
 // OpenCode Go 用量：rolling(5h) / weekly / monthly 百分比窗口
 async function fetchOpencodeGoUsage(
   apiKey: string,
-  dispatcher: ReturnType<typeof getProxyDispatcher>
+  dispatcher: ReturnType<typeof getOutboundDispatcher>
 ): Promise<BalanceResult> {
-  const res = await fetch("https://opencode.ai/zen/go/v1/usage", {
+  const res = await outboundFetch("https://opencode.ai/zen/go/v1/usage", {
     headers: { Authorization: `Bearer ${apiKey}` },
     redirect: "manual",
     ...(dispatcher ? { dispatcher } : {}),

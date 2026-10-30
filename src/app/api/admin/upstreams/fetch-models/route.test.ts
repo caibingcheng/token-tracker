@@ -15,6 +15,7 @@ import { setAdminApiKey, getTokenEpoch, deleteSetting } from "@/lib/auth/setting
 import { signSessionToken, keyFingerprint } from "@/lib/auth/session";
 import { withSkipCache } from "@/lib/db/cache";
 import { encryptSecret } from "@/lib/gateway/crypto";
+import { setOutboundFetchImpl } from "@/lib/gateway/outbound-fetch";
 
 const ORIG_DB = process.env.SQLITE_DATABASE_PATH;
 const ORIG_SECRET = process.env.GATEWAY_SECRET;
@@ -90,11 +91,12 @@ describe("/api/admin/upstreams/fetch-models", () => {
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify({ data: [{ id: "gpt-4o" }] }), { status: 200 })
     );
-    vi.stubGlobal("fetch", fetchMock);
+    setOutboundFetchImpl(fetchMock);
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    setOutboundFetchImpl(null);
   });
 
   it("未认证 401", async () => {
@@ -178,7 +180,7 @@ describe("/api/admin/upstreams/fetch-models", () => {
         protocol: "openai",
         baseUrl: "https://8.8.8.8",
         apiKey: "sk-test",
-        proxyUrl: "http://user:pass@8.8.8.8:3128",
+        proxyUrl: "https://user:pass@8.8.8.8:3128",
       })
     );
     expect(res.status).toBe(200);
@@ -212,7 +214,7 @@ describe("/api/admin/upstreams/fetch-models", () => {
           enabledModels: JSON.stringify(["gpt-4o"]),
           priority: 0,
           enabled: 1,
-          proxyUrlEncrypted: encryptSecret("http://user:pass@8.8.8.8:3128"),
+          proxyUrlEncrypted: encryptSecret("https://user:pass@8.8.8.8:3128"),
         })
         .returning();
       await db.insert(upstreamKeysTable).values({

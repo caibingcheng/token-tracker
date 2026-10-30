@@ -1,8 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { getDirectDispatcher } from "./proxy-dispatcher";
 import { handleProxyRequest, extractVirtualKeyToken, extractSessionId, stripRawPassthroughPrefix, MAX_SESSION_ID_LENGTH, MAX_RETRY } from "./proxy";
 import type { ProxyDeps } from "./proxy";
 import type { UpstreamRoute, NamedRoute } from "./model-router";
 import { buildSessionId } from "./session";
+import { setOutboundFetchImpl } from "./outbound-fetch";
 
 function mkNamedRoute(overrides: Partial<NamedRoute> = {}): NamedRoute {
   return {
@@ -70,29 +72,27 @@ function makeRequest(
 describe("extractVirtualKeyToken", () => {
   it("extracts from Authorization Bearer", () => {
     const headers = new Headers({ authorization: "Bearer vk-abc" });
-    expect(extractVirtualKeyToken(headers, new URLSearchParams())).toBe("vk-abc");
+    expect(extractVirtualKeyToken(headers)).toBe("vk-abc");
   });
 
   it("extracts from x-api-key (Anthropic style)", () => {
     const headers = new Headers({ "x-api-key": "vk-abc" });
-    expect(extractVirtualKeyToken(headers, new URLSearchParams())).toBe("vk-abc");
+    expect(extractVirtualKeyToken(headers)).toBe("vk-abc");
   });
 
   it("extracts from x-goog-api-key (Gemini style)", () => {
     const headers = new Headers({ "x-goog-api-key": "vk-abc" });
-    expect(extractVirtualKeyToken(headers, new URLSearchParams())).toBe("vk-abc");
+    expect(extractVirtualKeyToken(headers)).toBe("vk-abc");
   });
 
-  it("extracts from query param key (Gemini style)", () => {
+  it("ignores ?key= query auth (removed: query strings leak into logs)", () => {
     const headers = new Headers();
-    expect(
-      extractVirtualKeyToken(headers, new URLSearchParams("key=vk-abc"))
-    ).toBe("vk-abc");
+    expect(extractVirtualKeyToken(headers)).toBeNull();
   });
 
   it("returns null when missing", () => {
     const headers = new Headers();
-    expect(extractVirtualKeyToken(headers, new URLSearchParams())).toBeNull();
+    expect(extractVirtualKeyToken(headers)).toBeNull();
   });
 });
 
@@ -150,6 +150,23 @@ describe("handleProxyRequest - auth", () => {
       mkDeps()
     );
     expect(res.status).toBe(401);
+  });
+
+  it("rejects ?key= query credentials (query auth removed to keep keys out of logs)", async () => {
+    const fetchMock = vi.fn();
+    setOutboundFetchImpl(fetchMock);
+    const res = await handleProxyRequest(
+      makeRequest("/v1beta/models/gemini-pro:generateContent?key=vk-good", {
+        body: { contents: [] },
+      }),
+      mkDeps()
+    );
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as { error?: { message?: string } };
+    expect(body.error?.message).toBe("Missing virtual key");
+    expect(fetchMock).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+    setOutboundFetchImpl(null);
   });
 
   it("returns 401 when virtual key disabled", async () => {
@@ -332,11 +349,12 @@ describe("handleProxyRequest - /raw passthrough", () => {
   const fetchMock = vi.fn();
 
   beforeEach(() => {
-    vi.stubGlobal("fetch", fetchMock);
+    setOutboundFetchImpl(fetchMock);
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    setOutboundFetchImpl(null);
     fetchMock.mockReset();
   });
 
@@ -428,11 +446,12 @@ describe("handleProxyRequest - failover chain", () => {
   const fetchMock = vi.fn();
 
   beforeEach(() => {
-    vi.stubGlobal("fetch", fetchMock);
+    setOutboundFetchImpl(fetchMock);
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    setOutboundFetchImpl(null);
     fetchMock.mockReset();
   });
 
@@ -584,7 +603,7 @@ describe("handleProxyRequest - failover chain", () => {
     );
     const deps = mkDeps({
       loadUpstreams: vi.fn(async () => [
-        mkUpstream({ proxyUrl: "http://user:pass@proxy.example:3128" }),
+        mkUpstream({ proxyUrl: "https://user:pass@proxy.example:3128" }),
       ]),
     });
     await handleProxyRequest(
@@ -598,7 +617,7 @@ describe("handleProxyRequest - failover chain", () => {
     expect(init.dispatcher).toBeDefined();
   });
 
-  it("omits dispatcher key when upstream has no proxyUrl (main chain)", async () => {
+  it("injects the guarded direct dispatcher when upstream has no proxyUrl (main chain)", async () => {
     fetchMock.mockResolvedValue(
       new Response("{}", { status: 200, headers: { "content-type": "application/json" } })
     );
@@ -610,7 +629,9 @@ describe("handleProxyRequest - failover chain", () => {
       mkDeps()
     );
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit & { dispatcher?: unknown }];
-    expect("dispatcher" in init).toBe(false);
+    // 无 proxyUrl 也必须带受连接时地址校验保护的直连 Agent（防 DNS rebinding）
+    expect(init.dispatcher).toBe(getDirectDispatcher());
+    expect(init.redirect).toBe("manual");
   });
 });
 
@@ -620,13 +641,14 @@ describe("handleProxyRequest - request body size limit", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    setOutboundFetchImpl(null);
     fetchMock.mockReset();
     if (ORIG === undefined) delete process.env.GATEWAY_MAX_BODY_MB;
     else process.env.GATEWAY_MAX_BODY_MB = ORIG;
   });
 
   it("rejects oversized request body with 413 without calling upstream", async () => {
-    vi.stubGlobal("fetch", fetchMock);
+    setOutboundFetchImpl(fetchMock);
     process.env.GATEWAY_MAX_BODY_MB = "0.00001"; // ~10 bytes
 
     const res = await handleProxyRequest(
@@ -641,7 +663,7 @@ describe("handleProxyRequest - request body size limit", () => {
   });
 
   it("rejects oversized body via content-length without buffering", async () => {
-    vi.stubGlobal("fetch", fetchMock);
+    setOutboundFetchImpl(fetchMock);
     process.env.GATEWAY_MAX_BODY_MB = "0.00001"; // ~10 bytes
 
     const headers = new Headers({
@@ -664,11 +686,12 @@ describe("handleProxyRequest - usage capture & write-back", () => {
   const fetchMock = vi.fn();
 
   beforeEach(() => {
-    vi.stubGlobal("fetch", fetchMock);
+    setOutboundFetchImpl(fetchMock);
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    setOutboundFetchImpl(null);
     fetchMock.mockReset();
   });
 
@@ -1005,11 +1028,12 @@ describe("handleProxyRequest - request health status", () => {
   const fetchMock = vi.fn();
 
   beforeEach(() => {
-    vi.stubGlobal("fetch", fetchMock);
+    setOutboundFetchImpl(fetchMock);
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    setOutboundFetchImpl(null);
     fetchMock.mockReset();
   });
 
@@ -1197,11 +1221,12 @@ describe("handleProxyRequest - quota", () => {
   const fetchMock = vi.fn();
 
   beforeEach(() => {
-    vi.stubGlobal("fetch", fetchMock);
+    setOutboundFetchImpl(fetchMock);
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    setOutboundFetchImpl(null);
     fetchMock.mockReset();
   });
 
@@ -1343,11 +1368,12 @@ describe("handleProxyRequest - cross-upstream failover & session stickiness", ()
   }
 
   beforeEach(() => {
-    vi.stubGlobal("fetch", fetchMock);
+    setOutboundFetchImpl(fetchMock);
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    setOutboundFetchImpl(null);
     fetchMock.mockReset();
   });
 
@@ -2161,11 +2187,12 @@ describe("handleProxyRequest - named routing", () => {
   }
 
   beforeEach(() => {
-    vi.stubGlobal("fetch", fetchMock);
+    setOutboundFetchImpl(fetchMock);
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    setOutboundFetchImpl(null);
     fetchMock.mockReset();
   });
 
@@ -2774,11 +2801,12 @@ describe("handleProxyRequest - responses subresource endpoints", () => {
   }
 
   beforeEach(() => {
-    vi.stubGlobal("fetch", fetchMock);
+    setOutboundFetchImpl(fetchMock);
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    setOutboundFetchImpl(null);
     fetchMock.mockReset();
   });
 
@@ -3030,7 +3058,7 @@ describe("handleProxyRequest - responses subresource endpoints", () => {
     );
     const { deps } = mkSubDeps({
       loadUpstreams: vi.fn(async () => [
-        mkUpstream({ id: 1, name: "openai-primary", baseUrl: "https://primary.example", priority: 0, proxyUrl: "http://user:pass@proxy.example:3128" }),
+        mkUpstream({ id: 1, name: "openai-primary", baseUrl: "https://primary.example", priority: 0, proxyUrl: "https://user:pass@proxy.example:3128" }),
         mkUpstream({ id: 2, name: "openai-alt", baseUrl: "https://alt.example", priority: 1 }),
       ]),
     });
@@ -3044,7 +3072,7 @@ describe("handleProxyRequest - responses subresource endpoints", () => {
     expect(init.dispatcher).toBeDefined();
   });
 
-  it("omits dispatcher key when upstream has no proxyUrl (subresource chain)", async () => {
+  it("injects the guarded direct dispatcher when upstream has no proxyUrl (subresource chain)", async () => {
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify({ id: "resp_123", object: "response", status: "completed" }), {
         status: 200,
@@ -3059,7 +3087,8 @@ describe("handleProxyRequest - responses subresource endpoints", () => {
     await res.text();
     expect(res.status).toBe(200);
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit & { dispatcher?: unknown }];
-    expect("dispatcher" in init).toBe(false);
+    expect(init.dispatcher).toBe(getDirectDispatcher());
+    expect(init.redirect).toBe("manual");
   });
 
   it("passes through 5xx with original body when all upstreams fail", async () => {
@@ -3089,11 +3118,12 @@ describe("handleProxyRequest - responses create (POST /v1/responses)", () => {
   const fetchMock = vi.fn();
 
   beforeEach(() => {
-    vi.stubGlobal("fetch", fetchMock);
+    setOutboundFetchImpl(fetchMock);
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    setOutboundFetchImpl(null);
     fetchMock.mockReset();
   });
 
@@ -3213,13 +3243,14 @@ describe("handleProxyRequest - header transforms", () => {
     });
 
   beforeEach(() => {
-    vi.stubGlobal("fetch", fetchMock);
+    setOutboundFetchImpl(fetchMock);
     // 每次调用新建 Response（同一 body 被多次消费会 locked）
     fetchMock.mockImplementation(() => Promise.resolve(okResponse()));
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    setOutboundFetchImpl(null);
     fetchMock.mockReset();
   });
 
@@ -3406,11 +3437,12 @@ describe("handleProxyRequest - named route routing (LLM classifier)", () => {
     );
 
   beforeEach(() => {
-    vi.stubGlobal("fetch", fetchMock);
+    setOutboundFetchImpl(fetchMock);
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    setOutboundFetchImpl(null);
     fetchMock.mockReset();
   });
 
@@ -3619,11 +3651,12 @@ describe("handleProxyRequest - named route binding granularity", () => {
     });
 
   beforeEach(() => {
-    vi.stubGlobal("fetch", fetchMock);
+    setOutboundFetchImpl(fetchMock);
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    setOutboundFetchImpl(null);
     fetchMock.mockReset();
   });
 
@@ -3738,11 +3771,12 @@ describe("handleProxyRequest - rule classifier (priority)", () => {
     });
 
   beforeEach(() => {
-    vi.stubGlobal("fetch", fetchMock);
+    setOutboundFetchImpl(fetchMock);
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    setOutboundFetchImpl(null);
     fetchMock.mockReset();
   });
 
@@ -3857,11 +3891,12 @@ describe("handleProxyRequest - auto targets (provider-less)", () => {
     });
 
   beforeEach(() => {
-    vi.stubGlobal("fetch", fetchMock);
+    setOutboundFetchImpl(fetchMock);
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    setOutboundFetchImpl(null);
     fetchMock.mockReset();
   });
 

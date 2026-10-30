@@ -2,7 +2,11 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { canRunSetup, runSetup, checkSetupRateLimit } from "./setup";
+import {
+  canRunSetup,
+  runSetup,
+  checkSetupRateLimit,
+} from "./setup";
 import {
   getLoginKeyStrength,
   LOGIN_KEY_STRENGTH_META,
@@ -135,7 +139,45 @@ describe("runSetup 写入与并发安全", () => {
   });
 });
 
-describe("key 强度提示（仅提示，不强制）", () => {
+describe("弱 key 仅提示 + env 闸门", () => {
+  it.each(["short", "1234567890123456", "abcdefghijklmnop"])(
+    "runSetup 接受弱 key %s 并正常签发会话",
+    async (weak) => {
+      const token = await runSetup(weak);
+      expect(verifySessionToken(token)).not.toBeNull();
+      expect(await getAdminApiKey()).toBe(weak);
+      expect(await canRunSetup()).toBe(false);
+    }
+  );
+
+  it("弱 env key 可用于登录且仍关闭 setup", async () => {
+    process.env.ADMIN_API_KEY = "weakkey";
+    const { getEnvAdminKeys, getEnvAdminKeysConfigured } = await import("./settings");
+    expect(getEnvAdminKeysConfigured()).toEqual(["weakkey"]);
+    expect(getEnvAdminKeys()).toEqual(["weakkey"]);
+    expect(await canRunSetup()).toBe(false);
+    await expect(runSetup("Strong-Admin-Key-9f3a")).rejects.toMatchObject({
+      name: "SetupNotAllowedError",
+    });
+    expect(await getAdminApiKey()).toBeNull();
+  });
+
+  it("强弱 env key 混合时都保留，且不放行 setup", async () => {
+    process.env.ADMIN_API_KEY = "Strong-Env-Key-9f3a,weakkey";
+    const { getEnvAdminKeys } = await import("./settings");
+    expect(getEnvAdminKeys()).toEqual(["Strong-Env-Key-9f3a", "weakkey"]);
+    expect(await canRunSetup()).toBe(false);
+  });
+
+  it("只有弱 env key 时 setup 仍关闭，删掉 env 才放行", async () => {
+    process.env.API_KEYS = "shorty";
+    expect(await canRunSetup()).toBe(false);
+    delete process.env.API_KEYS;
+    expect(await canRunSetup()).toBe(true);
+  });
+});
+
+describe("key 强度分级（前后端同一标准）", () => {
   it("getLoginKeyStrength：按长度 + 字符类别数分级", () => {
     expect(getLoginKeyStrength("")).toBe("weak");
     expect(getLoginKeyStrength("short")).toBe("weak"); // <8 字符

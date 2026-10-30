@@ -15,15 +15,16 @@ function gatewaySecretError() {
 }
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 // 连接测试：默认用第一个启用 key；可选 body.apiKey 指定临时 key 测试
 export const POST = withAuth(async (request: NextRequest, ctx: any) => {
-  const { params } = ctx as Params;
+  const { params } = ctx as Params; // params 为 Promise（Next 15+ 动态路由）
+  const paramsResolved = await params;
   return withSkipCache(async () => {
     await initDatabase();
-    const upstreamId = Number(params.id);
+    const upstreamId = Number(paramsResolved.id);
     const upstream = (
       await db.select().from(upstreamsTable).where(eq(upstreamsTable.id, upstreamId))
     )[0];

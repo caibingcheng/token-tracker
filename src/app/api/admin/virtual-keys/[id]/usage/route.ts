@@ -7,15 +7,16 @@ import { hasQuotaLimits } from "@/lib/gateway/quota";
 import { loadQuotaUsageFromDb } from "@/lib/gateway/quota-db";
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 // 单个虚拟 key 的用量统计（按 virtual_key_id 过滤 token_records；历史数据视为 unknown 不计入）
 export const GET = withAuth(async (request: NextRequest, ctx: any) => {
-  const { params } = ctx as Params;
+  const { params } = ctx as Params; // params 为 Promise（Next 15+ 动态路由）
+  const paramsResolved = await params;
   return withSkipCache(async () => {
     await initDatabase();
-    const id = Number(params.id);
+    const id = Number(paramsResolved.id);
     const row = (
       await db.select().from(virtualKeysTable).where(eq(virtualKeysTable.id, id))
     )[0];

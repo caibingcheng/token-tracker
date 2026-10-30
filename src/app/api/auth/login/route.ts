@@ -26,6 +26,11 @@ import {
   setRecoveryCodeReminder,
 } from "@/lib/auth/recovery-codes";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
+import {
+  readJsonBodyLimited,
+  BodyTooLargeError,
+  InvalidJsonBodyError,
+} from "@/lib/auth/request-body";
 
 // 内存滑动窗口限流：按可信 IP 计数（默认全局桶，防 XFF 伪造绕过），防爆破登录 key 与 TOTP
 const WINDOW_MS = 15 * 60 * 1000;
@@ -59,19 +64,7 @@ function resetAttempts(key: string): void {
 }
 
 export async function POST(request: NextRequest) {
-  let body: Record<string, unknown>;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ success: false, error: "Invalid JSON body" }, { status: 400 });
-  }
-
-  const apiKey = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
-  const totpCode = typeof body.totpCode === "string" ? body.totpCode.trim() : "";
-  if (!apiKey) {
-    return NextResponse.json({ success: false, error: "Missing apiKey" }, { status: 400 });
-  }
-
+  // 限流必须最先执行：缺 key / 坏 JSON / 超大 body 都不能绕过限流
   const rateKey = getRateLimitKey(request);
   if (rateLimited(rateKey)) {
     return NextResponse.json(
@@ -80,7 +73,33 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // 登录 key 校验：DB 优先，env ADMIN_API_KEY / API_KEYS 兜底（仅 bootstrap 场景）
+  let body: Record<string, unknown>;
+  try {
+    body = await readJsonBodyLimited(request);
+  } catch (err) {
+    if (err instanceof BodyTooLargeError) {
+      return NextResponse.json(
+        { success: false, error: "Request body too large" },
+        { status: 413 }
+      );
+    }
+    if (err instanceof InvalidJsonBodyError) {
+      return NextResponse.json(
+        { success: false, error: "Invalid JSON body" },
+        { status: 400 }
+      );
+    }
+    throw err;
+  }
+
+  const apiKey = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
+  const totpCode = typeof body.totpCode === "string" ? body.totpCode.trim() : "";
+  if (!apiKey) {
+    return NextResponse.json({ success: false, error: "Missing apiKey" }, { status: 400 });
+  }
+
+  // 登录 key 校验：DB 优先，env ADMIN_API_KEY / API_KEYS 兜底（仅 bootstrap 场景）。
+  // 个人/家庭部署允许弱 key；强度仅由前端提示，不在服务端拒绝。
   let matchedKey: string | null = null;
   const dbKey = await getAdminApiKey();
   if (dbKey !== null) {

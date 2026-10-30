@@ -9,15 +9,16 @@ import { parseHeaderTransforms } from "@/lib/gateway/header-transforms";
 import { parseModelProbeConfigs, parseProbeConfig } from "@/lib/gateway/probe-config";
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 // 单模型可用性测试：POST body { model: string }，依次用每个启用 key 探测，任一成功即可用
 export const POST = withAuth(async (request: NextRequest, ctx: any) => {
-  const { params } = ctx as Params;
+  const { params } = ctx as Params; // params 为 Promise（Next 15+ 动态路由）
+  const paramsResolved = await params;
   return withSkipCache(async () => {
     await initDatabase();
-    const upstreamId = Number(params.id);
+    const upstreamId = Number(paramsResolved.id);
     const upstream = (
       await db.select().from(upstreamsTable).where(eq(upstreamsTable.id, upstreamId))
     )[0];

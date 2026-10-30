@@ -21,7 +21,7 @@ flowchart LR
 
     A -->|"base_url 指向 /v1,<br>key = vk-xxx"| G
     B -->|"base_url 指向根路径,<br>key = vk-xxx"| G
-    D -->|"x-goog-api-key 或 ?key=<br>vk-xxx"| G
+    D -->|"x-goog-api-key<br>vk-xxx"| G
 
     subgraph G[Token Tracker Gateway]
         direction TB
@@ -86,7 +86,8 @@ flowchart LR
 
 - TOTP 双因素认证 + 一次性恢复码（只存哈希）
 - 所有密钥 AES-256-GCM 加密落库，DB 泄露不泄露明文
-- SSRF 防护（私网/环回/元数据地址拒绝）、XFF 伪造防护、登录/设置限流
+- SSRF 防护（保存时地址分类 + **连接时 DNS lookup 校验**，防 DNS rebinding）、XFF 伪造防护、登录/设置限流 + 认证端点 64KB body 上限
+- 登录 key 提供强度提示，个人/家庭部署允许弱 key；虚拟 key 只接受 header（`?key=` 已移除，防 query 日志泄露）
 - 审计日志记录全部管理操作；首次设置向导 fail-open
 
 ## 快速开始（Docker）
@@ -94,7 +95,11 @@ flowchart LR
 ```bash
 docker pull ghcr.io/caibingcheng/token-tracker:latest
 cp docker-compose.example.yml docker-compose.yml
-# 编辑 docker-compose.yml：设置 ADMIN_API_KEY、GATEWAY_SECRET、SQLITE_DATABASE_PATH
+# 两个必填变量没有默认值（compose 缺失会直接报错退出）：
+#   ADMIN_API_KEY  >=16 字符且至少两类字符（openssl rand -hex 24）
+#   GATEWAY_SECRET openssl rand -hex 32
+export ADMIN_API_KEY="$(openssl rand -hex 24)"
+export GATEWAY_SECRET="$(openssl rand -hex 32)"
 docker compose up -d
 ```
 
@@ -110,7 +115,7 @@ docker compose up -d
 |---|---|
 | OpenAI 兼容（Codex / OpenCode 等） | `base_url = http://host:3000/v1`，`api_key = vk-xxx` |
 | Claude Code（Anthropic 协议） | `ANTHROPIC_BASE_URL = http://host:3000`，`ANTHROPIC_AUTH_TOKEN = vk-xxx` |
-| Gemini 协议客户端 | `base_url = http://host:3000`，key 走 `x-goog-api-key` 或 `?key=` |
+| Gemini 协议客户端 | `base_url = http://host:3000`，key 走 `x-goog-api-key` header（**`?key=` query 认证已移除**：query 会进访问日志/反代日志/浏览器历史） |
 | 其它端点（如 OpenRouter 的 `/alpha/*`，上游完整路径为 `/api/alpha/*`） | `base_url = http://host:3000/raw`，`api_key = vk-xxx`；`/raw` 前缀剥离后拼在 upstream base URL（`https://openrouter.ai/api`）之后——客户端路径按 `/alpha/*` 写，与 `/v1` 之于 `/api/v1` 同理 |
 
 虚拟 key（`vk-` 前缀）在 `/admin` 创建。多个设备共用同一个 key 时无法区分设备——需要按设备各建一个 key。
@@ -121,8 +126,8 @@ docker compose up -d
 npm install
 cp .env.example .env.local   # 必需：SQLITE_DATABASE_PATH、GATEWAY_SECRET
 npm run dev                  # http://localhost:3000
-npm test                     # vitest 单测（55 个测试文件，覆盖代理链路/解析器/路由/加密/认证等核心模块）
-npm run lint
+npm test                     # vitest 单测（覆盖代理链路/解析器/路由/加密/认证等核心模块，并发上限 = CPU 一半）
+npm run lint                 # ESLint 9 flat config（Next 16 起 `next lint` 已移除）
 ```
 
 SQLite 数据库在首次请求时自动建表 + 增量迁移，无需手动操作。
@@ -151,7 +156,7 @@ SQLite 数据库在首次请求时自动建表 + 增量迁移，无需手动操�
 | 变量 | 必需 | 说明 |
 |---|---|---|
 | `SQLITE_DATABASE_PATH` | 是 | SQLite 数据库文件路径 |
-| `ADMIN_API_KEY` | 建议 | 管理面用 API key，逗号分隔多个；未设置且 DB 无 key 时出现首次设置向导（旧名 `API_KEYS` 已废弃） |
+| `ADMIN_API_KEY` | 建议 | 管理面用 API key，逗号分隔多个；个人/家庭部署允许弱 key，前端提供强度提示，生产建议 ≥16 字符且 ≥2 类字符；已配置弱 key 也不会重新打开首次设置向导；未设置且 DB 无 key 时出现首次设置向导（旧名 `API_KEYS` 已废弃） |
 | `GATEWAY_SECRET` | 是 | 网关主密钥（AES-256-GCM），`openssl rand -hex 32` 生成；缺失时代理与管理 API 返回 503 |
 | `SESSION_TOKEN_TTL_HOURS` | 否 | 会话 token 有效期（小时，默认 24，滑动续期） |
 | `TRUSTED_PROXY` | 否 | 前置反代已设置 `X-Real-IP` 时设为 true，恢复精确 IP 限流 |
@@ -162,6 +167,10 @@ SQLite 数据库在首次请求时自动建表 + 增量迁移，无需手动操�
 ## 安全提示
 
 > **⚠️ 首次设置向导（fail-open）**：如果 `ADMIN_API_KEY` 未设置且 DB 无 key，任何能访问 Web UI 的人都可以抢先设置管理 key。**生产环境务必设置 `ADMIN_API_KEY`**，或用防火墙 / 内网保护首次配置窗口。向导的限流只能防爆破，不能防抢先注册。
+
+> **⚠️ 公网部署请走 HTTPS**：会话 token 与虚拟 key 都以明文 header 传输。反代（Caddy / Nginx）终止 TLS 后转发到 `127.0.0.1:3001`，并设置 `X-Real-IP` + `TRUSTED_PROXY=true`。upstream、proxy 与多实例同步均兼容 HTTP/HTTPS，便于本机和内网部署；私网地址仍受 SSRF 策略保护，内网目标使用 `ALLOW_PRIVATE_UPSTREAMS=true`，sync 的 loopback 可直接使用。
+
+> **🔑 密钥卫生**：`.env*`（除 `.env.example`）、`*.pem`、`*.p12`、`*.pfx`、`id_rsa*`、`credentials*`、`secrets*` 已加入 `.gitignore`；本机 `.env` 建议 `chmod 600`。
 
 忘记登录 key 时：删除 SQLite `settings` 表中的 `admin_api_key` 行，即回退到 `ADMIN_API_KEY` 环境变量。
 

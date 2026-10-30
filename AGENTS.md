@@ -15,7 +15,7 @@
 ```bash
 npm run dev                 # 启动开发服务器，访问 http://localhost:3000
 npm run build               # 生产构建
-npm run lint                # ESLint
+npm run lint                # ESLint 9 flat config（Next 16 起 next lint 已移除）
 npm test                    # vitest 单元测试（src/**/*.test.ts）
 npx drizzle-kit studio      # Drizzle Studio（SQLite）
 
@@ -41,9 +41,12 @@ docker compose up -d                                 # 本地运行
 ## 硬约束（红线，任何改动都适用）
 
 - **认证**：新增 `/api/*` 路由必须用 `withAuth` 包裹（`src/lib/auth/guard.ts`，login/setup 除外），否则 `src/lib/auth/guard-scan.test.ts` 静态扫描测试失败。所有 `/api/*`（login、setup 除外）只接受**会话 token**，原始 API key 不能直接调；脚本/curl 必须先 `POST /api/auth/login` 换 token，再带 `X-API-Key: <token>`
+- **虚拟 key 认证**：只接受 header（`Authorization: Bearer` / `x-api-key` / `x-goog-api-key`），**不得恢复 `?key=` query 认证**（query 会进访问日志/反代日志/Referer）
 - **缓存失效**：新增写入接口必须在写入成功后调用 `invalidateQueryCache()`，或将 handler 包进 `withSkipCache()`（`src/lib/db/cache.ts`）；settings 读写**必须**包 `withSkipCache()`（`src/lib/auth/settings.ts`），否则改 key/epoch+1/解绑 TOTP 后旧凭证最长残留 10s
 - **模型命名与 token 口径**：`token_records.model` 一律写**发往 upstream 的真实 model 名**，客户端原始请求名写 `request_model`；`input_tokens` 不含 cache_read，`cache_read` 单独列，展示层 Total Input 含 cache
-- **上游出站**：所有带真实 key 的出站 fetch（主链、responses 辅助链、probe、fetchUpstreamModels、fetchBalance）一律 `redirect: "manual"`，3xx 视为失败（防 key 跨源泄露）；upstream baseUrl / proxyUrl 一律走 SSRF 校验，不用裸 `^https?://` 正则
+- **登录 key 强度**：个人/家庭部署允许弱 key，`getLoginKeyStrength()` 仅用于前端提示，不在 setup、改 key 或登录时强制拒绝；env 是否配置统一用 `getEnvAdminKeysConfigured()` 判定，弱 key 也不能被当成「未配置」而重新打开 setup
+- **认证端点请求体**：`/api/auth/login`、`/api/auth/setup` 必须「先限流、再读 body」，body 走 `readJsonBodyLimited()`（64KB，content-length + chunked 双覆盖），不得用裸 `request.json()`
+- **上游出站**：所有带真实 key 的出站 fetch（主链、responses 辅助链、probe、classifier、fetchUpstreamModels、fetchBalance、sync pusher）一律 `redirect: "manual"`，3xx 视为失败（防 key 跨源泄露）；一律注入 `getOutboundDispatcher(proxyUrl)`（无 proxy 时也必须是受连接时地址校验保护的直连 Agent，禁止裸 fetch）；`outboundFetch` 每次请求前还要跑 `assertOutboundUrlAllowed(url, scope)` —— 写入校验挡不住存量行，字面私网 IP 与非法 scheme 必须在运行时也 fail-closed；upstream baseUrl / proxyUrl 一律走 SSRF 校验（含连接时 DNS lookup 校验防 rebinding），不用裸 `^https?://` 正则；HTTP/HTTPS 均允许，内网地址由 `ALLOW_PRIVATE_UPSTREAMS` 与 sync loopback 例外控制
 - **密钥与日志**：日志永不打印请求 body 与任何 key；`GATEWAY_SECRET` 缺失时代理路由与 admin API 返回 503，不静默降级；502/协议不匹配错误不回显 upstream 名、内网地址等内部细节
 - **迁移**：`CREATE TABLE IF NOT EXISTS` 不会补列，存量列变更必须 `PRAGMA table_info` 检测 + `ALTER TABLE` 补列；所有迁移必须幂等
 - **UI**：任何 UI 改动必须同时考虑移动端（<768px）——新表格做「桌面 table + `md:hidden` 卡片」双轨，新弹窗移动端全屏，触摸区 ≥40px；Admin 表格统一用共享组件 `src/components/admin/table.tsx`，禁止手写 `<table>`
