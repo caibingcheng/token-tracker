@@ -5,15 +5,16 @@ import { withAuth } from "@/lib/auth/guard";
 import { healthTracker } from "@/lib/gateway/proxy-deps";
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 // 手动触发一次探活（Probe now）：不要求 enabled（与 test-model 手动测试同语义），
 // 不记审计（与 test-model 口径一致）；返回最新探活状态供 UI 刷新展示
 export const POST = withAuth(async (_request: NextRequest, ctx: any) => {
-  const { params } = ctx as Params;
+  const { params } = ctx as Params; // params 为 Promise（Next 15+ 动态路由）
+  const paramsResolved = await params;
   await initDatabase();
-  const upstreamId = Number(params.id);
+  const upstreamId = Number(paramsResolved.id);
   const upstream = (
     await db
       .select({ id: upstreamsTable.id })

@@ -6,9 +6,12 @@ import {
   isBalanceFetchMode,
   normalizeBalanceFetchMode,
 } from "./balance";
+import { getDirectDispatcher } from "./proxy-dispatcher";
+import { setOutboundFetchImpl } from "./outbound-fetch";
 
 afterEach(() => {
   vi.unstubAllGlobals();
+    setOutboundFetchImpl(null);
 });
 
 describe("detectBalanceProvider", () => {
@@ -95,7 +98,7 @@ describe("fetchBalance - deepseek", () => {
         { status: 200, headers: { "content-type": "application/json" } }
       )
     );
-    vi.stubGlobal("fetch", fetchMock);
+    setOutboundFetchImpl(fetchMock);
 
     const result = await fetchBalance("https://api.deepseek.com", "sk-test");
     expect(result).toEqual({ balance: "115.5", currency: "CNY" });
@@ -111,29 +114,31 @@ describe("fetchBalance - deepseek", () => {
         { status: 200, headers: { "content-type": "application/json" } }
       )
     );
-    vi.stubGlobal("fetch", fetchMock);
+    setOutboundFetchImpl(fetchMock);
 
     await fetchBalance(
       "https://api.deepseek.com",
       "sk-test",
-      "http://user:pass@proxy.example:3128"
+      "https://user:pass@proxy.example:3128"
     );
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit & { dispatcher?: unknown }];
     expect(init.dispatcher).toBeDefined();
   });
 
-  it("omits dispatcher key without proxyUrl", async () => {
+  it("injects the guarded direct dispatcher when there is no proxyUrl", async () => {
     const fetchMock = vi.fn(async () =>
       new Response(
         JSON.stringify({ balance_infos: [{ currency: "CNY", total_balance: "1" }] }),
         { status: 200, headers: { "content-type": "application/json" } }
       )
     );
-    vi.stubGlobal("fetch", fetchMock);
+    setOutboundFetchImpl(fetchMock);
 
     await fetchBalance("https://api.deepseek.com", "sk-test");
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit & { dispatcher?: unknown }];
-    expect("dispatcher" in init).toBe(false);
+    // 无 proxyUrl 时也必须注入受连接时地址校验保护的直连 Agent（防 DNS rebinding）
+    expect("dispatcher" in init).toBe(true);
+    expect(init.dispatcher).toBe(getDirectDispatcher());
   });
 
   it("handles string or numeric total_balance", async () => {
@@ -148,26 +153,20 @@ describe("fetchBalance - deepseek", () => {
         { status: 200 }
       )
     );
-    vi.stubGlobal("fetch", fetchMock);
+    setOutboundFetchImpl(fetchMock);
     const result = await fetchBalance("https://api.deepseek.com", "sk-test");
     expect(result.balance).toBe("120");
   });
 
   it("throws on non-2xx response", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response("unauthorized", { status: 401 }))
-    );
+    setOutboundFetchImpl(vi.fn(async () => new Response("unauthorized", { status: 401 })));
     await expect(fetchBalance("https://api.deepseek.com", "bad")).rejects.toThrow(
       "401"
     );
   });
 
   it("throws on malformed payload", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response(JSON.stringify({ foo: 1 }), { status: 200 }))
-    );
+    setOutboundFetchImpl(vi.fn(async () => new Response(JSON.stringify({ foo: 1 }), { status: 200 })));
     await expect(fetchBalance("https://api.deepseek.com", "sk-test")).rejects.toThrow();
   });
 
@@ -188,7 +187,7 @@ describe("fetchBalance - openrouter", () => {
         { status: 200 }
       )
     );
-    vi.stubGlobal("fetch", fetchMock);
+    setOutboundFetchImpl(fetchMock);
 
     const result = await fetchBalance("https://openrouter.ai/api/v1", "sk-test");
     expect(result).toEqual({ balance: "8800", currency: "USD" });
@@ -198,38 +197,29 @@ describe("fetchBalance - openrouter", () => {
   });
 
   it("returns unknown when limit is null", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
+    setOutboundFetchImpl(vi.fn(async () =>
         new Response(
           JSON.stringify({ data: { usage: 10, limit: null } }),
           { status: 200 }
         )
-      )
-    );
+      ));
     const result = await fetchBalance("https://openrouter.ai", "sk-test");
     expect(result.balance).toBe("unknown");
   });
 
   it("clamps negative remaining to zero", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
+    setOutboundFetchImpl(vi.fn(async () =>
         new Response(
           JSON.stringify({ data: { usage: 120, limit: 100 } }),
           { status: 200 }
         )
-      )
-    );
+      ));
     const result = await fetchBalance("https://openrouter.ai", "sk-test");
     expect(result.balance).toBe("0");
   });
 
   it("throws on non-2xx", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response("bad", { status: 500 }))
-    );
+    setOutboundFetchImpl(vi.fn(async () => new Response("bad", { status: 500 })));
     await expect(fetchBalance("https://openrouter.ai", "bad")).rejects.toThrow("500");
   });
 });
@@ -246,7 +236,7 @@ describe("fetchBalance - kimi", () => {
         { status: 200 }
       )
     );
-    vi.stubGlobal("fetch", fetchMock);
+    setOutboundFetchImpl(fetchMock);
 
     const result = await fetchBalance("https://api.moonshot.cn/v1", "sk-test");
     expect(result).toEqual({ balance: "49.58894", currency: "CNY" });
@@ -263,7 +253,7 @@ describe("fetchBalance - kimi", () => {
         { status: 200 }
       )
     );
-    vi.stubGlobal("fetch", fetchMock);
+    setOutboundFetchImpl(fetchMock);
 
     await fetchBalance("https://api.moonshot.ai", "sk-test");
     const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -271,10 +261,7 @@ describe("fetchBalance - kimi", () => {
   });
 
   it("throws on malformed payload", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response(JSON.stringify({ code: 0 }), { status: 200 }))
-    );
+    setOutboundFetchImpl(vi.fn(async () => new Response(JSON.stringify({ code: 0 }), { status: 200 })));
     await expect(fetchBalance("https://api.moonshot.cn/v1", "sk-test")).rejects.toThrow();
   });
 });
@@ -309,7 +296,7 @@ describe("fetchBalance - kimi-coding", () => {
         { status: 200 }
       )
     );
-    vi.stubGlobal("fetch", fetchMock);
+    setOutboundFetchImpl(fetchMock);
 
     const result = await fetchBalance("https://api.kimi.com/coding", "sk-test");
     // 5h: 230/1000=23%，reset 80m→1h；weekly: used=5000-3000=2000 → 40%，reset 4d；booster → $0.12
@@ -323,9 +310,7 @@ describe("fetchBalance - kimi-coding", () => {
   });
 
   it("dedupes weekly window already present in limits", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
+    setOutboundFetchImpl(vi.fn(async () =>
         new Response(
           JSON.stringify({
             usage: { limit: 100, remaining: 50 },
@@ -338,18 +323,14 @@ describe("fetchBalance - kimi-coding", () => {
           }),
           { status: 200 }
         )
-      )
-    );
+      ));
     const result = await fetchBalance("https://api.kimi.com/coding", "sk-test");
     // 7d 窗口与 usage 周窗口归一为 wk 并去重，保留 limits 里的 60%
     expect(result.balance).toBe("wk 60%");
   });
 
   it("throws when no window is computable", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response(JSON.stringify({ limits: [] }), { status: 200 }))
-    );
+    setOutboundFetchImpl(vi.fn(async () => new Response(JSON.stringify({ limits: [] }), { status: 200 })));
     await expect(fetchBalance("https://api.kimi.com/coding", "sk-test")).rejects.toThrow();
   });
 });
@@ -374,7 +355,7 @@ describe("fetchBalance - glm", () => {
         { status: 200 }
       )
     );
-    vi.stubGlobal("fetch", fetchMock);
+    setOutboundFetchImpl(fetchMock);
 
     const result = await fetchBalance("https://api.z.ai/v1", "sk-test");
     expect(result).toEqual({ balance: "5h 44% (2h) · wk 61% (3d) · mo 7% · pro", currency: "" });
@@ -395,7 +376,7 @@ describe("fetchBalance - glm", () => {
         { status: 200 }
       )
     );
-    vi.stubGlobal("fetch", fetchMock);
+    setOutboundFetchImpl(fetchMock);
 
     const result = await fetchBalance("https://open.bigmodel.cn/api/paas/v4", "sk-test");
     expect(result.balance).toBe("5h 10%");
@@ -404,15 +385,12 @@ describe("fetchBalance - glm", () => {
   });
 
   it("surfaces API error message (e.g. pay-as-you-go key)", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
+    setOutboundFetchImpl(vi.fn(async () =>
         new Response(
           JSON.stringify({ code: 500, success: false, msg: "quota not available" }),
           { status: 200 }
         )
-      )
-    );
+      ));
     await expect(fetchBalance("https://api.z.ai/v1", "sk-test")).rejects.toThrow(
       "quota not available"
     );
@@ -434,7 +412,7 @@ describe("fetchBalance - opencode-go", () => {
         { status: 200 }
       )
     );
-    vi.stubGlobal("fetch", fetchMock);
+    setOutboundFetchImpl(fetchMock);
 
     const result = await fetchBalance("https://opencode.ai/v1", "oc_sk_test");
     expect(result).toEqual({ balance: "5h 10% (1h) · wk 35% · mo 63% (25d)", currency: "" });
@@ -444,10 +422,7 @@ describe("fetchBalance - opencode-go", () => {
   });
 
   it("throws when usage is missing", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response(JSON.stringify({}), { status: 200 }))
-    );
+    setOutboundFetchImpl(vi.fn(async () => new Response(JSON.stringify({}), { status: 200 })));
     await expect(fetchBalance("https://opencode.ai/v1", "bad")).rejects.toThrow();
   });
 });
@@ -460,7 +435,7 @@ describe("fetchBalance - manual mode dispatch", () => {
         { status: 200 }
       )
     );
-    vi.stubGlobal("fetch", fetchMock);
+    setOutboundFetchImpl(fetchMock);
 
     // baseUrl 不可识别，但手动指定 kimi 模式仍按 kimi 接口拉取
     const result = await fetchBalance("https://relay.example.com/v1", "sk-test", undefined, "kimi");

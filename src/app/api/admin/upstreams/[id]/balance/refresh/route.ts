@@ -8,14 +8,15 @@ import { fetchBalance, resolveBalanceMode, normalizeBalanceFetchMode } from "@/l
 import { decryptProxyUrl } from "@/lib/gateway/proxy-deps";
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 export const POST = withAuth(async (request: NextRequest, ctx: any) => {
-  const { params } = ctx as Params;
+  const { params } = ctx as Params; // params 为 Promise（Next 15+ 动态路由）
+  const paramsResolved = await params;
   return withSkipCache(async () => {
     await initDatabase();
-    const id = Number(params.id);
+    const id = Number(paramsResolved.id);
     const upstream = (
       await db.select().from(upstreamsTable).where(eq(upstreamsTable.id, id))
     )[0];

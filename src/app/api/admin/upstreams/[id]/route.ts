@@ -35,7 +35,7 @@ import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 import { isReservedRemoteName, REMOTE_NAME_PREFIX } from "@/lib/ingest/validate";
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 async function findUpstream(id: number) {
@@ -84,10 +84,11 @@ async function withKeys(upstream: any) {
 }
 
 export const GET = withAuth(async (request: NextRequest, ctx: any) => {
-  const { params } = ctx as Params;
+  const { params } = ctx as Params; // params 为 Promise（Next 15+ 动态路由）
+  const paramsResolved = await params;
   return withSkipCache(async () => {
     await initDatabase();
-    const id = Number(params.id);
+    const id = Number(paramsResolved.id);
     const upstream = await findUpstream(id);
     if (!upstream) {
       return NextResponse.json({ success: false, error: "Upstream not found" }, { status: 404 });
@@ -97,10 +98,11 @@ export const GET = withAuth(async (request: NextRequest, ctx: any) => {
 });
 
 export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
-  const { params } = ctx as Params;
+  const { params } = ctx as Params; // params 为 Promise（Next 15+ 动态路由）
+  const paramsResolved = await params;
   return withSkipCache(async () => {
     await initDatabase();
-    const id = Number(params.id);
+    const id = Number(paramsResolved.id);
     const upstream = await findUpstream(id);
     if (!upstream) {
       return NextResponse.json({ success: false, error: "Upstream not found" }, { status: 404 });
@@ -319,10 +321,11 @@ export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
 });
 
 export const DELETE = withAuth(async (request: NextRequest, ctx: any) => {
-  const { params } = ctx as Params;
+  const { params } = ctx as Params; // params 为 Promise（Next 15+ 动态路由）
+  const paramsResolved = await params;
   return withSkipCache(async () => {
     await initDatabase();
-    const id = Number(params.id);
+    const id = Number(paramsResolved.id);
     const upstream = await findUpstream(id);
     if (!upstream) {
       return NextResponse.json({ success: false, error: "Upstream not found" }, { status: 404 });

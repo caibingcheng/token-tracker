@@ -34,8 +34,25 @@ describe("session token", () => {
 
   it("rejects tampered tokens", () => {
     const token = signSessionToken(0, "deadbeef");
-    const tampered = token.slice(0, -2) + (token.endsWith("aa") ? "bb" : "aa");
-    expect(verifySessionToken(tampered)).toBeNull();
+    const dot = token.indexOf(".");
+    const payload = token.slice(0, dot);
+    const sig = token.slice(dot + 1);
+
+    // 1) 改 payload（签名覆盖的原文）→ HMAC 必然不匹配。
+    // 注意不要改签名尾字符：base64url 末位有非有效位，翻转后解码字节可能不变（旧测试的偶发漏判根因）。
+    const tamperedPayload = Buffer.from(
+      JSON.stringify({ exp: Date.now() + 60_000, epoch: 1, keyId: "deadbeef" })
+    ).toString("base64url");
+    expect(verifySessionToken(`${tamperedPayload}.${sig}`)).toBeNull();
+
+    // 2) 改签名的**首**字符（首字节全部是有效位，解码后必然不同）
+    const flippedFirst = (sig[0] === "A" ? "B" : "A") + sig.slice(1);
+    expect(verifySessionToken(`${payload}.${flippedFirst}`)).toBeNull();
+
+    // 3) 签名截断 / 缺失 / 长度不符
+    expect(verifySessionToken(`${payload}.${sig.slice(0, -4)}`)).toBeNull();
+    expect(verifySessionToken(`${payload}.`)).toBeNull();
+    expect(verifySessionToken(`${payload}.${sig}extra`)).toBeNull();
   });
 
   it("rejects tokens with malformed payload", () => {

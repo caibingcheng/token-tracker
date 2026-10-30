@@ -12,6 +12,7 @@ import { withSkipCache } from "@/lib/db/cache";
 import { setAdminApiKey, getTokenEpoch } from "@/lib/auth/settings";
 import { signSessionToken, keyFingerprint } from "@/lib/auth/session";
 import { encryptSecret } from "@/lib/gateway/crypto";
+import { setOutboundFetchImpl } from "@/lib/gateway/outbound-fetch";
 
 const ORIG_DB = process.env.SQLITE_DATABASE_PATH;
 const ORIG_SECRET = process.env.GATEWAY_SECRET;
@@ -40,6 +41,7 @@ beforeEach(async () => {
     await db.delete(upstreamsTable);
   });
   vi.unstubAllGlobals();
+  setOutboundFetchImpl(null);
   await setAdminApiKey(ADMIN_KEY);
 });
 
@@ -92,12 +94,9 @@ describe("/api/admin/upstreams/[id]/probe", () => {
     });
     const id = rows[0]!.id;
 
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
+    setOutboundFetchImpl(vi.fn(async () =>
         new Response("{}", { status: 200, headers: { "content-type": "application/json" } })
-      )
-    );
+      ));
 
     const res = await POST(req(`/api/admin/upstreams/${id}/probe`, token), {
       params: { id: String(id) },
@@ -133,15 +132,12 @@ describe("/api/admin/upstreams/[id]/probe", () => {
     });
     const id = rows[0]!.id;
 
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
+    setOutboundFetchImpl(vi.fn(async () =>
         new Response(JSON.stringify({ error: "invalid key" }), {
           status: 401,
           headers: { "content-type": "application/json" },
         })
-      )
-    );
+      ));
 
     const unhealthyFlag = async (): Promise<boolean> => {
       const res = await LIST_GET(

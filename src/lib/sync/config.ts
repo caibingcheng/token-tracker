@@ -6,6 +6,7 @@ import { hostname } from "os";
 import { getSetting, setSetting, deleteSetting } from "@/lib/auth/settings";
 import { encryptSecret, decryptSecret, GatewaySecretMissingError } from "@/lib/gateway/crypto";
 import { isValidInstanceName, isValidInstanceUid } from "@/lib/ingest/validate";
+import { isOutboundUrlAllowed } from "@/lib/gateway/url-guard";
 
 const KEY_TARGET_URL = "sync_target_url";
 const KEY_TOKEN = "sync_token_encrypted";
@@ -21,7 +22,8 @@ const KEY_LAST_ATTEMPT = "sync_last_attempt_at";
 const KEY_LAST_SKIPPED_INVALID = "sync_last_skipped_invalid";
 
 export interface SyncLastError {
-  type: "auth" | "batch_rejected" | "network" | "server" | "internal";
+  // config：目标 URL 指向非允许私网地址，推送被主动拦下，不发请求
+  type: "auth" | "batch_rejected" | "network" | "server" | "internal" | "config";
   message: string;
   firstFailedAt: string;
 }
@@ -49,6 +51,19 @@ export function isValidTargetUrl(url: string): boolean {
     return false;
   }
 }
+
+// HTTP / HTTPS 均允许，兼容个人/家庭内网部署。
+// 私网地址仍由 SSRF 策略把关；环回（localhost / 127.x / ::1）可直接使用。
+// **与运行时共用同一套规则**（url-guard 的 assertOutboundUrlAllowed(url, "sync")）：
+// 写入侧允许的配置运行侧必然可用（loopback 例外在 dispatcher 层同样生效），
+// 写入侧拒绝的配置运行侧也会被拦下（不出现「配置过、实际发不出去」的错位）。
+export function isSecureSyncTarget(url: string): boolean {
+  return isOutboundUrlAllowed(url, "sync");
+}
+
+export const INSECURE_TARGET_MESSAGE =
+  "targetUrl points to a private/link-local address; only loopback is allowed without " +
+  "ALLOW_PRIVATE_UPSTREAMS=true";
 
 // 归一化目标 URL：路径为空或 "/" 时自动补 A 端固定接收端点 /ingest/records；
 // 已有路径仅去尾部斜杠（保留反代子路径场景）；query/hash 无意义一并丢弃。
@@ -178,6 +193,9 @@ export async function saveSyncConfig(input: {
   if (input.targetUrl !== undefined) {
     if (!isValidTargetUrl(input.targetUrl)) {
       throw new Error("targetUrl must be an http(s) URL");
+    }
+    if (!isSecureSyncTarget(input.targetUrl)) {
+      throw new Error(INSECURE_TARGET_MESSAGE);
     }
     await setSetting(KEY_TARGET_URL, normalizeTargetUrl(input.targetUrl));
   }

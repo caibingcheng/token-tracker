@@ -36,7 +36,10 @@ export async function deleteSetting(key: string): Promise<void> {
 
 // ---- env 登录 key 解析：ADMIN_API_KEY（优先）→ API_KEYS（deprecated 兼容） ----
 
-export function getEnvAdminKeys(): string[] {
+// 全部已配置的 env 登录 key（不过滤强度）。
+// 用途：判定「env 是否已配置」。弱 key 也算「已配置」——否则弱 key 会被当成未配置，
+// 从而把首次设置向导（唯一 fail-open 入口）打开。
+export function getEnvAdminKeysConfigured(): string[] {
   const primary = process.env.ADMIN_API_KEY;
   if (primary && primary.trim() !== "") {
     return primary.split(",").map((k) => k.trim()).filter(Boolean);
@@ -49,6 +52,12 @@ export function getEnvAdminKeys(): string[] {
     return legacy.split(",").map((k) => k.trim()).filter(Boolean);
   }
   return [];
+}
+
+// 可用于登录/验签的 env key：个人/家庭部署允许弱 key，强度仅由前端提示。
+// 与 getEnvAdminKeysConfigured 共用同一列表，弱 key 也不会被当成「未配置」而开放 setup。
+export function getEnvAdminKeys(): string[] {
+  return getEnvAdminKeysConfigured();
 }
 
 // ---- admin 登录 key（DB 优先，env API_KEYS 仅 bootstrap 兜底） ----

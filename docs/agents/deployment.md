@@ -6,6 +6,7 @@
 
 - **安全响应头**（`next.config.js` 全局 header，`:path*`）：`X-Frame-Options: DENY`（点击劫持）、`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、`Permissions-Policy`（禁 camera/mic/geolocation）、CSP：`default-src 'self'` + `script-src 'self' 'unsafe-inline'`（**dev 模式额外放行 `unsafe-eval`**，生产不放松；`unsafe-inline` 因 Next bootstrap/styled-jsx 需要）+ `frame-ancestors 'none'` + `object-src 'none'`；`poweredByHeader: false`（不暴露 x-powered-by 框架身份）
 - **PWA 可安装性**：`src/app/manifest.ts`（manifest + 图标），无 Service Worker（离线能力未启用）；移动端底栏 `MobileTabBar.tsx`（`md:hidden`）
+- **依赖与工具链**：Next 16（App Router，Turbopack 构建）+ React 19 + undici 8 + **better-sqlite3 13（N-API）**（均要求 **Node >= 22.19**，`node:22-slim` 浮动 tag 当前 22.23.x 即可，本地开发建议同版本；better-sqlite3 13 起为 N-API 预编译，无需 node-gyp 编译，并修复了 Node 24 退出期 `RemoveEnvironmentCleanupHook` native abort）。`next lint` 在 Next 16 已移除 → `npm run lint` = `eslint .`，规则集为 `eslint.config.mjs`（flat config，eslint-config-next 16 的 core-web-vitals + typescript 预设；`no-explicit-any` 与 React Compiler 系列规则按升级前基线显式关闭）。`tsconfig.json` 排除 `**/*.test.ts`（Next 16 的构建期类型检查会覆盖测试文件，测试类型由 vitest/esbuild 负责，与 Next 14 行为对齐）
 - **Docker 构建**：Dockerfile `output: 'standalone'` + base `node:22-slim` + `ENV NODE_OPTIONS=--max-old-space-size=256 --expose-gc --max-semi-space-size=8`（生产内存控制：收紧 old space 上限 + young gen 双 semi-space 从 32MB 降到 16MB + `src/instrumentation.ts` instrumentationHook 每 5 分钟 RSS>64MB 时 full GC 归还内存）+ jemalloc（`LD_PRELOAD` 替换 glibc malloc，native 分配回收更彻底，防长跑 RSS 碎片爬升；构建期软链到架构无关路径）；docker-compose.example.yml 含 `TRUSTED_PROXY` 与可选 `deploy.memory` 注释
 - **TOTP 绑定二维码**：`qrcode.react`（^4.2.0）渲染 otpauth:// URI
 - **`scripts/test_gateway.py`**：手动端到端网关测试脚本（虚拟 key → 代理请求 → 校验透传/写库），不入 vitest，仅供本地联调
@@ -30,7 +31,9 @@ SQLITE_DATABASE_PATH="./data/token-tracker.db"
 GATEWAY_SECRET=""                   # AES-256-GCM 32 字节（hex/base64）；openssl rand -hex 32
 
 # 可选：bootstrap（未配置且 DB 无 key 时 Web 端出现首次设置向导）
-# ADMIN_API_KEY="your-secret-key"   # 可设置多个，逗号分隔；旧名 API_KEYS 兼容（deprecated）
+# ADMIN_API_KEY="..."               # 可设置多个，逗号分隔；旧名 API_KEYS 兼容（deprecated）
+#                                   # 强度仅提示；个人/家庭部署允许弱 key，生产建议 >=16 字符且 >=2 类字符
+#                                   # 且不会重新打开首次设置向导（fail-closed）
 
 # 可选：也可在 admin panel Security/Display tab 配置（面板优先，env 仅 fallback）
 SESSION_TOKEN_TTL_HOURS=24          # 会话 token 有效期（小时），默认 24，滑动续期；只影响新签发 token
@@ -50,7 +53,9 @@ ALLOW_PRIVATE_UPSTREAMS=false       # 设为 true 允许上游指向内网/环�
 # API_CACHE_DEBUG=true              # 设为 true 在日志中输出缓存命中/未命中
 ```
 
-- 本地开发复制 `.env.example` → `.env.local`
+- 本地开发复制 `.env.example` → `.env.local`，并 `chmod 600 .env .env.local`（`.env*` 除模板外已在 `.gitignore` 中）
+- **compose 无默认凭证**：`docker-compose.example.yml` 的 `ADMIN_API_KEY` / `GATEWAY_SECRET` 用 `${VAR:?...}` 必填语法，缺失时 compose 直接报错退出（不再有 `your-api-key-here` 之类公开默认值）
+- **公网建议 HTTPS**：会话 token / 虚拟 key / 同步 token 都走 header 明文，公网裸 HTTP 会暴露凭据。反代（Caddy/Nginx）终止 TLS 后转发到 `127.0.0.1:3001`，并配置 `X-Real-IP` + `TRUSTED_PROXY=true`。upstream、proxy、sync 均允许 HTTP/HTTPS 以兼容本机和内网部署；私网地址仍受 SSRF 策略保护（内网目标用 `ALLOW_PRIVATE_UPSTREAMS=true`，sync loopback 例外）
 
 ## Docker 部署（VPS 自托管）
 

@@ -14,9 +14,9 @@ import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 // 前缀兼容兜底（instance 名受 INSTANCE_NAME_RE 约束，LIKE 无通配符注入风险）。
 // 默认只删水位行，记录保留。
 export const DELETE = withAuth(
-  async (request: NextRequest, ctx: { params: Record<string, string> }) => {
+  async (request: NextRequest, ctx: { params: Promise<Record<string, string>> | Record<string, string> }) => {
     return withSkipCache(async () => {
-      const uid = ctx.params.uid ?? "";
+      const uid = (await ctx.params).uid ?? "";
       if (!INSTANCE_UID_RE.test(uid)) {
         return NextResponse.json(
           { success: false, error: "Invalid instance uid" },

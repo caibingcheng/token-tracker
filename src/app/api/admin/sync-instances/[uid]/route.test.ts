@@ -231,7 +231,7 @@ describe("DELETE /api/admin/sync-instances/[uid]", () => {
     await DELETE(delReq(`/api/admin/sync-instances/${UID_A}?deleteRecords=1`, token), {
       params: { uid: UID_A },
     });
-    let details = (await getAuditDetails())[0];
+    const details = (await getAuditDetails())[0];
     expect(details.uid).toBe(UID_A);
     expect(details.instanceName).toBe("bing-mbp");
     expect(details.deleteRecords).toBe(true);

@@ -18,6 +18,7 @@ import { setAdminApiKey, getTokenEpoch } from "@/lib/auth/settings";
 import { signSessionToken, keyFingerprint } from "@/lib/auth/session";
 import { encryptSecret } from "@/lib/gateway/crypto";
 import { healthTracker } from "@/lib/gateway/proxy-deps";
+import { setOutboundFetchImpl } from "@/lib/gateway/outbound-fetch";
 
 const ORIG_DB = process.env.SQLITE_DATABASE_PATH;
 const ORIG_SECRET = process.env.GATEWAY_SECRET;
@@ -47,6 +48,7 @@ beforeEach(async () => {
     await db.delete(upstreamsTable);
   });
   vi.unstubAllGlobals();
+  setOutboundFetchImpl(null);
   await setAdminApiKey(ADMIN_KEY);
 });
 
@@ -87,16 +89,13 @@ async function createUpstream(name: string, enabled: boolean): Promise<number> {
 
 function stubFetchOk() {
   const calls: string[] = [];
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async (_url: unknown, opts?: { headers?: Headers }) => {
+  setOutboundFetchImpl(vi.fn(async (_url: unknown, opts?: { headers?: Headers }) => {
       calls.push(opts?.headers?.get("authorization") ?? "");
       return new Response("{}", {
         status: 200,
         headers: { "content-type": "application/json" },
       });
-    })
-  );
+    }));
   return calls;
 }
 

@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { db, initDatabase, settingsTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { encryptSecret } from "@/lib/gateway/crypto";
-import { getEnvAdminKeys, getSetting, resolveSessionTtlMs } from "./settings";
+import { getEnvAdminKeysConfigured, getSetting, resolveSessionTtlMs } from "./settings";
 import { signSessionToken, keyFingerprint } from "./session";
 
 // 首次设置向导：仅当 DB 无 admin_api_key 且 env 无任何登录 key 时可执行。
@@ -44,11 +44,13 @@ export function checkSetupRateLimit(key: string): boolean {
   return false;
 }
 
-// 闸门：DB 无 key AND env 无有效 key → true
+// 闸门：DB 无 key AND env 无 key → true。
+// env 判定用「已配置」：弱 env key 也算已配置，允许用于登录，
+// 但不能被当成「未配置」把唯一 fail-open 入口（本向导）重新打开。
 export async function canRunSetup(): Promise<boolean> {
   await initDatabase();
   if (await getSetting("admin_api_key")) return false;
-  return getEnvAdminKeys().length === 0;
+  return getEnvAdminKeysConfigured().length === 0;
 }
 
 // 事务内 re-check 闸门 → 写入 admin_api_key → token_epoch + 1 → 签发会话 token。
@@ -57,7 +59,7 @@ export async function canRunSetup(): Promise<boolean> {
 // 注意：better-sqlite3 事务回调为同步执行，内部禁止 await。
 export async function runSetup(plainKey: string): Promise<string> {
   await initDatabase();
-  if (getEnvAdminKeys().length > 0) {
+  if (getEnvAdminKeysConfigured().length > 0) {
     throw new SetupNotAllowedError();
   }
   const ttlMs = await resolveSessionTtlMs();

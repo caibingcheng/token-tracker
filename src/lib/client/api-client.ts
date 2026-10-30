@@ -1,13 +1,30 @@
 "use client";
 
+// 会话 token 存 sessionStorage 而非 localStorage：
+// - token 效力等同登录态，localStorage 永久驻留（关标签页仍在）+ 同源任意脚本可读
+// - sessionStorage 按标签页隔离，关闭即失效，缩小持久化暴露面
+// 代价：新开标签页需重新登录（个人网关可接受）
 const STORAGE_KEY = "token-tracker-session-token";
 
 let storedKey: string | null = null;
 let unauthorizedHandler: (() => void) | null = null;
 
-function readFromStorage(): string | null {
+// 旧版本把会话 token 存在 localStorage（永久驻留）。切到 sessionStorage 后必须主动清理
+// 同一 key 的残留项：否则明文 token 仍留在浏览器磁盘上（关标签页也不失效），
+// 迁移就等于没做。清理策略 = 「只删不读」：旧值一概不认（可能已过期/已吊销）。
+function purgeLegacyLocalStorage(): void {
   try {
-    return localStorage.getItem(STORAGE_KEY);
+    localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // ignore storage errors（无 localStorage / 隐私模式）
+  }
+}
+
+function readFromStorage(): string | null {
+  // 初始化即清理旧存储（不读取其值）
+  purgeLegacyLocalStorage();
+  try {
+    return sessionStorage.getItem(STORAGE_KEY);
   } catch {
     return null;
   }
@@ -22,8 +39,10 @@ export function getApiKey(): string | null {
 
 export function setApiKey(key: string): void {
   storedKey = key;
+  // 每次写入都顺手清掉旧 localStorage 残留（首次 set 早于首次 get 时也能清理）
+  purgeLegacyLocalStorage();
   try {
-    localStorage.setItem(STORAGE_KEY, key);
+    sessionStorage.setItem(STORAGE_KEY, key);
   } catch {
     // ignore storage errors
   }
@@ -31,8 +50,9 @@ export function setApiKey(key: string): void {
 
 export function clearApiKey(): void {
   storedKey = null;
+  purgeLegacyLocalStorage();
   try {
-    localStorage.removeItem(STORAGE_KEY);
+    sessionStorage.removeItem(STORAGE_KEY);
   } catch {
     // ignore storage errors
   }

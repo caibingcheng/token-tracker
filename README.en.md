@@ -21,7 +21,7 @@ flowchart LR
 
     A -->|"base_url → /v1,<br>key = vk-xxx"| G
     B -->|"base_url → root,<br>key = vk-xxx"| G
-    D -->|"x-goog-api-key or ?key=<br>vk-xxx"| G
+    D -->|"x-goog-api-key<br>vk-xxx"| G
 
     subgraph G[Token Tracker Gateway]
         direction TB
@@ -86,7 +86,8 @@ I've tried a number of existing solutions (LiteLLM, NEW API, OmniRoute — all g
 
 - TOTP two-factor auth + one-time recovery codes (hashes only)
 - All secrets stored AES-256-GCM encrypted; a DB leak doesn't leak plaintext
-- SSRF protection (private/loopback/metadata addresses rejected), XFF spoofing protection, rate-limited login/setup
+- SSRF protection (address classification at save time **plus a connection-time DNS lookup guard** against DNS rebinding), XFF spoofing protection, rate-limited login/setup with a 64KB body cap on auth endpoints
+- Login-key strength hints; weak keys are allowed for personal/home deployments; virtual keys accepted via headers only (`?key=` removed so keys never reach query logs)
 - Audit log for every admin action; setup wizard is fail-open
 
 ## Quick Start (Docker)
@@ -94,7 +95,11 @@ I've tried a number of existing solutions (LiteLLM, NEW API, OmniRoute — all g
 ```bash
 docker pull ghcr.io/caibingcheng/token-tracker:latest
 cp docker-compose.example.yml docker-compose.yml
-# Edit docker-compose.yml: set ADMIN_API_KEY, GATEWAY_SECRET, SQLITE_DATABASE_PATH
+# Both credentials are required and have no defaults (compose aborts when missing):
+#   ADMIN_API_KEY  >=16 chars with 2+ character classes (openssl rand -hex 24)
+#   GATEWAY_SECRET openssl rand -hex 32
+export ADMIN_API_KEY="$(openssl rand -hex 24)"
+export GATEWAY_SECRET="$(openssl rand -hex 32)"
 docker compose up -d
 ```
 
@@ -110,7 +115,7 @@ First run, three steps:
 |---|---|
 | OpenAI-compatible (Codex / OpenCode, etc.) | `base_url = http://host:3000/v1`, `api_key = vk-xxx` |
 | Claude Code (Anthropic protocol) | `ANTHROPIC_BASE_URL = http://host:3000`, `ANTHROPIC_AUTH_TOKEN = vk-xxx` |
-| Gemini-protocol clients | `base_url = http://host:3000`, key via `x-goog-api-key` or `?key=` |
+| Gemini-protocol clients | `base_url = http://host:3000`, key via the `x-goog-api-key` header (**`?key=` query auth has been removed**: query strings end up in access logs, reverse-proxy logs, and browser history) |
 | Other endpoints (e.g. OpenRouter's `/alpha/*`, whose full upstream path is `/api/alpha/*`) | `base_url = http://host:3000/raw`, `api_key = vk-xxx`; the `/raw` prefix is stripped and the inner path appended to the upstream base URL (`https://openrouter.ai/api`) — write the client path as `/alpha/*`, the same way `/v1` maps to `/api/v1` |
 
 Virtual keys (the `vk-` prefix) are created in `/admin`. Sharing one key across devices does not distinguish between devices — create one key per device if you need that.
@@ -121,8 +126,8 @@ Virtual keys (the `vk-` prefix) are created in `/admin`. Sharing one key across 
 npm install
 cp .env.example .env.local   # required: SQLITE_DATABASE_PATH, GATEWAY_SECRET
 npm run dev                  # http://localhost:3000
-npm test                     # vitest unit tests (55 test files covering proxy chain/parsers/routing/crypto/auth)
-npm run lint
+npm test                     # vitest unit tests (proxy chain/parsers/routing/crypto/auth; workers capped at half the CPUs)
+npm run lint                 # ESLint 9 flat config (`next lint` was removed in Next 16)
 ```
 
 The SQLite database is created automatically on the first request (with incremental migrations); no manual setup needed.
@@ -151,7 +156,7 @@ The SQLite database is created automatically on the first request (with incremen
 | Variable | Required | Description |
 |---|---|---|
 | `SQLITE_DATABASE_PATH` | Yes | Path to the SQLite database file |
-| `ADMIN_API_KEY` | Suggested | Admin API keys, comma-separated; if unset and the DB has no key, a first-run setup wizard appears (legacy name `API_KEYS` deprecated) |
+| `ADMIN_API_KEY` | Suggested | Admin API keys, comma-separated; weak keys are allowed for personal/home deployments, with strength hints in the UI (>=16 chars with 2+ classes recommended in production); a configured weak key does not reopen the first-run wizard; if unset and the DB has no key, a first-run setup wizard appears (legacy name `API_KEYS` deprecated) |
 | `GATEWAY_SECRET` | Yes | Gateway master key (AES-256-GCM), generate with `openssl rand -hex 32`; if missing, the proxy and admin APIs return 503 |
 | `SESSION_TOKEN_TTL_HOURS` | No | Session token lifetime (hours, default 24, sliding renewal) |
 | `TRUSTED_PROXY` | No | Set to true when a reverse proxy sets `X-Real-IP`, restoring precise IP rate limiting |
@@ -162,6 +167,10 @@ The SQLite database is created automatically on the first request (with incremen
 ## Security Notes
 
 > **⚠️ First-run wizard (fail-open)**: if `ADMIN_API_KEY` is not set and the DB has no key, anyone who can reach the web UI can be the first to claim the admin key. **In production, always set `ADMIN_API_KEY`**, or protect the first-configuration window with a firewall / internal network. The wizard's rate limiting only prevents brute force, not first-run takeover.
+
+> **⚠️ Serve public deployments over HTTPS**: session tokens and virtual keys travel in plaintext headers. Terminate TLS in a reverse proxy (Caddy / Nginx) and forward to `127.0.0.1:3001` with `X-Real-IP` + `TRUSTED_PROXY=true`. Upstream, proxy, and sync URLs support both HTTP and HTTPS for local/internal deployments; private addresses remain protected by SSRF rules (`ALLOW_PRIVATE_UPSTREAMS=true` for internal targets, with a loopback exception for sync).
+
+> **🔑 Secret hygiene**: `.env*` (except `.env.example`), `*.pem`, `*.p12`, `*.pfx`, `id_rsa*`, `credentials*`, `secrets*` are gitignored; run `chmod 600` on your local `.env` files.
 
 Forgot the login key? Delete the `admin_api_key` row from the SQLite `settings` table to fall back to the `ADMIN_API_KEY` env.
 

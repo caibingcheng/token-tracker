@@ -4,7 +4,8 @@
 
 - **Schema**：`src/lib/db/schema-sqlite.ts`（sqlite-core）
 - **连接配置**：`src/lib/db/index.ts`，懒加载初始化
-- **关键配置**：better-sqlite3，文本模式存储时间戳（ISO 格式）
+- **关键配置**：better-sqlite3 **13.x（N-API 版，要求 Node >= 22）**，文本模式存储时间戳（ISO 格式）
+  - ⚠️ 为什么必须是 13.x：11.x/12.x 是传统 NAN/V8 绑定，`Statement::~Statement` 走 `node::RemoveEnvironmentCleanupHook`；Node 24 在 worker/子进程退出时环境已先行拆除，退出期 GC 销毁 Statement 会命中 `Assertion failed: (env) != nullptr` 直接 abort（`npm test` 表现为 87-88/89 文件后 worker native abort）。13.x 换用 node-addon-api（二进制里已无 `*EnvironmentCleanupHook`，改用 `napi_*_env_cleanup_hook`），该崩溃路径消失；Drizzle 驱动（`drizzle-orm/better-sqlite3`）API 未变，迁移与查询无需改动
 - **自动初始化**：`initDatabase()` 在首次 API 调用时自动建表 + 索引
 - **表结构**：
   - `token_records`（id, model, provider, agent, input_tokens, output_tokens, cache_read, cache_write, status, latency_ms, ttft_ms, virtual_key_id, user_agent, session_id, request_model, remote_instance_uid, created_at）：**`model` 列 = 发往 upstream 的真实 model 名**（命名路由场景 = 目标真实名）；`request_model` = 客户端原始请求名（虚拟名路由场景可追溯，仅展示不参与定价）；**`agent` 列 = 来源 key 名（本地 vk 名 / 远程 `remote/{instance}/{vk名}`），Dashboard Agent 维度展示由 `user_agent` 查询时派生（见 `docs/agents/data-conventions.md`「Agent 维度派生」），历史 agent 列值仅存 Key 列展示**；`user_agent` = 客户端 UA（派生 agent 的数据源，可 NULL）；`session_id` = 会话 id（**客户端 header 优先**：依次尝试 `x-session-id` → `session_id` → `x-conversation-id`，取首个 trim 后非空值，截断 256；**未携带时回退网关会话指纹**（`buildSessionId`，与 session 粘性同源，sha256 64 hex，仅当 body 带非空 `messages` 数组时回退——gemini `contents` / 非 chat 端点指纹退化为常量，留 NULL）；Records 表展示（`font-mono` 单列，桌面端 `max-w-[140px]` 截断 + title 全文，移动端 `break-all` 换行；无筛选/索引），sync 透传）；`latency_ms` = 整请求耗时（全部请求）；`ttft_ms` = 流式首 token 延迟（首 chunk 到达 - 请求开始，仅流式有值，非流式 NULL）；`remote_instance_uid` = 来源实例稳定身份键（NULL = 本地记录；非 NULL = ingest 推送来源，索引 `idx_token_records_remote_instance_uid_created_at`；存量 remote 行不回填）

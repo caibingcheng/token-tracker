@@ -3,7 +3,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vites
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { getModelPricesList, invalidateRemoteModelCache, RECENT_ACTIVITY_WINDOW_MS } from "./model-prices-service";
+import { getModelPricesList, invalidateRemoteModelCache, RECENT_ACTIVITY_WINDOW_MS, autoFillAllUnpriced, autoFillForceAll } from "./model-prices-service";
 import { db, initDatabase, upstreamsTable, modelPricesTable, tokenRecords, syncInstancesTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { eq } from "drizzle-orm";
@@ -87,6 +87,22 @@ async function insertRemoteInstance(instanceName: string, lastRecordId = 5) {
       epoch: "e",
       lastRecordId,
       updatedAt: new Date().toISOString(),
+    });
+  });
+}
+
+async function insertLocalRecord(model: string, createdAt: string, provider = "openrouter") {
+  await withSkipCache(async () => {
+    await db.insert(tokenRecords).values({
+      model,
+      provider,
+      agent: "claude-code",
+      inputTokens: 1,
+      outputTokens: 1,
+      cacheRead: 0,
+      cacheWrite: 0,
+      virtualKeyId: -1,
+      createdAt,
     });
   });
 }
@@ -188,6 +204,71 @@ describe("model prices visibility (近期流量)", () => {
     expect(visible).toBe(false);
   });
 
+  it("本机记录模型（不在 enabled_models、未定价）进入行集，upstreams 含 provider 归属", async () => {
+    await insertLocalRecord("typesafe/jev-1.13", daysAgo(60));
+
+    const rows = await getModelPricesList();
+    const jev = rows.find((r) => r.model === "typesafe/jev-1.13");
+    expect(jev).toBeDefined();
+    expect(jev!.status.active).toBe(false);
+    expect(jev!.recentActivity).toBe(false);
+    expect(jev!.status.inactive).toBe(false); // inactive 只针对已定价行
+    expect(jev!.upstreams).toContain("openrouter");
+  });
+
+  it("本机近 30 天流量 → recentActivity true（UI 默认可见）", async () => {
+    await insertLocalRecord("local-recent", daysAgo(5));
+
+    const rows = await getModelPricesList();
+    const m = rows.find((r) => r.model === "local-recent");
+    expect(m).toBeDefined();
+    expect(m!.recentActivity).toBe(true);
+  });
+
+  it("remote 行不计入本机来源：uid 非空 / remote/ 前缀（uid 迁移前旧行）均不进本机行集", async () => {
+    // 无 sync instance：remote 行不在行集；本机 loader 须严格排除，防旧行被当本机模型冒出
+    await insertRemoteRecord("uid-row", daysAgo(5));
+    await withSkipCache(async () => {
+      await db.insert(tokenRecords).values({
+        model: "legacy-remote-row",
+        provider: "remote/bing-mbp/openai",
+        agent: "remote/bing-mbp/claude-code",
+        inputTokens: 1,
+        outputTokens: 1,
+        cacheRead: 0,
+        cacheWrite: 0,
+        virtualKeyId: -1,
+        remoteInstanceUid: null,
+        createdAt: daysAgo(5),
+      });
+    });
+
+    const rows = await getModelPricesList();
+    expect(rows.find((r) => r.model === "uid-row")).toBeUndefined();
+    expect(rows.find((r) => r.model === "legacy-remote-row")).toBeUndefined();
+  });
+
+  it("enabled upstream + 同名 provider 本地记录 → upstreams 去重不重复显示", async () => {
+    await insertUpstream("up-a", ["dup-model"]);
+    await insertLocalRecord("dup-model", daysAgo(5), "up-a");
+
+    const rows = await getModelPricesList();
+    const m = rows.find((r) => r.model === "dup-model")!;
+    expect(m.upstreams).toEqual(["up-a"]);
+  });
+
+  it("localModelCache：暖缓存后新增本机记录不立即出现，invalidate 后出现", async () => {
+    await insertLocalRecord("cached-a", daysAgo(5));
+    await getModelPricesList(); // 暖缓存
+    await insertLocalRecord("cached-b", daysAgo(5));
+
+    let rows = await getModelPricesList();
+    expect(rows.find((r) => r.model === "cached-b")).toBeUndefined();
+    invalidateRemoteModelCache();
+    rows = await getModelPricesList();
+    expect(rows.find((r) => r.model === "cached-b")).toBeDefined();
+  });
+
   it("RECENT_ACTIVITY_WINDOW_MS is 30 days", () => {
     expect(RECENT_ACTIVITY_WINDOW_MS).toBe(30 * 24 * 60 * 60 * 1000);
   });
@@ -225,6 +306,46 @@ describe("model prices visibility (近期流量)", () => {
     const m = rows.find((r) => r.model === "legacy-model");
     expect(m).toBeDefined();
     expect(m!.upstreams).toContain("remote/bing-mbp/openai");
+  });
+});
+
+describe("auto-fill 覆盖本机模型", () => {
+  const snapshotData = {
+    p1: { id: "p1", models: { "local-only": { id: "local-only", cost: { input: 1, output: 2 } } } },
+  };
+
+  it("autoFillAllUnpriced 填充本机独有未定价模型", async () => {
+    await withSnapshot(snapshotData, async () => {
+      await insertLocalRecord("local-only", daysAgo(60));
+
+      const result = await autoFillAllUnpriced();
+      expect(result.filled).toContain("local-only");
+      const priced = await withSkipCache(async () =>
+        db.select().from(modelPricesTable).where(eq(modelPricesTable.model, "local-only"))
+      );
+      expect(priced[0]?.inputPrice).toBe(1);
+      expect(priced[0]?.outputPrice).toBe(2);
+    });
+  });
+
+  it("autoFillForceAll 用快照价覆盖本机模型的过期非 manual 价", async () => {
+    await withSnapshot(snapshotData, async () => {
+      await insertLocalRecord("local-only", daysAgo(60));
+      await insertPrice("local-only", {
+        source: "models.dev",
+        modelsDevId: "p1/local-only",
+        inputPrice: 9,
+        outputPrice: 9,
+      });
+
+      const result = await autoFillForceAll();
+      expect(result.updated).toContain("local-only");
+      const priced = await withSkipCache(async () =>
+        db.select().from(modelPricesTable).where(eq(modelPricesTable.model, "local-only"))
+      );
+      expect(priced[0]?.inputPrice).toBe(1);
+      expect(priced[0]?.outputPrice).toBe(2);
+    });
   });
 });
 

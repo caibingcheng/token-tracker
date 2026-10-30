@@ -7,7 +7,7 @@ import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 import { MAX_DESCRIPTION_LENGTH, parsePriority } from "@/lib/admin/named-routes";
 
 interface Params {
-  params: { id: string; targetId: string };
+  params: Promise<{ id: string; targetId: string }>;
 }
 
 async function findRouteAndTarget(routeId: number, targetId: number) {
@@ -31,11 +31,12 @@ async function findRouteAndTarget(routeId: number, targetId: number) {
 
 // PATCH：编辑目标（targetModel / description / priority；upstream 改动 = 删旧建新）
 export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
-  const { params } = ctx as Params;
+  const { params } = ctx as Params; // params 为 Promise（Next 15+ 动态路由）
+  const paramsResolved = await params;
   return withSkipCache(async () => {
     await initDatabase();
-    const routeId = Number(params.id);
-    const targetId = Number(params.targetId);
+    const routeId = Number(paramsResolved.id);
+    const targetId = Number(paramsResolved.targetId);
     const { route, target } = await findRouteAndTarget(routeId, targetId);
     if (!route) {
       return NextResponse.json({ success: false, error: "Named route not found" }, { status: 404 });
@@ -118,11 +119,12 @@ export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
 });
 
 export const DELETE = withAuth(async (request: NextRequest, ctx: any) => {
-  const { params } = ctx as Params;
+  const { params } = ctx as Params; // params 为 Promise（Next 15+ 动态路由）
+  const paramsResolved = await params;
   return withSkipCache(async () => {
     await initDatabase();
-    const routeId = Number(params.id);
-    const targetId = Number(params.targetId);
+    const routeId = Number(paramsResolved.id);
+    const targetId = Number(paramsResolved.targetId);
     const { route, target } = await findRouteAndTarget(routeId, targetId);
     if (!route) {
       return NextResponse.json({ success: false, error: "Named route not found" }, { status: 404 });

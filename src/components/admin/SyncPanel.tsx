@@ -52,7 +52,7 @@ export interface SyncStatusData {
   boundUid: string | null;
   lastSuccessAt: string | null;
   lastError: {
-    type: "auth" | "batch_rejected" | "network" | "server" | "internal";
+    type: "auth" | "batch_rejected" | "network" | "server" | "internal" | "config";
     message: string;
     firstFailedAt: string;
   } | null;
@@ -98,7 +98,7 @@ function ErrorBadge({ type }: { type: string }) {
   const cls =
     type === "auth"
       ? "border-red-200 bg-red-50 text-red-700"
-      : type === "batch_rejected"
+      : type === "batch_rejected" || type === "config"
         ? "border-amber-200 bg-amber-50 text-amber-700"
         : "border-gray-200 bg-gray-50 text-gray-600";
   const label =
@@ -106,11 +106,13 @@ function ErrorBadge({ type }: { type: string }) {
       ? "Auth"
       : type === "batch_rejected"
         ? "Rejected"
-        : type === "server"
-          ? "Server"
-          : type === "network"
-            ? "Network"
-            : "Internal";
+        : type === "config"
+          ? "Config"
+          : type === "server"
+            ? "Server"
+            : type === "network"
+              ? "Network"
+              : "Internal";
   return (
     <span className={`inline-block rounded border px-1.5 py-0.5 text-[10px] font-medium ${cls}`}>
       {label}

@@ -4,9 +4,38 @@ node_modules/
 # Next.js
 .next/
 
-# Environment variables
+# Environment variables（各种变体；保留模板文件）
 .env
-.env.local
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+
+# Secrets / credentials / keys / certificates（永不入库）
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa
+id_rsa.*
+id_dsa
+id_dsa.*
+id_ecdsa
+id_ecdsa.*
+id_ed25519
+id_ed25519.*
+credentials
+credentials.*
+*credentials.json
+*credential.json
+secrets
+secrets.*
+secret.*
+*.secret
+.npmrc
 
 # Docker compose (use example file)
 docker-compose.yml
@@ -36,7 +65,3 @@ drizzle/
 
 # Local dev tooling
 mise.toml
-
-# Secrets
-*.pem
-*.key

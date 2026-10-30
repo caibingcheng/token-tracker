@@ -9,6 +9,8 @@ import { and, gt, sql } from "drizzle-orm";
 import { db, initDatabase, tokenRecords } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import type { Dispatcher } from "undici";
+import { getOutboundDispatcher } from "@/lib/gateway/proxy-dispatcher";
+import { outboundFetch, type OutboundFetch } from "@/lib/gateway/outbound-fetch";
 import {
   loadSyncConfig,
   getSyncToken,
@@ -19,6 +21,8 @@ import {
   setSyncLastError,
   setSyncLastAttemptAt,
   setSyncLastSkippedInvalid,
+  isSecureSyncTarget,
+  INSECURE_TARGET_MESSAGE,
   type SyncLastError,
 } from "./config";
 import { recordAuditLog } from "@/lib/admin/audit";
@@ -134,16 +138,20 @@ function toPayload(row: SyncRecordRow): Record<string, unknown> {
 }
 
 export class SyncPusher {
-  private fetchImpl: typeof fetch;
+  private fetchImpl: OutboundFetch;
   private dispatcher?: Dispatcher;
   private running = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private backoffMs = BASE_BACKOFF_MS;
   private batchRejectedCount = 0;
 
-  constructor(opts: { fetchImpl?: typeof fetch; dispatcher?: Dispatcher } = {}) {
-    this.fetchImpl = opts.fetchImpl ?? fetch;
-    this.dispatcher = opts.dispatcher;
+  constructor(opts: { fetchImpl?: OutboundFetch; dispatcher?: Dispatcher } = {}) {
+    // 默认走 npm undici 的 fetch（与 dispatcher 同源，见 outbound-fetch.ts）
+    this.fetchImpl = opts.fetchImpl ?? outboundFetch;
+    // 默认走受连接时地址校验保护的直连 Agent（防 DNS rebinding）；推送带真实 ingest token。
+    // allowLoopback：sync 配置层允许 loopback 明文 http（本机/容器内 B→A 联调），
+    // dispatcher 必须认同同一例外，否则出现「配置允许、实际连不上」。
+    this.dispatcher = opts.dispatcher ?? getOutboundDispatcher(null, { allowLoopback: true });
   }
 
   // fire-and-forget 通知（写库后调用；未配置时零开销）。
@@ -209,6 +217,14 @@ export class SyncPusher {
     const config = await loadSyncConfig();
     if (!config.targetUrl || !config.hasToken) {
       return; // 未配置：不启动
+    }
+    // 存量配置兜底：旧版本落库的私网目标 URL 必须在这里再次拦住 ——
+    // 不发出任何请求（Bearer token 不出网），错误可观测。HTTP/HTTPS 本身均允许。
+    if (!isSecureSyncTarget(config.targetUrl)) {
+      await setSyncLastAttemptAt(new Date().toISOString());
+      await this.recordError("config", INSECURE_TARGET_MESSAGE);
+      this.schedule(RETRY_INTERVAL_MS, true);
+      return;
     }
 
     for (let rounds = 0; rounds < 1000; rounds++) {
@@ -303,6 +319,8 @@ export class SyncPusher {
     let response: Response;
     try {
       response = await this.fetchImpl(targetUrl, {
+        // 运行时 URL 安全校验按 sync 口径（HTTP/HTTPS 均允许，loopback 例外）
+        scope: "sync",
         method: "POST",
         headers: {
           "content-type": "application/json",

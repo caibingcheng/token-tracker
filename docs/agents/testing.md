@@ -2,6 +2,8 @@
 
 > 上级文档：`AGENTS.md`。加测试或改动被测模块前必读。
 
+- **Vitest 4 配置**（`vitest.config.mts`）：`maxWorkers: "25%"`（≤ CPU 一半，降低并行 SQLite/undici 的峰值 RSS）、`execArgv: ["--max-old-space-size=1536"]`（**Vitest 4 已移除 `poolOptions`**，execArgv 必须在顶层，否则被静默忽略）、`hookTimeout/testTimeout/teardownTimeout: 30s`（默认 10s/5s 在共享高负载机器上会误杀首启迁移 + 路由 import 的用例）、alias 用 `import.meta.dirname`（`.mts` 为 ESM，避开 Vite configLoader 的 `__dirname` 警告）
+- **native 依赖**：`better-sqlite3` 必须 ≥13（N-API）。11.x/12.x 在 Node 24 的 worker/进程退出期 GC 销毁 Statement 会触发 `node::RemoveEnvironmentCleanupHook Assertion failed` 让整个测试 worker native abort（不是 JS 异常，无法 catch）
 - 首次引入 vitest（`src/**/*.test.ts`，`npm test`），测试范围均为不依赖 Next.js 运行时的纯逻辑模块：
   - `src/lib/gateway/parsers/`：三协议 usage 解析（含 `stream-usage` 增量提取：随机 chunk 边界对照批量 parser、多行 data、跨 chunk 事件、UTF-8 截断）
   - `src/lib/gateway/model-router`：精确/通配/priority 匹配、Gemini path 提取
@@ -12,7 +14,7 @@
   - `src/lib/auth/totp`：RFC 6238 测试向量 + 时间窗容差
   - `src/lib/auth/recovery-codes`：生成格式/互斥/字符集、SHA-256 哈希、验证+标记已用（重复失败）、归一化、剩余数量递减、提醒标记往返、classifySecondFactorInput 分流
   - `src/app/api/admin/auth/totp/route.test`：TOTP 路由集成测试（临时 SQLite + 真实 handler + 签名 token）：换绑无 currentCode → 400、错误计入 totp_fail_count、换绑成功替换 secret + token_epoch+1、首次启用 epoch 不变、解绑清理 recovery_codes/reminder
-  - `src/lib/auth/session`：会话 token 签发/验签/过期/滑动续期判定
+  - `src/lib/auth/session`：会话 token 签发/验签/过期/滑动续期判定 + **篡改稳定性**（改 payload / 改签名首字符（全有效位）/ 截断 / 追加，不再改 base64url 末位非有效位）
   - `src/lib/auth/edge-verify`：WebCrypto 验签（与 node 侧签名互认）
   - `src/lib/auth/guard-scan`：静态扫描所有 /api 路由必须用 withAuth（login 除外）
   - `src/lib/gateway/balance`：deepseek/openrouter 余额 + kimi/kimi-coding/glm/opencode-go 余额或用量解析（mock fetch）、provider 判定、balance_fetch_mode 分发（auto 按 baseUrl/name 探测 / none 不获取 / 手动指定）、normalizeBalanceFetchMode 存量值回退
@@ -26,7 +28,8 @@
   - `src/app/api/admin/model-prices/route.test`：Admin API 集成测试（临时 SQLite + 真实 handler + 签名 token）——GET 行集与徽标状态（active/inactive/待确认/未匹配/有更新/已下架）、PUT 手动编辑（source='manual' 清空 modelsDevId、model 名含 `/`）、DELETE、select 落库、auto-fill `mode=force` 分支 + 缺省 fill 兼容 + 非法 mode 400、**force 下快照无价条目不覆盖已有价且存量 0 价行只标 zeroNoPrice**、**select 对“仅 input”条目 404（区分文案 no official price）**、**candidates 响应带 `hasCost` 且无价候选不被预选**、未带 withAuth 401
   - `src/app/api/model-pricing/route.test`：模拟器数据源集成测试（临时 SQLite + 临时快照文件 + 签名 token）——已定价行 + providers 列表、provider 推断（含日期变体剥离）、`?provider=` 懒加载/未知 provider 空数组、`?search=` 命中（canonicalId 格式 + cache 回退）/无结果、未带 token 401
   - `src/lib/provider-presets`：预设合法性（protocol/baseUrl/唯一性）
-  - `src/lib/gateway/url-guard`：上游 baseUrl SSRF 防护（环回/私有/链路本地/元数据 IP 拒绝、DNS 解析后分类、ALLOW_PRIVATE_UPSTREAMS 逃生开关）
+  - `src/lib/gateway/url-guard`：上游 baseUrl SSRF 防护（环回/私有/链路本地/元数据 IP 拒绝、DNS 解析后分类、ALLOW_PRIVATE_UPSTREAMS 逃生开关）+ **十六进制 IPv4-mapped IPv6**（`::ffff:7f00:1` / `::ffff:a00:1` / 全展开 / IPv4-compatible / NAT64）+ **URL 方括号 hostname**（`[::1]` 不当域名走 DNS）+ **公网 HTTP/HTTPS 兼容 / 环回私网例外** + `expandIpv6`/`extractEmbeddedIpv4`/`isLoopbackHost`/`isBlockedOutboundIp` 基础正确性
+  - `src/lib/gateway/outbound-guard`（**连接时 SSRF**）：`createGuardedLookup` 对公网地址放行、对 rebinding 回环地址抛 `ERR_BLOCKED_OUTBOUND_ADDRESS`、`all:true` 多地址任一私网即拒、解析错误/空结果传播 `ENOTFOUND`、`ALLOW_PRIVATE_UPSTREAMS=true` 放行；`getOutboundDispatcher` 无 proxyUrl 返回共享受保护 Agent（`getDirectDispatcher`）、有 proxyUrl 返回 `ProxyAgent`
   - `src/lib/gateway/url-utils`：`joinUrlPath` 前缀去重 + `sanitizePathSegments` `..` 段净化（逃逸返回 null）
   - `src/lib/net/client-ip`：限流 IP 可信源（TRUSTED_PROXY 开关、XFF 伪造防护）
   - `src/lib/auth/totp-lock`：TOTP 失败计数 + 指数锁定（settings 表持久化，防重启清零）
@@ -42,7 +45,13 @@
   - `src/lib/gateway/upstream-client`：模型列表拉取 + 3xx 不跟随（redirect manual，防 key 跨源泄露）
   - `src/lib/gateway/response-rewriter`：响应体模型名改写
   - `src/lib/models-dev/snapshot`：快照拉取/缓存/消毒
-  - `src/lib/auth/setup`：首次设置向导闸门（canRunSetup 双条件 + runSetup 事务 re-check）
+  - `src/lib/auth/setup`：首次设置向导闸门（canRunSetup 双条件 + runSetup 事务 re-check）+ **弱 key 仅提示**（runSetup 接受弱 key 并签发会话）+ **弱 env 可登录但 setup 仍关闭**（`getEnvAdminKeysConfigured()` 与 `getEnvAdminKeys()` 都保留弱 key）
+  - `src/lib/auth/request-body`：认证端点 body 上限（content-length 声明超限直接拒、chunked 边读边累计超限、合法 JSON/坏 JSON/空 body、非对象归一 `{}`、自定义 limit）
+  - `src/app/api/auth/login/route.test`：401/400 语义 + **限流先于读 body**（缺 key/坏 JSON/超大 body 均计数，第 11 次 429，成功登录清零）+ 弱/强 env key 均可登录 / DB key 优先
+  - `src/app/api/auth/setup/route.test`：弱 key 200 且正常写库、弱 env key 已配置时 403、413/400、限流顺序
+  - `src/app/api/admin/auth/api-key/route.test`：401、弱/强新 key 均落库 + token_epoch+1
+  - `src/lib/client/api-client`：会话 token 只写 **sessionStorage**（localStorage 不写不读）、apiLogin 落 token、apiFetch 带 `X-API-Key` 与滑动续期回写、401 清空 token
+  - `src/lib/auth/recovery-codes`（**原子消费**）：并发复用同一码只成功一次（含归一化等价写法）、并发不同码互不干扰、落库标记不可复活
   - `src/lib/auth/settings-display` / `settings-hidden-sources` / `settings-stream`：settings 读写与回退优先级（含 stream timeout 函数族、hidden providers/sources）
   - `src/lib/admin/audit`：审计日志写入
   - `src/lib/clipboard` / `src/lib/mask-utils`：剪贴板 fallback / 密钥掩码
@@ -61,12 +70,16 @@
   - `src/lib/gateway/proxy`（header transforms 集成）：transform 经 upstream 配置在出站请求生效（变量展开 per-hop、sessionId 与 session 模块指纹同源且随首问变化、fill 保留/override 覆盖客户端值）、无 transforms 零影响
   - `src/lib/gateway/proxy-dispatcher`：null/空串 → undefined、同 URL 缓存复用、上限 50 重建
   - `src/lib/gateway/url-guard`：`validateProxyUrl`（scheme 拒绝/私网 IP + DNS 拒绝/逃生开关/含凭据通过）+ `sanitizeProxyUrlForDisplay` 剥 userinfo
-  - `src/lib/gateway/proxy` / `probe` / `upstream-client` / `balance`：upstream 带 proxyUrl 时 init 含 dispatcher、无 proxyUrl 时无 dispatcher key（主链 + responses 辅助链各一）
+  - `src/lib/gateway/proxy` / `probe` / `upstream-client` / `balance` / `classifier`：upstream 带 proxyUrl 时 init 含 ProxyAgent dispatcher、**无 proxyUrl 时也必须含受地址校验保护的直连 dispatcher**（`toBe(getDirectDispatcher())`，主链 + responses 辅助链各一）；出站 fetch 一律经 `outboundFetch`（测试用 `setOutboundFetchImpl()` 注入，不再 stub 全局 fetch）
+  - `src/lib/gateway/outbound-fetch`：注入 seam 生效、绝不落到全局 fetch、dispatcher 与 fetch 同源（直连 dispatcher 是 npm undici 的 Agent）+ **运行时 URL 安全边界**（公网 HTTP/HTTPS 放行、字面私网/环回/元数据地址拒绝、sync scope 允许 loopback 明文、loopback 例外不外溢到 upstream、逃生开关放行内网、非法 scheme 拒绝、`scope` 不传给底层）
+  - `src/lib/gateway/url-guard`（运行时部分）：`assertOutboundUrlAllowed` 三 scope 矩阵 + 字面 IP 不依赖 DNS 的拦截 + `isLoopbackIp` 精度
+  - `src/lib/gateway/proxy-dispatcher`（**ProxyAgent 防 rebinding**）：`buildProxyAgentOptions().proxyTls.lookup` 存在且按地址分类；本地 TCP 假代理 + `https://localhost` 代理主机 → 建连前拦截（**连接数 0** + `ERR_BLOCKED_OUTBOUND_ADDRESS`），`ALLOW_PRIVATE_UPSTREAMS=true` 才真正连上；运行时允许公网 HTTP 代理、拒绝私网字面 IP 代理；sync 专用 Agent 与直连 Agent 区分
+  - `src/lib/sync/pusher-loopback.test`（**真实出站**）：无 mock，`http://localhost` / `http://127.0.0.1` 目标真实推送成功（ingest token、payload、游标推进）；非 loopback 私网 HTTP/HTTPS 目标被拦下（0 请求、token 不出网、游标不动、`lastError.type=config`）
   - `src/app/api/dashboard/route.test` / `src/app/api/records/route.test`：Dashboard/Records API 集成（含 agent 参数按派生工具名反找 / unknown 走 IS NULL / 未知 agent 400 / records 行 `keyName`）
   - `src/lib/ingest/validate.test`：payload 校验（instance 格式、结构错误 400、批量上限、部分接受 skippedInvalid、token 非负、userAgent 截断、sessionId 兼容——string/null/缺失（旧 B）→ 落库口径、trim + 截断 256、非 string 类型 skip、空批）
   - `src/app/ingest/records/route.test`：ingest 端点集成（临时 SQLite + 真实 handler + 真实 token）——401/禁用、缺 instanceUid 400、2MB、400 超限、uid TOFU 绑定与 instance_mismatch、字段改写（remote 前缀 + vk=-1 + remote_instance_uid + sessionId + createdAt 保留）、同 epoch 去重重推、epoch 变化重置水位、部分接受、同实例并发串行化、**同名不同 uid 双设备水位独立**、**同 uid 改名 instance_name 刷新**
-  - `src/lib/sync/pusher.test`：推送 worker（mock fetch）——成功推进（含 -1 哨兵夹心、redirect=manual、payload 携带 instanceUid + sessionId、boundUid ack 锁定）、401 不 drop、5xx/网络不 drop、400 五十次自动 drop 累计计数、skippedInvalid 计入 dropped、未配置不启动、多批推送；错误诊断 `describeFetchError`（ECONNREFUSED + Docker localhost 提示、ENOTFOUND DNS 提示、TLS 证书提示、TimeoutError、AggregateError 多地址展开、无 cause 回退 err.message）+ HTTP 401/404 提示后缀
-  - `src/lib/sync/config.test`：URL 格式校验、token 加密往返与清除、instance/uid 校验、cursor/dropped 读写往返、reset 语义（dropped 保留、**uid 不重置**）、instance/uid/epoch 自动生成持久
+  - `src/lib/sync/pusher.test`：推送 worker（mock fetch）——**存量公网 http 配置可推送 + 非环回私网配置 fail-closed（不发请求、`lastError.type=config`、游标不动）+ 环回 http 可推送 + `redirect:manual` 与受保护 dispatcher** ——成功推进（含 -1 哨兵夹心、redirect=manual、payload 携带 instanceUid + sessionId、boundUid ack 锁定）、401 不 drop、5xx/网络不 drop、400 五十次自动 drop 累计计数、skippedInvalid 计入 dropped、未配置不启动、多批推送；错误诊断 `describeFetchError`（ECONNREFUSED + Docker localhost 提示、ENOTFOUND DNS 提示、TLS 证书提示、TimeoutError、AggregateError 多地址展开、无 cause 回退 err.message）+ HTTP 401/404 提示后缀
+  - `src/lib/sync/config.test`：URL 格式校验、**`isSecureSyncTarget` 支持 HTTP/HTTPS（环回例外）+ saveSyncConfig 写入侧拒绝非允许私网目标**、token 加密往返与清除、instance/uid 校验、cursor/dropped 读写往返、reset 语义（dropped 保留、**uid 不重置**）、instance/uid/epoch 自动生成持久
   - `src/app/api/admin/sync/config/route.test`：DELETE 集成——401、清除项（target_url/token/bound_uid/last_error/last_attempt）与保留项（cursor/dropped/epoch/uid/instance/last_success）逐项断言、幂等 no-op、审计 `sync_config_deleted` 含 cursor 快照
   - `src/lib/model-prices-service.test`：可见性（近期流量 30 天窗口、推送模型行集含全历史 + 来源标注、active 判定、`inactive` 与默认可见性口径对齐、**uid 等值 + instance_name LIKE 兜底**、改名后历史行仍可发现）、徽标语义（跨快照源不判定 removed/hasUpdate、同源快照下 removed/hasUpdate、无快照不误报下架、无价条目不列下架、modelsDevId 为 null 不判定、removed/inactive 排序末尾含 active 的红 removed 行）、**无价候选与 zeroNoPrice**（仅提供 input 的条目按 no_price 不标 hasUpdate/diff、快照无价 + 已存价含 0 → `status.zeroNoPrice` 而显式 0/0 有价行与快照有价行不误报、未定价行候选全无价 → unmatched 而非 confirm）
 - 新增纯逻辑模块（如解析器、路由匹配、加密）时应同步提交单测

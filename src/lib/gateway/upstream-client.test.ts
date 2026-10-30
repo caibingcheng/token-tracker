@@ -1,15 +1,18 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { fetchUpstreamModels } from "./upstream-client";
+import { getDirectDispatcher } from "./proxy-dispatcher";
+import { setOutboundFetchImpl } from "./outbound-fetch";
 
 describe("fetchUpstreamModels", () => {
   const fetchMock = vi.fn();
 
   beforeEach(() => {
-    vi.stubGlobal("fetch", fetchMock);
+    setOutboundFetchImpl(fetchMock);
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    setOutboundFetchImpl(null);
     fetchMock.mockReset();
   });
 
@@ -81,14 +84,14 @@ describe("fetchUpstreamModels", () => {
       })
     );
     await fetchUpstreamModels(
-      { protocol: "openai", baseUrl: "https://api.example", proxyUrl: "http://user:pass@proxy.example:3128" },
+      { protocol: "openai", baseUrl: "https://api.example", proxyUrl: "https://user:pass@proxy.example:3128" },
       "sk-test"
     );
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit & { dispatcher?: unknown }];
     expect(init.dispatcher).toBeDefined();
   });
 
-  it("omits dispatcher key when upstream has no proxyUrl", async () => {
+  it("injects the guarded direct dispatcher when there is no proxyUrl", async () => {
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify({ data: [] }), {
         status: 200,
@@ -97,6 +100,8 @@ describe("fetchUpstreamModels", () => {
     );
     await fetchUpstreamModels({ protocol: "openai", baseUrl: "https://api.example" }, "sk-test");
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit & { dispatcher?: unknown }];
-    expect("dispatcher" in init).toBe(false);
+    // 无 proxyUrl 时也必须注入受连接时地址校验保护的直连 Agent（防 DNS rebinding）
+    expect("dispatcher" in init).toBe(true);
+    expect(init.dispatcher).toBe(getDirectDispatcher());
   });
 });

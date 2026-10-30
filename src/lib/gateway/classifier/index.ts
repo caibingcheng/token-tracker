@@ -3,7 +3,8 @@
 import type { Protocol, UpstreamRoute } from "../model-router";
 import { buildAuthHeaders } from "../upstream-client";
 import { joinUrlPath } from "../url-utils";
-import { getProxyDispatcher } from "../proxy-dispatcher";
+import { getOutboundDispatcher } from "../proxy-dispatcher";
+import { outboundFetch } from "../outbound-fetch";
 import { jevSystemoneAdapter } from "./adapters/jev-systemone";
 import { chatAdapter } from "./adapters/chat";
 import { buildStateSummary, extractMessageTexts } from "./summarize";
@@ -99,10 +100,10 @@ export async function runClassifier(opts: {
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), CLASSIFIER_TIMEOUT_MS);
-      const dispatcher = getProxyDispatcher(upstream.proxyUrl);
+      const dispatcher = getOutboundDispatcher(upstream.proxyUrl);
       let response: Response;
       try {
-        response = await fetch(url, {
+        response = await outboundFetch(url, {
           method: "POST",
           headers: {
             "content-type": "application/json",

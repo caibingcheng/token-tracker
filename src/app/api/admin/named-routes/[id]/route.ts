@@ -7,15 +7,16 @@ import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 import { MAX_INSTRUCTION_LENGTH, validateClassifier } from "@/lib/admin/named-routes";
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 // PATCH：仅允许改 instruction / classifier / enabled（name+protocol 是身份键，改动等价于删旧建新）
 export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
-  const { params } = ctx as Params;
+  const { params } = ctx as Params; // params 为 Promise（Next 15+ 动态路由）
+  const paramsResolved = await params;
   return withSkipCache(async () => {
     await initDatabase();
-    const id = Number(params.id);
+    const id = Number(paramsResolved.id);
     const rows = await db.select().from(namedRoutesTable).where(eq(namedRoutesTable.id, id));
     const route = rows[0];
     if (!route) {
@@ -100,10 +101,11 @@ export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
 });
 
 export const DELETE = withAuth(async (request: NextRequest, ctx: any) => {
-  const { params } = ctx as Params;
+  const { params } = ctx as Params; // params 为 Promise（Next 15+ 动态路由）
+  const paramsResolved = await params;
   return withSkipCache(async () => {
     await initDatabase();
-    const id = Number(params.id);
+    const id = Number(paramsResolved.id);
     const rows = await db.select().from(namedRoutesTable).where(eq(namedRoutesTable.id, id));
     const route = rows[0];
     if (!route) {

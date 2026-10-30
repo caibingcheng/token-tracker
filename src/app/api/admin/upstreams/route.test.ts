@@ -12,6 +12,7 @@ import { signSessionToken, keyFingerprint } from "@/lib/auth/session";
 import { withSkipCache } from "@/lib/db/cache";
 import { decryptSecret, encryptSecret } from "@/lib/gateway/crypto";
 import { healthTracker } from "@/lib/gateway/proxy-deps";
+import { setOutboundFetchImpl } from "@/lib/gateway/outbound-fetch";
 
 const ORIG_DB = process.env.SQLITE_DATABASE_PATH;
 const ORIG_SECRET = process.env.GATEWAY_SECRET;
@@ -57,7 +58,7 @@ function req(url: string, method: string, token?: string, body?: unknown): NextR
   });
 }
 
-const PROXY = "http://user:pass@8.8.8.8:3128";
+const PROXY = "https://user:pass@8.8.8.8:3128";
 const PROXY2 = "https://1.1.1.1:8080";
 
 describe("/api/admin/upstreams - proxy_url", () => {
@@ -144,7 +145,7 @@ describe("/api/admin/upstreams - proxy_url", () => {
     const up1 = data.find((d) => d.name === "up1");
     const up2 = data.find((d) => d.name === "up2");
     expect(up1.hasProxy).toBe(true);
-    expect(up1.proxyDisplay).toBe("http://8.8.8.8:3128");
+    expect(up1.proxyDisplay).toBe("https://8.8.8.8:3128");
     expect(up2.hasProxy).toBe(false);
     expect(up2.proxyDisplay).toBeNull();
     expect("proxyUrlEncrypted" in up1).toBe(false);
@@ -170,7 +171,7 @@ describe("/api/admin/upstreams - proxy_url", () => {
     const body = JSON.stringify(item);
     expect(body).not.toContain("user:pass");
     expect(item.data.hasProxy).toBe(true);
-    expect(item.data.proxyDisplay).toBe("http://8.8.8.8:3128");
+    expect(item.data.proxyDisplay).toBe("https://8.8.8.8:3128");
     expect("proxyUrlEncrypted" in item.data).toBe(false);
   });
 
@@ -300,6 +301,7 @@ describe("/api/admin/upstreams - proxy_url", () => {
 describe("/api/admin/upstreams - probe status", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    setOutboundFetchImpl(null);
   });
 
   it("GET 列表返回 probe 字段：从未探测为 null，探测后带结果", async () => {
@@ -327,12 +329,9 @@ describe("/api/admin/upstreams - probe status", () => {
     expect(row1.probe).toBeNull();
 
     // unhealthy + 探测成功 → probe 带结果
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
+    setOutboundFetchImpl(vi.fn(async () =>
         new Response("{}", { status: 200, headers: { "content-type": "application/json" } })
-      )
-    );
+      ));
     await healthTracker.markUnhealthy(created.id);
     await healthTracker.probeNow(created.id);
 

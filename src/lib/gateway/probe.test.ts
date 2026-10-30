@@ -8,7 +8,9 @@ import {
   PROBE_USER_AGENT,
   PROBE_KEY_NAME,
 } from "./probe";
+import { getDirectDispatcher } from "./proxy-dispatcher";
 import type { HeaderTransform } from "./header-transforms";
+import { setOutboundFetchImpl } from "./outbound-fetch";
 
 function ht(partial: Partial<HeaderTransform> & { header: string }): HeaderTransform {
   return { id: "ht-1", value: "v", mode: "fill", enabled: true, ...partial };
@@ -64,11 +66,12 @@ describe("probeModel", () => {
   const fetchMock = vi.fn();
 
   beforeEach(() => {
-    vi.stubGlobal("fetch", fetchMock);
+    setOutboundFetchImpl(fetchMock);
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    setOutboundFetchImpl(null);
     fetchMock.mockReset();
   });
 
@@ -84,7 +87,7 @@ describe("probeModel", () => {
   it("injects dispatcher when target has proxyUrl", async () => {
     fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
     await probeModel(
-      { protocol: "openai", baseUrl: "https://api.example", proxyUrl: "http://user:pass@proxy.example:3128" },
+      { protocol: "openai", baseUrl: "https://api.example", proxyUrl: "https://user:pass@proxy.example:3128" },
       "gpt-4o",
       "sk-test"
     );
@@ -92,11 +95,13 @@ describe("probeModel", () => {
     expect(init.dispatcher).toBeDefined();
   });
 
-  it("omits dispatcher key when target has no proxyUrl", async () => {
+  it("injects the guarded direct dispatcher when there is no proxyUrl", async () => {
     fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
     await probeModel({ protocol: "openai", baseUrl: "https://api.example" }, "gpt-4o", "sk-test");
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit & { dispatcher?: unknown }];
-    expect("dispatcher" in init).toBe(false);
+    // 无 proxyUrl 时也必须注入受连接时地址校验保护的直连 Agent（防 DNS rebinding）
+    expect("dispatcher" in init).toBe(true);
+    expect(init.dispatcher).toBe(getDirectDispatcher());
   });
 
   it("returns ok for 2xx", async () => {
@@ -587,7 +592,7 @@ describe("buildProbeHeaders", () => {
 
   it("reaches the wire through probeModel", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
+    setOutboundFetchImpl(fetchMock);
     try {
       await probeModel(
         {
@@ -604,6 +609,7 @@ describe("buildProbeHeaders", () => {
       expect(headers.get("authorization")).toBe("Bearer sk-test");
     } finally {
       vi.unstubAllGlobals();
+    setOutboundFetchImpl(null);
     }
   });
 });
@@ -613,11 +619,12 @@ describe("probeModelWithKeys", () => {
   const target = { protocol: "openai" as const, baseUrl: "https://api.example" };
 
   beforeEach(() => {
-    vi.stubGlobal("fetch", fetchMock);
+    setOutboundFetchImpl(fetchMock);
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    setOutboundFetchImpl(null);
     fetchMock.mockReset();
   });
 

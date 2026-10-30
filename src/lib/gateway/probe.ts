@@ -4,7 +4,8 @@ import { randomBytes } from "crypto";
 import type { Protocol } from "./model-router";
 import { buildAuthHeaders, isEdgeBlockStatus } from "./upstream-client";
 import { joinUrlPath } from "./url-utils";
-import { getProxyDispatcher } from "./proxy-dispatcher";
+import { getOutboundDispatcher } from "./proxy-dispatcher";
+import { outboundFetch } from "./outbound-fetch";
 import { applyHeaderTransforms } from "./header-transforms";
 import type { HeaderTransform } from "./header-transforms";
 import {
@@ -166,8 +167,8 @@ async function probeOnce(
 
   try {
     const headers = buildProbeHeaders(target, apiKey, model);
-    const dispatcher = getProxyDispatcher(target.proxyUrl);
-    const res = await fetch(url, {
+    const dispatcher = getOutboundDispatcher(target.proxyUrl);
+    const res = await outboundFetch(url, {
       method: "POST",
       headers,
       body: JSON.stringify(body),
