@@ -595,13 +595,6 @@ export default function SecuritySettings() {
             placeholder="New API key"
             className="w-full sm:w-56 rounded border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
           />
-          {newApiKey.trim() && (
-            <span className={`text-xs ${LOGIN_KEY_STRENGTH_META[getLoginKeyStrength(newApiKey)].className}`}>
-              Strength: {LOGIN_KEY_STRENGTH_META[getLoginKeyStrength(newApiKey)].label}
-              {getLoginKeyStrength(newApiKey) !== "strong" &&
-                " — longer keys with mixed cases, digits or symbols are safer"}
-            </span>
-          )}
           <input
             type="password"
             autoComplete="new-password"
@@ -621,6 +614,13 @@ export default function SecuritySettings() {
           >
             Change Key
           </button>
+          {newApiKey.trim() && (
+            <span className={`text-xs ${LOGIN_KEY_STRENGTH_META[getLoginKeyStrength(newApiKey)].className}`}>
+              Strength: {LOGIN_KEY_STRENGTH_META[getLoginKeyStrength(newApiKey)].label}
+              {getLoginKeyStrength(newApiKey) !== "strong" &&
+                " — longer keys with mixed cases, digits or symbols are safer"}
+            </span>
+          )}
         </div>
       </div>
 
