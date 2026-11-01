@@ -336,7 +336,7 @@ export default function AuditLogsPanel() {
               value={action}
               onChange={(e) => changeAction(e.target.value)}
               aria-label="Filter by action"
-              className="min-h-[40px] min-w-0 max-w-full rounded border border-gray-300 bg-white px-3 py-1.5 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 md:min-h-0"
+              className="min-h-[40px] min-w-0 max-w-full rounded border border-gray-300 bg-white px-3 py-1.5 text-base md:text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 md:min-h-0"
             >
               <option value={ALL_ACTIONS}>All Actions</option>
               {(data?.actions ?? []).map((value) => (
@@ -369,7 +369,7 @@ export default function AuditLogsPanel() {
                 value={pageSize}
                 onChange={(e) => changePageSize(Number(e.target.value))}
                 aria-label="Rows per page"
-                className="h-10 min-w-0 rounded border border-gray-300 bg-white px-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 md:h-8 md:text-xs"
+                className="h-10 min-w-0 rounded border border-gray-300 bg-white px-2 text-base md:text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 md:h-8 md:text-xs"
               >
                 {PAGE_SIZE_OPTIONS.map((size) => (
                   <option key={size} value={size}>

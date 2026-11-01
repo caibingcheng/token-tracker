@@ -243,6 +243,14 @@ export default function RecordsTable({
   }, [page]);
 
   const formatDate = (date: string) => new Date(date).toLocaleString();
+  // 移动端卡片用短格式（M/d HH:mm），完整时间走 title
+  const formatShortDate = (date: string) =>
+    new Date(date).toLocaleString(undefined, {
+      month: "numeric",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
   // Date 显示本地时间，hover 给 ISO（与 upstream 日志/运营侧对时间用）
   const dateTitle = (date: string) => {
     const d = new Date(date);
@@ -460,80 +468,97 @@ export default function RecordsTable({
             </table>
           </div>
 
-          <div className="md:hidden p-4 space-y-3">
-            {records.map((record) => (
-              <div key={record.id} className="border border-gray-200 rounded-lg p-4">
-                <div className="flex justify-between items-start mb-3">
-                  {show("date") && (
-                    <div>
-                      <p className="text-xs text-gray-500">Date</p>
-                      <p className="text-sm font-medium text-gray-900" title={dateTitle(record.createdAt)}>
-                        {formatDate(record.createdAt)}
-                      </p>
-                    </div>
-                  )}
-                  <div className="text-right">
-                    {show("model") && (
-                      <>
-                        <p className="text-xs text-gray-500">Model</p>
-                        <p className="text-sm font-medium text-gray-900" title={modelTitle(record)}>
+          <div className="md:hidden p-4 space-y-2">
+            {records.map((record) => {
+              // 紧凑卡片：标题（模型+状态）/ 元信息一行 / In·Out·Cache% 三列 / 延迟一行；
+              // 完整明细（requested 名、原始 UA、token 分解）走 title tooltip，与桌面列语义一致
+              const metaParts: string[] = [];
+              // tooltip 与可见列保持一致：只带 show() 允许的分量，且给被截断的字段完整值
+              const metaTitleParts: string[] = [];
+              if (show("date")) {
+                metaParts.push(formatShortDate(record.createdAt));
+                metaTitleParts.push(dateTitle(record.createdAt));
+              }
+              if (show("provider")) {
+                metaParts.push(record.providerName || "-");
+                metaTitleParts.push(`Provider: ${record.providerName || "-"}`);
+              }
+              if (show("agent")) {
+                metaParts.push(record.agent);
+                metaTitleParts.push(agentTitle(record));
+              }
+              if (show("key")) {
+                metaParts.push(`Key: ${record.keyName || "-"}`);
+                metaTitleParts.push(`Key: ${record.keyName || "-"}`);
+              }
+              if (show("session")) {
+                metaParts.push(`Session: ${record.sessionId || "-"}`);
+                metaTitleParts.push(`Session: ${record.sessionId || "-"}`);
+              }
+              const rate = cacheRate(record);
+              const showLatencyLine = show("ttft") || show("latency");
+              return (
+                <div key={record.id} className="space-y-1.5 rounded-lg border border-gray-200 p-3">
+                  {(show("model") || show("status")) && (
+                    <div className="flex items-center justify-between gap-2">
+                      {show("model") ? (
+                        <p className="truncate text-sm font-semibold text-gray-900" title={modelTitle(record)}>
                           {record.model}
                         </p>
-                        {record.requestModel && record.requestModel !== record.model && (
-                          <p className="text-xs text-gray-400 mt-0.5">Requested: {record.requestModel}</p>
-                        )}
-                      </>
-                    )}
-                    {show("provider") && (
-                      <p className="text-xs text-gray-400 mt-0.5">{record.providerName || "-"}</p>
-                    )}
-                    {show("agent") && (
-                      <p className="text-xs text-gray-400 mt-1" title={agentTitle(record)}>{record.agent}</p>
-                    )}
-                    {show("key") && (
-                      <p className="text-xs text-gray-400 mt-0.5">Key: {record.keyName || "-"}</p>
-                    )}
-                    {show("session") && (
-                      <p
-                        className="text-xs text-gray-400 mt-0.5 font-mono break-all"
-                        title={record.sessionId ?? undefined}
-                      >
-                        Session: {record.sessionId || "-"}
-                      </p>
-                    )}
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-3">
+                      ) : (
+                        <span />
+                      )}
+                      {show("status") && <StatusBadge status={record.status} />}
+                    </div>
+                  )}
+                  {metaParts.length > 0 && (
+                    <p
+                      className="truncate text-xs text-gray-400"
+                      title={metaTitleParts.join("\n")}
+                    >
+                      {metaParts.join(" · ")}
+                    </p>
+                  )}
                   {show("tokens") && (
-                    <div className="col-span-2">
-                      <p className="text-xs text-gray-500">Tokens</p>
-                      <p className="text-sm font-semibold text-gray-900 tabular-nums">{tokensText(record)}</p>
-                      <p className="mt-0.5 text-xs text-gray-400 tabular-nums">{tokensTitle(record).replace(/\n\s*/g, " · ")}</p>
+                    <div className="grid grid-cols-3 gap-2" title={tokensTitle(record)}>
+                      <div>
+                        <p className="text-[11px] text-gray-500">In</p>
+                        <p className="text-sm font-semibold tabular-nums text-gray-900">
+                          {formatNumber(promptTotal(record), compact)}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-[11px] text-gray-500">Out</p>
+                        <p className="text-sm font-semibold tabular-nums text-gray-900">
+                          {formatNumber(record.outputTokens, compact)}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-[11px] text-gray-500">Cache</p>
+                        <p className="text-sm font-semibold tabular-nums text-gray-900">
+                          {rate === null ? "-" : `${Math.round(rate)}%`}
+                        </p>
+                      </div>
                     </div>
                   )}
-                  {show("ttft") && (
-                    <div>
-                      <p className="text-xs text-gray-500">TTFT</p>
-                      <p className="text-sm font-semibold text-gray-900" title={latencyTitle(record.ttftMs)}>{formatLatencyMs(record.ttftMs)}</p>
-                    </div>
-                  )}
-                  {show("latency") && (
-                    <div>
-                      <p className="text-xs text-gray-500">Latency</p>
-                      <p className="text-sm font-semibold text-gray-900" title={latencyTitle(record.latencyMs)}>{formatLatencyMs(record.latencyMs)}</p>
-                    </div>
+                  {showLatencyLine && (
+                    <p
+                      className="text-xs text-gray-600 tabular-nums"
+                      title={[
+                        show("ttft") && `TTFT: ${latencyTitle(record.ttftMs)}`,
+                        show("latency") && `Latency: ${latencyTitle(record.latencyMs)}`,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    >
+                      {show("ttft") && <>TTFT {formatLatencyMs(record.ttftMs)}</>}
+                      {show("ttft") && show("latency") && " · "}
+                      {show("latency") && <>Latency {formatLatencyMs(record.latencyMs)}</>}
+                    </p>
                   )}
                 </div>
-                {show("status") && (
-                  <div className="mt-3 pt-3 border-t border-gray-100">
-                    <p className="text-xs text-gray-500">Status</p>
-                    <div className="mt-1">
-                      <StatusBadge status={record.status} />
-                    </div>
-                  </div>
-                )}
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           <div className="px-4 md:px-6 py-4 border-t">

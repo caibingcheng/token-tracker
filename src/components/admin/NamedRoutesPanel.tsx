@@ -412,7 +412,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="Virtual name clients request (e.g. cheap / precise)"
-            className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
           />
         </div>
         <div>
@@ -424,7 +424,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
               setFirstUpstreamId("");
               setFirstModel("");
             }}
-            className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
           >
             <option value="openai">openai</option>
             <option value="anthropic">anthropic</option>
@@ -440,7 +440,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
               setClassifierUpstreamId(v === RULE_CLASSIFIER ? RULE_CLASSIFIER : Number(v));
               setClassifierModel("");
             }}
-            className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
           >
             <option value={RULE_CLASSIFIER}>Rule — priority &amp; availability (no LLM)</option>
             {upstreamOptionsForProtocol(protocol).map((t) => (
@@ -460,7 +460,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
             placeholder="e.g. typesafe/jev-latest"
             list="named-route-classifier-models"
             autoComplete="off"
-            className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-400"
+            className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-400"
           />
           <datalist id="named-route-classifier-models">
             {modelCandidatesFor(isRuleClassifier ? "" : classifierUpstreamId).map((m) => (
@@ -487,7 +487,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
           rows={2}
           disabled={isRuleClassifier}
           placeholder="e.g. Route simple, low-stakes requests to the cheap tier; complex reasoning or long-context tasks to the precise tier."
-          className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-400"
+          className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-400"
         />
       </div>
 
@@ -503,7 +503,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
               setFirstUpstreamId(e.target.value === "" ? "" : Number(e.target.value));
               setFirstModel("");
             }}
-            className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+            className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none"
           >
             <option value="">Auto (route by model name)</option>
             {upstreamOptionsForProtocol(protocol).map((t) => (
@@ -521,7 +521,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
             onChange={(e) => setFirstModel(e.target.value)}
             placeholder="Model name (resolved via routing when provider is Auto)"
             list="named-route-first-models"
-            className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none disabled:opacity-50"
+            className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none disabled:opacity-50"
           />
           <datalist id="named-route-first-models">
             {modelCandidatesFor(firstUpstreamId).map((m) => (
@@ -537,7 +537,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
             value={firstDescription}
             onChange={(e) => setFirstDescription(e.target.value)}
             placeholder="e.g. cheap tier, simple Q&A"
-            className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+            className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none"
           />
         </div>
         <div>
@@ -547,7 +547,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
             onChange={(e) => setFirstPriority(e.target.value)}
             type="number"
             min={0}
-            className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+            className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none"
           />
         </div>
         <div className="flex items-end">
@@ -661,7 +661,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
                           value={instructionDraft}
                           onChange={(e) => setInstructionDraft(e.target.value)}
                           rows={2}
-                          className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                          className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none"
                         />
                         <button
                           type="button"
@@ -723,7 +723,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
                                   onChange={(e) =>
                                     setEditingTarget({ ...editingTarget!, targetModel: e.target.value })
                                   }
-                                  className="w-40 rounded border border-gray-300 px-2 py-1 text-xs focus:border-blue-500 focus:outline-none"
+                                  className="w-40 rounded border border-gray-300 px-2 py-1 text-base md:text-xs focus:border-blue-500 focus:outline-none"
                                 />
                               ) : (
                                 <CopyableCode className="text-xs">{target.targetModel}</CopyableCode>
@@ -736,7 +736,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
                                   onChange={(e) =>
                                     setEditingTarget({ ...editingTarget!, description: e.target.value })
                                   }
-                                  className="w-56 rounded border border-gray-300 px-2 py-1 text-xs focus:border-blue-500 focus:outline-none"
+                                  className="w-56 rounded border border-gray-300 px-2 py-1 text-base md:text-xs focus:border-blue-500 focus:outline-none"
                                 />
                               ) : (
                                 <span className="text-xs text-gray-500">{target.description ?? "—"}</span>
@@ -751,7 +751,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
                                   }
                                   type="number"
                                   min={0}
-                                  className="w-16 rounded border border-gray-300 px-2 py-1 text-xs focus:border-blue-500 focus:outline-none"
+                                  className="w-16 rounded border border-gray-300 px-2 py-1 text-base md:text-xs focus:border-blue-500 focus:outline-none"
                                 />
                               ) : (
                                 <span className="rounded bg-gray-50 px-1.5 py-0.5 text-xs text-gray-600">
@@ -790,7 +790,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
                                   onChange={(e) =>
                                     setEditingTarget({ ...editingTarget!, targetModel: e.target.value })
                                   }
-                                  className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 text-sm"
+                                  className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 text-base md:text-sm"
                                 />
                               ) : (
                                 <CopyableCode className="text-xs">{target.targetModel}</CopyableCode>
@@ -804,7 +804,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
                                   onChange={(e) =>
                                     setEditingTarget({ ...editingTarget!, description: e.target.value })
                                   }
-                                  className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 text-sm"
+                                  className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 text-base md:text-sm"
                                 />
                               ) : (
                                 <p className="text-sm text-gray-600">{target.description ?? "—"}</p>
@@ -820,7 +820,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
                                   }
                                   type="number"
                                   min={0}
-                                  className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 text-sm"
+                                  className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 text-base md:text-sm"
                                 />
                               ) : (
                                 <span className="rounded bg-gray-50 px-1.5 py-0.5 text-xs text-gray-600">
@@ -842,7 +842,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
                         setTargetUpstreamId(e.target.value === "" ? "" : Number(e.target.value));
                         setTargetModel("");
                       }}
-                      className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                      className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none"
                     >
                       <option value="">Auto (route by model name)</option>
                       {upstreamOptionsForProtocol(row.protocol).map((t) => (
@@ -857,7 +857,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
                       onChange={(e) => setTargetModel(e.target.value)}
                       placeholder="Model name (routing-resolved when provider is Auto)"
                       list={`named-route-models-${row.id}`}
-                      className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                      className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none"
                     />
                     <datalist id={`named-route-models-${row.id}`}>
                       {modelCandidatesFor(targetUpstreamId).map((m) => (
@@ -868,7 +868,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
                       value={targetDescription}
                       onChange={(e) => setTargetDescription(e.target.value)}
                       placeholder="Characteristics for the classifier"
-                      className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                      className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none"
                     />
                     <input
                       value={targetPriority}
@@ -876,7 +876,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
                       type="number"
                       min={0}
                       placeholder="p"
-                      className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                      className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none"
                     />
                     <button
                       type="button"

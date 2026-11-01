@@ -48,7 +48,7 @@ export default function ActionMenu({ label = "Actions", items }: ActionMenuProps
                 setOpen(false);
               }}
               disabled={item.disabled}
-              className={`w-full px-3 py-2 text-left text-xs hover:bg-gray-50 disabled:opacity-40 ${
+              className={`flex min-h-[40px] items-center px-3 py-2 text-left text-xs md:min-h-0 hover:bg-gray-50 disabled:opacity-40 ${
                 item.variant === "danger" ? "text-red-600" : "text-gray-700"
               }`}
             >

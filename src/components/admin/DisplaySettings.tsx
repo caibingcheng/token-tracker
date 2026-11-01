@@ -649,7 +649,7 @@ export default function DisplaySettings() {
                       value={hiddenEditName}
                       onChange={(e) => setHiddenEditName(e.target.value)}
                       placeholder="Display name (empty = Provider A, B, C...)"
-                      className="w-full rounded border border-gray-300 px-2 py-1 text-xs focus:border-blue-500 focus:outline-none"
+                      className="w-full rounded border border-gray-300 px-2 py-1 text-base md:text-xs focus:border-blue-500 focus:outline-none"
                     />
                   ) : (
                     <span className="text-sm text-gray-900">
@@ -664,7 +664,7 @@ export default function DisplaySettings() {
                       onChange={(e) => setHiddenEditPatterns(e.target.value)}
                       placeholder="matches, comma separated (e.g. vendor*, vendor-partner)"
                       spellCheck={false}
-                      className="w-full rounded border border-gray-300 px-2 py-1 font-mono text-xs focus:border-blue-500 focus:outline-none"
+                      className="w-full rounded border border-gray-300 px-2 py-1 font-mono text-base md:text-xs focus:border-blue-500 focus:outline-none"
                     />
                   ) : (
                     <span className="font-mono text-xs text-gray-600 break-all">{rule.patterns}</span>
@@ -700,7 +700,7 @@ export default function DisplaySettings() {
                       value={hiddenEditName}
                       onChange={(e) => setHiddenEditName(e.target.value)}
                       placeholder="Display name (empty = Provider A, B, C...)"
-                      className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 text-sm focus:border-blue-500 focus:outline-none"
+                      className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 text-base md:text-sm focus:border-blue-500 focus:outline-none"
                     />
                   ) : (
                     <p className="mt-0.5 text-sm text-gray-900">
@@ -728,7 +728,7 @@ export default function DisplaySettings() {
                     onChange={(e) => setHiddenEditPatterns(e.target.value)}
                     placeholder="matches, comma separated (e.g. vendor*, vendor-partner)"
                     spellCheck={false}
-                    className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 font-mono text-sm focus:border-blue-500 focus:outline-none"
+                    className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 font-mono text-base md:text-sm focus:border-blue-500 focus:outline-none"
                   />
                 ) : (
                   <p className="mt-0.5 font-mono text-xs text-gray-600 break-all">{rule.patterns}</p>
@@ -790,7 +790,7 @@ export default function DisplaySettings() {
                         value={aliasesEditName}
                         onChange={(e) => setAliasesEditName(e.target.value)}
                         placeholder="Display name (e.g. Claude Sonnet 4.6)"
-                        className="w-full rounded border border-gray-300 px-2 py-1 text-xs focus:border-blue-500 focus:outline-none"
+                        className="w-full rounded border border-gray-300 px-2 py-1 text-base md:text-xs focus:border-blue-500 focus:outline-none"
                       />
                     ) : (
                       <span className="text-sm text-gray-900">
@@ -805,7 +805,7 @@ export default function DisplaySettings() {
                         onChange={(e) => setAliasesEditValues(e.target.value)}
                         placeholder="matches, comma separated (e.g. claude-sonnet-4-6, anthropic/claude-sonnet-4-6)"
                         spellCheck={false}
-                        className="w-full rounded border border-gray-300 px-2 py-1 font-mono text-xs focus:border-blue-500 focus:outline-none"
+                        className="w-full rounded border border-gray-300 px-2 py-1 font-mono text-base md:text-xs focus:border-blue-500 focus:outline-none"
                       />
                     ) : (
                       <span className="font-mono text-xs text-gray-600 break-all">{rule.aliases}</span>
@@ -841,7 +841,7 @@ export default function DisplaySettings() {
                         value={aliasesEditName}
                         onChange={(e) => setAliasesEditName(e.target.value)}
                         placeholder="Display name (e.g. Claude Sonnet 4.6)"
-                        className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 text-sm focus:border-blue-500 focus:outline-none"
+                        className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 text-base md:text-sm focus:border-blue-500 focus:outline-none"
                       />
                     ) : (
                       <p className="mt-0.5 text-sm text-gray-900">
@@ -869,7 +869,7 @@ export default function DisplaySettings() {
                       onChange={(e) => setAliasesEditValues(e.target.value)}
                       placeholder="matches, comma separated (e.g. claude-sonnet-4-6, anthropic/claude-sonnet-4-6)"
                       spellCheck={false}
-                      className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 font-mono text-sm focus:border-blue-500 focus:outline-none"
+                      className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 font-mono text-base md:text-sm focus:border-blue-500 focus:outline-none"
                     />
                   ) : (
                     <p className="mt-0.5 font-mono text-xs text-gray-600 break-all">{rule.aliases}</p>
@@ -933,7 +933,7 @@ export default function DisplaySettings() {
                         value={agentEditName}
                         onChange={(e) => setAgentEditName(e.target.value)}
                         placeholder="Display name (e.g. Claude Code)"
-                        className="w-full rounded border border-gray-300 px-2 py-1 text-xs focus:border-blue-500 focus:outline-none"
+                        className="w-full rounded border border-gray-300 px-2 py-1 text-base md:text-xs focus:border-blue-500 focus:outline-none"
                       />
                     ) : (
                       <span className="text-sm text-gray-900">
@@ -948,7 +948,7 @@ export default function DisplaySettings() {
                         onChange={(e) => setAgentEditValues(e.target.value)}
                         placeholder="matches, comma separated (e.g. claude-cli, claude-code-cli)"
                         spellCheck={false}
-                        className="w-full rounded border border-gray-300 px-2 py-1 font-mono text-xs focus:border-blue-500 focus:outline-none"
+                        className="w-full rounded border border-gray-300 px-2 py-1 font-mono text-base md:text-xs focus:border-blue-500 focus:outline-none"
                       />
                     ) : (
                       <span className="font-mono text-xs text-gray-600 break-all">{rule.aliases}</span>
@@ -984,7 +984,7 @@ export default function DisplaySettings() {
                         value={agentEditName}
                         onChange={(e) => setAgentEditName(e.target.value)}
                         placeholder="Display name (e.g. Claude Code)"
-                        className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 text-sm focus:border-blue-500 focus:outline-none"
+                        className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 text-base md:text-sm focus:border-blue-500 focus:outline-none"
                       />
                     ) : (
                       <p className="mt-0.5 text-sm text-gray-900">
@@ -1012,7 +1012,7 @@ export default function DisplaySettings() {
                       onChange={(e) => setAgentEditValues(e.target.value)}
                       placeholder="matches, comma separated (e.g. claude-cli, claude-code-cli)"
                       spellCheck={false}
-                      className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 font-mono text-sm focus:border-blue-500 focus:outline-none"
+                      className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 font-mono text-base md:text-sm focus:border-blue-500 focus:outline-none"
                     />
                   ) : (
                     <p className="mt-0.5 font-mono text-xs text-gray-600 break-all">{rule.aliases}</p>
@@ -1069,7 +1069,7 @@ export default function DisplaySettings() {
                         }}
                         placeholder="Display name"
                         autoFocus
-                        className="w-full rounded border border-gray-300 px-2 py-1 text-xs focus:border-blue-500 focus:outline-none"
+                        className="w-full rounded border border-gray-300 px-2 py-1 text-base md:text-xs focus:border-blue-500 focus:outline-none"
                       />
                     ) : (
                       <span className="text-sm text-gray-600">{o.name}</span>

@@ -208,7 +208,7 @@ export default function UpstreamModelsManager({
           <button
             type="button"
             onClick={() => setOpen(false)}
-            className="text-2xl leading-none text-gray-400 hover:text-gray-600"
+            className="flex min-h-[40px] min-w-[40px] items-center justify-center text-2xl leading-none text-gray-400 hover:text-gray-600 md:min-h-0 md:min-w-0"
           >
             ×
           </button>

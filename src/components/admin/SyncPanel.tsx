@@ -584,7 +584,7 @@ export default function SyncPanel() {
                       value={targetUrl}
                       onChange={(e) => setTargetUrl(e.target.value)}
                       placeholder="https://tracker.example.com"
-                      className={`w-full rounded border px-3 py-2 text-sm focus:outline-none focus:ring-1 md:text-xs ${
+                      className={`w-full rounded border px-3 py-2 text-base md:text-xs focus:outline-none focus:ring-1 ${
                         urlError
                           ? "border-red-300 focus:border-red-500 focus:ring-red-500"
                           : "border-gray-300 focus:border-blue-500 focus:ring-blue-500"
@@ -600,7 +600,7 @@ export default function SyncPanel() {
                       onChange={(e) => setTokenInput(e.target.value)}
                       placeholder={status?.hasToken ? "•••• (already set, leave empty to keep)" : "it-…"}
                       autoComplete="new-password"
-                      className={`w-full rounded border px-3 py-2 text-sm focus:outline-none focus:ring-1 md:text-xs ${
+                      className={`w-full rounded border px-3 py-2 text-base md:text-xs focus:outline-none focus:ring-1 ${
                         tokenError
                           ? "border-red-300 focus:border-red-500 focus:ring-red-500"
                           : "border-gray-300 focus:border-blue-500 focus:ring-blue-500"
@@ -615,7 +615,7 @@ export default function SyncPanel() {
                       value={instanceName}
                       onChange={(e) => setInstanceName(e.target.value)}
                       placeholder="[a-z0-9-]"
-                      className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 md:text-xs"
+                      className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-xs focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                     />
                   </label>
                 </div>
@@ -777,7 +777,7 @@ export default function SyncPanel() {
                   value={skipInput}
                   onChange={(e) => setSkipInput(e.target.value)}
                   placeholder="skip up to record id"
-                  className="w-40 rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 md:text-xs"
+                  className="w-40 rounded border border-gray-300 px-3 py-2 text-base md:text-xs focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
                 <button
                   type="button"
@@ -815,7 +815,7 @@ export default function SyncPanel() {
                 value={tokenName}
                 onChange={(e) => setTokenName(e.target.value)}
                 placeholder="token name (e.g. bing-mbp)"
-                className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 md:w-64 md:text-xs"
+                className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-xs focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 md:w-64"
               />
               <button
                 type="button"
@@ -1094,7 +1094,7 @@ export default function SyncPanel() {
               <button
                 type="button"
                 onClick={() => setPendingDeleteInstance(null)}
-                className="text-2xl leading-none text-gray-400 hover:text-gray-600"
+                className="flex min-h-[40px] min-w-[40px] items-center justify-center text-2xl leading-none text-gray-400 hover:text-gray-600 md:min-h-0 md:min-w-0"
               >
                 ×
               </button>

@@ -1,62 +1,31 @@
 "use client";
 
-// 会话 token 存 sessionStorage 而非 localStorage：
-// - token 效力等同登录态，localStorage 永久驻留（关标签页仍在）+ 同源任意脚本可读
-// - sessionStorage 按标签页隔离，关闭即失效，缩小持久化暴露面
-// 代价：新开标签页需重新登录（个人网关可接受）
-const STORAGE_KEY = "token-tracker-session-token";
+// 浏览器登录态 = httpOnly Cookie（tt_session，服务端 login/setup 下发，见
+// src/lib/auth/session-cookie.ts）：JS 读不到 token，同源 fetch 自动携带，
+// 关浏览器重开仍在（直至过期 / 吊销 / 登出）。前端因此没有任何 token 存储逻辑。
+// 脚本场景（curl 等）仍可用 X-API-Key header 带会话 token 直连，不经此模块。
 
-let storedKey: string | null = null;
+// 旧版本把会话 token 存在 sessionStorage / localStorage（JS 可读）。切到 httpOnly cookie 后
+// 必须清理残留：升级前的明文 token 在过期前仍可被同源脚本读走，迁移就等于没做。
+// 清理策略 = 「只删不读」：旧值一概不认（可能已过期/已吊销）
+const LEGACY_STORAGE_KEY = "token-tracker-session-token";
+
+function purgeLegacyTokenStorage(): void {
+  try {
+    sessionStorage.removeItem(LEGACY_STORAGE_KEY);
+  } catch {
+    // ignore storage errors（无 sessionStorage / 隐私模式）
+  }
+  try {
+    localStorage.removeItem(LEGACY_STORAGE_KEY);
+  } catch {
+    // ignore storage errors
+  }
+}
+
+purgeLegacyTokenStorage();
+
 let unauthorizedHandler: (() => void) | null = null;
-
-// 旧版本把会话 token 存在 localStorage（永久驻留）。切到 sessionStorage 后必须主动清理
-// 同一 key 的残留项：否则明文 token 仍留在浏览器磁盘上（关标签页也不失效），
-// 迁移就等于没做。清理策略 = 「只删不读」：旧值一概不认（可能已过期/已吊销）。
-function purgeLegacyLocalStorage(): void {
-  try {
-    localStorage.removeItem(STORAGE_KEY);
-  } catch {
-    // ignore storage errors（无 localStorage / 隐私模式）
-  }
-}
-
-function readFromStorage(): string | null {
-  // 初始化即清理旧存储（不读取其值）
-  purgeLegacyLocalStorage();
-  try {
-    return sessionStorage.getItem(STORAGE_KEY);
-  } catch {
-    return null;
-  }
-}
-
-export function getApiKey(): string | null {
-  if (storedKey === null) {
-    storedKey = readFromStorage();
-  }
-  return storedKey;
-}
-
-export function setApiKey(key: string): void {
-  storedKey = key;
-  // 每次写入都顺手清掉旧 localStorage 残留（首次 set 早于首次 get 时也能清理）
-  purgeLegacyLocalStorage();
-  try {
-    sessionStorage.setItem(STORAGE_KEY, key);
-  } catch {
-    // ignore storage errors
-  }
-}
-
-export function clearApiKey(): void {
-  storedKey = null;
-  purgeLegacyLocalStorage();
-  try {
-    sessionStorage.removeItem(STORAGE_KEY);
-  } catch {
-    // ignore storage errors
-  }
-}
 
 export function registerUnauthorizedHandler(handler: () => void): () => void {
   unauthorizedHandler = handler;
@@ -67,12 +36,24 @@ export function registerUnauthorizedHandler(handler: () => void): () => void {
   };
 }
 
+// 401 时服务端已下发过期 Set-Cookie 清掉失效 cookie，这里只切 UI 状态回登录页
 export function notifyUnauthorized(): void {
-  clearApiKey();
   unauthorizedHandler?.();
 }
 
-// 登录：原始 API key（+ 可选 TOTP 动态码或 recovery code）换取会话 token，仅此接口接受原始 key。
+// 登录态探测（ApiKeyGate 首帧）：httpOnly cookie 前端不可读，只能探。
+// 200 = 已登录；401 = 未登录/已过期。用裸 fetch 而非 apiFetch —— 探测失败
+// 不该触发 notifyUnauthorized（会往登录表单上打错误文案）
+export async function checkSession(): Promise<boolean> {
+  try {
+    const res = await fetch("/api/auth/session", { method: "GET" });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// 登录：原始 API key（+ 可选 TOTP 动态码或 recovery code）换取会话 cookie，仅此接口接受原始 key。
 // 服务端对 key 无效 / 缺 TOTP / TOTP 错误统一返回 401 同文案（不暴露 key 有效性），
 // 前端两步流程（先 key 后 code）由组件本地驱动，不依赖服务端区分。
 // viaRecoveryCode：本次登录是否通过 recovery code 完成（true 时前端需弹窗提醒）
@@ -86,14 +67,25 @@ export async function apiLogin(
     body: JSON.stringify({ apiKey, totpCode }),
   });
   const json = await res.json();
-  if (res.ok && json.token) {
-    setApiKey(json.token as string);
+  if (res.ok && json.success) {
     return { ok: true, viaRecoveryCode: json.viaRecoveryCode === true };
   }
   return { ok: false, error: json.error || "Login failed" };
 }
 
-// 首次设置：探测是否需设置向导，以及提交初始 admin key 换取会话 token
+// 登出：吊销服务端 httpOnly cookie（过期 Set-Cookie）。调用方须 await 本函数再切登录 UI——
+// 否则登出响应晚于下一次登录回来时，会把新登录的 cookie 清掉（竞态）
+export async function apiLogout(): Promise<boolean> {
+  try {
+    const res = await fetch("/api/auth/logout", { method: "POST" });
+    return res.ok;
+  } catch {
+    // 网络失败：服务端不可达时 cookie 无从清起，返回 false 由调用方决定是否仍切登录 UI
+    return false;
+  }
+}
+
+// 首次设置：探测是否需设置向导，以及提交初始 admin key 换取会话 cookie
 export async function apiSetup(): Promise<{
   setupRequired: boolean;
   authDisabled: boolean;
@@ -121,30 +113,19 @@ export async function apiSetupSubmit(
     body: JSON.stringify({ apiKey }),
   });
   const json = await res.json();
-  if (res.ok && json.token) {
-    setApiKey(json.token as string);
+  if (res.ok && json.success) {
     return { ok: true };
   }
   return { ok: false, error: json.error || "Setup failed" };
 }
 
+// 同源 fetch：浏览器自动携带 tt_session cookie；滑动续期由服务端
+// 在剩余有效期不足一半时直接 Set-Cookie 续上，前端无感知
 export async function apiFetch(
   input: RequestInfo | URL,
   init?: RequestInit
 ): Promise<Response> {
-  const headers = new Headers(init?.headers);
-  const key = getApiKey();
-  if (key) {
-    headers.set("X-API-Key", key);
-  }
-
-  const res = await fetch(input, { ...init, headers });
-
-  // 滑动续期：guard 认证通过且 token 即将过期时在响应头下发新 token
-  const newToken = res.headers.get("X-Session-Token");
-  if (newToken) {
-    setApiKey(newToken);
-  }
+  const res = await fetch(input, init);
 
   if (res.status === 401) {
     notifyUnauthorized();

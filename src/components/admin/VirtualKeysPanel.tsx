@@ -390,7 +390,7 @@ export default function VirtualKeysPanel() {
               placeholder="Agent name, e.g. claude-code-desktop"
               title="Agent name used to identify this key in usage records. Unique across all virtual keys."
               required
-              className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>
           <div>
@@ -400,7 +400,7 @@ export default function VirtualKeysPanel() {
               onChange={(e) => setCommentInput(e.target.value)}
               placeholder="Comment (optional)"
               title="Optional note describing this key's purpose or owner. Editable later."
-              className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>
           <div>
@@ -410,7 +410,7 @@ export default function VirtualKeysPanel() {
               onChange={(e) => setModelsInput(e.target.value)}
               placeholder="Enabled models, e.g. * or gpt-4o, claude-*"
               title="Comma-separated model allowlist. '*' allows all models; prefix wildcards like 'gpt-*' are supported. Requests for other models are rejected with 403."
-              className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>
           <div>
@@ -423,7 +423,7 @@ export default function VirtualKeysPanel() {
                   onChange={(e) => setQuotaInputs((q) => ({ ...q, rpm: e.target.value }))}
                   placeholder="e.g. 2K"
                   title="Max requests per minute (60s window). Empty = unlimited, 0 = unlimited. Accepts 1000, 2K, 1M."
-                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
                 <p className="mt-0.5 text-xs text-gray-400">Requests per minute · 0 = unlimited</p>
               </div>
@@ -434,7 +434,7 @@ export default function VirtualKeysPanel() {
                   onChange={(e) => setQuotaInputs((q) => ({ ...q, tpm: e.target.value }))}
                   placeholder="e.g. 100K"
                   title="Max tokens per minute (60s window). Empty = unlimited, 0 = unlimited. Accepts 1000, 2K, 1M."
-                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
                 <p className="mt-0.5 text-xs text-gray-400">Tokens per minute · 0 = unlimited</p>
               </div>
@@ -445,7 +445,7 @@ export default function VirtualKeysPanel() {
                   onChange={(e) => setQuotaInputs((q) => ({ ...q, daily: e.target.value }))}
                   placeholder="e.g. 10M"
                   title="Max tokens per UTC calendar day. Empty = unlimited, 0 = unlimited. Accepts 1000, 2K, 1M."
-                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
                 <p className="mt-0.5 text-xs text-gray-400">Per UTC calendar day · 0 = unlimited</p>
               </div>
@@ -456,7 +456,7 @@ export default function VirtualKeysPanel() {
                   onChange={(e) => setQuotaInputs((q) => ({ ...q, monthly: e.target.value }))}
                   placeholder="e.g. 500M"
                   title="Max tokens per UTC calendar month. Empty = unlimited, 0 = unlimited. Accepts 1000, 2K, 1M."
-                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
                 <p className="mt-0.5 text-xs text-gray-400">Per UTC calendar month · 0 = unlimited</p>
               </div>
@@ -871,7 +871,7 @@ export default function VirtualKeysPanel() {
               <button
                 type="button"
                 onClick={() => setPendingDelete(null)}
-                className="text-2xl leading-none text-gray-400 hover:text-gray-600"
+                className="flex min-h-[40px] min-w-[40px] items-center justify-center text-2xl leading-none text-gray-400 hover:text-gray-600 md:min-h-0 md:min-w-0"
               >
                 ×
               </button>
