@@ -8,11 +8,13 @@ import {
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 import { getRateLimitKey } from "@/lib/net/client-ip";
 import { canBypassAuth } from "@/lib/auth/local-bypass";
+import { resolveSessionTtlMs } from "@/lib/auth/settings";
 import {
   readJsonBodyLimited,
   BodyTooLargeError,
   InvalidJsonBodyError,
 } from "@/lib/auth/request-body";
+import { buildSessionCookie, shouldSecureCookie } from "@/lib/auth/session-cookie";
 
 export async function GET(request: NextRequest) {
   // authDisabled：本地免密码直通生效时前端跳过登录/设置向导直接进入
@@ -66,7 +68,18 @@ export async function POST(request: NextRequest) {
       userAgent,
       details: { keyLength: apiKey.length },
     });
-    return NextResponse.json({ success: true, token });
+    // httpOnly cookie 下发浏览器登录态（同 login）；body 明文 token 保留给脚本。
+    // Max-Age 用 resolveSessionTtlMs() 与 runSetup 内部签发 TTL 保持一致
+    const res = NextResponse.json({ success: true, token });
+    res.headers.append(
+      "Set-Cookie",
+      buildSessionCookie(
+        token,
+        await resolveSessionTtlMs(),
+        shouldSecureCookie(request.url)
+      )
+    );
+    return res;
   } catch (err) {
     if (err instanceof SetupNotAllowedError) {
       return NextResponse.json(

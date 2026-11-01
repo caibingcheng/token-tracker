@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
-  getApiKey,
-  clearApiKey,
+  checkSession,
+  apiLogout,
   registerUnauthorizedHandler,
   apiLogin,
   apiSetup,
@@ -30,6 +30,7 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
   const [useRecovery, setUseRecovery] = useState(false);
   const [showTotp, setShowTotp] = useState(false);
   const [loggingIn, setLoggingIn] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [setupRequired, setSetupRequired] = useState(false);
   const [setupKey, setSetupKey] = useState("");
@@ -70,13 +71,19 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
   }, []);
 
   useEffect(() => {
-    setHasKey(getApiKey() !== null);
+    // 先探测 setup 状态，再探登录态（httpOnly cookie 前端不可读，只能问 /api/auth/session）
     apiSetup().then(({ setupRequired, authDisabled }) => {
       setSetupRequired(setupRequired);
       if (authDisabled) {
         localBypassRef.current = true;
         setHasKey(true);
+        return;
       }
+      checkSession().then((authenticated) => {
+        // 探测返回前可能已判定本地直通，以 bypass 为准
+        if (localBypassRef.current) return;
+        setHasKey(authenticated);
+      });
     });
   }, []);
 
@@ -116,15 +123,22 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
     }
   };
 
-  const handleLogout = () => {
-    if (localBypassRef.current) return;
-    clearApiKey();
-    setInputKey("");
-    setTotpCode("");
-    setShowTotp(false);
-    setUseRecovery(false);
-    setError(null);
-    setHasKey(false);
+  // 登出须 await 服务端响应再切 UI：httpOnly cookie 前端清不掉，若 fire-and-forget，
+  // 登出响应晚于紧接的登录回来会把新 cookie 清掉（竞态）
+  const handleLogout = async () => {
+    if (localBypassRef.current || loggingOut) return;
+    setLoggingOut(true);
+    try {
+      await apiLogout();
+    } finally {
+      setLoggingOut(false);
+      setInputKey("");
+      setTotpCode("");
+      setShowTotp(false);
+      setUseRecovery(false);
+      setError(null);
+      setHasKey(false);
+    }
   };
 
   const handleSetup = async (e: React.FormEvent) => {
@@ -305,11 +319,12 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
         <MobileTabBar onLogout={handleLogout} />
         <button
           type="button"
-          onClick={handleLogout}
-          className="hidden md:block fixed bottom-4 right-4 z-50 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs text-gray-500 shadow-sm hover:bg-gray-50 hover:text-red-600 transition-colors"
+          onClick={() => void handleLogout()}
+          disabled={loggingOut}
+          className="hidden md:block fixed bottom-4 right-4 z-50 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs text-gray-500 shadow-sm hover:bg-gray-50 hover:text-red-600 transition-colors disabled:opacity-50"
           title="Logout"
         >
-          Logout
+          {loggingOut ? "Logging out..." : "Logout"}
         </button>
       </SidebarActionsContext.Provider>
     </NumberFormatProvider>

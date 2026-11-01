@@ -25,6 +25,8 @@ describe("withAuth static scan (防漏保障第三层)", () => {
     // 首次设置向导：fail-open 闸门自校验（DB 无 key AND env 无 key 才放行），
     // 未配置 key 时无法签发会话 token，只能走 setup 自身闸门
     "src/app/api/auth/setup/route.ts",
+    // 登出：无状态会话删 cookie 即结束，不要求携带有效 token（带了也可能刚过期）
+    "src/app/api/auth/logout/route.ts",
   ]);
 
   it("finds at least one API route", () => {

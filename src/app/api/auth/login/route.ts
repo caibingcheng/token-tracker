@@ -31,6 +31,22 @@ import {
   BodyTooLargeError,
   InvalidJsonBodyError,
 } from "@/lib/auth/request-body";
+import { buildSessionCookie, shouldSecureCookie } from "@/lib/auth/session-cookie";
+
+// 登录成功：httpOnly cookie 下发浏览器登录态（关浏览器重开仍在，直至过期/吊销）；
+// body 里的明文 token 保留给脚本（X-API-Key header）
+function setSessionCookie(
+  response: NextResponse,
+  token: string,
+  ttlMs: number,
+  request: NextRequest
+): NextResponse {
+  response.headers.append(
+    "Set-Cookie",
+    buildSessionCookie(token, ttlMs, shouldSecureCookie(request.url))
+  );
+  return response;
+}
 
 // 内存滑动窗口限流：按可信 IP 计数（默认全局桶，防 XFF 伪造绕过），防爆破登录 key 与 TOTP
 const WINDOW_MS = 15 * 60 * 1000;
@@ -152,12 +168,17 @@ export async function POST(request: NextRequest) {
         const epoch = await getTokenEpoch();
         const ttlMs = await resolveSessionTtlMs();
         const token = signSessionToken(epoch, keyFingerprint(matchedKey), ttlMs);
-        return NextResponse.json({
-          success: true,
+        return setSessionCookie(
+          NextResponse.json({
+            success: true,
+            token,
+            expiresInMs: ttlMs,
+            viaRecoveryCode: true,
+          }),
           token,
-          expiresInMs: ttlMs,
-          viaRecoveryCode: true,
-        });
+          ttlMs,
+          request
+        );
       }
       const { ip, userAgent } = extractClientInfo(request);
       await recordAuditLog({
@@ -222,9 +243,14 @@ export async function POST(request: NextRequest) {
   const epoch = await getTokenEpoch();
   const ttlMs = await resolveSessionTtlMs();
   const token = signSessionToken(epoch, keyFingerprint(matchedKey), ttlMs);
-  return NextResponse.json({
-    success: true,
+  return setSessionCookie(
+    NextResponse.json({
+      success: true,
+      token,
+      expiresInMs: ttlMs,
+    }),
     token,
-    expiresInMs: ttlMs,
-  });
+    ttlMs,
+    request
+  );
 }

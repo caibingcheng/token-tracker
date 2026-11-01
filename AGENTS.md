@@ -40,7 +40,7 @@ docker compose up -d                                 # 本地运行
 
 ## 硬约束（红线，任何改动都适用）
 
-- **认证**：新增 `/api/*` 路由必须用 `withAuth` 包裹（`src/lib/auth/guard.ts`，login/setup 除外），否则 `src/lib/auth/guard-scan.test.ts` 静态扫描测试失败。所有 `/api/*`（login、setup 除外）只接受**会话 token**，原始 API key 不能直接调；脚本/curl 必须先 `POST /api/auth/login` 换 token，再带 `X-API-Key: <token>`
+- **认证**：新增 `/api/*` 路由必须用 `withAuth` 包裹（`src/lib/auth/guard.ts`，login/setup/logout 除外），否则 `src/lib/auth/guard-scan.test.ts` 静态扫描测试失败。所有 `/api/*`（login、setup、logout 除外）只接受**会话 token**，原始 API key 不能直接调；脚本/curl 必须先 `POST /api/auth/login` 换 token，再带 `X-API-Key: <token>`
 - **虚拟 key 认证**：只接受 header（`Authorization: Bearer` / `x-api-key` / `x-goog-api-key`），**不得恢复 `?key=` query 认证**（query 会进访问日志/反代日志/Referer）
 - **缓存失效**：新增写入接口必须在写入成功后调用 `invalidateQueryCache()`，或将 handler 包进 `withSkipCache()`（`src/lib/db/cache.ts`）；settings 读写**必须**包 `withSkipCache()`（`src/lib/auth/settings.ts`），否则改 key/epoch+1/解绑 TOTP 后旧凭证最长残留 10s
 - **模型命名与 token 口径**：`token_records.model` 一律写**发往 upstream 的真实 model 名**，客户端原始请求名写 `request_model`；`input_tokens` 不含 cache_read，`cache_read` 单独列，展示层 Total Input 含 cache

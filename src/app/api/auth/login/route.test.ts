@@ -155,6 +155,33 @@ describe("POST /api/auth/login - 限流在读取 body 之前", () => {
   });
 });
 
+describe("POST /api/auth/login - 会话 cookie", () => {
+  it("登录成功下发 httpOnly Set-Cookie（body token 保留给脚本）", async () => {
+    await setAdminApiKey(DB_KEY);
+    const POST = await handler();
+    const res = await POST(jsonRequest(JSON.stringify({ apiKey: DB_KEY })));
+    expect(res.status).toBe(200);
+    const setCookie = res.headers.get("set-cookie");
+    expect(setCookie).toBeTruthy();
+    expect(setCookie).toContain("tt_session=");
+    expect(setCookie).toContain("HttpOnly");
+    expect(setCookie).toContain("SameSite=Lax");
+    expect(setCookie).toContain("Path=/");
+    // localhost 属安全上下文：带 Secure
+    expect(setCookie).toContain("Secure");
+    const payload = (await res.json()) as { token?: string };
+    expect(payload.token).toBeTruthy();
+  });
+
+  it("登录失败不下发 cookie", async () => {
+    await setAdminApiKey(DB_KEY);
+    const POST = await handler();
+    const res = await POST(jsonRequest(JSON.stringify({ apiKey: "Wrong-Key-9f3a2b" })));
+    expect(res.status).toBe(401);
+    expect(res.headers.get("set-cookie")).toBeNull();
+  });
+});
+
 describe("POST /api/auth/login - 弱 env key 仅提示", () => {
   it("DB 无 key 时弱 env key 也可登录", async () => {
     process.env.ADMIN_API_KEY = WEAK_ENV_KEY;
