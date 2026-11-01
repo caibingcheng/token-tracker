@@ -896,7 +896,7 @@ export default function UpstreamsPanel() {
               onBlur={() => setTimeout(() => setShowPresets(false), 150)}
               placeholder="e.g. deepseek"
               required
-              className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
             {showPresets && filteredPresets.length > 0 && (
               <div className="absolute z-10 mt-1 max-h-48 w-full overflow-y-auto rounded border border-gray-200 bg-white shadow-lg">
@@ -937,7 +937,7 @@ export default function UpstreamsPanel() {
             <select
               value={form.protocol}
               onChange={(e) => setForm({ ...form, protocol: e.target.value })}
-              className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             >
               {PROTOCOL_OPTIONS.map((p) => (
                 <option key={p.value} value={p.value}>{p.label}</option>
@@ -950,7 +950,7 @@ export default function UpstreamsPanel() {
               type="number"
               value={form.priority}
               onChange={(e) => setForm({ ...form, priority: e.target.value })}
-              className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>
           <div className="md:col-span-3 grid grid-cols-1 gap-3 md:grid-cols-3">
@@ -967,7 +967,7 @@ export default function UpstreamsPanel() {
               }
               placeholder="e.g. https://api.deepseek.com"
               required
-              className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>
           <div>
@@ -975,7 +975,7 @@ export default function UpstreamsPanel() {
             <select
               value={form.balanceFetchMode}
               onChange={(e) => setForm({ ...form, balanceFetchMode: e.target.value })}
-              className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             >
               {BALANCE_MODE_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -1011,7 +1011,7 @@ export default function UpstreamsPanel() {
               autoComplete="off"
               data-1p-ignore
               data-bitwarden-ignore
-              className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
             {editingId && hasProxyForEditing && (
               <p className="mt-1 text-[10px] text-gray-400">
@@ -1072,7 +1072,7 @@ export default function UpstreamsPanel() {
                       value={keyValue}
                       onChange={(e) => updateFormKey(index, e.target.value)}
                       placeholder={`API key ${index + 1}`}
-                      className={`min-w-0 flex-1 rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 ${
+                      className={`min-w-0 flex-1 rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 ${
                         formKeyShown[index] ? "" : "[-webkit-text-security:disc]"
                       }`}
                     />
@@ -1141,7 +1141,7 @@ export default function UpstreamsPanel() {
                     onChange={(e) => updateTransformRow(index, { header: e.target.value })}
                     placeholder="header name"
                     autoComplete="off"
-                    className="min-w-0 w-40 flex-none rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    className="min-w-0 w-40 flex-none rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                   />
                   <input
                     type="text"
@@ -1149,7 +1149,7 @@ export default function UpstreamsPanel() {
                     onChange={(e) => updateTransformRow(index, { value: e.target.value })}
                     placeholder="value, e.g. tt-${var.sessionId}"
                     autoComplete="off"
-                    className="min-w-0 flex-1 rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    className="min-w-0 flex-1 rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                   />
                   <label className="flex shrink-0 cursor-pointer items-center gap-1.5 text-xs text-gray-500">
                     <input
@@ -1217,7 +1217,7 @@ export default function UpstreamsPanel() {
               value={form.enabledModels}
               onChange={(e) => setForm({ ...form, enabledModels: e.target.value })}
               placeholder="deepseek-chat, deepseek-*"
-              className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>
           <div className="md:col-span-1">
@@ -1232,7 +1232,7 @@ export default function UpstreamsPanel() {
               onChange={(e) => setForm({ ...form, healthCheckModel: e.target.value })}
               placeholder="deepseek-chat"
               autoComplete="off"
-              className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
             <datalist id="health-check-models">
               {modelProbeModelOptions
@@ -1256,7 +1256,7 @@ export default function UpstreamsPanel() {
               <select
                 value={probePresetValue}
                 onChange={(e) => applyProbePreset(e.target.value)}
-                className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
               >
                 <option value="auto">auto (default chat → responses)</option>
                 {PROBE_PRESETS.map((p) => (
@@ -1269,7 +1269,7 @@ export default function UpstreamsPanel() {
                 onChange={(e) => setForm({ ...form, probePath: e.target.value })}
                 placeholder="/v1/systemone"
                 autoComplete="off"
-                className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
               />
             </div>
             {form.probePath.trim() !== "" && (
@@ -1279,7 +1279,7 @@ export default function UpstreamsPanel() {
                 rows={4}
                 spellCheck={false}
                 placeholder='{"model":"{{model}}","state":"hi","questions":{}}'
-                className="mt-2 w-full rounded border border-gray-300 px-3 py-2 font-mono text-xs focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="mt-2 w-full rounded border border-gray-300 px-3 py-2 font-mono text-base md:text-xs focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
               />
             )}
             <p className="mt-1 text-[10px] text-gray-400">
@@ -1319,12 +1319,12 @@ export default function UpstreamsPanel() {
                       }
                       placeholder="model name (pick from enabled models or type)"
                       autoComplete="off"
-                      className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                      className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none"
                     />
                     <select
                       value={derived}
                       onChange={(e) => applyModelProbePreset(index, e.target.value)}
-                      className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                      className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none"
                     >
                       <option value="">apply preset…</option>
                       {PROBE_PRESETS.map((preset) => (
@@ -1341,7 +1341,7 @@ export default function UpstreamsPanel() {
                       }
                       placeholder="/v1/embeddings"
                       autoComplete="off"
-                      className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                      className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none"
                     />
                     <button
                       type="button"
@@ -1363,7 +1363,7 @@ export default function UpstreamsPanel() {
                       rows={3}
                       spellCheck={false}
                       placeholder='{"model":"{{model}}","input":"hi"}'
-                      className="mt-2 w-full rounded border border-gray-300 px-3 py-2 font-mono text-xs focus:border-blue-500 focus:outline-none"
+                      className="mt-2 w-full rounded border border-gray-300 px-3 py-2 font-mono text-base md:text-xs focus:border-blue-500 focus:outline-none"
                     />
                   )}
                 </div>
@@ -1434,7 +1434,7 @@ export default function UpstreamsPanel() {
                   setModelPicker(null);
                   setPickerQuery("");
                 }}
-                className="text-2xl leading-none text-gray-400 hover:text-gray-600"
+                className="flex min-h-[40px] min-w-[40px] items-center justify-center text-2xl leading-none text-gray-400 hover:text-gray-600 md:min-h-0 md:min-w-0"
               >
                 ×
               </button>
@@ -1933,7 +1933,7 @@ export default function UpstreamsPanel() {
               <button
                 type="button"
                 onClick={() => setPendingDelete(null)}
-                className="text-2xl leading-none text-gray-400 hover:text-gray-600"
+                className="flex min-h-[40px] min-w-[40px] items-center justify-center text-2xl leading-none text-gray-400 hover:text-gray-600 md:min-h-0 md:min-w-0"
               >
                 ×
               </button>

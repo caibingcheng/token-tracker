@@ -593,7 +593,7 @@ export default function SecuritySettings() {
             value={newApiKey}
             onChange={(e) => setNewApiKey(e.target.value)}
             placeholder="New API key"
-            className="w-full sm:w-56 rounded border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            className="w-full sm:w-56 rounded border border-gray-300 px-3 py-1.5 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
           />
           <input
             type="password"
@@ -601,7 +601,7 @@ export default function SecuritySettings() {
             value={newApiKeyConfirm}
             onChange={(e) => setNewApiKeyConfirm(e.target.value)}
             placeholder="Confirm new key"
-            className="w-full sm:w-56 rounded border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            className="w-full sm:w-56 rounded border border-gray-300 px-3 py-1.5 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
           />
           {status?.totpEnabled && (
             <OtpInput value={apiKeyCode} onChange={setApiKeyCode} />
@@ -659,7 +659,7 @@ export default function SecuritySettings() {
               setTtlSaved(false);
             }}
             placeholder="24"
-            className="w-full sm:w-32 rounded border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            className="w-full sm:w-32 rounded border border-gray-300 px-3 py-1.5 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
           />
           <span className="text-sm text-gray-500">hours (1–720)</span>
           <button
@@ -748,7 +748,7 @@ export default function SecuritySettings() {
               setStreamSaved(false);
             }}
             placeholder="30"
-            className="w-full sm:w-32 rounded border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            className="w-full sm:w-32 rounded border border-gray-300 px-3 py-1.5 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
           />
           <span className="text-sm text-gray-500">minutes (1–1440)</span>
           <button

@@ -184,15 +184,16 @@ export default function RecordsPage() {
     <main className="min-h-screen bg-gray-50 p-4 pb-20 md:p-8 md:pb-8">
       <div className="w-full">
         <div className="sticky top-0 z-20 -mx-4 mb-6 bg-gray-50 px-4 py-3 md:-mx-8 md:px-8">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex flex-wrap items-center gap-2">
+          {/* 移动端：筛选等宽一行 + 控制一行；桌面端保持横排 */}
+          <div className="flex flex-col gap-2 md:flex-row md:flex-wrap md:items-center md:justify-between">
+            <div className="grid grid-cols-3 gap-2 md:flex md:flex-wrap md:items-center md:gap-2">
               {FILTERS.map((filter) => (
                 <select
                   key={filter.key}
                   value={selected[filter.key]}
                   onChange={(e) => setFilter(filter.key, e.target.value)}
                   aria-label={filter.allLabel}
-                  className="min-h-[40px] min-w-0 max-w-full rounded border border-gray-300 bg-white px-3 py-1.5 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 md:min-h-0"
+                  className="min-h-[40px] w-full min-w-0 max-w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-base md:text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 md:w-auto md:min-h-0 md:px-3"
                 >
                   <option value="all">{filter.allLabel}</option>
                   {options[filter.key].map((option) => (
@@ -206,7 +207,7 @@ export default function RecordsPage() {
                 <button
                   type="button"
                   onClick={resetFilters}
-                  className="inline-flex min-h-[40px] items-center rounded border border-gray-300 bg-white px-3 text-sm font-medium text-gray-600 shadow-sm hover:bg-gray-50 md:min-h-0 md:py-1.5"
+                  className="hidden min-h-[40px] items-center rounded border border-gray-300 bg-white px-3 text-sm font-medium text-gray-600 shadow-sm hover:bg-gray-50 md:inline-flex md:min-h-0 md:py-1.5"
                 >
                   Reset
                 </button>
@@ -214,6 +215,15 @@ export default function RecordsPage() {
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
+              {hasFilter && (
+                <button
+                  type="button"
+                  onClick={resetFilters}
+                  className="inline-flex min-h-[40px] items-center rounded border border-gray-300 bg-white px-2 text-sm font-medium text-gray-600 shadow-sm hover:bg-gray-50 md:hidden"
+                >
+                  Reset
+                </button>
+              )}
               <ColumnPicker
                 columns={RECORD_COLUMNS}
                 value={visibleColumns}
@@ -221,12 +231,12 @@ export default function RecordsPage() {
                 error={columnsError}
               />
               <label className="flex items-center gap-2 text-xs text-gray-600">
-                Rows
+                <span className="hidden md:inline">Rows</span>
                 <select
                   value={pageSize}
                   onChange={(e) => setPageSize(Number(e.target.value))}
                   aria-label="Rows per page"
-                  className="h-10 min-w-0 rounded border border-gray-300 bg-white px-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 md:h-8 md:text-xs"
+                  className="h-10 min-w-0 rounded border border-gray-300 bg-white px-2 text-base md:text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 md:h-8 md:text-xs"
                 >
                   {PAGE_SIZE_OPTIONS.map((size) => (
                     <option key={size} value={size}>
@@ -240,13 +250,18 @@ export default function RecordsPage() {
                 onClick={refresh}
                 disabled={refreshing}
                 title="Refresh"
-                className={`inline-flex h-10 items-center justify-center rounded px-3 text-sm font-medium transition-colors bg-gray-100 disabled:cursor-default md:h-8 md:text-xs ${
+                className={`inline-flex h-10 items-center justify-center gap-1 rounded px-3 text-sm font-medium transition-colors bg-gray-100 disabled:cursor-default md:h-8 md:text-xs ${
                   refreshing
                     ? "text-blue-600 animate-pulse"
                     : "text-gray-600 hover:bg-gray-200"
                 }`}
               >
-                Refresh
+                {/* 移动端只显示图标，给 Auto 按钮腾出一行的空间 */}
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="md:hidden">
+                  <polyline points="23 4 23 10 17 10" />
+                  <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+                </svg>
+                <span className="hidden md:inline">Refresh</span>
               </button>
               <button
                 type="button"

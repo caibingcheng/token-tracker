@@ -652,7 +652,7 @@ export default function ModelsPanel() {
               onChange={(e) => setModelInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && runSimulation()}
               placeholder="e.g. gpt-4o"
-              className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>
           <div>
@@ -662,7 +662,7 @@ export default function ModelsPanel() {
               onChange={(e) => setPathInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && runSimulation()}
               placeholder={DEFAULT_PATH}
-              className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>
           <div className="flex items-end">
@@ -1168,7 +1168,7 @@ export default function ModelsPanel() {
               onChange={(e) => changeModelsDevSource(e.target.value as ModelsDevSource)}
               disabled={savingSource}
               title="Snapshot data source; saved on change, applied on next refresh"
-              className="rounded border border-gray-300 bg-white px-2 py-1.5 text-xs text-gray-700 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50 min-h-[36px] md:min-h-0"
+              className="rounded border border-gray-300 bg-white px-2 py-1.5 text-base md:text-xs text-gray-700 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50 min-h-[40px] md:min-h-0"
             >
               <option value="models.dev">models.dev</option>
               <option value="github">GitHub LiteLLM</option>
@@ -1177,7 +1177,7 @@ export default function ModelsPanel() {
               type="button"
               disabled={refreshingSnapshot}
               onClick={refreshModelsDev}
-              className="rounded border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 whitespace-nowrap min-h-[36px] md:min-h-0"
+              className="rounded border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 whitespace-nowrap min-h-[40px] md:min-h-0"
             >
               {refreshingSnapshot ? "Refreshing…" : "Refresh"}
             </button>
@@ -1196,7 +1196,7 @@ export default function ModelsPanel() {
               type="button"
               disabled={uploadingSnapshot}
               onClick={() => fileInputRef.current?.click()}
-              className="rounded border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 min-h-[36px] md:min-h-0"
+              className="rounded border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 min-h-[40px] md:min-h-0"
             >
               {uploadingSnapshot ? "Uploading…" : "Upload…"}
             </button>
@@ -1204,7 +1204,7 @@ export default function ModelsPanel() {
               type="button"
               disabled={pricesBusy}
               onClick={autoFillPrices}
-              className="rounded border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50 min-h-[36px] md:min-h-0"
+              className="rounded border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50 min-h-[40px] md:min-h-0"
             >
               Auto-fill unmatched
             </button>
@@ -1212,7 +1212,7 @@ export default function ModelsPanel() {
               type="button"
               disabled={pricesBusy}
               onClick={refillAllPrices}
-              className="rounded border border-green-200 bg-green-50 px-3 py-1.5 text-xs font-medium text-green-700 hover:bg-green-100 disabled:opacity-50 min-h-[36px] md:min-h-0"
+              className="rounded border border-green-200 bg-green-50 px-3 py-1.5 text-xs font-medium text-green-700 hover:bg-green-100 disabled:opacity-50 min-h-[40px] md:min-h-0"
             >
               Re-fill all
             </button>

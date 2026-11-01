@@ -294,7 +294,7 @@ function CacheRateCell({
           value={value}
           onChange={(e) => onChange(section.id, e.target.value)}
           aria-label={`Simulated cache rate for ${section.title}`}
-          className={`w-20 rounded border px-2 py-1 text-right text-sm focus:outline-none focus:ring-1 ${
+          className={`w-20 rounded border px-2 py-1 text-right text-base md:text-sm focus:outline-none focus:ring-1 ${
             isOverride
               ? "border-blue-400 bg-blue-50/40 font-medium text-blue-700 focus:border-blue-500 focus:ring-blue-500"
               : "border-gray-200 text-gray-600 focus:border-blue-500 focus:ring-blue-500"
@@ -902,7 +902,7 @@ export default function PriceSimulatorModal({
           <button
             type="button"
             onClick={onClose}
-            className="text-2xl leading-none text-gray-400 hover:text-gray-600"
+            className="flex min-h-[40px] min-w-[40px] items-center justify-center text-2xl leading-none text-gray-400 hover:text-gray-600 md:min-h-0 md:min-w-0"
             aria-label="Close"
           >
             ×
@@ -934,7 +934,7 @@ export default function PriceSimulatorModal({
                   id="simulator-filter-agent"
                   value={filterAgent}
                   onChange={(e) => setFilterAgent(e.target.value)}
-                  className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 >
                   <option value="all">All Agents</option>
                   {agents.map((a) => (
@@ -955,7 +955,7 @@ export default function PriceSimulatorModal({
                   id="simulator-filter-provider"
                   value={filterProvider}
                   onChange={(e) => setFilterProvider(e.target.value)}
-                  className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 >
                   <option value="all">All Providers</option>
                   {providers.map((p) => (
@@ -976,7 +976,7 @@ export default function PriceSimulatorModal({
                   id="simulator-filter-model"
                   value={filterModel}
                   onChange={(e) => setFilterModel(e.target.value)}
-                  className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 >
                   <option value="all">All Models</option>
                   {models.map((m) => (
@@ -1115,7 +1115,7 @@ export default function PriceSimulatorModal({
                     (providerGroups.length === 0 &&
                       modelsDevProviders.length === 0)
                   }
-                  className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-100 disabled:text-gray-500"
+                  className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-100 disabled:text-gray-500"
                 >
                   <option value="">Select provider</option>
                   {providerOptions.map((id) => (
@@ -1140,7 +1140,7 @@ export default function PriceSimulatorModal({
                     updateSelection(selectedProvider, e.target.value)
                   }
                   disabled={!selectedProvider || availableModels.length === 0}
-                  className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-100 disabled:text-gray-500"
+                  className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-100 disabled:text-gray-500"
                 >
                   <option value="">Select model</option>
                   {availableModels.map((m) => (
@@ -1194,7 +1194,7 @@ export default function PriceSimulatorModal({
                             [field.key]: e.target.value,
                           });
                         }}
-                        className={`w-full rounded border bg-white px-2 py-1.5 text-sm focus:outline-none focus:ring-1 disabled:bg-gray-100 disabled:text-gray-400 ${
+                        className={`w-full rounded border bg-white px-2 py-1.5 text-base md:text-sm focus:outline-none focus:ring-1 disabled:bg-gray-100 disabled:text-gray-400 ${
                           invalid
                             ? "border-red-400 focus:border-red-500 focus:ring-red-500"
                             : "border-gray-300 focus:border-blue-500 focus:ring-blue-500"

@@ -187,7 +187,7 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
               onChange={(e) => setSetupKey(e.target.value)}
               placeholder="Admin API Key"
               autoFocus
-              className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
             {setupKey.trim() && (
               <p className={`text-xs ${LOGIN_KEY_STRENGTH_META[getLoginKeyStrength(setupKey)].className}`}>
@@ -202,7 +202,7 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
               value={setupConfirm}
               onChange={(e) => setSetupConfirm(e.target.value)}
               placeholder="Confirm Admin API Key"
-              className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
             {error && (
               <div className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-600">
@@ -245,7 +245,7 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
                 onChange={(e) => setInputKey(e.target.value)}
                 placeholder="API Key..."
                 autoFocus
-                className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
               />
             )}
             {showTotp && !useRecovery && (
@@ -258,7 +258,7 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
                 onChange={(e) => setTotpCode(e.target.value)}
                 placeholder="Recovery code (XXXX-XXXX-XXXX-XXXX)"
                 autoFocus
-                className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
               />
             )}
             {showTotp && (
