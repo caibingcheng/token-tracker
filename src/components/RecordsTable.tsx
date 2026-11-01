@@ -473,11 +473,28 @@ export default function RecordsTable({
               // 紧凑卡片：标题（模型+状态）/ 元信息一行 / In·Out·Cache% 三列 / 延迟一行；
               // 完整明细（requested 名、原始 UA、token 分解）走 title tooltip，与桌面列语义一致
               const metaParts: string[] = [];
-              if (show("date")) metaParts.push(formatShortDate(record.createdAt));
-              if (show("provider")) metaParts.push(record.providerName || "-");
-              if (show("agent")) metaParts.push(record.agent);
-              if (show("key")) metaParts.push(`Key: ${record.keyName || "-"}`);
-              if (show("session")) metaParts.push(`Session: ${record.sessionId || "-"}`);
+              // tooltip 与可见列保持一致：只带 show() 允许的分量，且给被截断的字段完整值
+              const metaTitleParts: string[] = [];
+              if (show("date")) {
+                metaParts.push(formatShortDate(record.createdAt));
+                metaTitleParts.push(dateTitle(record.createdAt));
+              }
+              if (show("provider")) {
+                metaParts.push(record.providerName || "-");
+                metaTitleParts.push(`Provider: ${record.providerName || "-"}`);
+              }
+              if (show("agent")) {
+                metaParts.push(record.agent);
+                metaTitleParts.push(agentTitle(record));
+              }
+              if (show("key")) {
+                metaParts.push(`Key: ${record.keyName || "-"}`);
+                metaTitleParts.push(`Key: ${record.keyName || "-"}`);
+              }
+              if (show("session")) {
+                metaParts.push(`Session: ${record.sessionId || "-"}`);
+                metaTitleParts.push(`Session: ${record.sessionId || "-"}`);
+              }
               const rate = cacheRate(record);
               const showLatencyLine = show("ttft") || show("latency");
               return (
@@ -497,7 +514,7 @@ export default function RecordsTable({
                   {metaParts.length > 0 && (
                     <p
                       className="truncate text-xs text-gray-400"
-                      title={[dateTitle(record.createdAt), modelTitle(record), agentTitle(record)].join("\n")}
+                      title={metaTitleParts.join("\n")}
                     >
                       {metaParts.join(" · ")}
                     </p>
@@ -525,7 +542,15 @@ export default function RecordsTable({
                     </div>
                   )}
                   {showLatencyLine && (
-                    <p className="text-xs text-gray-600 tabular-nums">
+                    <p
+                      className="text-xs text-gray-600 tabular-nums"
+                      title={[
+                        show("ttft") && `TTFT: ${latencyTitle(record.ttftMs)}`,
+                        show("latency") && `Latency: ${latencyTitle(record.latencyMs)}`,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    >
                       {show("ttft") && <>TTFT {formatLatencyMs(record.ttftMs)}</>}
                       {show("ttft") && show("latency") && " · "}
                       {show("latency") && <>Latency {formatLatencyMs(record.latencyMs)}</>}
