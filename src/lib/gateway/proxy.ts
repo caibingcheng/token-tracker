@@ -14,7 +14,7 @@ import {
 import type { UpstreamRoute, ModelCandidate, NamedRoute as NamedRouteConfig } from "./model-router";
 import { buildAuthHeaders, isEdgeBlockStatus } from "./upstream-client";
 import { joinUrlPath, sanitizePathSegments } from "./url-utils";
-import { buildSessionId } from "./session";
+import { buildSessionId, computeSessionId } from "./session";
 import type { SessionBinding } from "./session";
 import {
   parseOpenAiNonStreaming,
@@ -106,7 +106,7 @@ export interface RecordUsageMeta {
   ttftMs?: number; // 流式首 token 延迟（首 chunk 到达 - 请求开始），非流式无此概念不写
   virtualKeyId?: number;
   userAgent?: string | null;
-  sessionId?: string | null; // 客户端 session header 原值（trim + 截断 256；未携带 NULL）
+  sessionId?: string | null; // 客户端原生 session ID 优先，否则为网关指纹；无法识别会话时 NULL
   requestModel?: string | null; // 客户端原始请求名（虚拟名路由场景可追溯）
 }
 
@@ -183,9 +183,17 @@ export interface ProxyDeps {
   log?: (message: string) => void;
 }
 
-// 从请求头中提取客户端会话 id（仅用于记录，不透传行为不变）：
-// 依次尝试 x-session-id → session_id → x-conversation-id，取第一个 trim 后非空值，截断 256
-const SESSION_ID_HEADERS = ["x-session-id", "session_id", "x-conversation-id"] as const;
+// 从请求头中提取客户端原生会话 ID；请求内只调用一次，供 Records 与路由粘性共用。
+// 保留原有 generic header，并覆盖 Claude Code / Codex / OpenCode / session affinity 常见形式。
+const SESSION_ID_HEADERS = [
+  "x-claude-code-session-id",
+  "x-opencode-session",
+  "session-id",
+  "x-session-id",
+  "session_id",
+  "x-session-affinity",
+  "x-conversation-id",
+] as const;
 export const MAX_SESSION_ID_LENGTH = 256;
 
 export function extractSessionId(headers: Headers): string | null {
@@ -197,21 +205,6 @@ export function extractSessionId(headers: Headers): string | null {
     return trimmed.slice(0, MAX_SESSION_ID_LENGTH);
   }
   return null;
-}
-
-// 记录用 session id：客户端 header 原值优先；未携带时回退网关会话指纹（与粘性路由同源，sha256 64 hex）。
-// 仅在请求体带非空 messages 数组时回退（gemini contents / 非 chat 端点的指纹退化为常量，宁可留空）
-export function resolveRecordSessionId(
-  clientSessionId: string | null,
-  bodyJson: unknown,
-  model: string,
-  virtualKeyId: number,
-  protocol: string
-): string | null {
-  if (clientSessionId) return clientSessionId;
-  const messages = (bodyJson as { messages?: unknown } | null)?.messages;
-  if (!Array.isArray(messages) || messages.length === 0) return null;
-  return buildSessionId(bodyJson, model, virtualKeyId, protocol).slice(0, MAX_SESSION_ID_LENGTH);
 }
 
 // 从请求头中提取虚拟 key token。
@@ -438,15 +431,19 @@ export async function handleProxyRequest(
 
   const upstreams = await deps.loadUpstreams();
   const protocol = detectRequestProtocol(path);
-  // 记录用 session id（客户端 header 优先，否则网关会话指纹）：懒计算无收益（每次仅一次小 sha256），
-  // 且写库点分散在成功/失败/分类器多处，统一算一次
-  const recordSessionId = resolveRecordSessionId(
-    clientSessionId,
-    bodyJson,
-    model,
-    virtualKey.id,
-    protocol
-  );
+  // 请求级会话 ID：原生 header 优先，否则至多计算一次指纹；Records、路由粘性和出站变量共用。
+  // Records 无原生 ID 时仍要求非空 messages，避免 Gemini / 非 chat 端点写入退化的常量指纹。
+  const sessionId =
+    clientSessionId ?? buildSessionId(bodyJson, model, virtualKey.id, protocol);
+  // 原生 ID 也需保留原指纹的 model / vk / protocol 隔离，避免跨 key、跨路由共享 binding。
+  const routeSessionId = clientSessionId
+    ? computeSessionId(
+        `native\u0000${clientSessionId}\u0000${model}\u0000${virtualKey.id}\u0000${protocol}`
+      )
+    : sessionId;
+  const messages = (bodyJson as { messages?: unknown } | null)?.messages;
+  const recordSessionId =
+    clientSessionId ?? (Array.isArray(messages) && messages.length > 0 ? sessionId : null);
 
   // ---- 命名路由解析：命中后目标池整体构成 failover 链（同名自动路由完全失效） ----
   // 链首：session binding 预选 > 分类器（kind='model'）> 首个健康目标（按 priority）；
@@ -456,8 +453,6 @@ export async function handleProxyRequest(
   let namedRoute: { name: string } | null = null;
   // 健康过滤时被跳过的目标（兜底成功时自愈清除标记，命名/自动路由统一）
   const degradedUpstreams = new Set<number>();
-  // 命名路由决策需要会话指纹（failover 重绑复用同一值）
-  let sessionId: string | null = null;
   // 本次请求决策选中的目标 hop（路由内 failover 落点漂移时用于重绑 binding）
   let decisionHop: RouteHop | null = null;
   let hops: RouteHop[] = [];
@@ -556,8 +551,7 @@ export async function handleProxyRequest(
       let preselected: NamedRouteTargetInfo | null = null;
       let boundHop: RouteHop | null = null;
       if (deps.session && expandable.length > 1) {
-        sessionId = buildSessionId(bodyJson, model, virtualKey.id, protocol);
-        const binding = deps.session.getBinding(sessionId);
+        const binding = deps.session.getBinding(routeSessionId);
         // named-route binding 必带 targetModel（成功路径总是写 hop 粒度）；
         // undefined = 旧自动路由粒度的残留 binding，不让它通配命名路由目标
         if (binding && binding.targetModel !== undefined) {
@@ -582,12 +576,12 @@ export async function handleProxyRequest(
       if (!selected && expandable.length > 1) {
         const headHopOf = (t: NamedRouteTargetInfo) => hopsByTarget.get(t.id)![0];
         const writeBinding = (t: NamedRouteTargetInfo, hop?: RouteHop) => {
-          if (sessionId && deps.session) {
+          if (deps.session) {
             const h = hop ?? headHopOf(t);
-            deps.session.setBinding(sessionId, h.upstream.id, h.targetModel);
+            deps.session.setBinding(routeSessionId, h.upstream.id, h.targetModel);
           }
         };
-        if (route.classifierKind === "model" && deps.runClassifier && sessionId && deps.session) {
+        if (route.classifierKind === "model" && deps.runClassifier && deps.session) {
           const classifierUpstream = upstreams.find((u) => u.id === route.classifierUpstreamId);
           // 已声明的 classifier_models 条目优先（保留存量 chat 类型/path 覆盖/预算配置）；
           // 未声明的一律按 jev-systemone 决策模型处理（POST /v1/systemone）
@@ -762,8 +756,7 @@ export async function handleProxyRequest(
 
   // 自动路由的多候选 session 粘性（upstream 粒度；命名路由的粘性已在组装时按 route 粒度处理）
   if (!namedRoute && hops.length > 1 && deps.session) {
-    sessionId = buildSessionId(bodyJson, model, virtualKey.id, protocol);
-    const binding = deps.session.getBinding(sessionId);
+    const binding = deps.session.getBinding(routeSessionId);
     if (binding && hops.some((h) => h.upstream.id === binding.upstreamId)) {
       const bound = hops.filter((h) => h.upstream.id === binding.upstreamId);
       const rest = hops.filter((h) => h.upstream.id !== binding.upstreamId);
@@ -859,9 +852,8 @@ export async function handleProxyRequest(
               apiKey,
               upstream.headerTransforms,
               {
-                // 会话指纹与 session 粘性同源；单候选链 sessionId 未预计算，懒计算
-                sessionId: () =>
-                  sessionId ?? buildSessionId(bodyJson, model, virtualKey.id, protocol),
+                // 与 Records 共用请求级会话 ID：原生 header 优先，否则复用已计算指纹
+                sessionId: () => sessionId,
                 model: hopModel,
                 keyName: virtualKey.name,
                 upstream: upstream.name,
@@ -1042,7 +1034,6 @@ export async function handleProxyRequest(
   // manual/virtual route 落点带 targetModel（route 粒度），自动路由为 upstream 粒度；
   // vm 候选的决策 route 与实际落点漂移（vm 内 failover）时也重绑
   if (
-    sessionId &&
     deps.session &&
     lastResponse.status >= 200 &&
     lastResponse.status < 300 &&
@@ -1056,16 +1047,16 @@ export async function handleProxyRequest(
     if (namedRoute) {
       if (successUpstream.id !== defaultUpstream.id || successHop.targetModel !== defaultHop.targetModel || vmDrifted) {
         // 值未变不重写（binding 预选/决策落点与既有 binding 一致时避免每请求重复 set）
-        const existing = deps.session.getBinding(sessionId);
+        const existing = deps.session.getBinding(routeSessionId);
         if (
           existing?.upstreamId !== successUpstream.id ||
           existing?.targetModel !== successHop.targetModel
         ) {
-          deps.session.setBinding(sessionId, successUpstream.id, successHop.targetModel);
+          deps.session.setBinding(routeSessionId, successUpstream.id, successHop.targetModel);
         }
       }
     } else if (successUpstream.id !== defaultUpstream.id) {
-      deps.session.setBinding(sessionId, successUpstream.id);
+      deps.session.setBinding(routeSessionId, successUpstream.id);
     }
   }
 

@@ -7,7 +7,7 @@
 - 首次引入 vitest（`src/**/*.test.ts`，`npm test`），测试范围均为不依赖 Next.js 运行时的纯逻辑模块：
   - `src/lib/gateway/parsers/`：三协议 usage 解析（含 `stream-usage` 增量提取：随机 chunk 边界对照批量 parser、多行 data、跨 chunk 事件、UTF-8 截断）
   - `src/lib/gateway/model-router`：精确/通配/priority 匹配、Gemini path 提取
-  - `src/lib/gateway/proxy`：认证、跨 upstream 故障转移链 + session 粘性（mock fetch）、usage 写库回调、vk model allowlist 403、sessionId 捕获（三 header 优先级/trim/截断 256；缺失时回退网关会话指纹（body 带非空 messages）/无 messages 回退 NULL/header 值优先于指纹，非流式 + 流式写库路径携带）
+  - `src/lib/gateway/proxy`：认证、跨 upstream 故障转移链 + session 粘性（mock fetch）、usage 写库回调、vk model allowlist 403、sessionId 捕获（Claude Code/Codex/OpenCode 原生 header + generic/affinity header 优先级、trim、截断 256；缺失时回退网关会话指纹（body 带非空 messages）/无 messages 回退 NULL/header 值优先于指纹，非流式 + 流式写库路径携带；Named Route 原生 session 在压缩改写首条 user 后仍复用 binding）
   - `src/lib/gateway/session`：会话指纹提取（截断/多 system/多模态/无 user）+ hash 稳定性 + LRU binding store
   - `src/lib/gateway/health`：健康状态机（失败 → unhealthy → 探活成功 → healthy、失败重调度、幂等）+ 探活状态（probeStatus 记录 nextAt/结果、stopProbing 停 timer 保留 lastAt、resumeProbing 恢复调度、removeUpstream 清内存态与 model 标记、probeNow 立即恢复/并发互斥/禁用下失败不再调度、probeFn 抛错记录 error）
   - `src/lib/gateway/crypto`：AES-256-GCM 往返/篡改
@@ -67,7 +67,7 @@
   - `src/app/api/admin/upstreams/[id]/route.test`：PATCH enabled=false 停探活（nextAt 清空、状态保留）、enabled=true 且 unhealthy 立即探活（fire-and-forget 恢复）、healthy 不触发、DELETE 清内存态与 `upstream_model_health` 残留行
   - `src/app/api/admin/upstreams/[id]/probe/route.test`：401 / 404 / 200 返回探活状态
   - `src/lib/gateway/header-transforms`：格式校验（token 字符集/CRLF/长度/条数/mode/enabled 类型、无语义黑名单）、normalize 小写、parse 失败回退 []、applyHeaderTransforms（fill/override、客户端带与不带、同名后者覆盖——缺失基准为应用前 header 集、enabled=false 跳过、变量展开、sessionId 懒计算、未知变量保留字面量）
-  - `src/lib/gateway/proxy`（header transforms 集成）：transform 经 upstream 配置在出站请求生效（变量展开 per-hop、sessionId 与 session 模块指纹同源且随首问变化、fill 保留/override 覆盖客户端值）、无 transforms 零影响
+  - `src/lib/gateway/proxy`（header transforms 集成）：transform 经 upstream 配置在出站请求生效（变量展开 per-hop、sessionId 复用请求级解析结果（原生 header 优先，否则指纹随首问变化）、fill 保留/override 覆盖客户端值）、无 transforms 零影响
   - `src/lib/gateway/proxy-dispatcher`：null/空串 → undefined、同 URL 缓存复用、上限 50 重建
   - `src/lib/gateway/url-guard`：`validateProxyUrl`（scheme 拒绝/私网 IP + DNS 拒绝/逃生开关/含凭据通过）+ `sanitizeProxyUrlForDisplay` 剥 userinfo
   - `src/lib/gateway/proxy` / `probe` / `upstream-client` / `balance` / `classifier`：upstream 带 proxyUrl 时 init 含 ProxyAgent dispatcher、**无 proxyUrl 时也必须含受地址校验保护的直连 dispatcher**（`toBe(getDirectDispatcher())`，主链 + responses 辅助链各一）；出站 fetch 一律经 `outboundFetch`（测试用 `setOutboundFetchImpl()` 注入，不再 stub 全局 fetch）
