@@ -139,11 +139,12 @@ SQLite 数据库在首次请求时自动建表 + 增量迁移，无需手动操�
 | `/v1/*`、`/v1beta/*` | 虚拟 key | 代理入口（纯透传） |
 | `/raw/*` | 虚拟 key | 裸透传入口：剥掉 `/raw` 前缀后按内层路径透传到上游（用于 `/v1`、`/v1beta` 之外的端点） |
 | `/api/auth/login` | 原始 API key（+ 可选 TOTP） | 登录换取会话 token |
+| `/api/cli` | **无（公开只读）** | 公开用量快照：全时段 `summary` + 当日 `today`（`?tzOffset=` 对齐时区，仅 token/cache/请求数聚合，无模型名与成本） |
 | `/api/dashboard` 等统计 API | 会话 token（`X-API-Key` header） | 仪表盘数据 |
 | `/api/admin/*` | 会话 token | 管理操作 |
 | `/admin`、`/` | 页面 + 会话 token | 管理面板 / 仪表盘 |
 
-> 除 `login` 外，所有 `/api/*` 路由只接受会话 token。脚本示例：
+> 除 `login` / `setup` / `logout` 与已登记的公开只读例外 `/api/cli` 外，所有 `/api/*` 路由只接受会话 token。脚本示例：
 > ```bash
 > TOKEN=$(curl -s -X POST http://host:3000/api/auth/login \
 >   -H 'Content-Type: application/json' \

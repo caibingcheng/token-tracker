@@ -70,5 +70,6 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   // auth/logout 不验签：登出就是清 cookie，带不带有效 token 都要能到达路由
-  matcher: "/api/((?!auth/login|auth/setup|auth/logout).*)",
+  // cli：公开用量快照（无认证、参数固定），认证由路由自身不提供（见 api-routes.md）
+  matcher: "/api/((?!auth/login|auth/setup|auth/logout|cli(?:$|/)).*)",
 };

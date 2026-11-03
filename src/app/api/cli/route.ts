@@ -1,444 +1,239 @@
-import { NextRequest, NextResponse } from "next/server";
-import { initDatabase, db } from "@/lib/db";
-import { tokenRecords } from "@/lib/db";
-import { withAuth } from "@/lib/auth/guard";
-import { executeStatsQuery, type StatsQueryResult } from "@/lib/stats-query";
-import { resolveProviderFilter, loadHiddenProviderGroups } from "@/lib/provider-utils";
-import { getDisplayName } from "@/lib/model-registry";
-import { loadModelAliases, loadAgentAliases } from "@/lib/auth/settings";
+import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
+import { initDatabase } from "@/lib/db";
 import {
-  resolveAgentUserAgents,
-  type AgentUaFilter,
-} from "@/lib/agent-utils";
-import {
-  calculateCostPerMillion,
-} from "@/lib/cost-utils";
-import { type StatItem } from "@/lib/model-utils";
+  executeStatsQuery,
+  type StatItemWithGroup,
+  type TotalStatItem,
+} from "@/lib/stats-query";
+import { localDateKeyFromUtcDate } from "@/lib/timezone-utils";
 import { toNum } from "@/lib/number-utils";
 
 export const dynamic = "force-dynamic";
 
-const VALID_RANGES = ["3d", "7d", "14d", "30d"];
+// 公开快照接口（无认证，见 docs/agents/api-routes.md）：用进程内快照做全局限流 ——
+// TTL 内的同一时区请求直接返回同一份数据且不触达数据库。多实例各自持有一份，
+// 允许实例间短暂不一致。数据不需要实时，60s 足够。
+const SNAPSHOT_TTL_MS = 60_000;
+// tzOffset 让缓存 key 有 1441 种可能，因此缓存条目设上限 + 每窗口设全局刷新预算，
+// 防止匿名请求者用不同 tzOffset 放大聚合查询。
+// 容量必须明显大于单窗口预算：否则上一窗口的快照会被本窗口的刷新全部挤出，
+// TTL 缓存跨窗口失效（= 每个新窗口必重新读库），且 stale 回退永远不可达。
+const MAX_SNAPSHOTS = 32;
+const MAX_BUILDS_PER_WINDOW = 8;
+const MAX_TZ_OFFSET = 720;
 
-function formatNumber(num: number): string {
-  return new Intl.NumberFormat("en-US").format(Math.round(num));
+type UsageTotals = {
+  totalInput: number;
+  totalInputCached: number;
+  totalInputUncached: number;
+  totalCacheWrite: number;
+  totalOutput: number;
+  requests: number;
+};
+
+// summary 与 today 用同一组字段（today 额外带 date），保证两边可直接对比
+type UsageBlock = UsageTotals & {
+  // 0~1 比率
+  cacheHitRate: number;
+};
+
+export type CliSnapshot = {
+  generatedAt: string;
+  summary: UsageBlock;
+  today: UsageBlock & { date: string };
+};
+
+// key = tzOffsetMinutes（getTimezoneOffset 语义）；Map 插入顺序即 LRU 顺序，
+// 新鲜命中与刷新都会重排，只有真正最久未使用的时区被淘汰
+const snapshots = new Map<number, { at: number; body: CliSnapshot }>();
+const inflight = new Map<number, Promise<CliSnapshot>>();
+let windowStart = 0;
+let windowBuilds = 0;
+
+function round(value: number, digits: number): number {
+  const factor = 10 ** digits;
+  return Math.round(value * factor) / factor;
 }
 
-function formatCompact(num: number): string {
-  if (num >= 1_000_000) return `${(num / 1_000_000).toFixed(1)}M`;
-  if (num >= 1_000) return `${(num / 1_000).toFixed(1)}K`;
-  return formatNumber(num);
+function usageTotals(row: StatItemWithGroup | TotalStatItem | undefined): UsageTotals {
+  return {
+    totalInput: toNum(row?.totalInput),
+    totalInputCached: toNum(row?.totalInputCached),
+    totalInputUncached: toNum(row?.totalInputUncached),
+    totalCacheWrite: toNum(row?.totalCacheWrite),
+    totalOutput: toNum(row?.totalOutput),
+    requests: toNum(row?.count),
+  };
 }
 
-function formatCost(num: number): string {
-  if (num <= 0) return "$0.0000";
-  return `$${num.toFixed(4)}`;
+function usageBlock(row: StatItemWithGroup | TotalStatItem | undefined): UsageBlock {
+  const totals = usageTotals(row);
+  return {
+    ...totals,
+    cacheHitRate:
+      totals.totalInput > 0
+        ? round(totals.totalInputCached / totals.totalInput, 4)
+        : 0,
+  };
 }
 
-function formatDate(dateStr: string): string {
-  const d = new Date(dateStr);
-  return d.toISOString().split("T")[0];
-}
-
-function formatDateTime(dateStr: string | null): string {
-  if (!dateStr) return "Never";
-  const d = new Date(dateStr);
-  return d.toLocaleString("en-US", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  });
-}
-
-function pad(str: string, width: number): string {
-  return str.padEnd(width, " ");
-}
-
-function padLeft(str: string, width: number): string {
-  return str.padStart(width, " ");
-}
-
-function computeChange(current: number, previous: number): string {
-  if (previous === 0) {
-    if (current === 0) return "  0.0%";
-    return "  +∞";
+function takeBuildBudget(): boolean {
+  const now = Date.now();
+  if (now - windowStart >= SNAPSHOT_TTL_MS) {
+    windowStart = now;
+    windowBuilds = 0;
   }
-  const change = ((current - previous) / previous) * 100;
-  const sign = change >= 0 ? "+" : "";
-  return `${sign}${change.toFixed(1)}%`;
+  if (windowBuilds >= MAX_BUILDS_PER_WINDOW) return false;
+  windowBuilds += 1;
+  return true;
 }
 
-function computeCostFromStatItem(item: StatItem): { cost: number; effectiveTokens: number } {
-  const inputTokens = toNum(item.totalInputUncached);
-  const cacheRead = toNum(item.totalInputCached);
-  const cacheWrite = toNum(item.totalCacheWrite);
-  const outputTokens = toNum(item.totalOutput);
+async function buildSnapshot(tzOffsetMinutes: number): Promise<CliSnapshot> {
+  await initDatabase();
 
-  const cost = item.cost?.totalCost ?? 0;
-  const effectiveTokens = item.cost?.effectiveTokens ?? inputTokens + cacheRead + cacheWrite + outputTokens;
-
-  return { cost, effectiveTokens };
-}
-
-function normalizeProviderInput(provider: string): string {
-  // ProviderA -> Provider A
-  const match = provider.match(/^Provider([A-Z])$/);
-  if (match) {
-    return `Provider ${match[1]}`;
-  }
-  return provider;
-}
-
-function isStatItemsWithGroup(data: StatsQueryResult): data is Array<StatItem & { group: string }> {
-  return Array.isArray(data);
-}
-
-function isTotalStatItems(data: StatsQueryResult): data is Array<StatItem & { group: string; lastActiveAt?: string }> {
-  return Array.isArray(data) && (data.length === 0 || "lastActiveAt" in data[0]);
-}
-
-async function queryCliData(range: string, provider: string, providerFilter: string[] | null, agentUaFilter: AgentUaFilter) {
-  const [total, totalModels, daily, models] = await Promise.all([
+  const [total, daily] = await Promise.all([
     executeStatsQuery({
       groupBy: "none",
       range: "all",
-      provider,
-      providerFilter,
-      agentUaFilter,
+      provider: "all",
+      agentUaFilter: null,
     }),
-    executeStatsQuery({
-      groupBy: "model",
-      range: "all",
-      provider,
-      providerFilter,
-      agentUaFilter,
-      limit: null,
-    }),
+    // 与 /api/dashboard 的 today 同源：2d 窗口 + 同一个 tzOffset 日界分组
     executeStatsQuery({
       groupBy: "date",
-      range,
-      provider,
+      range: "2d",
+      provider: "all",
       granularity: "day",
-      providerFilter,
-      agentUaFilter,
-    }),
-    executeStatsQuery({
-      groupBy: "model",
-      range,
-      provider,
-      providerFilter,
-      agentUaFilter,
+      agentUaFilter: null,
+      timezoneOffsetMinutes: tzOffsetMinutes,
     }),
   ]);
-  return { total, totalModels, daily, models };
+
+  const dailyRows = daily as StatItemWithGroup[];
+  const todayKey = localDateKeyFromUtcDate(new Date(), tzOffsetMinutes);
+
+  return {
+    generatedAt: new Date().toISOString(),
+    summary: usageBlock((total as TotalStatItem[])[0]),
+    today: {
+      date: todayKey,
+      ...usageBlock(dailyRows.find((row) => row.group === todayKey)),
+    },
+  };
 }
 
-export const GET = withAuth(async (request: NextRequest) => {
-  await initDatabase();
-  const groups = await loadHiddenProviderGroups();
-  const aliases = await loadModelAliases();
+function json(
+  body: unknown,
+  init?: { status?: number; headers?: Record<string, string> }
+): NextResponse {
+  return NextResponse.json(body, {
+    status: init?.status ?? 200,
+    headers: { "Cache-Control": "no-store", ...init?.headers },
+  });
+}
+
+function touchSnapshot(
+  tzOffsetMinutes: number,
+  entry: { at: number; body: CliSnapshot }
+): void {
+  snapshots.delete(tzOffsetMinutes);
+  snapshots.set(tzOffsetMinutes, entry);
+}
+
+// null = 刷新预算耗尽且该时区没有可回退的快照
+async function getSnapshot(tzOffsetMinutes: number): Promise<CliSnapshot | null> {
+  const cached = snapshots.get(tzOffsetMinutes);
+  if (cached && Date.now() - cached.at < SNAPSHOT_TTL_MS) {
+    // 新鲜命中也要重排，保持真正的 LRU 语义
+    touchSnapshot(tzOffsetMinutes, cached);
+    return cached.body;
+  }
+
+  const pending = inflight.get(tzOffsetMinutes);
+  if (pending) return pending;
+
+  if (!takeBuildBudget()) return cached?.body ?? null;
+
+  const task = buildSnapshot(tzOffsetMinutes)
+    .then((body) => {
+      touchSnapshot(tzOffsetMinutes, { at: Date.now(), body });
+      while (snapshots.size > MAX_SNAPSHOTS) {
+        const oldest = snapshots.keys().next().value;
+        if (oldest === undefined) break;
+        snapshots.delete(oldest);
+      }
+      return body;
+    })
+    .finally(() => {
+      inflight.delete(tzOffsetMinutes);
+    });
+
+  inflight.set(tzOffsetMinutes, task);
+  return task;
+}
+
+// 仅供测试：清空快照与刷新预算，强制下次请求重新读库
+export function resetCliSnapshot(): void {
+  snapshots.clear();
+  inflight.clear();
+  windowStart = 0;
+  windowBuilds = 0;
+}
+
+export async function GET(request: NextRequest) {
+  // 唯一接受的参数是 tzOffset（与 /api/dashboard 同语义）；provider/agent 等过滤参数
+  // 一律忽略 —— 它们会构成名单枚举 oracle，见注释与文档
+  const raw = new URL(request.url).searchParams.get("tzOffset");
+  let tzOffsetMinutes = 0;
+  if (raw !== null) {
+    // 严格十进制整数：parseInt 会把 "1abc"/"1.5" 静默截成 1，与公开契约不符
+    if (!/^-?\d+$/.test(raw)) {
+      return tzOffsetError();
+    }
+    tzOffsetMinutes = Number(raw);
+    if (
+      !Number.isSafeInteger(tzOffsetMinutes) ||
+      tzOffsetMinutes < -MAX_TZ_OFFSET ||
+      tzOffsetMinutes > MAX_TZ_OFFSET
+    ) {
+      return tzOffsetError();
+    }
+  }
 
   try {
-    const { searchParams } = new URL(request.url);
-    const range = searchParams.get("range") || "7d";
-    let provider = searchParams.get("provider") || "all";
-    const agent = searchParams.get("agent") || "all";
-
-    // CLI-specific: ProviderA -> Provider A
-    provider = normalizeProviderInput(provider);
-
-    // Validate range
-    if (!VALID_RANGES.includes(range)) {
-      return new NextResponse(
-        `Error: Invalid range. Must be one of: ${VALID_RANGES.join(", ")}\n`,
-        { status: 400, headers: { "Content-Type": "text/plain; charset=utf-8" } }
+    const body = await getSnapshot(tzOffsetMinutes);
+    if (!body) {
+      return json(
+        { success: false, error: "Too many snapshot refreshes, retry later" },
+        {
+          status: 429,
+          headers: { "Retry-After": String(SNAPSHOT_TTL_MS / 1000) },
+        }
       );
     }
-
-    // Resolve provider filter
-    let providerFilter: string[] | null = null;
-    if (provider !== "all") {
-      const allProviderRows = await db
-        .selectDistinct({ provider: tokenRecords.provider })
-        .from(tokenRecords);
-      const allProviderNames: string[] = allProviderRows
-        .map((r: any) => r.provider)
-        .filter((n: any): n is string => n !== null && n !== undefined);
-
-      providerFilter = resolveProviderFilter(provider, allProviderNames, groups);
-
-      // CLI-specific fallback: case-insensitive match
-      if (!providerFilter || providerFilter.length === 0) {
-        const lowerProvider = provider.toLowerCase();
-        const matched = allProviderNames.filter(
-          (p) => p.toLowerCase() === lowerProvider
-        );
-        providerFilter = matched.length > 0 ? matched : null;
-      }
-
-      if (!providerFilter || providerFilter.length === 0) {
-        return new NextResponse(
-          `Error: Unknown provider: ${provider}\n`,
-          { status: 400, headers: { "Content-Type": "text/plain; charset=utf-8" } }
-        );
-      }
-    }
-
-    // Agent 维度（派生工具名）：反找 agent 名 → 命中该 agent 的 UA 集合
-    let agentUaFilter: AgentUaFilter = null;
-    if (agent !== "all") {
-      const agentAliases = await loadAgentAliases();
-      const uaRows = await db
-        .selectDistinct({ ua: tokenRecords.userAgent })
-        .from(tokenRecords);
-      const allUas: Array<string | null> = uaRows.map((r: any) => r.ua);
-      agentUaFilter = resolveAgentUserAgents(agent, allUas, agentAliases);
-      if (!agentUaFilter) {
-        return new NextResponse(
-          `Error: Unknown agent: ${agent}\n`,
-          { status: 400, headers: { "Content-Type": "text/plain; charset=utf-8" } }
-        );
-      }
-    }
-
-    // Query data
-    const { total, totalModels, daily, models } = await queryCliData(range, provider, providerFilter, agentUaFilter);
-
-    // Build output
-    const lines: string[] = [];
-
-    const providerDisplay =
-      provider === "all" ? "all providers" : provider;
-    const agentDisplay =
-      agent === "all" ? "" : `, agent: ${agent}`;
-    lines.push(`Token Tracker Dashboard (${range}, ${providerDisplay}${agentDisplay})`);
-    lines.push("=".repeat(60));
-    lines.push("");
-
-    // No data check
-    if (
-      !total ||
-      !Array.isArray(total) ||
-      total.length === 0 ||
-      !total[0].count
-    ) {
-      lines.push("No records found.");
-      return new NextResponse(lines.join("\n") + "\n", {
-        headers: { "Content-Type": "text/plain; charset=utf-8" },
-      });
-    }
-
-    const totalArr = isTotalStatItems(total) ? total : [];
-    const totalItem = totalArr[0];
-    const lastActiveAt = totalItem?.lastActiveAt ?? null;
-
-    const totalModelsArr = isStatItemsWithGroup(totalModels) ? totalModels : [];
-
-    let totalCost = 0;
-    let totalEffectiveTokens = 0;
-    for (const item of totalModelsArr) {
-      const { cost, effectiveTokens } = computeCostFromStatItem(item);
-      totalCost += cost;
-      totalEffectiveTokens += effectiveTokens;
-    }
-    const totalCostPerMillion = calculateCostPerMillion(totalCost, totalEffectiveTokens);
-
-    lines.push(`Last Active: ${formatDateTime(lastActiveAt)}`);
-    lines.push("");
-
-    // Summary
-    const totalInput = toNum(totalItem.totalInput);
-    const totalInputCached = toNum(totalItem.totalInputCached);
-    const totalInputUncached = toNum(totalItem.totalInputUncached);
-    const totalOutput = toNum(totalItem.totalOutput);
-    const totalCacheWrite = toNum(totalItem.totalCacheWrite);
-    const totalCount = toNum(totalItem.count);
-    const cacheHitRate =
-      totalInput > 0 ? ((totalInputCached / totalInput) * 100).toFixed(1) : "0.0";
-
-    const summaryItems = [
-      { label: "Total Input:", value: formatNumber(totalInput), suffix: "tokens", indent: 0 },
-      { label: "\u251c\u2500 Cached:", value: formatNumber(totalInputCached), suffix: "tokens", indent: 2 },
-      { label: "\u2514\u2500 Uncached:", value: formatNumber(totalInputUncached), suffix: "tokens", indent: 2 },
-      { label: "Cache Hit Rate:", value: cacheHitRate + "%", suffix: "", indent: 0 },
-      { label: "Total Output:", value: formatNumber(totalOutput), suffix: "tokens", indent: 0 },
-      { label: "Total Requests:", value: formatNumber(totalCount), suffix: "", indent: 0 },
-      { label: "Estimated Cost:", value: formatCost(totalCost), suffix: "", indent: 0 },
-      { label: "Avg cost / 1M tokens:", value: formatCost(totalCostPerMillion), suffix: "", indent: 0 },
-    ];
-
-    const maxLabelLen = Math.max(...summaryItems.map((item) => item.indent + item.label.length));
-    const maxValueLen = Math.max(...summaryItems.map((item) => item.value.length));
-
-    lines.push("Summary (Total)");
-    lines.push("-".repeat(40));
-    for (const item of summaryItems) {
-      const fullLabel = " ".repeat(item.indent) + item.label;
-      const labelPadded = pad(fullLabel, maxLabelLen + 2);
-      const valuePadded = padLeft(item.value, maxValueLen);
-      const suffix = item.suffix ? " " + item.suffix : "";
-      lines.push(`${labelPadded}${valuePadded}${suffix}`);
-    }
-    lines.push("");
-
-    // Today vs Yesterday
-    const now = new Date();
-    const todayStr = now.toISOString().split("T")[0];
-    const yesterdayDate = new Date(now);
-    yesterdayDate.setDate(yesterdayDate.getDate() - 1);
-    const yesterdayStr = yesterdayDate.toISOString().split("T")[0];
-
-    const dailyArr = isStatItemsWithGroup(daily) ? daily : [];
-    const todayItem = dailyArr.find((d) => d.group === todayStr);
-    const yesterdayItem = dailyArr.find(
-      (d) => d.group === yesterdayStr
-    );
-
-    lines.push("Today vs Yesterday");
-    lines.push("-".repeat(60));
-
-    if (todayItem || yesterdayItem) {
-      const todayInput = toNum(todayItem?.totalInput);
-      const todayOutput = toNum(todayItem?.totalOutput);
-      const todayCacheRead = toNum(todayItem?.totalInputCached);
-      const todayCacheWrite = toNum(todayItem?.totalCacheWrite);
-      const todayRequests = toNum(todayItem?.count);
-
-      const yestInput = toNum(yesterdayItem?.totalInput);
-      const yestOutput = toNum(yesterdayItem?.totalOutput);
-      const yestCacheRead = toNum(yesterdayItem?.totalInputCached);
-      const yestCacheWrite = toNum(yesterdayItem?.totalCacheWrite);
-      const yestRequests = toNum(yesterdayItem?.count);
-
-      const col1 = 14;
-      const col2 = 16;
-      const col3 = 16;
-      const col4 = 10;
-
-      lines.push(
-        `${pad("", col1)} ${padLeft("Today", col2)} ${padLeft("Yesterday", col3)} ${padLeft("Change", col4)}`
-      );
-      lines.push(
-        `${pad("Input", col1)} ${padLeft(formatNumber(todayInput), col2)} ${padLeft(formatNumber(yestInput), col3)} ${padLeft(computeChange(todayInput, yestInput), col4)}`
-      );
-      lines.push(
-        `${pad("Output", col1)} ${padLeft(formatNumber(todayOutput), col2)} ${padLeft(formatNumber(yestOutput), col3)} ${padLeft(computeChange(todayOutput, yestOutput), col4)}`
-      );
-      lines.push(
-        `${pad("Cache Rd", col1)} ${padLeft(formatNumber(todayCacheRead), col2)} ${padLeft(formatNumber(yestCacheRead), col3)} ${padLeft(computeChange(todayCacheRead, yestCacheRead), col4)}`
-      );
-      lines.push(
-        `${pad("Requests", col1)} ${padLeft(formatNumber(todayRequests), col2)} ${padLeft(formatNumber(yestRequests), col3)} ${padLeft(computeChange(todayRequests, yestRequests), col4)}`
-      );
-    } else {
-      lines.push("No data for today or yesterday.");
-    }
-    lines.push("");
-
-    // Top 5 Models
-    const rawModelArr = isStatItemsWithGroup(models) ? models.slice(0, 5) : [];
-    const modelArr = rawModelArr.map((item) => {
-      const { cost, effectiveTokens } = computeCostFromStatItem(item);
-      return {
-        ...item,
-        displayName: getDisplayName(item.group, aliases),
-        cost,
-        costPerMillion: calculateCostPerMillion(cost, effectiveTokens),
-      };
-    });
-
-    lines.push(`Top 5 Models (${range})`);
-    lines.push("-".repeat(60));
-
-    if (modelArr.length > 0) {
-      const colInput = 14;
-      const colCache = 13;
-      const colHit = 8;
-      const colOutput = 14;
-      const colCost = 12;
-      const colReqs = 11;
-
-      // 动态计算模型名称列宽
-      const modelLabels = modelArr.map((m, i) => `${i + 1}. ${m.displayName}`);
-      const colModel = Math.max(
-        5, // "Model" header
-        ...modelLabels.map((l) => l.length)
-      );
-
-      lines.push(
-        `${pad("Model", colModel)} ${padLeft("Total Input", colInput)} ${padLeft("Cache Read", colCache)} ${padLeft("Hit%", colHit)} ${padLeft("Total Output", colOutput)} ${padLeft("Avg / 1M", colCost)} ${padLeft("Requests", colReqs)}`
-      );
-      lines.push(
-        "\u2500".repeat(
-          colModel +
-            colInput +
-            colCache +
-            colHit +
-            colOutput +
-            colCost +
-            colReqs +
-            6
-        )
-      );
-
-      for (let i = 0; i < modelArr.length; i++) {
-        const m = modelArr[i];
-        const mInput = toNum(m.totalInput);
-        const mCacheRead = toNum(m.totalInputCached);
-        const mHitRate =
-          mInput > 0 ? ((mCacheRead / mInput) * 100).toFixed(1) : "0.0";
-
-        lines.push(
-          `${pad(`${i + 1}. ${m.displayName}`, colModel)} ${padLeft(formatNumber(mInput), colInput)} ${padLeft(formatNumber(mCacheRead), colCache)} ${padLeft(mHitRate + "%", colHit)} ${padLeft(formatNumber(toNum(m.totalOutput)), colOutput)} ${padLeft(formatCost(m.costPerMillion), colCost)} ${padLeft(formatNumber(toNum(m.count)), colReqs)}`
-        );
-      }
-    } else {
-      lines.push("No model data available.");
-    }
-    lines.push("");
-
-    // Daily Trend
-    lines.push("Daily Trend");
-    lines.push("-".repeat(60));
-
-    if (dailyArr.length > 0) {
-      const colDate = 12;
-      const colInput = 14;
-      const colOutput = 12;
-      const colReqs = 10;
-      const colTotal = 10;
-
-      lines.push(
-        `${pad("Date", colDate)} ${padLeft("Input", colInput)} ${padLeft("Output", colOutput)} ${padLeft("Requests", colReqs)} ${padLeft("Total", colTotal)}`
-      );
-      lines.push(
-        "\u2500".repeat(colDate + colInput + colOutput + colReqs + colTotal + 4)
-      );
-
-      for (const d of dailyArr) {
-        const dInput = toNum(d.totalInput);
-        const dOutput = toNum(d.totalOutput);
-        const dTotal = dInput + dOutput;
-        lines.push(
-          `${pad(d.group, colDate)} ${padLeft(formatNumber(dInput), colInput)} ${padLeft(formatNumber(dOutput), colOutput)} ${padLeft(formatNumber(toNum(d.count)), colReqs)} ${padLeft(formatCompact(dTotal), colTotal)}`
-        );
-      }
-    } else {
-      lines.push("No daily data available.");
-    }
-
-    return new NextResponse(lines.join("\n") + "\n", {
-      headers: { "Content-Type": "text/plain; charset=utf-8" },
-    });
+    return json(body);
   } catch (error) {
-    console.error("CLI error:", error);
-    return new NextResponse("Error: Internal server error\n", {
-      status: 500,
-      headers: { "Content-Type": "text/plain; charset=utf-8" },
-    });
+    console.error("CLI snapshot error:", error);
+    // 刷新失败时退回该时区上一次快照，避免公开接口直接 500
+    const stale = snapshots.get(tzOffsetMinutes);
+    if (stale) {
+      touchSnapshot(tzOffsetMinutes, stale);
+      return json(stale.body);
+    }
+    return json(
+      { success: false, error: "Internal server error" },
+      { status: 500 }
+    );
   }
-});
+}
+
+function tzOffsetError(): NextResponse {
+  return json(
+    {
+      success: false,
+      error: `Invalid tzOffset. Must be an integer between -${MAX_TZ_OFFSET} and ${MAX_TZ_OFFSET}.`,
+    },
+    { status: 400 }
+  );
+}

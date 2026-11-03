@@ -16,7 +16,7 @@
   - `src/app/api/admin/auth/totp/route.test`：TOTP 路由集成测试（临时 SQLite + 真实 handler + 签名 token）：换绑无 currentCode → 400、错误计入 totp_fail_count、换绑成功替换 secret + token_epoch+1、首次启用 epoch 不变、解绑清理 recovery_codes/reminder
   - `src/lib/auth/session`：会话 token 签发/验签/过期/滑动续期判定 + **篡改稳定性**（改 payload / 改签名首字符（全有效位）/ 截断 / 追加，不再改 base64url 末位非有效位）
   - `src/lib/auth/edge-verify`：WebCrypto 验签（与 node 侧签名互认）
-  - `src/lib/auth/guard-scan`：静态扫描所有 /api 路由必须用 withAuth（login 除外）
+  - `src/lib/auth/guard-scan`：静态扫描所有 /api 路由必须用 withAuth（`exempt` 白名单：login / setup / logout / cli）
   - `src/lib/gateway/balance`：deepseek/openrouter 余额 + kimi/kimi-coding/glm/opencode-go 余额或用量解析（mock fetch）、provider 判定、balance_fetch_mode 分发（auto 按 baseUrl/name 探测 / none 不获取 / 手动指定）、normalizeBalanceFetchMode 存量值回退
   - `src/lib/db/migrate`：存量表补列迁移（临时 SQLite 库，幂等性 + NOT NULL 默认值回填）+ `migrateTokenRecordsModelColumns`（request_model 回填、model 覆盖 target_model、DROP、幂等）+ `migrateSyncInstancesTable`/`migrateIngestTokensTable` 表重建（旧行丢弃 / 行回迁 + bound_uid 置 NULL、幂等）+ token_records session_id/remote_instance_uid 补列（存量不回填）
   - `src/lib/models-dev/match`：三级匹配管线（精确/归一化/日期变体剥离）、多候选冲突按优先级预选、价格相同不视为冲突、**有价候选（hasPriceData/hasCost）恒优先：含“显式 0/0 有价 vs 无价同价”的无冲突短路场景与全候选无价场景**、`searchModelsDevModel` 搜索（子串/大小写/provider 名命中、上限截断）
