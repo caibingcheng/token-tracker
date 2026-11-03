@@ -139,11 +139,12 @@ The SQLite database is created automatically on the first request (with incremen
 | `/v1/*`, `/v1beta/*` | Virtual key | Proxy entry points (pass-through) |
 | `/raw/*` | Virtual key | Raw pass-through entry: strips the `/raw` prefix and forwards the inner path upstream (for endpoints outside `/v1`, `/v1beta`) |
 | `/api/auth/login` | Raw API key (+ optional TOTP) | Login to exchange for a session token |
+| `/api/cli` | **None (public, read-only)** | Public usage snapshot: all-time `summary` + `today` (`?tzOffset=` to align the day boundary; token/cache/request aggregates only — no model names, no cost) |
 | `/api/dashboard` and other stats APIs | Session token (`X-API-Key` header) | Dashboard data |
 | `/api/admin/*` | Session token | Admin operations |
 | `/admin`, `/` | Page + session token | Admin UI / Dashboard |
 
-> All `/api/*` routes (except `login`) only accept the session token obtained from login. Script example:
+> All `/api/*` routes only accept the session token obtained from login, except `login` / `setup` / `logout` and the registered public read-only exception `/api/cli`. Script example:
 > ```bash
 > TOKEN=$(curl -s -X POST http://host:3000/api/auth/login \
 >   -H 'Content-Type: application/json' \

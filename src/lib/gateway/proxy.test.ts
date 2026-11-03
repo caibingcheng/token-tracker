@@ -97,13 +97,26 @@ describe("extractVirtualKeyToken", () => {
 });
 
 describe("extractSessionId", () => {
-  it("recognizes x-session-id / session_id / x-conversation-id", () => {
+  it("recognizes native agent, generic and affinity session headers", () => {
+    expect(extractSessionId(new Headers({ "x-claude-code-session-id": "claude" }))).toBe("claude");
+    expect(extractSessionId(new Headers({ "x-opencode-session": "opencode" }))).toBe("opencode");
+    expect(extractSessionId(new Headers({ "session-id": "codex" }))).toBe("codex");
     expect(extractSessionId(new Headers({ "x-session-id": "s1" }))).toBe("s1");
     expect(extractSessionId(new Headers({ session_id: "s2" }))).toBe("s2");
+    expect(extractSessionId(new Headers({ "x-session-affinity": "affinity" }))).toBe("affinity");
     expect(extractSessionId(new Headers({ "x-conversation-id": "s3" }))).toBe("s3");
   });
 
-  it("prefers x-session-id over the other two headers", () => {
+  it("prefers native agent headers over generic headers", () => {
+    const headers = new Headers({
+      "x-claude-code-session-id": "native",
+      "x-session-id": "generic",
+      session_id: "legacy",
+    });
+    expect(extractSessionId(headers)).toBe("native");
+  });
+
+  it("prefers x-session-id over the other generic headers", () => {
     const headers = new Headers({
       "x-session-id": "first",
       session_id: "second",
@@ -3525,6 +3538,37 @@ describe("handleProxyRequest - named route routing (LLM classifier)", () => {
     expect(res2.status).toBe(200);
     expect(deps.runClassifier).toHaveBeenCalledTimes(1);
     expect((fetchMock.mock.calls[1] as [string, RequestInit])[0]).toContain("precise.example");
+  });
+
+  it("reuses a native session binding after compaction rewrites the first user message", async () => {
+    fetchMock.mockImplementation(() => Promise.resolve(okJson("gpt-5")));
+    const session = mkMemorySession();
+    const deps = mkNamedDeps({ session });
+    const request = (firstUser: string, latestUser: string) =>
+      makeRequest("/v1/chat/completions", {
+        headers: {
+          authorization: "Bearer vk-good",
+          "x-claude-code-session-id": "claude-session-1",
+        },
+        body: {
+          model: "auto",
+          messages: [
+            { role: "user", content: firstUser },
+            { role: "user", content: latestUser },
+          ],
+        },
+      });
+
+    const res1 = await handleProxyRequest(request("原始任务", "写个编译器"), deps);
+    await res1.text();
+    const res2 = await handleProxyRequest(request("以下是压缩后的对话摘要", "继续实现"), deps);
+    await res2.text();
+
+    expect(res2.status).toBe(200);
+    expect(deps.runClassifier).toHaveBeenCalledTimes(1);
+    expect((fetchMock.mock.calls[1] as [string, RequestInit])[0]).toContain("precise.example");
+    const usageCalls = (deps.onUsage as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
+    expect(usageCalls.every((m: { sessionId?: string }) => m.sessionId === "claude-session-1")).toBe(true);
   });
 
   it("pre-seeded route-level binding is honored (no classifier call)", async () => {

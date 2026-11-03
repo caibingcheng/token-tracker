@@ -27,6 +27,9 @@ describe("withAuth static scan (防漏保障第三层)", () => {
     "src/app/api/auth/setup/route.ts",
     // 登出：无状态会话删 cookie 即结束，不要求携带有效 token（带了也可能刚过期）
     "src/app/api/auth/logout/route.ts",
+    // 公开用量快照：只返回全时段聚合 summary + today，无 provider/model/agent 维度；
+    // 唯一参数 tzOffset，进程内 60s 快照限流，TTL 内不读库（见 route.ts 注释 + docs/agents/api-routes.md）
+    "src/app/api/cli/route.ts",
   ]);
 
   it("finds at least one API route", () => {

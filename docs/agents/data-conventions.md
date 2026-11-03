@@ -63,7 +63,7 @@
 - **语义**：`token_records.agent` 列 = **来源 key 名**（本地 vk 名 / 远程 `remote/{instance}/{vk名}`），继续承担 Hidden Sources vk 维度、同步协议与 ingest 改写（零改动）；Dashboard 的 **Agent 维度显示客户端工具名**（claude-code、opencode 等），由 `user_agent` 列**查询时派生**（不回填、不改历史数据），Records 表 Agent（派生）+ Key（`agent` 列原值）双列展示，另带 Session 列（`session_id`：客户端 header 原值，未携带时回退网关会话指纹；无筛选）
 - **解析规则**（`src/lib/agent-utils.ts`，纯逻辑可单测）：UA 首段 token（第一个 `/` 前，lowercase）→ 手动 `agent_aliases` 精确匹配（大小写不敏感）→ 内置 `BUILTIN_AGENT_MAP`（claude-cli→claude-code、codex_cli_rs/codex→codex、geminicli→gemini-cli、aider→aider、cursor-agent→cursor 等）→ 未命中回退 token 本身；null/空 UA → `unknown`（筛选 UI 显示 `(unknown)`）
 - **注册新 agent 工具**：无需改代码——在 Display pane Agent Aliases 添加 {name, aliases[]} 即可（多 UA token 可映射同一工具名），写入 `setAgentAliasesSetting` 主动 `invalidateQueryCache()` 立即生效
-- **过滤器**：Dashboard/Records/CLI 的 `agent` 参数是**派生工具名**，服务端反找（`resolveAgentUserAgents`）映射为 UA 集合后按 `user_agent IN (...)` 过滤；`unknown` 走 `user_agent IS NULL`；未命中 → 400。`buildWhereClause` 的第 4 参数即此 UA 过滤（类型 `AgentUaFilter`），`exclude.agents`（Hidden Sources excludedVirtualKeys）仍按 `agent` 列 NOT IN 排除，两维度并行
+- **过滤器**：Dashboard/Records 的 `agent` 参数是**派生工具名**，服务端反找（`resolveAgentUserAgents`）映射为 UA 集合后按 `user_agent IN (...)` 过滤；`unknown` 走 `user_agent IS NULL`；未命中 → 400。`/api/cli` 不支持维度过滤（`agent`/`provider`/`range` 一律忽略，不解析、不报 400）。`buildWhereClause` 的第 4 参数即此 UA 过滤（类型 `AgentUaFilter`），`exclude.agents`（Hidden Sources excludedVirtualKeys）仍按 `agent` 列 NOT IN 排除，两维度并行
 - **注意**：反找需 `selectDistinct(user_agent)` 全表扫描（无索引）；个人规模（日均约 1000 行）+ 10s 查询缓存可接受。远程记录（vk=-1）按自身 UA 派生，与本地同名工具合并为一个 agent；instance 区分仍靠 provider 的 `remote/{instance}/` 前缀
 
 ## Model 归一化
@@ -85,3 +85,4 @@
 - Dashboard 的所有日期/时间分组与显示均按**浏览器时区**对齐。
 - `Dashboard.tsx` 通过 `new Date().getTimezoneOffset()` 获取客户端偏移分钟数，并通过 `tzOffset` 查询参数传递给 `/api/dashboard`。
 - 服务端使用 `src/lib/timezone-utils.ts` 中的助手函数将 UTC 的 `created_at` 转换为本地日期/小时进行分组和过滤。
+- `/api/cli` 的 `today` 走同一套 `tzOffset` 语义（严格十进制整数，缺省 0 = UTC），日界分组与 `/api/dashboard` 的 `today` 完全一致（同一 `timezoneOffsetMinutes` + `2d` 窗口）；两者数值相等由 `src/app/api/cli/route.test.ts` 的对比用例锁定。

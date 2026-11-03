@@ -114,6 +114,9 @@ function modelSourceLabel(source: ModelsDevSource): string {
   return source === "github" ? "LiteLLM" : "models.dev";
 }
 
+// 表内统一按 model 名字典序（忽略大小写）
+const compareModelName = (a: string, b: string) => a.localeCompare(b, "en", { sensitivity: "base" });
+
 function protocolBadgeClass(protocol: Protocol): string {
   switch (protocol) {
     case "openai":
@@ -623,7 +626,7 @@ export default function ModelsPanel() {
   const allRoutes = useMemo(() => {
     if (!data) return [];
     return [...data.resolvedRoutes].sort(
-      (a, b) => a.model.localeCompare(b.model) || a.protocol.localeCompare(b.protocol)
+      (a, b) => compareModelName(a.model, b.model) || a.protocol.localeCompare(b.protocol)
     );
   }, [data]);
 
@@ -1241,9 +1244,12 @@ export default function ModelsPanel() {
         )}
 
         {(() => {
-          const visibleRows = showInactive
+          const visibleRows = (showInactive
             ? priceRows
-            : priceRows.filter((r) => r.status.active || r.recentActivity);
+            : priceRows.filter((r) => r.status.active || r.recentActivity)
+          )
+            .slice()
+            .sort((a, b) => compareModelName(a.model, b.model));
           if (visibleRows.length === 0) {
             return (
               <div className="py-8 text-center text-sm text-gray-400">
