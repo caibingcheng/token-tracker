@@ -13,7 +13,9 @@ services:
     container_name: token-tracker-local
     restart: unless-stopped
     ports:
-      - "127.0.0.1:39001:3000"
+      # 不绑具体网卡 IP：本地是 DHCP 地址，开机时 dockerd 早于 WiFi 拿到地址，
+      # 绑 IP 会 bind 失败导致容器停在 Exited（restart 策略救不回来）。
+      - "39001:3000"
     environment:
       - SQLITE_DATABASE_PATH=/app/data/token-tracker.db
       - LOCAL_ADMIN_BYPASS=0
