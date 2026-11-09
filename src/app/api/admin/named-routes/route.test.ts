@@ -205,6 +205,89 @@ describe("/api/admin/named-routes", () => {
     expect(row.instruction).toBe("pick by complexity");
   });
 
+  it("renames a named route and rejects a name that collides on the same protocol", async () => {
+    const token = await makeToken();
+    const created = await POST(
+      req("/api/admin/named-routes", "POST", token, { name: "cheap", protocol: "openai" })
+    );
+    const id = (await created.json()).data.id;
+    expect(
+      (await POST(req("/api/admin/named-routes", "POST", token, { name: "taken", protocol: "openai" }))).status
+    ).toBe(201);
+
+    const renamed = await PATCH(
+      req(`/api/admin/named-routes/${id}`, "PATCH", token, { name: "  fast  " }),
+      await ctx(id)
+    );
+    expect(renamed.status).toBe(200);
+
+    const list = await GET(req("/api/admin/named-routes", "GET", token));
+    const names = (await list.json()).data.map((r: any) => r.name).sort();
+    expect(names).toEqual(["fast", "taken"]);
+
+    // 同协议重名 → 409，原值不变
+    const conflict = await PATCH(
+      req(`/api/admin/named-routes/${id}`, "PATCH", token, { name: "taken" }),
+      await ctx(id)
+    );
+    expect(conflict.status).toBe(409);
+    const after = await db.select().from(namedRoutesTable);
+    expect((after.find((r: any) => r.id === id) as any).name).toBe("fast");
+
+    // 空名 / 超长名 → 400
+    expect(
+      (await PATCH(req(`/api/admin/named-routes/${id}`, "PATCH", token, { name: "   " }), await ctx(id))).status
+    ).toBe(400);
+    expect(
+      (
+        await PATCH(
+          req(`/api/admin/named-routes/${id}`, "PATCH", token, { name: "n".repeat(257) }),
+          await ctx(id)
+        )
+      ).status
+    ).toBe(400);
+  });
+
+  it("keeps protocol immutable and treats a same-name patch as a no-op", async () => {
+    const token = await makeToken();
+    const created = await POST(
+      req("/api/admin/named-routes", "POST", token, { name: "immutable", protocol: "openai" })
+    );
+    const id = (await created.json()).data.id;
+
+    // 同名提交：合法 no-op → 200
+    expect(
+      (await PATCH(req(`/api/admin/named-routes/${id}`, "PATCH", token, { name: "immutable" }), await ctx(id)))
+        .status
+    ).toBe(200);
+
+    // 只提交 protocol：无有效字段 → 400
+    expect(
+      (await PATCH(req(`/api/admin/named-routes/${id}`, "PATCH", token, { protocol: "anthropic" }), await ctx(id)))
+        .status
+    ).toBe(400);
+
+    // 与有效字段同提交：protocol 被忽略，name 正常落库
+    expect(
+      (
+        await PATCH(
+          req(`/api/admin/named-routes/${id}`, "PATCH", token, { name: "still-openai", protocol: "anthropic" }),
+          await ctx(id)
+        )
+      ).status
+    ).toBe(200);
+    const list = await GET(req("/api/admin/named-routes", "GET", token));
+    const row = (await list.json()).data.find((r: any) => r.id === id);
+    expect(row.name).toBe("still-openai");
+    expect(row.protocol).toBe("openai");
+
+    // 同名不同协议互不冲突（UNIQUE 是 name+protocol 组合）
+    expect(
+      (await POST(req("/api/admin/named-routes", "POST", token, { name: "still-openai", protocol: "anthropic" })))
+        .status
+    ).toBe(201);
+  });
+
   it("deletes a named route together with its targets", async () => {
     const token = await makeToken();
     const upstreamId = await upstreamIdByName("up-openai");

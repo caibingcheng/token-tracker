@@ -3,7 +3,7 @@
 // Named Routes 管理：一个命名路由 = 虚拟名 + 协议 → 目标池（多目标 failover 链）+ 可选分类器。
 // classifierKind='priority' = 无 LLM 分类器（链首 = 首个健康目标，按 priority，零 LLM 开销）；
 // 'model' = LLM 分类器从目标池选链首（每 session 一次）。与同名自动路由互斥：命名路由完全替代它。
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/client/api-client";
 import type { Protocol } from "@/lib/gateway/model-router";
 import { CopyableCode } from "./CopyableCode";
@@ -89,8 +89,14 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
   const [firstPriority, setFirstPriority] = useState("0");
 
   const [busyId, setBusyId] = useState<number | null>(null);
+  // 同步 in-flight guard：busyId 是 state，同一渲染帧内连按 Enter 时闭包仍读到旧值，
+  // 只靠 disabled 拦不住重复 PATCH
+  const inFlight = useRef(new Set<number>());
   const [editingInstructionId, setEditingInstructionId] = useState<number | null>(null);
   const [instructionDraft, setInstructionDraft] = useState("");
+  // 改名：name+protocol 为 UNIQUE 身份键，冲突时后端 409，保持输入框不关闭
+  const [editingNameId, setEditingNameId] = useState<number | null>(null);
+  const [nameDraft, setNameDraft] = useState("");
   const [expandedRouteId, setExpandedRouteId] = useState<number | null>(null);
   const [editingTarget, setEditingTarget] = useState<{
     id: number;
@@ -211,6 +217,8 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
   };
 
   const patchRoute = async (id: number, payload: Record<string, unknown>) => {
+    if (inFlight.current.has(id)) return false;
+    inFlight.current.add(id);
     setBusyId(id);
     try {
       const res = await apiFetch(`/api/admin/named-routes/${id}`, {
@@ -219,19 +227,41 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
         body: JSON.stringify(payload),
       });
       const json = await res.json();
-      if (json.success) await reload();
-      else setError(json.error || "Failed to update named route");
+      if (json.success) {
+        await reload();
+        return true;
+      }
+      setError(json.error || "Failed to update named route");
+      return false;
     } catch {
       setError("Network error");
+      return false;
     } finally {
+      inFlight.current.delete(id);
       setBusyId(null);
     }
   };
 
   const toggleEnabled = (row: NamedRouteRow) => patchRoute(row.id, { enabled: !row.enabled });
 
-  const saveInstruction = (row: NamedRouteRow) =>
-    patchRoute(row.id, { instruction: instructionDraft }).then(() => setEditingInstructionId(null));
+  const saveName = async (row: NamedRouteRow) => {
+    const next = nameDraft.trim();
+    // 空值不兼任取消：保留编辑器并报错（取消有独立按钮与 Esc）
+    if (!next) {
+      setError("Name is required");
+      return;
+    }
+    if (next === row.name) {
+      setEditingNameId(null);
+      return;
+    }
+    if (await patchRoute(row.id, { name: next })) setEditingNameId(null);
+  };
+
+  // 失败保留编辑器，与 saveName 一致
+  const saveInstruction = async (row: NamedRouteRow) => {
+    if (await patchRoute(row.id, { instruction: instructionDraft })) setEditingInstructionId(null);
+  };
 
   const deleteRoute = async (row: NamedRouteRow) => {
     if (!window.confirm(`Delete named route "${row.name}" (${row.protocol}) and its targets?`)) return;
@@ -575,7 +605,26 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
                 className="flex cursor-pointer flex-wrap items-center gap-2 px-4 py-3 hover:bg-gray-50"
                 onClick={() => toggleExpanded(row.id)}
               >
-                <CopyableCode className="text-xs font-medium">{row.name}</CopyableCode>
+                {editingNameId === row.id ? (
+                  <input
+                    value={nameDraft}
+                    autoFocus
+                    onClick={(e) => e.stopPropagation()}
+                    disabled={busyId === row.id}
+                    onChange={(e) => setNameDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        saveName(row);
+                      }
+                      if (e.key === "Escape") setEditingNameId(null);
+                    }}
+                    className="min-h-[40px] min-w-0 rounded border border-gray-300 px-2 py-0.5 text-base focus:border-blue-500 focus:outline-none disabled:opacity-50 md:min-h-0 md:text-sm"
+                    placeholder="Virtual name clients request"
+                  />
+                ) : (
+                  <CopyableCode className="text-xs font-medium">{row.name}</CopyableCode>
+                )}
                 <span className={`rounded border px-1.5 py-0.5 text-[10px] ${protocolBadgeClass(row.protocol)}`}>
                   {row.protocol}
                 </span>
@@ -598,29 +647,68 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
                   {row.targets.length} targets
                 </span>
                 <div className="ml-auto flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      toggleEnabled(row);
-                    }}
-                    disabled={busyId === row.id}
-                    className={`rounded px-2 py-0.5 text-xs ${
-                      row.enabled ? "bg-green-50 text-green-700" : "bg-gray-100 text-gray-500"
-                    } disabled:opacity-50`}
-                  >
-                    {row.enabled ? "enabled" : "disabled"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      deleteRoute(row);
-                    }}
-                    className="text-xs text-red-500 hover:text-red-700"
-                  >
-                    Delete
-                  </button>
+                  {editingNameId === row.id ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          saveName(row);
+                        }}
+                        disabled={busyId === row.id}
+                        className="rounded bg-blue-600 px-2 py-0.5 text-xs text-white disabled:opacity-50 min-h-[40px] md:min-h-0"
+                      >
+                        Save name
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditingNameId(null);
+                        }}
+                        className="rounded border border-gray-300 px-2 py-0.5 text-xs text-gray-500 min-h-[40px] md:min-h-0"
+                      >
+                        Cancel
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleEnabled(row);
+                        }}
+                        disabled={busyId === row.id}
+                        className={`rounded px-2 py-0.5 text-xs ${
+                          row.enabled ? "bg-green-50 text-green-700" : "bg-gray-100 text-gray-500"
+                        } disabled:opacity-50 min-h-[40px] md:min-h-0`}
+                      >
+                        {row.enabled ? "enabled" : "disabled"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditingNameId(row.id);
+                          setNameDraft(row.name);
+                        }}
+                        className="inline-flex items-center text-xs text-gray-600 hover:text-gray-800 min-h-[40px] md:min-h-0"
+                      >
+                        Rename
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deleteRoute(row);
+                        }}
+                        className="inline-flex items-center text-xs text-red-500 hover:text-red-700 min-h-[40px] md:min-h-0"
+                      >
+                        Delete
+                      </button>
+                    </>
+                  )}
                   <span className="text-xs text-gray-400">
                     {expandedRouteId === row.id ? "▲" : "▼"}
                   </span>

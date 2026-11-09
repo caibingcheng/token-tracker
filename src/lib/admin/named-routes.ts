@@ -3,6 +3,7 @@ import { db, upstreamsTable } from "@/lib/db";
 import { parseClassifierModels, isClassifierKind, VALID_CLASSIFIER_KINDS } from "@/lib/gateway/classifier/types";
 import type { ClassifierKind } from "@/lib/gateway/classifier/types";
 
+export const MAX_NAME_LENGTH = 256;
 export const MAX_INSTRUCTION_LENGTH = 2000;
 export const MAX_DESCRIPTION_LENGTH = 512;
 
