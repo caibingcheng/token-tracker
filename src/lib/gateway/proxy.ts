@@ -1369,6 +1369,11 @@ async function passthroughResponse(
   // 客户端断开 / 上游流中断状态标记
   let clientAborted = false;
   let streamStatus: string | undefined;
+  // pump 已正常读完上游并 close。配合 extractor.sawTerminal 判定「响应完整后
+  // 客户端才断开」——此时 cancel/abort 是正常收尾竞态，不标 client_aborted
+  let responseComplete = false;
+  const isAbortAfterComplete = () =>
+    responseComplete || (extractor?.sawTerminal ?? false);
 
   const rewriter = virtualModelName
     ? createSseModelRewriter(protocol, virtualModelName)
@@ -1379,8 +1384,10 @@ async function passthroughResponse(
       // 监听客户端 signal abort（双保险：cancel() 钩子是主要路径）
       if (clientSignal) {
         clientSignal.addEventListener("abort", () => {
-          clientAborted = true;
-          streamStatus = "client_aborted";
+          if (!isAbortAfterComplete()) {
+            clientAborted = true;
+            streamStatus = "client_aborted";
+          }
           reader.cancel().catch(() => {});
         });
       }
@@ -1422,6 +1429,7 @@ async function passthroughResponse(
             const rewritten = rewriteModelNonStreaming(fullText, protocol, virtualModelName!);
             const bytes = new TextEncoder().encode(rewritten);
             if (bytes.length > 0) controller.enqueue(bytes);
+            responseComplete = true;
             controller.close();
           } else {
             let totalBytes = 0;
@@ -1451,11 +1459,14 @@ async function passthroughResponse(
               const rest = rewriter.flush();
               if (rest.length > 0) controller.enqueue(rest);
             }
+            responseComplete = true;
             controller.close();
           }
         } catch (err) {
           // 释放上游连接，避免超时/异常后连接泄漏
-          streamStatus = clientAborted ? "client_aborted" : "stream_interrupted";
+          if (!isAbortAfterComplete()) {
+            streamStatus = clientAborted ? "client_aborted" : "stream_interrupted";
+          }
           await reader.cancel().catch(() => {});
           controller.error(err);
         }
@@ -1463,8 +1474,10 @@ async function passthroughResponse(
       pump().finally(() => onDone());
     },
     cancel() {
-      clientAborted = true;
-      streamStatus = "client_aborted";
+      if (!isAbortAfterComplete()) {
+        clientAborted = true;
+        streamStatus = "client_aborted";
+      }
       reader.cancel();
     },
   });

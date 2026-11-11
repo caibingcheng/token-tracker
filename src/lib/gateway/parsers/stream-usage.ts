@@ -69,6 +69,11 @@ export class StreamUsageExtractor {
   private dataBuffer = "";
   private finished = false;
 
+  // 是否已见协议终止事件（[DONE] / response.completed / message_stop）。
+  // Gemini 流无终止事件，恒为 false。proxy 据此区分「响应完整后客户端断开」
+  // 与「真中断」，前者不标 client_aborted。
+  sawTerminal = false;
+
   // OpenAI / Gemini：最后一个 usage 事件胜出
   private lastOpenAiUsage: OpenAIUsage | null = null;
   private lastGeminiMetadata: GeminiUsageMetadata | null = null;
@@ -131,7 +136,12 @@ export class StreamUsageExtractor {
   }
 
   private processEvent(data: string): void {
-    if (data === "[DONE]") return;
+    if (data === "[DONE]") {
+      // [DONE] 是 OpenAI chat 的终止哨兵，仅 openai 协议识别（responses 由
+      // response.completed 置位）；Gemini/Anthropic 收到也不豁免中断标记
+      if (this.protocol === "openai") this.sawTerminal = true;
+      return;
+    }
     // 快速过滤：命中协议相关的 usage 字段才 JSON.parse（大多数内容事件直接跳过，省 CPU）
     if (!this.matchesProtocol(data)) return;
     let json: unknown;
@@ -146,11 +156,15 @@ export class StreamUsageExtractor {
   private matchesProtocol(data: string): boolean {
     switch (this.protocol) {
       case "anthropic":
-        return data.includes('"message_start"') || data.includes('"message_delta"');
+        return (
+          data.includes('"message_start"') ||
+          data.includes('"message_delta"') ||
+          data.includes('"message_stop"')
+        );
       case "gemini":
         return data.includes('"usageMetadata"');
       default:
-        return data.includes('"usage"');
+        return data.includes('"usage"') || data.includes('"response.completed"');
     }
   }
 
@@ -170,6 +184,8 @@ export class StreamUsageExtractor {
           this.anthropicOutputTokens = Number(usage.output_tokens) || 0;
           this.anthropicFound = true;
         }
+      } else if (type === "message_stop") {
+        this.sawTerminal = true;
       }
       return;
     }
@@ -179,6 +195,9 @@ export class StreamUsageExtractor {
         this.lastGeminiMetadata = metadata;
       }
       return;
+    }
+    if (event?.type === "response.completed") {
+      this.sawTerminal = true;
     }
     const usage = openAiUsageOf(event);
     if (usage && typeof usage === "object") {
