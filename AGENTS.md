@@ -55,6 +55,8 @@ docker compose up -d                                 # 本地运行
 
 - DO NOT and MUST NOT commit plan/spec files to the repository.
 - Commit message must in English.
+- Format: Conventional Commits — `<type>(<scope>): <subject>` (e.g. `fix(gateway): skip client_aborted status when response complete`);
+  type ∈ feat / fix / refactor / chore / docs / test / style; subject-only, no body.
 
 <!-- BEGIN:nextjs-agent-rules -->
 
