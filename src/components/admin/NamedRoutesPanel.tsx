@@ -92,17 +92,13 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
   // 同步 in-flight guard：busyId 是 state，同一渲染帧内连按 Enter 时闭包仍读到旧值，
   // 只靠 disabled 拦不住重复 PATCH
   const inFlight = useRef(new Set<number>());
-  const [editingInstructionId, setEditingInstructionId] = useState<number | null>(null);
+  // 展开行的编辑草稿（同时只有一行展开，draft 全局复用），展开时在 toggleExpanded 里初始化
+  const [nameDraft, setNameDraft] = useState("");
   const [instructionDraft, setInstructionDraft] = useState("");
-  // 分类器编辑（provider + model），仅 LLM 分类器路由可展开编辑；rule 可切换到 LLM 反之亦然
-  const [editingClassifierId, setEditingClassifierId] = useState<number | null>(null);
   const [classifierDraftUpstreamId, setClassifierDraftUpstreamId] = useState<
     number | typeof RULE_CLASSIFIER
   >(RULE_CLASSIFIER);
   const [classifierDraftModel, setClassifierDraftModel] = useState("");
-  // 改名：name+protocol 为 UNIQUE 身份键，冲突时后端 409，保持输入框不关闭
-  const [editingNameId, setEditingNameId] = useState<number | null>(null);
-  const [nameDraft, setNameDraft] = useState("");
   const [expandedRouteId, setExpandedRouteId] = useState<number | null>(null);
   const [editingTarget, setEditingTarget] = useState<{
     id: number;
@@ -250,52 +246,30 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
 
   const toggleEnabled = (row: NamedRouteRow) => patchRoute(row.id, { enabled: !row.enabled });
 
-  const saveName = async (row: NamedRouteRow) => {
-    const next = nameDraft.trim();
-    // 空值不兼任取消：保留编辑器并报错（取消有独立按钮与 Esc）
-    if (!next) {
+  // 展开区统一保存：name / instruction / classifier 一个 PATCH 提交；
+  // name+protocol 为 UNIQUE 身份键，改名冲突后端 409，保留草稿并报错
+  const saveRouteConfig = async (row: NamedRouteRow) => {
+    const nextName = nameDraft.trim();
+    if (!nextName) {
       setError("Name is required");
       return;
     }
-    if (next === row.name) {
-      setEditingNameId(null);
-      return;
-    }
-    if (await patchRoute(row.id, { name: next })) setEditingNameId(null);
-  };
-
-  // 失败保留编辑器，与 saveName 一致
-  const saveInstruction = async (row: NamedRouteRow) => {
-    if (await patchRoute(row.id, { instruction: instructionDraft })) setEditingInstructionId(null);
-  };
-
-  // 分类器：rule ↔ LLM 可互切；提交值与当前值一致时直接关闭编辑器（避免无意义 PATCH）
-  const saveClassifier = async (row: NamedRouteRow) => {
     const isRule = classifierDraftUpstreamId === RULE_CLASSIFIER;
     if (!isRule && !classifierDraftModel.trim()) {
       setError("Classifier model is required");
       return;
     }
-    const unchanged = isRule
-      ? row.classifierKind === "priority"
-      : row.classifierKind === "model" &&
-        row.classifierUpstreamId === classifierDraftUpstreamId &&
-        row.classifierModel === classifierDraftModel.trim();
-    if (unchanged) {
-      setEditingClassifierId(null);
-      return;
-    }
-    const ok = await patchRoute(
-      row.id,
-      isRule
-        ? { classifierKind: "priority" }
+    await patchRoute(row.id, {
+      name: nextName,
+      instruction: instructionDraft,
+      classifierKind: isRule ? "priority" : "model",
+      ...(isRule
+        ? {}
         : {
-            classifierKind: "model",
             classifierUpstreamId: classifierDraftUpstreamId as number,
             classifierModel: classifierDraftModel.trim(),
-          }
-    );
-    if (ok) setEditingClassifierId(null);
+          }),
+    });
   };
 
   const deleteRoute = async (row: NamedRouteRow) => {
@@ -392,9 +366,20 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
   };
 
   const toggleExpanded = (id: number) => {
-    setExpandedRouteId((prev) => (prev === id ? null : id));
-    setEditingInstructionId(null);
-    setEditingClassifierId(null);
+    const next = expandedRouteId === id ? null : id;
+    setExpandedRouteId(next);
+    if (next !== null) {
+      // 初始化展开行的编辑草稿；折叠不保留未保存的修改
+      const row = rows.find((r) => r.id === next);
+      if (row) {
+        setNameDraft(row.name);
+        setInstructionDraft(row.instruction);
+        setClassifierDraftUpstreamId(
+          row.classifierKind === "priority" ? RULE_CLASSIFIER : row.classifierUpstreamId
+        );
+        setClassifierDraftModel(row.classifierModel);
+      }
+    }
     setEditingTarget(null);
     setTargetUpstreamId("");
     setTargetModel("");
@@ -641,26 +626,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
                 className="flex cursor-pointer flex-wrap items-center gap-2 px-4 py-3 hover:bg-gray-50"
                 onClick={() => toggleExpanded(row.id)}
               >
-                {editingNameId === row.id ? (
-                  <input
-                    value={nameDraft}
-                    autoFocus
-                    onClick={(e) => e.stopPropagation()}
-                    disabled={busyId === row.id}
-                    onChange={(e) => setNameDraft(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        saveName(row);
-                      }
-                      if (e.key === "Escape") setEditingNameId(null);
-                    }}
-                    className="min-h-[40px] min-w-0 rounded border border-gray-300 px-2 py-0.5 text-base focus:border-blue-500 focus:outline-none disabled:opacity-50 md:min-h-0 md:text-sm"
-                    placeholder="Virtual name clients request"
-                  />
-                ) : (
-                  <CopyableCode className="text-xs font-medium">{row.name}</CopyableCode>
-                )}
+                <CopyableCode className="text-xs font-medium">{row.name}</CopyableCode>
                 <span className={`rounded border px-1.5 py-0.5 text-[10px] ${protocolBadgeClass(row.protocol)}`}>
                   {row.protocol}
                 </span>
@@ -683,68 +649,29 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
                   {row.targets.length} targets
                 </span>
                 <div className="ml-auto flex flex-wrap items-center gap-2">
-                  {editingNameId === row.id ? (
-                    <>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          saveName(row);
-                        }}
-                        disabled={busyId === row.id}
-                        className="rounded bg-blue-600 px-2 py-0.5 text-xs text-white disabled:opacity-50 min-h-[40px] md:min-h-0"
-                      >
-                        Save name
-                      </button>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setEditingNameId(null);
-                        }}
-                        className="rounded border border-gray-300 px-2 py-0.5 text-xs text-gray-500 min-h-[40px] md:min-h-0"
-                      >
-                        Cancel
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          toggleEnabled(row);
-                        }}
-                        disabled={busyId === row.id}
-                        className={`rounded px-2 py-0.5 text-xs ${
-                          row.enabled ? "bg-green-50 text-green-700" : "bg-gray-100 text-gray-500"
-                        } disabled:opacity-50 min-h-[40px] md:min-h-0`}
-                      >
-                        {row.enabled ? "enabled" : "disabled"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setEditingNameId(row.id);
-                          setNameDraft(row.name);
-                        }}
-                        className="inline-flex items-center text-xs text-gray-600 hover:text-gray-800 min-h-[40px] md:min-h-0"
-                      >
-                        Rename
-                      </button>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          deleteRoute(row);
-                        }}
-                        className="inline-flex items-center text-xs text-red-500 hover:text-red-700 min-h-[40px] md:min-h-0"
-                      >
-                        Delete
-                      </button>
-                    </>
-                  )}
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleEnabled(row);
+                    }}
+                    disabled={busyId === row.id}
+                    className={`rounded px-2 py-0.5 text-xs ${
+                      row.enabled ? "bg-green-50 text-green-700" : "bg-gray-100 text-gray-500"
+                    } disabled:opacity-50 min-h-[40px] md:min-h-0`}
+                  >
+                    {row.enabled ? "enabled" : "disabled"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      deleteRoute(row);
+                    }}
+                    className="inline-flex items-center text-xs text-red-500 hover:text-red-700 min-h-[40px] md:min-h-0"
+                  >
+                    Delete
+                  </button>
                   <span className="text-xs text-gray-400">
                     {expandedRouteId === row.id ? "▲" : "▼"}
                   </span>
@@ -753,140 +680,92 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
               {/* 目标池编辑区 */}
               {expandedRouteId === row.id && (
                 <div className="border-t border-gray-100 px-4 py-3">
-                  {/* 分类器 provider/model：可编辑，rule ↔ LLM 互切 */}
-                  <div className="mb-3">
-                    <div className="mb-1 flex items-center justify-between gap-2">
-                      <p className="text-xs font-medium text-gray-700">
-                        Classifier{" "}
-                        <span className="font-normal text-gray-400">(picks the chain head per session)</span>
-                      </p>
-                      {editingClassifierId !== row.id && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setEditingClassifierId(row.id);
-                            setClassifierDraftUpstreamId(
-                              row.classifierKind === "priority" ? RULE_CLASSIFIER : row.classifierUpstreamId
-                            );
-                            setClassifierDraftModel(row.classifierModel);
-                          }}
-                          className="text-xs text-gray-600 hover:text-gray-800"
-                        >
-                          Edit
-                        </button>
-                      )}
+                  {/* 配置表单：样式与新建 Named Route 表单一致，直接编辑后统一 Save */}
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-[1.4fr_100px_1fr_1.4fr]">
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-gray-700">Route Name</label>
+                      <input
+                        value={nameDraft}
+                        onChange={(e) => setNameDraft(e.target.value)}
+                        disabled={busyId === row.id}
+                        placeholder="Virtual name clients request"
+                        className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50"
+                      />
                     </div>
-                    {editingClassifierId === row.id ? (
-                      <div className="flex flex-col gap-2 md:flex-row md:items-start">
-                        <select
-                          value={classifierDraftUpstreamId}
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            setClassifierDraftUpstreamId(v === RULE_CLASSIFIER ? RULE_CLASSIFIER : Number(v));
-                            setClassifierDraftModel("");
-                          }}
-                          className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:w-auto md:text-sm focus:border-blue-500 focus:outline-none"
-                        >
-                          <option value={RULE_CLASSIFIER}>Rule — priority &amp; availability (no LLM)</option>
-                          {upstreamOptionsForProtocol(row.protocol).map((t) => (
-                            <option key={t.upstreamId} value={t.upstreamId}>
-                              {t.upstreamName}
-                              {t.upstreamProtocol !== row.protocol && ` [${t.upstreamProtocol}]`}
-                            </option>
-                          ))}
-                        </select>
-                        {classifierDraftUpstreamId !== RULE_CLASSIFIER && (
-                          <input
-                            value={classifierDraftModel}
-                            onChange={(e) => setClassifierDraftModel(e.target.value)}
-                            placeholder="Classifier model"
-                            list="named-route-classifier-models"
-                            autoComplete="off"
-                            className="w-full rounded border border-gray-300 px-3 py-2 text-base md:w-64 md:text-sm focus:border-blue-500 focus:outline-none"
-                          />
-                        )}
-                        <div className="flex shrink-0 gap-2">
-                          <button
-                            type="button"
-                            onClick={() => saveClassifier(row)}
-                            disabled={busyId === row.id}
-                            className="rounded bg-blue-600 px-3 py-2 text-xs text-white disabled:opacity-50 md:py-1.5"
-                          >
-                            Save
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setEditingClassifierId(null)}
-                            className="rounded border border-gray-300 px-3 py-2 text-xs text-gray-500 md:py-1.5"
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <p className="rounded border border-gray-100 bg-gray-50 px-3 py-2 text-xs leading-relaxed text-gray-600">
-                        {row.classifierKind === "priority" ? (
-                          <span className="text-indigo-700">
-                            Rule — priority &amp; availability (no LLM)
-                          </span>
-                        ) : (
-                          <>
-                            <span className="font-medium">{row.classifierUpstreamName}</span>
-                            {" / "}
-                            <span className="font-medium">{row.classifierModel}</span>
-                          </>
-                        )}
-                      </p>
-                    )}
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-gray-700">Protocol</label>
+                      <select
+                        value={row.protocol}
+                        disabled
+                        className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none disabled:bg-gray-50 disabled:text-gray-400"
+                      >
+                        <option value={row.protocol}>{row.protocol}</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-gray-700">Classifier Provider</label>
+                      <select
+                        value={classifierDraftUpstreamId}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setClassifierDraftUpstreamId(v === RULE_CLASSIFIER ? RULE_CLASSIFIER : Number(v));
+                          setClassifierDraftModel("");
+                        }}
+                        className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      >
+                        <option value={RULE_CLASSIFIER}>Rule — priority &amp; availability (no LLM)</option>
+                        {upstreamOptionsForProtocol(row.protocol).map((t) => (
+                          <option key={t.upstreamId} value={t.upstreamId}>
+                            {t.upstreamName}
+                            {t.upstreamProtocol !== row.protocol && ` [${t.upstreamProtocol}]`}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-gray-700">Classifier Model</label>
+                      <input
+                        value={classifierDraftModel}
+                        onChange={(e) => setClassifierDraftModel(e.target.value)}
+                        disabled={classifierDraftUpstreamId === RULE_CLASSIFIER}
+                        placeholder="e.g. typesafe/jev-latest"
+                        list={`named-route-cls-models-${row.id}`}
+                        autoComplete="off"
+                        className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-400"
+                      />
+                      <datalist id={`named-route-cls-models-${row.id}`}>
+                        {modelCandidatesFor(
+                          classifierDraftUpstreamId === RULE_CLASSIFIER ? "" : classifierDraftUpstreamId
+                        ).map((m) => (
+                          <option key={m} value={m} />
+                        ))}
+                      </datalist>
+                    </div>
                   </div>
-                  <div className="mb-3">
-                    <div className="mb-1 flex items-center justify-between gap-2">
-                      <p className="text-xs font-medium text-gray-700">
-                        Instruction{" "}
-                        <span className="font-normal text-gray-400">(decision prompt for the classifier)</span>
-                      </p>
-                      {editingInstructionId !== row.id && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setEditingInstructionId(row.id);
-                            setInstructionDraft(row.instruction);
-                          }}
-                          className="text-xs text-gray-600 hover:text-gray-800"
-                        >
-                          Edit
-                        </button>
-                      )}
-                    </div>
-                    {editingInstructionId === row.id ? (
-                      <div className="flex items-start gap-2">
-                        <textarea
-                          value={instructionDraft}
-                          onChange={(e) => setInstructionDraft(e.target.value)}
-                          rows={2}
-                          className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => saveInstruction(row)}
-                          disabled={busyId === row.id}
-                          className="shrink-0 rounded bg-blue-600 px-3 py-1.5 text-xs text-white disabled:opacity-50"
-                        >
-                          Save
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setEditingInstructionId(null)}
-                          className="shrink-0 rounded border border-gray-300 px-3 py-1.5 text-xs text-gray-500"
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    ) : (
-                      <p className="whitespace-pre-wrap break-words rounded border border-gray-100 bg-gray-50 px-3 py-2 text-xs leading-relaxed text-gray-600">
-                        {row.instruction || "—"}
-                      </p>
-                    )}
+
+                  <div className="mt-3">
+                    <label className="mb-1 block text-xs font-medium text-gray-700">
+                      Instruction{" "}
+                      <span className="font-normal text-gray-400">(decision prompt for the classifier)</span>
+                    </label>
+                    <textarea
+                      value={instructionDraft}
+                      onChange={(e) => setInstructionDraft(e.target.value)}
+                      rows={2}
+                      disabled={classifierDraftUpstreamId === RULE_CLASSIFIER}
+                      className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-400"
+                    />
+                  </div>
+
+                  <div className="mt-3 flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => saveRouteConfig(row)}
+                      disabled={busyId === row.id}
+                      className="min-h-[40px] rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 md:min-h-0"
+                    >
+                      {busyId === row.id ? "Saving…" : "Save"}
+                    </button>
                   </div>
                   {row.targets.length === 0 && (
                     <p className="rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-700">
