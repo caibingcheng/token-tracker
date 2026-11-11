@@ -1148,6 +1148,34 @@ describe("handleProxyRequest - request health status", () => {
     );
   });
 
+  it("does not mark client_aborted when [DONE] was already received before cancel", async () => {
+    const encoder = new TextEncoder();
+    const sse =
+      'data: {"id":"1","choices":[],"usage":{"prompt_tokens":50,"completion_tokens":20}}\n\n' +
+      "data: [DONE]\n\n";
+    fetchMock.mockResolvedValueOnce(makeHangingStreamingResponse(encoder.encode(sse)));
+
+    const deps = mkDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", stream: true },
+      }),
+      deps
+    );
+
+    const reader = res.body!.getReader();
+    await reader.read();
+    await reader.cancel();
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    const usageCall = vi.mocked(deps.onUsage!).mock.calls[0]![0] as { status?: string };
+    expect(usageCall).not.toHaveProperty("status");
+    expect(usageCall.inputTokens).toBe(50);
+    expect(usageCall.outputTokens).toBe(20);
+  });
+
   it("marks client_aborted when request signal aborts during streaming", async () => {
     const encoder = new TextEncoder();
     fetchMock.mockResolvedValueOnce(makeHangingStreamingResponse(encoder.encode('data: {"choices":[]}\n\n')));

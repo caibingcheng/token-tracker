@@ -16,6 +16,7 @@ import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 import {
   MAX_DESCRIPTION_LENGTH,
   MAX_INSTRUCTION_LENGTH,
+  MAX_NAME_LENGTH,
   parsePriority,
   validateClassifier,
 } from "@/lib/admin/named-routes";
@@ -110,8 +111,11 @@ export const POST = withAuth(async (request: NextRequest) => {
     const protocol = typeof body.protocol === "string" ? body.protocol : "";
     const instruction = typeof body.instruction === "string" ? body.instruction.trim() : "";
 
-    if (!name || name.length > 256) {
-      return NextResponse.json({ success: false, error: "name is required (max 256 chars)" }, { status: 400 });
+    if (!name || name.length > MAX_NAME_LENGTH) {
+      return NextResponse.json(
+        { success: false, error: `name is required (max ${MAX_NAME_LENGTH} chars)` },
+        { status: 400 }
+      );
     }
     if (!isProtocol(protocol)) {
       return NextResponse.json(

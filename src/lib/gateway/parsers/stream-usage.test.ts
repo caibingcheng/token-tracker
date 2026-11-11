@@ -161,3 +161,44 @@ describe("StreamUsageExtractor edge cases", () => {
     expect(result).toEqual({ inputTokens: 10, outputTokens: 5, cacheRead: 0, cacheWrite: 0, hasUsage: true });
   });
 });
+
+describe("StreamUsageExtractor sawTerminal", () => {
+  function feedAll(sse: string, protocol: Protocol) {
+    const extractor = new StreamUsageExtractor(protocol);
+    for (const chunk of splitIntoChunks(sse, 3)) extractor.feed(chunk);
+    // 与 proxy 的 onDone 一致：finish 处理尾部残余事件
+    extractor.finish();
+    return extractor;
+  }
+
+  it("OpenAI chat: set on [DONE]", () => {
+    expect(feedAll(OPENAI_SSE, "openai").sawTerminal).toBe(true);
+  });
+
+  it("OpenAI chat: not set when stream ends without [DONE]", () => {
+    const sse = 'data: {"id":"1","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}\n\n';
+    expect(feedAll(sse, "openai").sawTerminal).toBe(false);
+  });
+
+  it("Responses API: set on response.completed", () => {
+    expect(feedAll(RESPONSES_SSE, "openai").sawTerminal).toBe(true);
+  });
+
+  it("Anthropic: set on message_stop", () => {
+    expect(feedAll(ANTHROPIC_SSE, "anthropic").sawTerminal).toBe(true);
+  });
+
+  it("not fooled by content text mentioning terminal events", () => {
+    const sse =
+      'data: {"id":"1","choices":[{"delta":{"content":"the type response.completed and \\"message_stop\\" appear here"}}]}\n\n';
+    expect(feedAll(sse, "openai").sawTerminal).toBe(false);
+  });
+
+  it("Gemini: never set (no terminal event in protocol)", () => {
+    expect(feedAll(GEMINI_SSE, "gemini").sawTerminal).toBe(false);
+  });
+
+  it("Gemini: not set even on non-standard [DONE]", () => {
+    expect(feedAll(GEMINI_SSE + "data: [DONE]\n\n", "gemini").sawTerminal).toBe(false);
+  });
+});

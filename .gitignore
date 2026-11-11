@@ -3,6 +3,8 @@ node_modules/
 
 # Next.js
 .next/
+# Next 自动生成，内容属实现细节（next dev 写 .next/dev/types，next build 写 .next/types）
+next-env.d.ts
 
 # Environment variables（各种变体；保留模板文件）
 .env
