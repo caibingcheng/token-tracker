@@ -94,6 +94,12 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
   const inFlight = useRef(new Set<number>());
   const [editingInstructionId, setEditingInstructionId] = useState<number | null>(null);
   const [instructionDraft, setInstructionDraft] = useState("");
+  // 分类器编辑（provider + model），仅 LLM 分类器路由可展开编辑；rule 可切换到 LLM 反之亦然
+  const [editingClassifierId, setEditingClassifierId] = useState<number | null>(null);
+  const [classifierDraftUpstreamId, setClassifierDraftUpstreamId] = useState<
+    number | typeof RULE_CLASSIFIER
+  >(RULE_CLASSIFIER);
+  const [classifierDraftModel, setClassifierDraftModel] = useState("");
   // 改名：name+protocol 为 UNIQUE 身份键，冲突时后端 409，保持输入框不关闭
   const [editingNameId, setEditingNameId] = useState<number | null>(null);
   const [nameDraft, setNameDraft] = useState("");
@@ -263,6 +269,35 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
     if (await patchRoute(row.id, { instruction: instructionDraft })) setEditingInstructionId(null);
   };
 
+  // 分类器：rule ↔ LLM 可互切；提交值与当前值一致时直接关闭编辑器（避免无意义 PATCH）
+  const saveClassifier = async (row: NamedRouteRow) => {
+    const isRule = classifierDraftUpstreamId === RULE_CLASSIFIER;
+    if (!isRule && !classifierDraftModel.trim()) {
+      setError("Classifier model is required");
+      return;
+    }
+    const unchanged = isRule
+      ? row.classifierKind === "priority"
+      : row.classifierKind === "model" &&
+        row.classifierUpstreamId === classifierDraftUpstreamId &&
+        row.classifierModel === classifierDraftModel.trim();
+    if (unchanged) {
+      setEditingClassifierId(null);
+      return;
+    }
+    const ok = await patchRoute(
+      row.id,
+      isRule
+        ? { classifierKind: "priority" }
+        : {
+            classifierKind: "model",
+            classifierUpstreamId: classifierDraftUpstreamId as number,
+            classifierModel: classifierDraftModel.trim(),
+          }
+    );
+    if (ok) setEditingClassifierId(null);
+  };
+
   const deleteRoute = async (row: NamedRouteRow) => {
     if (!window.confirm(`Delete named route "${row.name}" (${row.protocol}) and its targets?`)) return;
     try {
@@ -359,6 +394,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
   const toggleExpanded = (id: number) => {
     setExpandedRouteId((prev) => (prev === id ? null : id));
     setEditingInstructionId(null);
+    setEditingClassifierId(null);
     setEditingTarget(null);
     setTargetUpstreamId("");
     setTargetModel("");
@@ -713,17 +749,96 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
                     {expandedRouteId === row.id ? "▲" : "▼"}
                   </span>
                 </div>
-                {/* 概要行 instruction：单行截断，悬停 tooltip 看全文（移动端无悬停，展开区看全文） */}
-                {row.instruction && (
-                  <span className="w-full truncate text-xs text-gray-500" title={row.instruction}>
-                    <span className="text-gray-400">instruction: </span>
-                    {row.instruction}
-                  </span>
-                )}
               </div>
               {/* 目标池编辑区 */}
               {expandedRouteId === row.id && (
                 <div className="border-t border-gray-100 px-4 py-3">
+                  {/* 分类器 provider/model：可编辑，rule ↔ LLM 互切 */}
+                  <div className="mb-3">
+                    <div className="mb-1 flex items-center justify-between gap-2">
+                      <p className="text-xs font-medium text-gray-700">
+                        Classifier{" "}
+                        <span className="font-normal text-gray-400">(picks the chain head per session)</span>
+                      </p>
+                      {editingClassifierId !== row.id && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingClassifierId(row.id);
+                            setClassifierDraftUpstreamId(
+                              row.classifierKind === "priority" ? RULE_CLASSIFIER : row.classifierUpstreamId
+                            );
+                            setClassifierDraftModel(row.classifierModel);
+                          }}
+                          className="text-xs text-gray-600 hover:text-gray-800"
+                        >
+                          Edit
+                        </button>
+                      )}
+                    </div>
+                    {editingClassifierId === row.id ? (
+                      <div className="flex flex-col gap-2 md:flex-row md:items-start">
+                        <select
+                          value={classifierDraftUpstreamId}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setClassifierDraftUpstreamId(v === RULE_CLASSIFIER ? RULE_CLASSIFIER : Number(v));
+                            setClassifierDraftModel("");
+                          }}
+                          className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:w-auto md:text-sm focus:border-blue-500 focus:outline-none"
+                        >
+                          <option value={RULE_CLASSIFIER}>Rule — priority &amp; availability (no LLM)</option>
+                          {upstreamOptionsForProtocol(row.protocol).map((t) => (
+                            <option key={t.upstreamId} value={t.upstreamId}>
+                              {t.upstreamName}
+                              {t.upstreamProtocol !== row.protocol && ` [${t.upstreamProtocol}]`}
+                            </option>
+                          ))}
+                        </select>
+                        {classifierDraftUpstreamId !== RULE_CLASSIFIER && (
+                          <input
+                            value={classifierDraftModel}
+                            onChange={(e) => setClassifierDraftModel(e.target.value)}
+                            placeholder="Classifier model"
+                            list="named-route-classifier-models"
+                            autoComplete="off"
+                            className="w-full rounded border border-gray-300 px-3 py-2 text-base md:w-64 md:text-sm focus:border-blue-500 focus:outline-none"
+                          />
+                        )}
+                        <div className="flex shrink-0 gap-2">
+                          <button
+                            type="button"
+                            onClick={() => saveClassifier(row)}
+                            disabled={busyId === row.id}
+                            className="rounded bg-blue-600 px-3 py-2 text-xs text-white disabled:opacity-50 md:py-1.5"
+                          >
+                            Save
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditingClassifierId(null)}
+                            className="rounded border border-gray-300 px-3 py-2 text-xs text-gray-500 md:py-1.5"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="rounded border border-gray-100 bg-gray-50 px-3 py-2 text-xs leading-relaxed text-gray-600">
+                        {row.classifierKind === "priority" ? (
+                          <span className="text-indigo-700">
+                            Rule — priority &amp; availability (no LLM)
+                          </span>
+                        ) : (
+                          <>
+                            <span className="font-medium">{row.classifierUpstreamName}</span>
+                            {" / "}
+                            <span className="font-medium">{row.classifierModel}</span>
+                          </>
+                        )}
+                      </p>
+                    )}
+                  </div>
                   <div className="mb-3">
                     <div className="mb-1 flex items-center justify-between gap-2">
                       <p className="text-xs font-medium text-gray-700">
