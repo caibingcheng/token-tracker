@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import { apiFetch, notifyUnauthorized } from "@/lib/client/api-client";
 import { QRCodeSVG } from "qrcode.react";
 import { CopyableCode } from "./CopyableCode";
+import { useBodyScrollLock } from "@/hooks/useBodyScrollLock";
+import ModalPortal from "@/components/ModalPortal";
 import OtpInput from "../OtpInput";
 import {
   getLoginKeyStrength,
@@ -52,6 +54,8 @@ export default function SecuritySettings() {
   // 弹窗内的恢复码是否来自换绑（换绑后会话已被吊销，关闭弹窗时必须提示重新登录）
   const [recoveryIsRebind, setRecoveryIsRebind] = useState(false);
   const [recoveryInfo, setRecoveryInfo] = useState<RecoveryInfo | null>(null);
+  // 明文 recovery codes 弹窗打开时锁背景滚动
+  useBodyScrollLock(recoveryCodes !== null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [ttlData, setTtlData] = useState<SessionTtlData | null>(null);
@@ -389,7 +393,7 @@ export default function SecuritySettings() {
             type="button"
             onClick={handleGenerate}
             disabled={busy}
-            className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            className="inline-flex items-center justify-center rounded bg-blue-600 px-3 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50 min-h-[40px] md:min-h-0 md:py-1.5"
           >
             {busy ? "Generating..." : "Enable 2FA"}
           </button>
@@ -400,7 +404,7 @@ export default function SecuritySettings() {
             type="button"
             onClick={() => setShowRebind(true)}
             disabled={busy}
-            className="rounded border border-blue-200 px-3 py-1.5 text-xs text-blue-600 hover:bg-blue-50 disabled:opacity-50"
+            className="inline-flex items-center justify-center rounded border border-blue-200 px-3 text-xs text-blue-600 hover:bg-blue-50 disabled:opacity-50 min-h-[40px] md:min-h-0 md:py-1.5"
           >
             Rebind 2FA
           </button>
@@ -418,7 +422,7 @@ export default function SecuritySettings() {
                 type="button"
                 onClick={handleRebindVerify}
                 disabled={busy}
-                className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                className="inline-flex items-center justify-center rounded bg-blue-600 px-3 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50 min-h-[40px] md:min-h-0 md:py-1.5"
               >
                 Verify
               </button>
@@ -428,7 +432,7 @@ export default function SecuritySettings() {
                   setShowRebind(false);
                   setRebindCode("");
                 }}
-                className="text-xs text-gray-400 hover:text-gray-600"
+                className="inline-flex min-h-[40px] items-center text-xs text-gray-400 hover:text-gray-600 md:min-h-0"
               >
                 Cancel
               </button>
@@ -454,14 +458,14 @@ export default function SecuritySettings() {
                 type="button"
                 onClick={handleConfirmEnable}
                 disabled={busy}
-                className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                className="inline-flex items-center justify-center rounded bg-blue-600 px-3 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50 min-h-[40px] md:min-h-0 md:py-1.5"
               >
                 Confirm & Enable
               </button>
               <button
                 type="button"
                 onClick={() => setPending(null)}
-                className="text-xs text-gray-400 hover:text-gray-600"
+                className="inline-flex min-h-[40px] items-center text-xs text-gray-400 hover:text-gray-600 md:min-h-0"
               >
                 Cancel
               </button>
@@ -476,7 +480,7 @@ export default function SecuritySettings() {
               type="button"
               onClick={handleDisable}
               disabled={busy}
-              className="rounded border border-red-200 px-3 py-1.5 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50"
+              className="inline-flex items-center justify-center rounded border border-red-200 px-3 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50 min-h-[40px] md:min-h-0 md:py-1.5"
             >
               Disable 2FA
             </button>
@@ -559,7 +563,7 @@ export default function SecuritySettings() {
                   type="button"
                   onClick={handleRegenerateCodes}
                   disabled={busy}
-                  className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                  className="inline-flex items-center justify-center rounded bg-blue-600 px-3 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50 min-h-[40px] md:min-h-0 md:py-1.5"
                 >
                   Generate
                 </button>
@@ -569,7 +573,7 @@ export default function SecuritySettings() {
                     setShowRegen(false);
                     setRegenCode("");
                   }}
-                  className="text-xs text-gray-400 hover:text-gray-600"
+                  className="inline-flex min-h-[40px] items-center text-xs text-gray-400 hover:text-gray-600 md:min-h-0"
                 >
                   Cancel
                 </button>
@@ -610,7 +614,7 @@ export default function SecuritySettings() {
             type="button"
             onClick={handleChangeApiKey}
             disabled={busy || !newApiKey.trim()}
-            className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            className="inline-flex items-center justify-center rounded bg-blue-600 px-3 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50 min-h-[40px] md:min-h-0 md:py-1.5"
           >
             Change Key
           </button>
@@ -666,7 +670,7 @@ export default function SecuritySettings() {
             type="button"
             onClick={handleSaveTtl}
             disabled={ttlBusy}
-            className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            className="inline-flex items-center justify-center rounded bg-blue-600 px-3 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50 min-h-[40px] md:min-h-0 md:py-1.5"
           >
             {ttlBusy ? "Saving..." : "Save"}
           </button>
@@ -720,7 +724,7 @@ export default function SecuritySettings() {
             }
           }}
           disabled={busy}
-          className="rounded border border-red-200 px-3 py-1.5 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50"
+          className="inline-flex items-center justify-center rounded border border-red-200 px-3 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50 min-h-[40px] md:min-h-0 md:py-1.5"
         >
           Revoke All Sessions
         </button>
@@ -755,7 +759,7 @@ export default function SecuritySettings() {
             type="button"
             onClick={handleSaveStream}
             disabled={streamBusy}
-            className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            className="inline-flex items-center justify-center rounded bg-blue-600 px-3 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50 min-h-[40px] md:min-h-0 md:py-1.5"
           >
             {streamBusy ? "Saving..." : "Save"}
           </button>
@@ -779,8 +783,9 @@ export default function SecuritySettings() {
 
       {/* Recovery codes 明文弹窗：仅生成成功时展示一次，关闭后无法再次查看 */}
       {recoveryCodes && (
+        <ModalPortal>
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-0 md:p-4">
-          <div className="flex h-full w-full flex-col overflow-y-auto rounded-none bg-white p-6 shadow-xl md:h-auto md:max-h-[85vh] md:w-[480px] md:rounded-lg">
+          <div className="flex h-full w-full flex-col overflow-y-auto overscroll-contain rounded-none bg-white p-6 shadow-xl md:h-auto md:max-h-[85vh] md:w-[480px] md:rounded-lg">
             <h3 className="mb-2 text-lg font-semibold">Recovery Codes</h3>
             <p className="mb-4 text-sm text-amber-600">
               Save these codes now — they will not be shown again. Each code can be
@@ -814,6 +819,7 @@ export default function SecuritySettings() {
             </button>
           </div>
         </div>
+        </ModalPortal>
       )}
     </div>
   );

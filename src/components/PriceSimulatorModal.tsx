@@ -24,6 +24,8 @@ import {
   localDateKeyFromUtcDate,
 } from "@/lib/timezone-utils";
 import { apiFetch } from "@/lib/client/api-client";
+import { useBodyScrollLock } from "@/hooks/useBodyScrollLock";
+import ModalPortal from "@/components/ModalPortal";
 
 interface FilterOption {
   id: string;
@@ -889,9 +891,12 @@ export default function PriceSimulatorModal({
     },
   ];
 
+  useBodyScrollLock(isOpen);
+
   if (!isOpen) return null;
 
   return (
+    <ModalPortal>
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-0 md:p-4">
       <div
         ref={dialogRef}
@@ -909,7 +914,7 @@ export default function PriceSimulatorModal({
           </button>
         </div>
 
-        <div className="px-6 py-5 overflow-y-auto flex-1">
+        <div className="px-6 py-5 overflow-y-auto overscroll-contain flex-1">
           {/* 数据过滤：独立于 dashboard */}
           <section className="mb-6">
             <div className="flex items-center justify-between gap-2 mb-2">
@@ -917,7 +922,7 @@ export default function PriceSimulatorModal({
               <button
                 type="button"
                 onClick={syncFiltersFromDashboard}
-                className="text-xs text-blue-600 hover:text-blue-700 hover:underline"
+                className="inline-flex min-h-[40px] items-center text-xs text-blue-600 hover:text-blue-700 hover:underline md:min-h-0"
               >
                 Sync from dashboard
               </button>
@@ -1162,7 +1167,7 @@ export default function PriceSimulatorModal({
                   <button
                     type="button"
                     onClick={() => setPriceDraft(null)}
-                    className="text-xs text-blue-600 hover:text-blue-700 hover:underline"
+                    className="inline-flex min-h-[40px] items-center text-xs text-blue-600 hover:text-blue-700 hover:underline md:min-h-0"
                   >
                     Reset to model price
                   </button>
@@ -1223,7 +1228,7 @@ export default function PriceSimulatorModal({
               <button
                 type="button"
                 onClick={resetCacheRates}
-                className="rounded border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-700 shadow-sm hover:bg-gray-50"
+                className="rounded border border-gray-300 bg-white px-3 text-sm text-gray-700 shadow-sm hover:bg-gray-50 min-h-[40px] md:min-h-0 md:py-1.5"
               >
                 Follow actual for all
               </button>
@@ -1329,5 +1334,6 @@ export default function PriceSimulatorModal({
         </div>
       </div>
     </div>
+    </ModalPortal>
   );
 }

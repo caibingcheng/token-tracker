@@ -3,8 +3,66 @@
 import { useEffect, useRef, useState } from "react";
 import type { ColumnDef } from "@/lib/columns";
 
-// 表格列可见性下拉（Records / Audit 共用）：勾选即回调，至少保留一列。
-// 提交顺序恒为 columns 定义顺序，与点击顺序无关。
+// 列可见性勾选列表（Records / Audit 共用，也供移动端筛选抽屉内联使用）：
+// 勾选即回调，至少保留一列。提交顺序恒为 columns 定义顺序，与点击顺序无关。
+interface ColumnChecklistProps<T extends string> {
+  columns: readonly ColumnDef<T>[];
+  value: T[];
+  onChange: (next: T[]) => void;
+  error?: string | null;
+}
+
+export function ColumnChecklist<T extends string>({
+  columns,
+  value,
+  onChange,
+  error,
+}: ColumnChecklistProps<T>) {
+  const visible = new Set(value);
+  const ids = columns.map((column) => column.id);
+
+  const toggle = (id: T) => {
+    const next = new Set(visible);
+    if (next.has(id)) {
+      if (next.size === 1) return; // 至少保留一列
+      next.delete(id);
+    } else {
+      next.add(id);
+    }
+    // 始终按定义顺序提交，展示顺序与点击顺序无关
+    onChange(ids.filter((columnId) => next.has(columnId)));
+  };
+
+  return (
+    <>
+      {columns.map((column) => {
+        const checked = visible.has(column.id);
+        const isLastVisible = checked && value.length === 1;
+        return (
+          <label
+            key={column.id}
+            title={isLastVisible ? "At least one column must stay visible" : undefined}
+            className={`flex min-h-[40px] items-center gap-2 rounded px-2 text-sm md:min-h-0 md:py-1.5 ${
+              isLastVisible ? "cursor-not-allowed opacity-50" : "cursor-pointer hover:bg-gray-50"
+            }`}
+          >
+            <input
+              type="checkbox"
+              checked={checked}
+              disabled={isLastVisible}
+              onChange={() => toggle(column.id)}
+              className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+            />
+            <span className="text-gray-700">{column.label}</span>
+          </label>
+        );
+      })}
+      {error && <p className="px-2 pt-2 text-xs text-red-600">{error}</p>}
+    </>
+  );
+}
+
+// 表格列可见性下拉（Records / Audit 共用）
 interface ColumnPickerProps<T extends string> {
   columns: readonly ColumnDef<T>[];
   value: T[];
@@ -30,20 +88,7 @@ export default function ColumnPicker<T extends string>({
     return () => document.removeEventListener("mousedown", onMouseDown);
   }, [open]);
 
-  const visible = new Set(value);
   const ids = columns.map((column) => column.id);
-
-  const toggle = (id: T) => {
-    const next = new Set(visible);
-    if (next.has(id)) {
-      if (next.size === 1) return; // 至少保留一列
-      next.delete(id);
-    } else {
-      next.add(id);
-    }
-    // 始终按定义顺序提交，展示顺序与点击顺序无关
-    onChange(ids.filter((columnId) => next.has(columnId)));
-  };
 
   return (
     <div ref={containerRef} className="relative">
@@ -66,29 +111,7 @@ export default function ColumnPicker<T extends string>({
       {open && (
         <div className="absolute right-0 z-30 mt-2 w-64 max-h-[70vh] overflow-y-auto rounded-lg border border-gray-200 bg-white p-2 shadow-lg">
           <p className="px-2 py-1 text-xs font-medium uppercase text-gray-500">Visible columns</p>
-          {columns.map((column) => {
-            const checked = visible.has(column.id);
-            const isLastVisible = checked && value.length === 1;
-            return (
-              <label
-                key={column.id}
-                title={isLastVisible ? "At least one column must stay visible" : undefined}
-                className={`flex min-h-[40px] items-center gap-2 rounded px-2 text-sm md:min-h-0 md:py-1.5 ${
-                  isLastVisible ? "cursor-not-allowed opacity-50" : "cursor-pointer hover:bg-gray-50"
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  disabled={isLastVisible}
-                  onChange={() => toggle(column.id)}
-                  className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                />
-                <span className="text-gray-700">{column.label}</span>
-              </label>
-            );
-          })}
-          {error && <p className="px-2 pt-2 text-xs text-red-600">{error}</p>}
+          <ColumnChecklist columns={columns} value={value} onChange={onChange} error={error} />
         </div>
       )}
     </div>

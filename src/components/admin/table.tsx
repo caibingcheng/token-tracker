@@ -113,7 +113,8 @@ export function AdminMobileCards({ children }: { children: ReactNode }) {
   return <div className="md:hidden space-y-3">{children}</div>;
 }
 
-// 移动端单卡：border border-gray-200 rounded-lg p-4（与 Records 移动端卡片一致）
+// 移动端单卡：rounded-xl bg-white shadow-sm ring-1 ring-gray-100（与 Records 移动端卡片一致）
+// 白卡 + 细边框：灰底页面（Records）与白卡面板内（Admin）都能区分卡片边界
 export function AdminMobileCard({
   className,
   children,
@@ -122,7 +123,7 @@ export function AdminMobileCard({
   children: ReactNode;
 }) {
   return (
-    <div className={`border border-gray-200 rounded-lg p-4${className ? ` ${className}` : ""}`}>
+    <div className={`rounded-xl bg-white p-4 shadow-sm ring-1 ring-gray-100${className ? ` ${className}` : ""}`}>
       {children}
     </div>
   );

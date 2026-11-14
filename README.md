@@ -124,7 +124,7 @@ docker compose up -d
 
 ```bash
 npm install
-cp .env.example .env.local   # 必需：SQLITE_DATABASE_PATH、GATEWAY_SECRET
+cp .env.example .env.local   # 可选：不建也能起，默认 ./data/token-tracker.db；dev 自动生成 GATEWAY_SECRET
 npm run dev                  # http://localhost:3000
 npm test                     # vitest 单测（覆盖代理链路/解析器/路由/加密/认证等核心模块，并发上限 = CPU 一半）
 npm run lint                 # ESLint 9 flat config（Next 16 起 `next lint` 已移除）
@@ -156,9 +156,9 @@ SQLite 数据库在首次请求时自动建表 + 增量迁移，无需手动操�
 
 | 变量 | 必需 | 说明 |
 |---|---|---|
-| `SQLITE_DATABASE_PATH` | 是 | SQLite 数据库文件路径 |
+| `SQLITE_DATABASE_PATH` | 否 | SQLite 数据库文件路径，默认 `./data/token-tracker.db`（Docker 由 compose 显式指定） |
 | `ADMIN_API_KEY` | 建议 | 管理面用 API key，逗号分隔多个；个人/家庭部署允许弱 key，前端提供强度提示，生产建议 ≥16 字符且 ≥2 类字符；已配置弱 key 也不会重新打开首次设置向导；未设置且 DB 无 key 时出现首次设置向导（旧名 `API_KEYS` 已废弃） |
-| `GATEWAY_SECRET` | 是 | 网关主密钥（AES-256-GCM），`openssl rand -hex 32` 生成；缺失时代理与管理 API 返回 503 |
+| `GATEWAY_SECRET` | 生产是 | 网关主密钥（AES-256-GCM），`openssl rand -hex 32` 生成；缺失时代理与管理 API 返回 503。`npm run dev` 缺失时自动生成并复用 `<db 目录>/.gateway-secret`（仅 dev，`next build/start` 不生成） |
 | `SESSION_TOKEN_TTL_HOURS` | 否 | 会话 token 有效期（小时，默认 24，滑动续期） |
 | `TRUSTED_PROXY` | 否 | 前置反代已设置 `X-Real-IP` 时设为 true，恢复精确 IP 限流 |
 | `API_CACHE_TTL_MS` | 否 | SELECT 缓存 TTL（毫秒，默认 10000） |
@@ -171,7 +171,9 @@ SQLite 数据库在首次请求时自动建表 + 增量迁移，无需手动操�
 
 > **⚠️ 公网部署请走 HTTPS**：会话 token 与虚拟 key 都以明文 header 传输。反代（Caddy / Nginx）终止 TLS 后转发到 `127.0.0.1:3001`，并设置 `X-Real-IP` + `TRUSTED_PROXY=true`。upstream、proxy 与多实例同步均兼容 HTTP/HTTPS，便于本机和内网部署；私网地址仍受 SSRF 策略保护，内网目标使用 `ALLOW_PRIVATE_UPSTREAMS=true`，sync 的 loopback 可直接使用。
 
-> **🔑 密钥卫生**：`.env*`（除 `.env.example`）、`*.pem`、`*.p12`、`*.pfx`、`id_rsa*`、`credentials*`、`secrets*` 已加入 `.gitignore`；本机 `.env` 建议 `chmod 600`。
+> **🔑 密钥卫生**：`.env*`（除 `.env.example`）、`*.pem`、`*.p12`、`*.pfx`、`id_rsa*`、`credentials*`、`secrets*`、`**/.gateway-secret` 已加入 `.gitignore`；本机 `.env` 建议 `chmod 600`。
+
+> **⚠️ `GATEWAY_SECRET` 丢失不可逆**：dev 自动生成的密钥在 `<db 目录>/.gateway-secret`。数据库里已加密的 upstream key / 虚拟 key / 同步 token 只能用它解密；**已有数据库时该文件丢失，`npm run dev` 会直接拒绝启动**（不会静默重建）。备份数据库时请一并备份这个文件。
 
 忘记登录 key 时：删除 SQLite `settings` 表中的 `admin_api_key` 行，即回退到 `ADMIN_API_KEY` 环境变量。
 

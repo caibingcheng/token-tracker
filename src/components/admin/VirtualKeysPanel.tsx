@@ -8,6 +8,8 @@ import { modelMatchesPattern, type Protocol } from "@/lib/gateway/model-router";
 import { CopyableCode } from "./CopyableCode";
 import ActionMenu from "./ActionMenu";
 import { copyText } from "@/lib/clipboard";
+import { useBodyScrollLock } from "@/hooks/useBodyScrollLock";
+import ModalPortal from "@/components/ModalPortal";
 import { QuotaBar, MiniQuotaBar, type QuotaUsageData } from "./QuotaProgress";
 import {
   AdminMobileCard,
@@ -169,6 +171,8 @@ export default function VirtualKeysPanel() {
   const [refreshingId, setRefreshingId] = useState<number | null>(null);
   const [copied, setCopied] = useState<number | null>(null);
   const [pendingDelete, setPendingDelete] = useState<VirtualKeyItem | null>(null);
+  // 删除确认弹窗打开时锁背景滚动
+  useBodyScrollLock(pendingDelete !== null);
   const [hideHistory, setHideHistory] = useState(false);
 
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -469,7 +473,7 @@ export default function VirtualKeysPanel() {
             <button
               type="submit"
               disabled={saving}
-              className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 min-h-[40px] md:min-h-0"
             >
               {saving ? "Saving..." : editingId ? "Save" : "Create"}
             </button>
@@ -483,7 +487,7 @@ export default function VirtualKeysPanel() {
                   setModelsInput("*");
                   setQuotaInputs({ rpm: "", tpm: "", daily: "", monthly: "" });
                 }}
-                className="rounded border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50"
+                className="rounded border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50 min-h-[40px] md:min-h-0"
               >
                 Cancel
               </button>
@@ -506,14 +510,14 @@ export default function VirtualKeysPanel() {
                   const ok = await copyText(createdKey);
                   if (!ok) setError("Copy failed. Please copy the key manually.");
                 }}
-                className="rounded border border-green-300 px-3 py-2 text-sm text-green-700 hover:bg-green-100"
+                className="rounded border border-green-300 px-3 py-2 text-sm text-green-700 hover:bg-green-100 min-h-[40px] md:min-h-0"
               >
                 Copy
               </button>
               <button
                 type="button"
                 onClick={() => setCreatedKey(null)}
-                className="rounded border border-green-300 px-3 py-2 text-sm text-green-700 hover:bg-green-100"
+                className="rounded border border-green-300 px-3 py-2 text-sm text-green-700 hover:bg-green-100 min-h-[40px] md:min-h-0"
               >
                 Done
               </button>
@@ -724,7 +728,7 @@ export default function VirtualKeysPanel() {
                     type="button"
                     onClick={() => refreshUsage(key)}
                     disabled={refreshingId === key.id}
-                    className="rounded border border-gray-300 px-2.5 py-1 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+                    className="rounded border border-gray-300 px-2.5 py-1 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-50 min-h-[40px] md:min-h-0"
                   >
                     {refreshingId === key.id ? "Refreshing..." : "Refresh"}
                   </button>
@@ -864,6 +868,7 @@ export default function VirtualKeysPanel() {
       </div>
 
       {pendingDelete && (
+        <ModalPortal>
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
           <div className="flex h-full w-full flex-col rounded-none bg-white shadow-xl md:h-auto md:max-w-md md:rounded-lg">
             <div className="flex items-center justify-between border-b px-5 py-3">
@@ -876,7 +881,7 @@ export default function VirtualKeysPanel() {
                 ×
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto p-5">
+            <div className="flex-1 overflow-y-auto overscroll-contain p-5">
               <p className="text-sm text-gray-700">
                 Revoke and delete key{" "}
                 <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">
@@ -904,20 +909,21 @@ export default function VirtualKeysPanel() {
               <button
                 type="button"
                 onClick={() => setPendingDelete(null)}
-                className="rounded border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50"
+                className="rounded border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50 min-h-[40px] md:min-h-0"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={confirmRemove}
-                className="rounded bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700"
+                className="rounded bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 min-h-[40px] md:min-h-0"
               >
                 Delete
               </button>
             </div>
           </div>
         </div>
+        </ModalPortal>
       )}
     </div>
   );

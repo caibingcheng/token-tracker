@@ -18,6 +18,10 @@ let ingestTokensTable: any;
 let syncInstancesTable: any;
 let initialized = false;
 
+// 未配置时的默认库路径（与 .env.example / docs / scripts/migrate-pg-to-sqlite.ts 一致）：
+// 本地开发零配置能起，Docker 由 compose / entrypoint 显式传入
+const DEFAULT_DB_PATH = "./data/token-tracker.db";
+
 export async function initDatabase() {
   if (initialized) return;
   await ensureClient();
@@ -32,10 +36,7 @@ async function ensureClient() {
   const { dirname } = await import("path");
   const sqliteModule = await import("./schema-sqlite");
 
-  const dbPath = process.env.SQLITE_DATABASE_PATH;
-  if (!dbPath) {
-    throw new Error("SQLITE_DATABASE_PATH environment variable is required");
-  }
+  const dbPath = process.env.SQLITE_DATABASE_PATH || DEFAULT_DB_PATH;
 
   mkdirSync(dirname(dbPath), { recursive: true });
   const client = new Database(dbPath);

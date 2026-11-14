@@ -3,9 +3,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import RecordsTable from "./RecordsTable";
-import ColumnPicker from "./ColumnPicker";
+import ColumnPicker, { ColumnChecklist } from "./ColumnPicker";
 import { DEFAULT_RECORD_COLUMNS, RECORD_COLUMNS, normalizeRecordColumns, type RecordColumnId } from "@/lib/records-columns";
 import { apiFetch } from "@/lib/client/api-client";
+import { useBodyScrollLock } from "@/hooks/useBodyScrollLock";
+import ModalPortal from "./ModalPortal";
 import { useSidebarActions, NumberFormatToggle } from "./AppSidebar";
 
 type FilterKey = "provider" | "model" | "agent";
@@ -16,13 +18,47 @@ interface FilterOption {
 }
 
 // 顺序与 Dashboard 筛选栏一致：Agent → Provider → Model
-const FILTERS: Array<{ key: FilterKey; endpoint: string; allLabel: string }> = [
-  { key: "agent", endpoint: "/api/agents", allLabel: "All Agents" },
-  { key: "provider", endpoint: "/api/providers", allLabel: "All Providers" },
-  { key: "model", endpoint: "/api/models", allLabel: "All Models" },
+const FILTERS: Array<{ key: FilterKey; label: string; endpoint: string; allLabel: string }> = [
+  { key: "agent", label: "Agent", endpoint: "/api/agents", allLabel: "All Agents" },
+  { key: "provider", label: "Provider", endpoint: "/api/providers", allLabel: "All Providers" },
+  { key: "model", label: "Model", endpoint: "/api/models", allLabel: "All Models" },
 ];
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100, 200] as const;
+
+function FilterIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+    </svg>
+  );
+}
+
+function ChevronDownIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="6 9 12 15 18 9" />
+    </svg>
+  );
+}
+
+function CloseIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+  );
+}
+
+function RefreshIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="23 4 23 10 17 10" />
+      <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+    </svg>
+  );
+}
 
 export default function RecordsPage() {
   const router = useRouter();
@@ -42,6 +78,8 @@ export default function RecordsPage() {
   // 列可见性：DB 配置（records_columns），加载前先按默认全显示
   const [visibleColumns, setVisibleColumns] = useState<RecordColumnId[]>(DEFAULT_RECORD_COLUMNS);
   const [columnsError, setColumnsError] = useState<string | null>(null);
+  // 移动端筛选抽屉（筛选 + 行数 + 列可见性）
+  const [filterSheetOpen, setFilterSheetOpen] = useState(false);
 
   const selected = useMemo(
     () => ({
@@ -55,6 +93,18 @@ export default function RecordsPage() {
     selected.provider !== "all" ||
     selected.model !== "all" ||
     selected.agent !== "all";
+  const activeFilterCount = FILTERS.filter((filter) => selected[filter.key] !== "all").length;
+
+  // 移动端抽屉：Esc 关闭（抽屉是浮层，Esc 是键盘用户的退出路径）
+  useEffect(() => {
+    if (!filterSheetOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setFilterSheetOpen(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [filterSheetOpen]);
+  useBodyScrollLock(filterSheetOpen);
 
   const handleRefreshingChange = useCallback((value: boolean) => {
     setRefreshing(value);
@@ -183,9 +233,53 @@ export default function RecordsPage() {
   return (
     <main className="min-h-screen bg-gray-50 p-4 pb-20 md:p-8 md:pb-8">
       <div className="w-full">
-        <div className="sticky top-0 z-20 -mx-4 mb-6 bg-gray-50 px-4 py-3 md:-mx-8 md:px-8">
-          {/* 移动端：筛选等宽一行 + 控制一行；桌面端保持横排 */}
-          <div className="flex flex-col gap-2 md:flex-row md:flex-wrap md:items-center md:justify-between">
+        <div className="sticky top-0 z-20 -mx-4 mb-4 bg-gray-50 px-4 py-3 md:-mx-8 md:mb-6 md:px-8">
+          {/* 移动端：一行「筛选 / 刷新 / 自动」；筛选、行数、列可见性收进底部抽屉 */}
+          <div className="flex items-center gap-2 md:hidden">
+            <button
+              type="button"
+              onClick={() => setFilterSheetOpen(true)}
+              className="inline-flex min-h-[40px] min-w-0 flex-1 items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 text-sm font-medium text-gray-700 shadow-sm active:scale-[0.99]"
+            >
+              <FilterIcon />
+              <span>Filters</span>
+              {activeFilterCount > 0 && (
+                <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-blue-600 px-1.5 text-[11px] font-semibold tabular-nums text-white">
+                  {activeFilterCount}
+                </span>
+              )}
+              <span className="ml-auto text-gray-400">
+                <ChevronDownIcon />
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={refresh}
+              disabled={refreshing}
+              aria-label="Refresh"
+              className={`inline-flex h-10 w-10 items-center justify-center rounded-lg transition-colors bg-gray-100 disabled:cursor-default ${
+                refreshing ? "text-blue-600 animate-pulse" : "text-gray-600"
+              }`}
+            >
+              <RefreshIcon />
+            </button>
+            <button
+              type="button"
+              onClick={toggleAutoRefresh}
+              aria-pressed={autoRefresh}
+              aria-label={`Auto refresh every 15s: ${autoRefresh ? "on" : "off"}`}
+              className={`inline-flex h-10 shrink-0 items-center justify-center rounded-lg px-3 text-xs font-medium transition-colors ${
+                autoRefresh
+                  ? "text-blue-700 bg-blue-100"
+                  : "text-gray-600 bg-gray-100"
+              }`}
+            >
+              Auto 15s
+            </button>
+          </div>
+
+          {/* 桌面端：筛选栏横排（移动端已换为上面的抽屉入口） */}
+          <div className="hidden md:flex md:flex-wrap md:items-center md:justify-between md:gap-2">
             <div className="grid grid-cols-3 gap-2 md:flex md:flex-wrap md:items-center md:gap-2">
               {FILTERS.map((filter) => (
                 <select
@@ -215,15 +309,6 @@ export default function RecordsPage() {
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
-              {hasFilter && (
-                <button
-                  type="button"
-                  onClick={resetFilters}
-                  className="inline-flex min-h-[40px] items-center rounded border border-gray-300 bg-white px-2 text-sm font-medium text-gray-600 shadow-sm hover:bg-gray-50 md:hidden"
-                >
-                  Reset
-                </button>
-              )}
               <ColumnPicker
                 columns={RECORD_COLUMNS}
                 value={visibleColumns}
@@ -256,12 +341,8 @@ export default function RecordsPage() {
                     : "text-gray-600 hover:bg-gray-200"
                 }`}
               >
-                {/* 移动端只显示图标，给 Auto 按钮腾出一行的空间 */}
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="md:hidden">
-                  <polyline points="23 4 23 10 17 10" />
-                  <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-                </svg>
-                <span className="hidden md:inline">Refresh</span>
+                {/* 刷新与自动刷新：移动端入口在抽屉外的顶栏，这里只服务桌面 */}
+                Refresh
               </button>
               <button
                 type="button"
@@ -279,6 +360,118 @@ export default function RecordsPage() {
             </div>
           </div>
         </div>
+
+        {/* 移动端筛选抽屉：筛选 / 行数 / 列可见性（桌面端这些控件直接在顶栏）。
+            z-50 与全站弹窗同层（MobileTabBar 已降到 z-40），抽屉才能盖住底栏 */}
+        {filterSheetOpen && (
+          <ModalPortal>
+          <div className="fixed inset-0 z-50 md:hidden">
+            <div
+              className="absolute inset-0 bg-black/40"
+              onClick={() => setFilterSheetOpen(false)}
+              aria-hidden="true"
+            />
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-label="Filters"
+              className="absolute inset-x-0 bottom-0 flex max-h-[85dvh] flex-col rounded-t-2xl bg-white shadow-xl"
+            >
+              <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
+                <h2 className="text-base font-semibold text-gray-900">Filters</h2>
+                <button
+                  type="button"
+                  onClick={() => setFilterSheetOpen(false)}
+                  aria-label="Close filters"
+                  className="inline-flex h-10 w-10 items-center justify-center rounded-full text-gray-500 active:bg-gray-100"
+                >
+                  <CloseIcon />
+                </button>
+              </div>
+
+              <div className="flex-1 space-y-5 overflow-y-auto overscroll-contain px-4 py-4">
+                <div className="space-y-3">
+                  {FILTERS.map((filter) => (
+                    <label key={filter.key} className="block">
+                      <span className="mb-1 block text-xs font-medium uppercase text-gray-500">
+                        {filter.label}
+                      </span>
+                      <select
+                        value={selected[filter.key]}
+                        onChange={(e) => setFilter(filter.key, e.target.value)}
+                        aria-label={filter.allLabel}
+                        className="min-h-[44px] w-full rounded-lg border border-gray-300 bg-white px-3 text-base shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      >
+                        <option value="all">{filter.allLabel}</option>
+                        {options[filter.key].map((option) => (
+                          <option key={option.id} value={option.id}>
+                            {option.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ))}
+                </div>
+
+                <div>
+                  <span className="mb-2 block text-xs font-medium uppercase text-gray-500">
+                    Rows per page
+                  </span>
+                  <div className="grid grid-cols-4 gap-2">
+                    {PAGE_SIZE_OPTIONS.map((size) => (
+                      <button
+                        key={size}
+                        type="button"
+                        onClick={() => setPageSize(size)}
+                        aria-pressed={pageSize === size}
+                        className={`min-h-[44px] rounded-lg text-sm font-medium tabular-nums transition-colors ${
+                          pageSize === size
+                            ? "bg-blue-600 text-white"
+                            : "bg-gray-100 text-gray-600"
+                        }`}
+                      >
+                        {size}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <span className="mb-2 block text-xs font-medium uppercase text-gray-500">
+                    Columns
+                  </span>
+                  <div className="rounded-lg bg-gray-50 p-1">
+                    <ColumnChecklist
+                      columns={RECORD_COLUMNS}
+                      value={visibleColumns}
+                      onChange={changeColumns}
+                      error={columnsError}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 border-t border-gray-100 px-4 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3">
+                <button
+                  type="button"
+                  onClick={resetFilters}
+                  disabled={!hasFilter}
+                  className="inline-flex min-h-[44px] items-center justify-center rounded-lg border border-gray-300 px-4 text-sm font-medium text-gray-700 disabled:opacity-40"
+                >
+                  Reset
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFilterSheetOpen(false)}
+                  className="inline-flex min-h-[44px] flex-1 items-center justify-center rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white"
+                >
+                  Done
+                </button>
+              </div>
+            </div>
+          </div>
+          </ModalPortal>
+        )}
 
         <RecordsTable
           selectedProvider={selected.provider}

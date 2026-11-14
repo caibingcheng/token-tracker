@@ -124,7 +124,7 @@ Virtual keys (the `vk-` prefix) are created in `/admin`. Sharing one key across 
 
 ```bash
 npm install
-cp .env.example .env.local   # required: SQLITE_DATABASE_PATH, GATEWAY_SECRET
+cp .env.example .env.local   # optional: works without it (defaults to ./data/token-tracker.db; dev auto-generates GATEWAY_SECRET)
 npm run dev                  # http://localhost:3000
 npm test                     # vitest unit tests (proxy chain/parsers/routing/crypto/auth; workers capped at half the CPUs)
 npm run lint                 # ESLint 9 flat config (`next lint` was removed in Next 16)
@@ -156,9 +156,9 @@ The SQLite database is created automatically on the first request (with incremen
 
 | Variable | Required | Description |
 |---|---|---|
-| `SQLITE_DATABASE_PATH` | Yes | Path to the SQLite database file |
+| `SQLITE_DATABASE_PATH` | No | Path to the SQLite database file; defaults to `./data/token-tracker.db` (Docker compose sets it explicitly) |
 | `ADMIN_API_KEY` | Suggested | Admin API keys, comma-separated; weak keys are allowed for personal/home deployments, with strength hints in the UI (>=16 chars with 2+ classes recommended in production); a configured weak key does not reopen the first-run wizard; if unset and the DB has no key, a first-run setup wizard appears (legacy name `API_KEYS` deprecated) |
-| `GATEWAY_SECRET` | Yes | Gateway master key (AES-256-GCM), generate with `openssl rand -hex 32`; if missing, the proxy and admin APIs return 503 |
+| `GATEWAY_SECRET` | Yes in production | Gateway master key (AES-256-GCM), generate with `openssl rand -hex 32`; if missing, the proxy and admin APIs return 503. `npm run dev` auto-generates and reuses `<db dir>/.gateway-secret` (dev only; `next build/start` never generates) |
 | `SESSION_TOKEN_TTL_HOURS` | No | Session token lifetime (hours, default 24, sliding renewal) |
 | `TRUSTED_PROXY` | No | Set to true when a reverse proxy sets `X-Real-IP`, restoring precise IP rate limiting |
 | `API_CACHE_TTL_MS` | No | SELECT cache TTL (ms, default 10000) |
@@ -171,7 +171,9 @@ The SQLite database is created automatically on the first request (with incremen
 
 > **⚠️ Serve public deployments over HTTPS**: session tokens and virtual keys travel in plaintext headers. Terminate TLS in a reverse proxy (Caddy / Nginx) and forward to `127.0.0.1:3001` with `X-Real-IP` + `TRUSTED_PROXY=true`. Upstream, proxy, and sync URLs support both HTTP and HTTPS for local/internal deployments; private addresses remain protected by SSRF rules (`ALLOW_PRIVATE_UPSTREAMS=true` for internal targets, with a loopback exception for sync).
 
-> **🔑 Secret hygiene**: `.env*` (except `.env.example`), `*.pem`, `*.p12`, `*.pfx`, `id_rsa*`, `credentials*`, `secrets*` are gitignored; run `chmod 600` on your local `.env` files.
+> **🔑 Secret hygiene**: `.env*` (except `.env.example`), `*.pem`, `*.p12`, `*.pfx`, `id_rsa*`, `credentials*`, `secrets*`, `**/.gateway-secret` are gitignored; run `chmod 600` on your local `.env` files.
+
+> **⚠️ Losing `GATEWAY_SECRET` is irreversible**: the dev-generated key lives in `<db dir>/.gateway-secret`. Encrypted upstream keys, virtual keys, and sync tokens in the database can only be decrypted with it; **if the database already exists and this file is missing, `npm run dev` refuses to start** instead of silently generating a new one. Back up that file together with the database.
 
 Forgot the login key? Delete the `admin_api_key` row from the SQLite `settings` table to fall back to the `ADMIN_API_KEY` env.
 

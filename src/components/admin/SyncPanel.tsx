@@ -5,6 +5,8 @@ import { apiFetch } from "@/lib/client/api-client";
 import { CopyableCode } from "./CopyableCode";
 import { copyText } from "@/lib/clipboard";
 import { maskVirtualKey } from "@/lib/mask-utils";
+import { useBodyScrollLock } from "@/hooks/useBodyScrollLock";
+import ModalPortal from "@/components/ModalPortal";
 import {
   AdminMobileCard,
   AdminMobileCards,
@@ -134,6 +136,8 @@ export default function SyncPanel() {
   const [instancesError, setInstancesError] = useState<string | null>(null);
   const [instancesSuccess, setInstancesSuccess] = useState<string | null>(null);
   const [pendingDeleteInstance, setPendingDeleteInstance] = useState<SyncInstanceItem | null>(null);
+  // 删除确认弹窗打开时锁背景滚动
+  useBodyScrollLock(pendingDeleteInstance !== null);
   const [deleteInstanceRecords, setDeleteInstanceRecords] = useState(false);
 
   // ---- B 端配置 ----
@@ -837,14 +841,14 @@ export default function SyncPanel() {
                   <button
                     type="button"
                     onClick={() => copyText(newTokenPlain.apiKey)}
-                    className="rounded border border-green-300 bg-white px-2 py-1 text-xs text-green-700 hover:bg-green-100"
+                    className="rounded border border-green-300 bg-white px-2 text-xs text-green-700 hover:bg-green-100 min-h-[40px] md:min-h-0 md:py-1"
                   >
                     Copy
                   </button>
                   <button
                     type="button"
                     onClick={() => setNewTokenPlain(null)}
-                    className="rounded border border-green-300 bg-white px-2 py-1 text-xs text-green-700 hover:bg-green-100"
+                    className="rounded border border-green-300 bg-white px-2 text-xs text-green-700 hover:bg-green-100 min-h-[40px] md:min-h-0 md:py-1"
                   >
                     Done
                   </button>
@@ -882,7 +886,7 @@ export default function SyncPanel() {
                           <button
                             type="button"
                             onClick={() => copyTokenKey(token)}
-                            className="text-xs text-gray-500 hover:text-blue-600"
+                            className="inline-flex min-h-[40px] items-center text-xs text-gray-500 hover:text-blue-600 md:min-h-0"
                           >
                             {copiedToken === token.id ? "Copied!" : "Copy"}
                           </button>
@@ -958,7 +962,7 @@ export default function SyncPanel() {
                           <button
                             type="button"
                             onClick={() => copyTokenKey(token)}
-                            className="text-xs text-gray-500"
+                            className="inline-flex min-h-[40px] items-center text-xs text-gray-500 md:min-h-0"
                           >
                             {copiedToken === token.id ? "Copied!" : "Copy"}
                           </button>
@@ -974,7 +978,7 @@ export default function SyncPanel() {
                             ? "Enabled — this instance can push records to /ingest/records"
                             : "Disabled — pushes with this token are rejected (401). Click to re-enable."
                         }
-                        className={`rounded px-2 py-1 text-[11px] font-medium min-h-[32px] ${
+                        className={`rounded px-2 text-[11px] font-medium min-h-[40px] md:min-h-0 md:py-1 ${
                           token.enabled
                             ? "bg-green-100 text-green-700"
                             : "bg-gray-100 text-gray-500"
@@ -1066,7 +1070,7 @@ export default function SyncPanel() {
                       <p className="mt-0.5 font-mono text-[10px] text-gray-400 break-all">{inst.uid}</p>
                       <p className="mt-0.5 text-[11px] text-gray-400">{formatDate(inst.updatedAt)}</p>
                     </div>
-                    <button type="button" onClick={() => deleteInstance(inst)} className="text-xs text-red-500">
+                    <button type="button" onClick={() => deleteInstance(inst)} className="inline-flex min-h-[40px] items-center text-xs text-red-500 md:min-h-0">
                       Delete
                     </button>
                   </div>
@@ -1087,6 +1091,7 @@ export default function SyncPanel() {
       )}
 
       {pendingDeleteInstance && (
+        <ModalPortal>
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
           <div className="flex h-full w-full flex-col rounded-none bg-white shadow-xl md:h-auto md:max-w-md md:rounded-lg">
             <div className="flex items-center justify-between border-b px-5 py-3">
@@ -1099,7 +1104,7 @@ export default function SyncPanel() {
                 ×
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto p-5">
+            <div className="flex-1 overflow-y-auto overscroll-contain p-5">
               <p className="text-sm text-gray-700">
                 Delete watermark for instance{" "}
                 {pendingDeleteInstance.instanceName && (
@@ -1129,20 +1134,21 @@ export default function SyncPanel() {
               <button
                 type="button"
                 onClick={() => setPendingDeleteInstance(null)}
-                className="rounded border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50"
+                className="rounded border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50 min-h-[40px] md:min-h-0"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={confirmDeleteInstance}
-                className="rounded bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700"
+                className="rounded bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 min-h-[40px] md:min-h-0"
               >
                 Delete
               </button>
             </div>
           </div>
         </div>
+        </ModalPortal>
       )}
     </div>
   );

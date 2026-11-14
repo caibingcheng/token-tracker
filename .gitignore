@@ -56,6 +56,8 @@ drizzle/
 # Data
 /data/
 *.db
+# dev 自动生成的主密钥（默认在 data/ 下已覆盖，自定义 SQLITE_DATABASE_PATH 时靠这条）
+**/.gateway-secret
 
 # OpenCode
 .opencode/

@@ -11,6 +11,7 @@
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
     "db:migrate-to-sqlite": "tsx scripts/migrate-pg-to-sqlite.ts",
+    "seed:demo": "tsx scripts/seed-demo-data.ts",
     "test": "vitest run"
   },
   "dependencies": {
