@@ -673,7 +673,7 @@ export default function ModelsPanel() {
               type="button"
               onClick={runSimulation}
               disabled={!modelInput.trim() || !data}
-              className="w-full rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 md:w-auto"
+              className="w-full rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 md:w-auto min-h-[40px] md:min-h-0"
             >
               Test Match
             </button>
@@ -1348,7 +1348,7 @@ export default function ModelsPanel() {
                       <button
                         type="button"
                         onClick={() => setPricePickerModel(row.model)}
-                        className="rounded bg-blue-600 px-3 py-2 text-xs font-medium text-white hover:bg-blue-700"
+                        className="rounded bg-blue-600 px-3 py-2 text-xs font-medium text-white hover:bg-blue-700 min-h-[40px] md:min-h-0"
                       >
                         {row.inputPrice === null ? "Select price" : "Edit"}
                       </button>
@@ -1356,7 +1356,7 @@ export default function ModelsPanel() {
                         <button
                           type="button"
                           onClick={() => deletePrice(row)}
-                          className="text-xs text-red-500 hover:text-red-700"
+                          className="inline-flex min-h-[40px] items-center text-xs text-red-500 hover:text-red-700 md:min-h-0"
                         >
                           Delete
                         </button>
@@ -1445,7 +1445,7 @@ function PriceBadges({
           onClick={b.action}
           disabled={!b.action}
           title={b.title}
-          className={`rounded border px-1.5 py-0.5 text-[10px] font-medium ${b.cls} ${b.action ? "hover:opacity-70" : "cursor-default"}`}
+          className={`rounded border px-2.5 text-[11px] font-medium min-h-[40px] md:min-h-0 md:px-1.5 md:py-0.5 md:text-[10px] ${b.cls} ${b.action ? "hover:opacity-70" : "cursor-default"}`}
         >
           {b.label}
         </button>

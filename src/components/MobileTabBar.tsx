@@ -2,43 +2,12 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
 
-interface MobileTabBarProps {
-  onLogout: () => void;
-}
-
-const LOGOUT_CONFIRM_MS = 3000;
-
-export default function MobileTabBar({ onLogout }: MobileTabBarProps) {
+// 移动端底部导航：只管页面切换（登出入口在 Admin 列表页底部）
+export default function MobileTabBar() {
   const pathname = usePathname();
   const isAdmin = pathname?.startsWith("/admin") ?? false;
   const isRecords = pathname === "/records" || pathname?.startsWith("/records/") === true;
-  // Logout 二次确认：首次点击进入确认态，3 秒内再点才退出，超时自动复位
-  const [confirmingLogout, setConfirmingLogout] = useState(false);
-  const logoutTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (logoutTimeoutRef.current) {
-        clearTimeout(logoutTimeoutRef.current);
-      }
-    };
-  }, []);
-
-  const handleLogoutTap = () => {
-    if (confirmingLogout) {
-      onLogout();
-      return;
-    }
-    setConfirmingLogout(true);
-    if (logoutTimeoutRef.current) {
-      clearTimeout(logoutTimeoutRef.current);
-    }
-    logoutTimeoutRef.current = setTimeout(() => {
-      setConfirmingLogout(false);
-    }, LOGOUT_CONFIRM_MS);
-  };
 
   const tabs = [
     {
@@ -82,14 +51,10 @@ export default function MobileTabBar({ onLogout }: MobileTabBarProps) {
     },
   ];
 
-  const tabClass = (active: boolean) =>
-    `flex min-h-[56px] flex-1 flex-col items-center justify-center gap-1 text-xs font-medium transition-colors ${
-      active ? "text-blue-600" : "text-gray-500 hover:text-gray-700"
-    }`;
-
   return (
+    // z-40：低于弹窗的 z-50，全屏弹窗（含其底部按钮）才不会被底栏盖住
     <nav
-      className="fixed bottom-0 inset-x-0 z-50 md:hidden border-t border-gray-200 bg-white pb-[env(safe-area-inset-bottom)]"
+      className="fixed bottom-0 inset-x-0 z-40 md:hidden border-t border-gray-200 bg-white pb-[env(safe-area-inset-bottom)]"
       aria-label="Mobile navigation"
     >
       <div className="flex">
@@ -97,28 +62,15 @@ export default function MobileTabBar({ onLogout }: MobileTabBarProps) {
           <Link
             key={tab.href}
             href={tab.href}
-            className={tabClass(tab.active)}
+            className={`flex min-h-[56px] flex-1 flex-col items-center justify-center gap-1 text-xs font-medium transition-colors ${
+              tab.active ? "text-blue-600" : "text-gray-500 hover:text-gray-700"
+            }`}
             aria-current={tab.active ? "page" : undefined}
           >
             {tab.icon}
             {tab.label}
           </Link>
         ))}
-        <button
-          type="button"
-          onClick={handleLogoutTap}
-          aria-label={confirmingLogout ? "Confirm logout" : "Logout"}
-          className={`flex min-h-[56px] flex-1 flex-col items-center justify-center gap-1 text-xs font-medium transition-colors ${
-            confirmingLogout ? "text-red-600" : "text-gray-500 hover:text-red-600"
-          }`}
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-            <polyline points="16 17 21 12 16 7" />
-            <line x1="21" y1="12" x2="9" y2="12" />
-          </svg>
-          {confirmingLogout ? "Confirm?" : "Logout"}
-        </button>
       </div>
     </nav>
   );

@@ -606,7 +606,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
             type="button"
             onClick={createRoute}
             disabled={!name.trim() || (!isRuleClassifier && !classifierModel.trim()) || submitting}
-            className="w-full rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 md:w-auto"
+            className="w-full rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 md:w-auto min-h-[40px] md:min-h-0"
           >
             {submitting ? "Adding…" : "Add Route"}
           </button>
@@ -964,7 +964,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
                       type="button"
                       onClick={() => addTarget(row)}
                       disabled={!targetModel.trim() || addingTarget}
-                      className="rounded bg-blue-600 px-3 py-2 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
+                      className="rounded bg-blue-600 px-3 py-2 text-sm text-white hover:bg-blue-700 disabled:opacity-50 min-h-[40px] md:min-h-0"
                     >
                       {addingTarget ? "Adding…" : "Add Target"}
                     </button>

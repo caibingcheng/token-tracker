@@ -12,6 +12,8 @@ import { detectBalanceProvider } from "@/lib/gateway/balance-detect";
 import { PROBE_PRESETS } from "@/lib/gateway/probe-config";
 import type { ModelProbeConfig, ProbeConfig } from "@/lib/gateway/probe-config";
 import type { ClassifierModelEntry } from "@/lib/gateway/classifier/types";
+import { useBodyScrollLock } from "@/hooks/useBodyScrollLock";
+import ModalPortal from "@/components/ModalPortal";
 
 export interface UpstreamProbeStatus {
   lastAt: number; // 0 = 尚未探测
@@ -202,6 +204,8 @@ export default function UpstreamsPanel() {
     return () => clearInterval(t);
   }, [hasImminentProbe]);
   const [pendingDelete, setPendingDelete] = useState<UpstreamItem | null>(null);
+  // 选型 / 删除确认弹窗打开时锁背景滚动（两弹窗不会同时开）
+  useBodyScrollLock(modelPicker !== null || pendingDelete !== null);
   const [hideHistory, setHideHistory] = useState(false);
   // 编辑表单中 key 启停的本地暂存（点击 Save 后才提交生效）
   const [pendingKeyEnabled, setPendingKeyEnabled] = useState<Record<number, boolean>>({});
@@ -915,7 +919,7 @@ export default function UpstreamsPanel() {
                       });
                       setShowPresets(false);
                     }}
-                    className="flex w-full items-center justify-between px-3 py-1.5 text-left text-sm hover:bg-gray-50"
+                    className="flex w-full items-center justify-between px-3 text-left text-sm hover:bg-gray-50 min-h-[40px] md:min-h-0 md:py-1.5"
                   >
                     <span>{p.name}</span>
                     <span className="text-xs text-gray-400">{p.baseUrl}</span>
@@ -1079,7 +1083,7 @@ export default function UpstreamsPanel() {
                     <button
                       type="button"
                       onClick={() => toggleFormKeyShown(index)}
-                      className="shrink-0 rounded border border-gray-300 px-3 py-2 text-xs text-gray-600 hover:bg-gray-50"
+                      className="shrink-0 rounded border border-gray-300 px-3 py-2 text-xs text-gray-600 hover:bg-gray-50 min-h-[40px] md:min-h-0"
                     >
                       {formKeyShown[index] ? "Hide" : "Show"}
                     </button>
@@ -1087,14 +1091,14 @@ export default function UpstreamsPanel() {
                       type="button"
                       onClick={() => testFormKey(index)}
                       disabled={!keyValue.trim() || !form.baseUrl.trim()}
-                      className="shrink-0 rounded border border-gray-300 px-3 py-2 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40"
+                      className="shrink-0 rounded border border-gray-300 px-3 py-2 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40 min-h-[40px] md:min-h-0"
                     >
                       Test
                     </button>
                     <button
                       type="button"
                       onClick={() => removeFormKeyRow(index)}
-                      className="shrink-0 rounded border border-gray-300 px-3 py-2 text-xs text-gray-600 hover:bg-gray-50"
+                      className="shrink-0 rounded border border-gray-300 px-3 py-2 text-xs text-gray-600 hover:bg-gray-50 min-h-[40px] md:min-h-0"
                       title="Remove key"
                     >
                       −
@@ -1117,7 +1121,7 @@ export default function UpstreamsPanel() {
             <button
               type="button"
               onClick={addFormKeyRow}
-              className="mt-2 rounded border border-dashed border-gray-300 px-3 py-1.5 text-xs text-gray-500 hover:bg-gray-50"
+              className="mt-2 rounded border border-dashed border-gray-300 px-3 text-xs text-gray-500 hover:bg-gray-50 min-h-[40px] md:min-h-0 md:py-1.5"
             >
               + Add key
             </button>
@@ -1174,7 +1178,7 @@ export default function UpstreamsPanel() {
                   <button
                     type="button"
                     onClick={() => removeTransformRow(index)}
-                    className="shrink-0 rounded border border-gray-300 px-3 py-2 text-xs text-gray-600 hover:bg-gray-50"
+                    className="shrink-0 rounded border border-gray-300 px-3 py-2 text-xs text-gray-600 hover:bg-gray-50 min-h-[40px] md:min-h-0"
                     title="Remove header transform"
                   >
                     −
@@ -1185,7 +1189,7 @@ export default function UpstreamsPanel() {
             <button
               type="button"
               onClick={addTransformRow}
-              className="mt-2 rounded border border-dashed border-gray-300 px-3 py-1.5 text-xs text-gray-500 hover:bg-gray-50"
+              className="mt-2 rounded border border-dashed border-gray-300 px-3 text-xs text-gray-500 hover:bg-gray-50 min-h-[40px] md:min-h-0 md:py-1.5"
             >
               + Add header transform
             </button>
@@ -1197,18 +1201,19 @@ export default function UpstreamsPanel() {
             </p>
           </div>
           <div className="md:col-span-2">
-            <div className="mb-1 flex items-center justify-between gap-2">
+            <div className="mb-1 flex items-center justify-between gap-3">
               <label className="min-w-0 text-xs text-gray-600">
                 Enabled Models{" "}
                 <span className="hidden md:inline text-gray-400">
                   (comma separated, supports gpt-* wildcard)
                 </span>
               </label>
+              {/* 移动端触摸区 40px（原 py-1/text-xs 仅 26px 高，手指点不中）；桌面保持紧凑行高 26px */}
               <button
                 type="button"
                 onClick={handleFetchModels}
                 disabled={fetchingModels || !form.baseUrl.trim() || (!firstFormKey() && !hasStoredEnabledKey)}
-                className="shrink-0 rounded border border-gray-300 px-2.5 py-1 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40"
+                className="inline-flex shrink-0 items-center rounded border border-gray-300 px-3 text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-40 min-h-[40px] md:min-h-0 md:px-2.5 md:py-1 md:text-xs"
               >
                 {fetchingModels ? "Fetching..." : "Fetch Models"}
               </button>
@@ -1346,7 +1351,7 @@ export default function UpstreamsPanel() {
                     <button
                       type="button"
                       onClick={() => setFormModelProbes((prev) => prev.filter((_, i) => i !== index))}
-                      className="shrink-0 rounded border border-gray-300 px-3 py-2 text-xs text-gray-600 hover:bg-gray-50"
+                      className="shrink-0 rounded border border-gray-300 px-3 py-2 text-xs text-gray-600 hover:bg-gray-50 min-h-[40px] md:min-h-0"
                       title="Remove model probe"
                     >
                       −
@@ -1374,7 +1379,7 @@ export default function UpstreamsPanel() {
               onClick={() =>
                 setFormModelProbes((prev) => [...prev, { model: "", path: "", body: "" }])
               }
-              className="mt-2 rounded border border-dashed border-gray-300 px-3 py-1.5 text-xs text-gray-500 hover:bg-gray-50"
+              className="mt-2 rounded border border-dashed border-gray-300 px-3 text-xs text-gray-500 hover:bg-gray-50 min-h-[40px] md:min-h-0 md:py-1.5"
             >
               + Add per-model probe
             </button>
@@ -1390,7 +1395,7 @@ export default function UpstreamsPanel() {
             <button
               type="submit"
               disabled={saving}
-              className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 min-h-[40px] md:min-h-0"
             >
               {saving ? "Saving..." : editingId ? "Save" : "Create"}
             </button>
@@ -1409,7 +1414,7 @@ export default function UpstreamsPanel() {
                   setProbeCustom(false);
                   setPendingKeyEnabled({});
                 }}
-                className="rounded border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50"
+                className="rounded border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50 min-h-[40px] md:min-h-0"
               >
                 Cancel
               </button>
@@ -1419,6 +1424,7 @@ export default function UpstreamsPanel() {
       </div>
 
       {modelPicker && (
+        <ModalPortal>
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
           <div className="flex h-full w-full flex-col rounded-none bg-white shadow-xl md:h-auto md:max-h-[80vh] md:w-full md:max-w-2xl md:rounded-lg md:py-0">
             <div className="flex items-center justify-between border-b px-5 py-3">
@@ -1446,7 +1452,7 @@ export default function UpstreamsPanel() {
               </div>
             )}
 
-            <div className="flex-1 overflow-y-auto p-5">
+            <div className="flex-1 overflow-y-auto overscroll-contain p-5">
               {modelPicker.error ? null :
                 modelPicker.models.length === 0 && pickerMissing.length === 0 ? (
                   <div className="py-10 text-center text-gray-400">
@@ -1567,7 +1573,7 @@ export default function UpstreamsPanel() {
                   setModelPicker(null);
                   setPickerQuery("");
                 }}
-                className="rounded border border-gray-300 px-4 py-1.5 text-sm text-gray-600 hover:bg-gray-50"
+                className="rounded border border-gray-300 px-4 py-1.5 text-sm text-gray-600 hover:bg-gray-50 min-h-[40px] md:min-h-0"
               >
                 Cancel
               </button>
@@ -1575,13 +1581,14 @@ export default function UpstreamsPanel() {
                 type="button"
                 onClick={confirmModelPicker}
                 disabled={modelPicker.models.length === 0 && pickerMissing.length === 0}
-                className="rounded bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                className="rounded bg-blue-600 px-4 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 min-h-[40px] md:min-h-0 md:py-1.5"
               >
                 Apply ({modelPicker.selected.size})
               </button>
             </div>
           </div>
         </div>
+        </ModalPortal>
       )}
 
       {/* 上游列表 */}
@@ -1772,7 +1779,7 @@ export default function UpstreamsPanel() {
                       type="button"
                       onClick={() => handleTestAllModels(u)}
                       disabled={testingAll[u.id] || u.enabledModels.length === 0}
-                      className="rounded border border-gray-300 px-2 py-0.5 text-[11px] text-gray-500 hover:bg-gray-50 disabled:opacity-40"
+                      className="rounded border border-gray-300 px-2 text-[11px] text-gray-500 hover:bg-gray-50 disabled:opacity-40 min-h-[40px] md:min-h-0 md:py-0.5"
                       title="Test all models against this upstream"
                     >
                       {testingAll[u.id] ? "Testing..." : "Test all"}
@@ -1926,6 +1933,7 @@ export default function UpstreamsPanel() {
       </div>
 
       {pendingDelete && (
+        <ModalPortal>
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
           <div className="flex h-full w-full flex-col rounded-none bg-white shadow-xl md:h-auto md:max-w-md md:rounded-lg">
             <div className="flex items-center justify-between border-b px-5 py-3">
@@ -1938,7 +1946,7 @@ export default function UpstreamsPanel() {
                 ×
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto p-5">
+            <div className="flex-1 overflow-y-auto overscroll-contain p-5">
               <p className="text-sm text-gray-700">
                 Delete upstream{" "}
                 <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">
@@ -1966,20 +1974,21 @@ export default function UpstreamsPanel() {
               <button
                 type="button"
                 onClick={() => setPendingDelete(null)}
-                className="rounded border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50"
+                className="rounded border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50 min-h-[40px] md:min-h-0"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={confirmDelete}
-                className="rounded bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700"
+                className="rounded bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 min-h-[40px] md:min-h-0"
               >
                 Delete
               </button>
             </div>
           </div>
         </div>
+        </ModalPortal>
       )}
     </div>
   );

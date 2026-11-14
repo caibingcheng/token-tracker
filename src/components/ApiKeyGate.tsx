@@ -11,6 +11,7 @@ import {
 } from "@/lib/client/api-client";
 import AppSidebar, { SidebarActionsContext } from "./AppSidebar";
 import MobileTabBar from "./MobileTabBar";
+import { LogoutProvider } from "./LogoutContext";
 import OtpInput from "./OtpInput";
 import { NumberFormatProvider } from "./NumberFormatContext";
 import {
@@ -212,7 +213,7 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
             <button
               type="submit"
               disabled={settingUp || !setupKey.trim()}
-              className="w-full rounded bg-blue-600 py-2 text-sm font-medium text-white hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-50"
+              className="w-full rounded bg-blue-600 py-2 text-sm font-medium text-white hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-50 min-h-[44px] md:min-h-0"
             >
               {settingUp ? "Setting up..." : "Create & Continue"}
             </button>
@@ -282,7 +283,7 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
             <button
               type="submit"
               disabled={loggingIn}
-              className="w-full rounded bg-blue-600 py-2 text-sm font-medium text-white hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-50"
+              className="w-full rounded bg-blue-600 py-2 text-sm font-medium text-white hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-50 min-h-[44px] md:min-h-0"
             >
               {loggingIn ? "Signing in..." : showTotp ? "Verify" : "Continue"}
             </button>
@@ -295,7 +296,7 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
                   setTotpCode("");
                   setError(null);
                 }}
-                className="w-full text-center text-xs text-gray-400 hover:text-gray-600"
+                className="inline-flex min-h-[44px] w-full items-center justify-center text-xs text-gray-400 hover:text-gray-600 md:min-h-0"
               >
                 ← Back
               </button>
@@ -309,23 +310,16 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
   return (
     <NumberFormatProvider>
       <SidebarActionsContext.Provider value={{ setSidebarActions }}>
-        {/* 桌面端内容区左移让出侧栏宽度 */}
-        <div className={sidebarCollapsed ? "md:pl-16" : "md:pl-56"}>{children}</div>
-        <AppSidebar
-          actions={sidebarActions}
-          collapsed={sidebarCollapsed}
-          onToggleCollapse={toggleSidebarCollapsed}
-        />
-        <MobileTabBar onLogout={handleLogout} />
-        <button
-          type="button"
-          onClick={() => void handleLogout()}
-          disabled={loggingOut}
-          className="hidden md:block fixed bottom-4 right-4 z-50 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs text-gray-500 shadow-sm hover:bg-gray-50 hover:text-red-600 transition-colors disabled:opacity-50"
-          title="Logout"
-        >
-          {loggingOut ? "Logging out..." : "Logout"}
-        </button>
+        <LogoutProvider value={{ logout: handleLogout, loggingOut }}>
+          {/* 桌面端内容区左移让出侧栏宽度 */}
+          <div className={sidebarCollapsed ? "md:pl-16" : "md:pl-56"}>{children}</div>
+          <AppSidebar
+            actions={sidebarActions}
+            collapsed={sidebarCollapsed}
+            onToggleCollapse={toggleSidebarCollapsed}
+          />
+          <MobileTabBar />
+        </LogoutProvider>
       </SidebarActionsContext.Provider>
     </NumberFormatProvider>
   );

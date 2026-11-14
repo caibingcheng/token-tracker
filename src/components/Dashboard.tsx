@@ -604,18 +604,17 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
 
   return (
     <main className="min-h-screen bg-gray-50 p-4 pb-20 md:p-8 md:pb-8">
-      <div className="md:hidden flex min-h-[calc(100dvh-6rem)] items-center justify-center">
-          <div className="flex flex-col items-center gap-6 text-center">
-            <h1 className="text-lg font-bold text-gray-900 truncate">
-              Token Tracker
-            </h1>
-            <MobileSummary
-              stats={stats}
-              today={todayData}
-              loading={loading}
-              error={error}
-            />
-          </div>
+      <div className="md:hidden flex flex-col gap-4">
+          <h1 className="text-lg font-bold text-gray-900 truncate">
+            Token Tracker
+          </h1>
+          <MobileSummary
+            stats={stats}
+            today={todayData}
+            todayTopModels={todayTopModels}
+            loading={loading}
+            error={error}
+          />
         </div>
         <div className="hidden md:block max-w-7xl mx-auto">
           <div className="sticky top-0 z-20 -mx-8 bg-gray-50 px-8 py-3 mb-6">

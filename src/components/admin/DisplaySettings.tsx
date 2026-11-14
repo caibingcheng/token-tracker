@@ -745,7 +745,7 @@ export default function DisplaySettings() {
         type="button"
         onClick={addHiddenRow}
         disabled={hiddenEditingIdx !== null}
-        className="rounded border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+        className="rounded border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-50 min-h-[40px] md:min-h-0"
       >
         + Add row
       </button>
@@ -886,7 +886,7 @@ export default function DisplaySettings() {
           type="button"
           onClick={addAliasRow}
           disabled={aliasesEditingIdx !== null}
-          className="rounded border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+          className="rounded border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-50 min-h-[40px] md:min-h-0"
         >
           + Add row
         </button>
@@ -1029,7 +1029,7 @@ export default function DisplaySettings() {
           type="button"
           onClick={addAgentRow}
           disabled={agentEditingIdx !== null}
-          className="rounded border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+          className="rounded border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-50 min-h-[40px] md:min-h-0"
         >
           + Add row
         </button>

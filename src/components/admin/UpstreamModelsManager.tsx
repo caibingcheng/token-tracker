@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/client/api-client";
 import { filterModelsByQuery } from "@/lib/model-search";
+import { useBodyScrollLock } from "@/hooks/useBodyScrollLock";
+import ModalPortal from "@/components/ModalPortal";
 import type { UpstreamItem } from "./UpstreamsPanel";
 
 interface ModelsData {
@@ -20,6 +22,7 @@ export default function UpstreamModelsManager({
   onUpdated: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  useBodyScrollLock(open);
   const [data, setData] = useState<ModelsData | null>(null);
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -154,7 +157,7 @@ export default function UpstreamModelsManager({
       <button
         type="button"
         onClick={openModal}
-        className="text-xs text-gray-500 hover:text-blue-600"
+        className="inline-flex min-h-[40px] items-center text-xs text-gray-500 hover:text-blue-600 md:min-h-0"
       >
         Models
       </button>
@@ -196,6 +199,7 @@ export default function UpstreamModelsManager({
     : allMainSelected ? "Unselect all" : "Select all";
 
   return (
+    <ModalPortal>
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
       <div className="flex h-full w-full flex-col rounded-none bg-white shadow-xl md:h-auto md:max-h-[80vh] md:w-full md:max-w-2xl md:rounded-lg">
         <div className="flex items-center justify-between border-b px-5 py-3">
@@ -220,7 +224,7 @@ export default function UpstreamModelsManager({
           </div>
         )}
 
-        <div className="flex-1 overflow-y-auto p-5">
+        <div className="flex-1 overflow-y-auto overscroll-contain p-5">
           {loading ? (
             <div className="py-10 text-center text-gray-400">Fetching models...</div>
           ) : !hasModels ? (
@@ -365,7 +369,7 @@ export default function UpstreamModelsManager({
             type="button"
             onClick={pull}
             disabled={loading}
-            className="text-sm text-gray-500 hover:text-blue-600 disabled:opacity-50"
+            className="inline-flex min-h-[40px] items-center text-sm text-gray-500 hover:text-blue-600 disabled:opacity-50 md:min-h-0"
           >
             {loading ? "Fetching..." : "↻ Pull from upstream"}
           </button>
@@ -373,7 +377,7 @@ export default function UpstreamModelsManager({
             <button
               type="button"
               onClick={() => setOpen(false)}
-              className="rounded border border-gray-300 px-4 py-1.5 text-sm text-gray-600 hover:bg-gray-50"
+              className="rounded border border-gray-300 px-4 py-1.5 text-sm text-gray-600 hover:bg-gray-50 min-h-[40px] md:min-h-0"
             >
               Cancel
             </button>
@@ -381,7 +385,7 @@ export default function UpstreamModelsManager({
               type="button"
               onClick={save}
               disabled={saving}
-              className="rounded bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              className="rounded bg-blue-600 px-4 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 min-h-[40px] md:min-h-0 md:py-1.5"
             >
               {saving ? "Saving..." : `Save (${selected.size})`}
             </button>
@@ -389,5 +393,6 @@ export default function UpstreamModelsManager({
         </div>
       </div>
     </div>
+    </ModalPortal>
   );
 }

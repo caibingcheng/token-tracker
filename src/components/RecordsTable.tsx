@@ -132,6 +132,14 @@ function IconNext() {
   );
 }
 
+function ChevronDownIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="6 9 12 15 18 9"/>
+    </svg>
+  );
+}
+
 export default function RecordsTable({
   selectedProvider = "all",
   selectedModel = "all",
@@ -149,6 +157,8 @@ export default function RecordsTable({
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pageInput, setPageInput] = useState("1");
+  // 移动端卡片展开的明细行（一次只展开一条，避免长列表滚动过长）
+  const [expandedId, setExpandedId] = useState<number | null>(null);
 
   const [queryKey, setQueryKey] = useState(0);
   const { compact } = useNumberFormat();
@@ -330,7 +340,7 @@ export default function RecordsTable({
   const pageInputWidth = `${Math.max(String(totalPages).length + 2, 4)}ch`;
 
   return (
-    <div className="bg-white rounded-lg shadow overflow-hidden">
+    <div className="md:bg-white md:rounded-lg md:shadow md:overflow-hidden">
       {error && hasRecords && (
         <div className="mx-4 md:mx-6 mt-3 px-3 py-2 rounded border border-red-200 bg-red-50 text-sm text-red-700">
           Refresh failed: {error}
@@ -338,11 +348,27 @@ export default function RecordsTable({
       )}
 
       {loading ? (
-        <div className="p-6">
-          <div className="h-4 bg-gray-200 rounded w-full mb-4 animate-pulse"></div>
-          <div className="h-4 bg-gray-200 rounded w-full mb-4 animate-pulse"></div>
-          <div className="h-4 bg-gray-200 rounded w-full mb-4 animate-pulse"></div>
-        </div>
+        <>
+          <div className="hidden md:block p-6">
+            <div className="h-4 bg-gray-200 rounded w-full mb-4 animate-pulse"></div>
+            <div className="h-4 bg-gray-200 rounded w-full mb-4 animate-pulse"></div>
+            <div className="h-4 bg-gray-200 rounded w-full mb-4 animate-pulse"></div>
+          </div>
+          {/* 移动端骨架屏与卡片同形（白卡 + 两行文本 + 三列数值） */}
+          <div className="space-y-3 md:hidden">
+            {[1, 2, 3, 4].map((i) => (
+              <div key={i} className="animate-pulse rounded-xl bg-white p-4 shadow-sm ring-1 ring-gray-100">
+                <div className="h-4 w-2/3 rounded bg-gray-200" />
+                <div className="mt-2 h-3 w-1/2 rounded bg-gray-100" />
+                <div className="mt-3 grid grid-cols-3 gap-2">
+                  <div className="h-8 rounded bg-gray-100" />
+                  <div className="h-8 rounded bg-gray-100" />
+                  <div className="h-8 rounded bg-gray-100" />
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
       ) : error && !hasRecords ? (
         <div className="p-6">
           <p className="text-red-600">Error: {error}</p>
@@ -468,100 +494,175 @@ export default function RecordsTable({
             </table>
           </div>
 
-          <div className="md:hidden p-4 space-y-2">
+          {/* 移动端卡片：模型/状态 + 元信息 + 三列数值 + 延迟，点开看完整明细。
+              移动端没有 hover，所以 Session / Key / 原始 UA / request 名必须可展开，不能再只靠 title */}
+          <div className="md:hidden space-y-3">
             {records.map((record) => {
-              // 紧凑卡片：标题（模型+状态）/ 元信息一行 / In·Out·Cache% 三列 / 延迟一行；
-              // 完整明细（requested 名、原始 UA、token 分解）走 title tooltip，与桌面列语义一致
-              const metaParts: string[] = [];
-              // tooltip 与可见列保持一致：只带 show() 允许的分量，且给被截断的字段完整值
-              const metaTitleParts: string[] = [];
-              if (show("date")) {
-                metaParts.push(formatShortDate(record.createdAt));
-                metaTitleParts.push(dateTitle(record.createdAt));
-              }
-              if (show("provider")) {
-                metaParts.push(record.providerName || "-");
-                metaTitleParts.push(`Provider: ${record.providerName || "-"}`);
-              }
-              if (show("agent")) {
-                metaParts.push(record.agent);
-                metaTitleParts.push(agentTitle(record));
-              }
-              if (show("key")) {
-                metaParts.push(`Key: ${record.keyName || "-"}`);
-                metaTitleParts.push(`Key: ${record.keyName || "-"}`);
-              }
-              if (show("session")) {
-                metaParts.push(`Session: ${record.sessionId || "-"}`);
-                metaTitleParts.push(`Session: ${record.sessionId || "-"}`);
-              }
               const rate = cacheRate(record);
-              const showLatencyLine = show("ttft") || show("latency");
+              const expanded = expandedId === record.id;
+              const metaParts: string[] = [];
+              if (show("date")) metaParts.push(formatShortDate(record.createdAt));
+              if (show("provider")) metaParts.push(record.providerName || "-");
+              if (show("agent")) metaParts.push(record.agent);
+
+              const details: Array<{ label: string; value: string; breakAll?: boolean }> = [];
+              if (show("model")) {
+                if (record.normalizedModel && record.normalizedModel !== record.model) {
+                  details.push({ label: "Manual", value: record.normalizedModel });
+                }
+                if (record.requestModel && record.requestModel !== record.model) {
+                  details.push({ label: "Requested", value: record.requestModel });
+                }
+              }
+              if (show("key")) details.push({ label: "Key", value: record.keyName || "-" });
+              if (show("agent")) {
+                details.push({ label: "User-Agent", value: record.userAgent?.trim() || "-" });
+              }
+              if (show("tokens")) {
+                details.push({ label: "Prompt", value: formatFullNumber(promptTotal(record)) });
+                details.push({ label: "Uncached", value: formatFullNumber(record.inputTokens) });
+                details.push({ label: "Cached", value: formatFullNumber(record.cacheRead) });
+                if (record.cacheWrite > 0) {
+                  details.push({ label: "Cache write", value: formatFullNumber(record.cacheWrite) });
+                }
+                details.push({ label: "Output", value: formatFullNumber(record.outputTokens) });
+              }
+              if (show("ttft")) details.push({ label: "TTFT", value: latencyTitle(record.ttftMs) });
+              if (show("latency")) details.push({ label: "Latency", value: latencyTitle(record.latencyMs) });
+              if (show("session")) {
+                details.push({ label: "Session", value: record.sessionId || "-", breakAll: true });
+              }
+              if (show("date")) {
+                details.push({ label: "Time", value: dateTitle(record.createdAt), breakAll: true });
+              }
               return (
-                <div key={record.id} className="space-y-1.5 rounded-lg border border-gray-200 p-3">
-                  {(show("model") || show("status")) && (
-                    <div className="flex items-center justify-between gap-2">
-                      {show("model") ? (
-                        <p className="truncate text-sm font-semibold text-gray-900" title={modelTitle(record)}>
-                          {record.model}
-                        </p>
-                      ) : (
-                        <span />
-                      )}
-                      {show("status") && <StatusBadge status={record.status} />}
+                <div key={record.id} className="overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-gray-100">
+                  <button
+                    type="button"
+                    onClick={() => setExpandedId(expanded ? null : record.id)}
+                    aria-expanded={expanded}
+                    className="w-full p-4 text-left active:bg-gray-50"
+                  >
+                    {(show("model") || show("status")) && (
+                      <span className="flex items-start justify-between gap-2">
+                        {show("model") ? (
+                          <span className="min-w-0 truncate text-sm font-semibold text-gray-900">
+                            {record.model}
+                          </span>
+                        ) : (
+                          <span />
+                        )}
+                        {show("status") && <StatusBadge status={record.status} />}
+                      </span>
+                    )}
+                    {metaParts.length > 0 && (
+                      <span className="mt-1 block truncate text-xs text-gray-500">
+                        {metaParts.join(" · ")}
+                      </span>
+                    )}
+                    {show("tokens") && (
+                      <span className="mt-3 grid grid-cols-3 gap-2">
+                        <span className="block">
+                          <span className="block text-[11px] uppercase text-gray-400">In</span>
+                          <span className="block text-sm font-semibold tabular-nums text-gray-900">
+                            {formatNumber(promptTotal(record), compact)}
+                          </span>
+                        </span>
+                        <span className="block">
+                          <span className="block text-[11px] uppercase text-gray-400">Out</span>
+                          <span className="block text-sm font-semibold tabular-nums text-gray-900">
+                            {formatNumber(record.outputTokens, compact)}
+                          </span>
+                        </span>
+                        <span className="block">
+                          <span className="block text-[11px] uppercase text-gray-400">Cache</span>
+                          <span className="block text-sm font-semibold tabular-nums text-gray-900">
+                            {rate === null ? "-" : `${Math.round(rate)}%`}
+                          </span>
+                        </span>
+                      </span>
+                    )}
+                    {(show("ttft") || show("latency") || details.length > 0) && (
+                      <span className="mt-2 flex items-center justify-between gap-2 text-xs tabular-nums text-gray-500">
+                        <span>
+                          {show("ttft") && <>TTFT {formatLatencyMs(record.ttftMs)}</>}
+                          {show("ttft") && show("latency") && " · "}
+                          {show("latency") && <>Latency {formatLatencyMs(record.latencyMs)}</>}
+                        </span>
+                        {details.length > 0 && (
+                          <span
+                            className={`shrink-0 text-gray-400 transition-transform ${
+                              expanded ? "rotate-180" : ""
+                            }`}
+                          >
+                            <ChevronDownIcon />
+                          </span>
+                        )}
+                      </span>
+                    )}
+                  </button>
+                  {expanded && details.length > 0 && (
+                    <div className="space-y-1.5 border-t border-gray-100 bg-gray-50/60 px-4 py-3">
+                      {details.map((detail) => (
+                        <div key={detail.label} className="flex items-start justify-between gap-3 text-xs">
+                          <span className="shrink-0 text-gray-400">{detail.label}</span>
+                          <span
+                            className={`min-w-0 text-right font-medium text-gray-700 ${
+                              detail.breakAll ? "break-all font-mono" : "break-words"
+                            }`}
+                          >
+                            {detail.value}
+                          </span>
+                        </div>
+                      ))}
                     </div>
-                  )}
-                  {metaParts.length > 0 && (
-                    <p
-                      className="truncate text-xs text-gray-400"
-                      title={metaTitleParts.join("\n")}
-                    >
-                      {metaParts.join(" · ")}
-                    </p>
-                  )}
-                  {show("tokens") && (
-                    <div className="grid grid-cols-3 gap-2" title={tokensTitle(record)}>
-                      <div>
-                        <p className="text-[11px] text-gray-500">In</p>
-                        <p className="text-sm font-semibold tabular-nums text-gray-900">
-                          {formatNumber(promptTotal(record), compact)}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-[11px] text-gray-500">Out</p>
-                        <p className="text-sm font-semibold tabular-nums text-gray-900">
-                          {formatNumber(record.outputTokens, compact)}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-[11px] text-gray-500">Cache</p>
-                        <p className="text-sm font-semibold tabular-nums text-gray-900">
-                          {rate === null ? "-" : `${Math.round(rate)}%`}
-                        </p>
-                      </div>
-                    </div>
-                  )}
-                  {showLatencyLine && (
-                    <p
-                      className="text-xs text-gray-600 tabular-nums"
-                      title={[
-                        show("ttft") && `TTFT: ${latencyTitle(record.ttftMs)}`,
-                        show("latency") && `Latency: ${latencyTitle(record.latencyMs)}`,
-                      ]
-                        .filter(Boolean)
-                        .join(" · ")}
-                    >
-                      {show("ttft") && <>TTFT {formatLatencyMs(record.ttftMs)}</>}
-                      {show("ttft") && show("latency") && " · "}
-                      {show("latency") && <>Latency {formatLatencyMs(record.latencyMs)}</>}
-                    </p>
                   )}
                 </div>
               );
             })}
           </div>
 
-          <div className="px-4 md:px-6 py-4 border-t">
+          {/* 移动端分页：prev / 页码 / next（first+prev+input+next+last 在 360px 下换行错位） */}
+          <div className="flex items-center justify-between gap-2 border-t border-gray-200 px-1 py-3 md:hidden">
+            <PagerButton
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={isFirstPage}
+              label="Previous page"
+            >
+              <IconPrev />
+            </PagerButton>
+            <span className="flex items-center gap-1 text-sm text-gray-600">
+              Page
+              <input
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                value={pageInput}
+                onChange={(e) => setPageInput(e.target.value.replace(/[^0-9]/g, ""))}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    commitPageInput();
+                  }
+                }}
+                onBlur={commitPageInput}
+                aria-label="Page number"
+                title="Jump to page"
+                style={{ width: pageInputWidth }}
+                className="h-10 px-0 text-center text-base tabular-nums border border-gray-200 rounded bg-gray-50 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+              of <span className="tabular-nums">{totalPages}</span>
+            </span>
+            <PagerButton
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={isLastPage}
+              label="Next page"
+            >
+              <IconNext />
+            </PagerButton>
+          </div>
+
+          <div className="hidden md:block px-4 md:px-6 py-4 border-t">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <span className="text-sm text-gray-600">
                 Page {page} of {totalPages}

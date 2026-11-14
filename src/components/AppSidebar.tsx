@@ -14,16 +14,8 @@ import {
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useNumberFormat } from "./NumberFormatContext";
-
-const ADMIN_TABS = [
-  ["upstreams", "Upstreams"],
-  ["models", "Models"],
-  ["virtual-keys", "Virtual Keys"],
-  ["security", "Security"],
-  ["display", "Display"],
-  ["sync", "Sync"],
-  ["audit", "Audit"],
-] as const;
+import { ADMIN_SECTIONS } from "@/app/admin/sections";
+import { useConfirmLogout } from "./LogoutContext";
 
 // Dashboard 专属操作节点注册到侧栏底部：
 // Dashboard 挂载时 setSidebarActions(操作组 JSX)，卸载时置 null → Admin 页操作组自动消失。
@@ -107,13 +99,15 @@ const DASHBOARD_SECTIONS: SectionNavItem[] = [
   },
 ];
 
-// Admin 二级 tab 列表：inline 与 flyout 共用
+// Admin 二级 tab 列表：inline 与 flyout 共用（分区数据源：src/app/admin/sections.tsx）。
+// 桌面端登出入口在这里（侧栏 Admin 子菜单末尾）：桌面用户不经过 /admin 列表页
 function AdminTabsNav({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
+  const { confirming, loggingOut, triggerLogout } = useConfirmLogout();
 
   return (
     <>
-      {ADMIN_TABS.map(([id, label]) => {
+      {ADMIN_SECTIONS.map(({ id, label }) => {
         const active = pathname === `/admin/${id}`;
         return (
           <Link
@@ -131,6 +125,23 @@ function AdminTabsNav({ onNavigate }: { onNavigate?: () => void }) {
           </Link>
         );
       })}
+      <div className="my-1 border-t border-gray-200" />
+      <button
+        type="button"
+        onClick={() => {
+          if (!confirming) onNavigate?.();
+          triggerLogout();
+        }}
+        disabled={loggingOut}
+        aria-label={confirming ? "Confirm logout" : "Logout"}
+        className={`block w-full rounded px-3 py-1.5 text-left text-sm transition-colors disabled:opacity-50 ${
+          confirming
+            ? "bg-red-600 font-medium text-white hover:bg-red-700"
+            : "text-red-600 hover:bg-red-50"
+        }`}
+      >
+        {loggingOut ? "Logging out..." : confirming ? "Confirm logout" : "Logout"}
+      </button>
     </>
   );
 }
