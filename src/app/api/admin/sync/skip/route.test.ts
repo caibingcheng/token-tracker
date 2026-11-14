@@ -4,7 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { NextRequest } from "next/server";
 import { POST } from "./route";
-import { initDatabase } from "@/lib/db";
+import { closeDb, initDatabase } from "@/lib/db";
 import { setAdminApiKey, getTokenEpoch, deleteSetting, getSetting, setSetting } from "@/lib/auth/settings";
 import { signSessionToken, keyFingerprint } from "@/lib/auth/session";
 
@@ -21,6 +21,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  closeDb();
   rmSync(dir, { recursive: true, force: true });
   if (ORIG_DB === undefined) delete process.env.SQLITE_DATABASE_PATH;
   else process.env.SQLITE_DATABASE_PATH = ORIG_DB;

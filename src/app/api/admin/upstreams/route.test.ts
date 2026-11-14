@@ -5,7 +5,7 @@ import { join } from "path";
 import { NextRequest } from "next/server";
 import { GET as LIST_GET, POST as LIST_POST } from "./route";
 import { GET as ITEM_GET, PATCH } from "./[id]/route";
-import { db, initDatabase, upstreamsTable, upstreamKeysTable, tokenRecords } from "@/lib/db";
+import { closeDb, db, initDatabase, tokenRecords, upstreamKeysTable, upstreamsTable } from "@/lib/db";
 import { eq } from "drizzle-orm";
 import { setAdminApiKey, getTokenEpoch, deleteSetting } from "@/lib/auth/settings";
 import { signSessionToken, keyFingerprint } from "@/lib/auth/session";
@@ -27,6 +27,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  closeDb();
   rmSync(dir, { recursive: true, force: true });
   if (ORIG_DB === undefined) delete process.env.SQLITE_DATABASE_PATH;
   else process.env.SQLITE_DATABASE_PATH = ORIG_DB;

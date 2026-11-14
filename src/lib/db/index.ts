@@ -22,10 +22,32 @@ let initialized = false;
 // 本地开发零配置能起，Docker 由 compose / entrypoint 显式传入
 const DEFAULT_DB_PATH = "./data/token-tracker.db";
 
+// 已打开的 SQLite 客户端登记表（挂在 globalThis，跨模块实例共享）。
+// 测试里 vi.resetModules() 会重建模块实例，每个实例都有自己的连接；
+// closeDb 必须能关掉历史连接，否则 Windows 上临时库文件删不掉。
+const CLIENT_REGISTRY = Symbol.for("token-tracker.sqlite-clients");
+
 export async function initDatabase() {
   if (initialized) return;
   await ensureClient();
   initialized = true;
+}
+
+// 关闭所有已打开的 SQLite 句柄并重置本实例状态。仅供测试 afterAll 使用：
+// Windows 上句柄未关时临时库文件删不掉（unlink EPERM），Linux 上不报错。
+// 生产代码不走这里；重复调用安全。
+export function closeDb() {
+  const registry: any[] = (globalThis as any)[CLIENT_REGISTRY] ?? [];
+  for (const client of registry) {
+    try {
+      client.close();
+    } catch {
+      // 已关闭或连接失效，忽略
+    }
+  }
+  registry.length = 0;
+  db = undefined;
+  initialized = false;
 }
 
 async function ensureClient() {
@@ -40,6 +62,7 @@ async function ensureClient() {
 
   mkdirSync(dirname(dbPath), { recursive: true });
   const client = new Database(dbPath);
+  ((globalThis as any)[CLIENT_REGISTRY] ??= []).push(client);
   wrapDatabaseClient(client);
 
   const { drizzle } = await import("drizzle-orm/better-sqlite3");

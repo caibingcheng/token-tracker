@@ -6,7 +6,7 @@ import { NextRequest } from "next/server";
 import { GET } from "./route";
 import { GET as usageGET } from "./[id]/usage/route";
 import { DELETE } from "./[id]/route";
-import { db, initDatabase, virtualKeysTable, tokenRecords } from "@/lib/db";
+import { closeDb, db, initDatabase, tokenRecords, virtualKeysTable } from "@/lib/db";
 import { setAdminApiKey, getTokenEpoch, deleteSetting } from "@/lib/auth/settings";
 import { signSessionToken, keyFingerprint } from "@/lib/auth/session";
 import { withSkipCache } from "@/lib/db/cache";
@@ -25,6 +25,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  closeDb();
   rmSync(dir, { recursive: true, force: true });
   if (ORIG_DB === undefined) delete process.env.SQLITE_DATABASE_PATH;
   else process.env.SQLITE_DATABASE_PATH = ORIG_DB;

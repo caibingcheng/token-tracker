@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { SyncPusher } from "./pusher";
-import { db, initDatabase, tokenRecords } from "@/lib/db";
+import { closeDb, db, initDatabase, tokenRecords } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { encryptSecret } from "@/lib/gateway/crypto";
 import { getSetting, setSetting, deleteSetting } from "@/lib/auth/settings";
@@ -60,6 +60,7 @@ afterAll(async () => {
   await (getSyncDispatcher() as { close?: () => Promise<void> }).close?.().catch(() => {});
   server?.closeAllConnections?.();
   await new Promise<void>((resolve) => server?.close(() => resolve()));
+  closeDb();
   rmSync(dir, { recursive: true, force: true });
   if (ORIG_DB === undefined) delete process.env.SQLITE_DATABASE_PATH;
   else process.env.SQLITE_DATABASE_PATH = ORIG_DB;

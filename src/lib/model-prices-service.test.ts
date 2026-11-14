@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { getModelPricesList, invalidateRemoteModelCache, RECENT_ACTIVITY_WINDOW_MS, autoFillAllUnpriced, autoFillForceAll } from "./model-prices-service";
-import { db, initDatabase, upstreamsTable, modelPricesTable, tokenRecords, syncInstancesTable } from "@/lib/db";
+import { closeDb, db, initDatabase, modelPricesTable, syncInstancesTable, tokenRecords, upstreamsTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { eq } from "drizzle-orm";
 import { setSetting } from "@/lib/auth/settings";
@@ -30,6 +30,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  closeDb();
   rmSync(dir, { recursive: true, force: true });
   if (ORIG_DB === undefined) delete process.env.SQLITE_DATABASE_PATH;
   else process.env.SQLITE_DATABASE_PATH = ORIG_DB;

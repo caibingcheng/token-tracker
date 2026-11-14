@@ -4,7 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { NextRequest } from "next/server";
 import { DELETE, PUT } from "./route";
-import { db, initDatabase, adminAuditLogsTable } from "@/lib/db";
+import { adminAuditLogsTable, closeDb, db, initDatabase } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import {
   setAdminApiKey,
@@ -29,6 +29,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  closeDb();
   rmSync(dir, { recursive: true, force: true });
   if (ORIG_DB === undefined) delete process.env.SQLITE_DATABASE_PATH;
   else process.env.SQLITE_DATABASE_PATH = ORIG_DB;

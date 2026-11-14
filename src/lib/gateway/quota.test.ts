@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { checkQuota, hasQuotaLimits } from "./quota";
 import type { QuotaCheckInput, QuotaUsage } from "./quota";
 import { mkdtempSync, rmSync } from "fs";
+import { closeDb } from "@/lib/db";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -123,6 +124,7 @@ describe("quota loadUsage (DB-backed)", () => {
   });
 
   afterAll(() => {
+    closeDb();
     rmSync(dir, { recursive: true, force: true });
   });
 

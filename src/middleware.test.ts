@@ -4,6 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { NextRequest } from "next/server";
 import { setAdminApiKey, deleteAdminApiKey } from "@/lib/auth/settings";
+import { closeDb } from "@/lib/db";
 import { signSessionToken, keyFingerprint } from "@/lib/auth/session";
 
 const ORIG_DB = process.env.SQLITE_DATABASE_PATH;
@@ -20,6 +21,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  closeDb();
   rmSync(dir, { recursive: true, force: true });
   if (ORIG_DB === undefined) delete process.env.SQLITE_DATABASE_PATH;
   else process.env.SQLITE_DATABASE_PATH = ORIG_DB;

@@ -7,7 +7,7 @@ import { GET, POST } from "./route";
 import { PATCH, DELETE } from "./[id]/route";
 import { POST as ADD_TARGET } from "./[id]/targets/route";
 import { PATCH as PATCH_TARGET, DELETE as DELETE_TARGET } from "./[id]/targets/[targetId]/route";
-import { db, initDatabase, namedRouteTargetsTable, namedRoutesTable, upstreamsTable } from "@/lib/db";
+import { closeDb, db, initDatabase, namedRouteTargetsTable, namedRoutesTable, upstreamsTable } from "@/lib/db";
 import { setAdminApiKey, getTokenEpoch, deleteSetting } from "@/lib/auth/settings";
 import { signSessionToken, keyFingerprint } from "@/lib/auth/session";
 import { withSkipCache } from "@/lib/db/cache";
@@ -25,6 +25,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  closeDb();
   rmSync(dir, { recursive: true, force: true });
   if (ORIG_DB === undefined) delete process.env.SQLITE_DATABASE_PATH;
   else process.env.SQLITE_DATABASE_PATH = ORIG_DB;

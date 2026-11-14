@@ -39,7 +39,8 @@ describe("withAuth static scan (防漏保障第三层)", () => {
   it("every /api route handler must use withAuth (login excluded)", () => {
     const violations: string[] = [];
     for (const file of routeFiles) {
-      const relative = file.slice(process.cwd().length + 1);
+      // 统一成正斜杠：Windows 上 join() 产出反斜杠，exempt 用正斜杠登记
+      const relative = file.slice(process.cwd().length + 1).replace(/\\/g, "/");
       if (exempt.has(relative)) continue;
       const content = readFileSync(file, "utf8");
       if (!content.includes("withAuth")) {

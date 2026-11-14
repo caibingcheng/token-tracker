@@ -4,7 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { NextRequest } from "next/server";
 import { GET } from "./route";
-import { db, initDatabase, modelPricesTable } from "@/lib/db";
+import { closeDb, db, initDatabase, modelPricesTable } from "@/lib/db";
 import {
   setAdminApiKey,
   getTokenEpoch,
@@ -72,6 +72,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  closeDb();
   rmSync(dir, { recursive: true, force: true });
   if (ORIG_DB === undefined) delete process.env.SQLITE_DATABASE_PATH;
   else process.env.SQLITE_DATABASE_PATH = ORIG_DB;

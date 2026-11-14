@@ -7,7 +7,7 @@ import { GET, PUT, DELETE } from "./route";
 import { POST as selectPOST } from "./select/route";
 import { GET as candidatesGET } from "./candidates/route";
 import { POST as autofillPOST } from "./auto-fill/route";
-import { db, initDatabase, upstreamsTable, modelPricesTable, tokenRecords, syncInstancesTable } from "@/lib/db";
+import { closeDb, db, initDatabase, modelPricesTable, syncInstancesTable, tokenRecords, upstreamsTable } from "@/lib/db";
 import { invalidateRemoteModelCache } from "@/lib/model-prices-service";
 import { eq } from "drizzle-orm";
 import {
@@ -77,6 +77,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  closeDb();
   rmSync(dir, { recursive: true, force: true });
   if (ORIG_DB === undefined) delete process.env.SQLITE_DATABASE_PATH;
   else process.env.SQLITE_DATABASE_PATH = ORIG_DB;

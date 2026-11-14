@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync } from "fs";
+import { closeDb } from "@/lib/db";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -22,6 +23,7 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
+  closeDb();
   rmSync(dir, { recursive: true, force: true });
 });
 
