@@ -24,10 +24,10 @@
 ## 环境变量
 
 ```bash
-# SQLite（必需）
+# SQLite（可选，默认 ./data/token-tracker.db）
 SQLITE_DATABASE_PATH="./data/token-tracker.db"
 
-# AI Gateway 主密钥（必需）
+# AI Gateway 主密钥（生产必需；npm run dev 缺失时自动生成到 <db 目录>/.gateway-secret）
 GATEWAY_SECRET=""                   # AES-256-GCM 32 字节（hex/base64）；openssl rand -hex 32
 
 # 可选：bootstrap（未配置且 DB 无 key 时 Web 端出现首次设置向导）
@@ -53,7 +53,7 @@ ALLOW_PRIVATE_UPSTREAMS=false       # 设为 true 允许上游指向内网/环�
 # API_CACHE_DEBUG=true              # 设为 true 在日志中输出缓存命中/未命中
 ```
 
-- 本地开发复制 `.env.example` → `.env.local`，并 `chmod 600 .env .env.local`（`.env*` 除模板外已在 `.gitignore` 中）
+- 本地开发复制 `.env.example` → `.env.local`，并 `chmod 600 .env .env.local`（`.env*` 除模板外已在 `.gitignore` 中）；**不建也能起**：`SQLITE_DATABASE_PATH` 默认 `./data/token-tracker.db`（`src/lib/db/index.ts`、`drizzle.config.ts` 同值），`GATEWAY_SECRET` 缺失时由 `next.config.js` 在 dev 生成并落盘 `<db 目录>/.gateway-secret`（`flag:"wx"` 原子创建 + 0600，后续复用；已在 `.gitignore` 白名单外单独 ignore `**/.gateway-secret`，自定义 db 目录也不会入库）。只认 `phase === PHASE_DEVELOPMENT_SERVER`（不看 `NODE_ENV`：`next build --debug-prerender` 会把它设成 development），build/start 不生成，生产缺 secret 仍是 503；**同一目录下 db 已存在但密钥文件缺失时拒绝启动**（生成新密钥会让已加密的 upstream key / 虚拟 key / 同步 token 永久不可解，与 `scripts/local-entrypoint.sh` 同口径），ENOENT 之外的读错（权限/IO）也不当作首次运行。secret 必须在启动进程内就位，middleware（edge）在编译期读 `process.env.GATEWAY_SECRET`，运行期写文件无效
 - **compose 无默认凭证**：`docker-compose.example.yml` 的 `ADMIN_API_KEY` / `GATEWAY_SECRET` 用 `${VAR:?...}` 必填语法，缺失时 compose 直接报错退出（不再有 `your-api-key-here` 之类公开默认值）
 - **公网建议 HTTPS**：会话 token / 虚拟 key / 同步 token 都走 header 明文，公网裸 HTTP 会暴露凭据。反代（Caddy/Nginx）终止 TLS 后转发到 `127.0.0.1:3001`，并配置 `X-Real-IP` + `TRUSTED_PROXY=true`。upstream、proxy、sync 均允许 HTTP/HTTPS 以兼容本机和内网部署；私网地址仍受 SSRF 策略保护（内网目标用 `ALLOW_PRIVATE_UPSTREAMS=true`，sync loopback 例外）
 

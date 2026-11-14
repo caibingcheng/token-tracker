@@ -8,6 +8,7 @@ export default defineConfig({
   out: "./drizzle",
   dialect: "sqlite",
   dbCredentials: {
-    url: process.env.SQLITE_DATABASE_PATH!,
+    // 与 src/lib/db/index.ts 的默认值保持一致，避免 drizzle-kit 指向另一份库
+    url: process.env.SQLITE_DATABASE_PATH || "./data/token-tracker.db",
   },
 });
