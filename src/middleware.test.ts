@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { NextRequest } from "next/server";
-import { setAdminApiKey, deleteAdminApiKey } from "@/lib/auth/settings";
+import { setAdminApiKey } from "@/lib/auth/settings";
 import { closeDb } from "@/lib/db";
 import { signSessionToken, keyFingerprint } from "@/lib/auth/session";
 

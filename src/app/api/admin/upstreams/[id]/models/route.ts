@@ -4,15 +4,8 @@ import { db, initDatabase, upstreamsTable, upstreamKeysTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";
 import { fetchUpstreamModels } from "@/lib/gateway/upstream-client";
-import { decryptSecret, GatewaySecretMissingError } from "@/lib/gateway/crypto";
+import { decryptSecret } from "@/lib/gateway/crypto";
 import { parseEnabledModels } from "@/lib/gateway/model-router";
-
-function gatewaySecretError() {
-  return NextResponse.json(
-    { success: false, error: "GATEWAY_SECRET is not configured" },
-    { status: 503 }
-  );
-}
 
 interface Params {
   params: Promise<{ id: string }>;

@@ -145,7 +145,7 @@ export default function SyncPanel() {
   const [tokenInput, setTokenInput] = useState("");
   const [instanceName, setInstanceName] = useState("");
   const [configuredInstance, setConfiguredInstance] = useState("");
-  const [boundUid, setBoundUid] = useState<string | null>(null);
+  const [, setBoundUid] = useState<string | null>(null);
   const [editingConfig, setEditingConfig] = useState(false); // false = 查看模式；未配置时自动进入编辑模式
   const [configBusy, setConfigBusy] = useState(false);
   const [configError, setConfigError] = useState<string | null>(null);

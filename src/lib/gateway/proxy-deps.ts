@@ -1,4 +1,4 @@
-import { eq, sql, and } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { db, initDatabase, upstreamsTable, upstreamKeysTable, virtualKeysTable, tokenRecords, upstreamModelHealthTable, namedRoutesTable, namedRouteTargetsTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { decryptSecret, safeCompare, GatewaySecretMissingError } from "./crypto";

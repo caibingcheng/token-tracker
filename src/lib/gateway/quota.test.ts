@@ -36,8 +36,6 @@ describe("checkQuota", () => {
     };
   }
 
-  const zeroUsage: QuotaUsage = { rpm: 0, tpm: 0, dailyTokens: 0, monthlyTokens: 0 };
-
   it("never violates when all limits are null", () => {
     expect(checkQuota(mkInput(), { rpm: 999, tpm: 999999, dailyTokens: 99999999, monthlyTokens: 999999999 })).toBeNull();
   });

@@ -79,7 +79,7 @@ export function validateFilterOrThrow(
   providerFilter: string[] | null,
   model: string,
   modelFilter: string[] | null,
-  agent?: string
+  _agent?: string
 ): void {
   if (provider !== "all" && (!providerFilter || providerFilter.length === 0)) {
     throw new FilterValidationError(`Unknown provider: ${provider}`);

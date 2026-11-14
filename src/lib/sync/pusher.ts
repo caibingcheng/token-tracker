@@ -6,7 +6,7 @@
 // - 单进程假设：一个 B = 一个 Node 进程连一个 SQLite，不支持同库多进程
 
 import { and, gt, sql } from "drizzle-orm";
-import { db, initDatabase, tokenRecords } from "@/lib/db";
+import { db, tokenRecords } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import type { Dispatcher } from "undici";
 import { getOutboundDispatcher } from "@/lib/gateway/proxy-dispatcher";

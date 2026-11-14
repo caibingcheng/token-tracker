@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { eq, count } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db, initDatabase, upstreamsTable, upstreamKeysTable, upstreamModelHealthTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";

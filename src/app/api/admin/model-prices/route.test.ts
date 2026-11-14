@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -270,7 +270,7 @@ describe("model-prices admin routes", () => {
   });
 
   it("GET: pending (multi-candidate with differing prices) and unmatched badges", async () => {
-    const token = await makeToken();
+    await makeToken();
     await insertUpstream();
     // 快照里只有一个 openai/gpt-4o 候选 → 非 pending
     const rows = await getRows();

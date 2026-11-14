@@ -8,7 +8,6 @@ import {
   addDaysLocal,
 } from "@/lib/timezone-utils";
 import {
-  BarChart,
   Bar,
   Cell,
   ComposedChart,
@@ -393,7 +392,7 @@ function getXAxisInterval(range: number): number {
   return 4;
 }
 
-function HourlyDistributionCard({ hourly, range, timezoneOffsetMinutes }: { hourly?: DailyData[]; range: number; timezoneOffsetMinutes?: number }) {
+function HourlyDistributionCard({ hourly, range }: { hourly?: DailyData[]; range: number; timezoneOffsetMinutes?: number }) {
   const { compact } = useNumberFormat();
   const { buckets, maxAvg } = useMemo(() => {
     const map = new Map<number, number>();
@@ -671,7 +670,6 @@ function RatioCostTooltip({ active, payload, label }: {
   payload?: Array<TooltipEntry>;
   label?: string;
 }) {
-  const { compact } = useNumberFormat();
   if (!active || !payload || payload.length === 0) return null;
   const filtered = payload.filter((entry) => {
     const name = String(entry.name || "");
