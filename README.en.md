@@ -1,44 +1,14 @@
 # Token Tracker — Personal AI Gateway
 
-[中文](./README.md) · [CI (main)](https://github.com/caibingcheng/token-tracker/actions/workflows/docker.yml) · [Docker Image](https://ghcr.io/caibingcheng/token-tracker)
+[中文](./README.md) · [Architecture](./docs/architecture.md) · [Screenshots](./docs/screenshots.md) · [Dev / API / Env](./docs/development.md) · [Security & Deployment](./docs/security.md) · [CI (main)](https://github.com/caibingcheng/token-tracker/actions/workflows/docker.yml) · [Docker Image](https://ghcr.io/caibingcheng/token-tracker)
 
 A lightweight personal AI Gateway: unify access to multiple upstream LLM APIs (OpenAI-compatible / Anthropic / Gemini) behind a single set of standard protocol endpoints, proxy requests and responses transparently, and automatically parse and record token usage along the way. Ships with a Token Usage Dashboard and an admin UI.
 
 **Auto-accounting personal AI gateway**: transparent pass-through for OpenAI / Anthropic / Gemini, streaming and non-streaming token usage parsed automatically and attributed per virtual key — zero plugins, clients only change `base_url` and key
 
-![Dashboard Screenshot](./public/dashboard1.png)
-![Dashboard Screenshot](./public/dashboard2.png)
+![Dashboard overview](./public/screenshots/dashboard.png)
 
-## Architecture
-
-```mermaid
-flowchart LR
-    subgraph C[Clients · zero plugins]
-        A[Codex / OpenCode<br>OpenAI protocol]
-        B[Claude Code<br>Anthropic protocol]
-        D[Gemini protocol clients]
-    end
-
-    A -->|"base_url → /v1,<br>key = vk-xxx"| G
-    B -->|"base_url → root,<br>key = vk-xxx"| G
-    D -->|"x-goog-api-key<br>vk-xxx"| G
-
-    subgraph G[Token Tracker Gateway]
-        direction TB
-        V[Virtual key check<br>AES-256-GCM encrypted compare]
-        R[Model routing<br>cross-upstream failover · self-healing health · session stickiness]
-        P[Transparent proxy · parse usage on the fly<br>constant memory for streams]
-    end
-
-    V --> R --> P
-
-    P --> U1[OpenAI-compatible upstreams<br>DeepSeek / Kimi / OpenRouter…]
-    P --> U2[Anthropic upstreams]
-    P --> U3[Gemini upstreams]
-
-    P --> DB[(SQLite<br>token_records)]
-    DB --> W[Dashboard · Admin UI]
-```
+More screenshots: [usage trends, records, mobile](./docs/screenshots.md)
 
 ## Why this project · Who it's for
 
@@ -77,18 +47,25 @@ I've tried a number of existing solutions (LiteLLM, NEW API, OmniRoute — all g
 - Quotas: per-virtual-key rpm / tpm / daily / monthly limits, 429 without forwarding when exceeded
 - Cost estimation: models.dev official price snapshot auto-matched + auto-filled; historical cost recomputed instantly after pricing
 
-**Admin UI**
+**Multi-instance sync**
 
-- Upstreams / virtual keys / named routes / model pricing / audit logs
+- Multi-tier deployment: a local instance (B) pushes its own `token_records` to a public main instance (A) through a persistent cursor queue; A dedupes and stores by `uid` + watermark — **loss is observable, duplicates are impossible**
+- `uid` is the stable identity key (instances can be renamed at any time); the ingest token is bound by TOFU on first push; A labels sources as `remote/{instance}/{original provider}` and prices pushed models itself
+- B can trigger push / skip / reset manually; A can inspect watermarks, cascade-delete one instance's history, revoke/unbind tokens
+
+**Admin UI & interface**
+
+- Sections for upstreams / virtual keys / named routes / model pricing / sync / audit logs
 - Model alias normalization (display-level rollup), provider anonymization groups, hidden sources (hide vs exclude are independent dimensions)
+- Configurable column visibility for the Records / Audit tables, plus action filtering and pagination for audit logs
+- Collapsible desktop sidebar (icon-only); on mobile a bottom tab bar, card views for tables, and full-screen modals — installable as a PWA (no Service Worker, offline not enabled)
 
 **Security**
 
 - TOTP two-factor auth + one-time recovery codes (hashes only)
-- All secrets stored AES-256-GCM encrypted; a DB leak doesn't leak plaintext
-- SSRF protection (address classification at save time **plus a connection-time DNS lookup guard** against DNS rebinding), XFF spoofing protection, rate-limited login/setup with a 64KB body cap on auth endpoints
-- Login-key strength hints; weak keys are allowed for personal/home deployments; virtual keys accepted via headers only (`?key=` removed so keys never reach query logs)
-- Audit log for every admin action; setup wizard is fail-open
+- All secrets stored AES-256-GCM encrypted; virtual keys accepted via headers only (`?key=` removed so keys never reach query logs)
+- SSRF protection (address classification at save time plus a connection-time DNS lookup guard against DNS rebinding), XFF spoofing protection, rate-limited login/setup
+- Audit log for every admin action. Deployment notes: [Security & Deployment](./docs/security.md)
 
 ## Quick Start (Docker)
 
@@ -120,62 +97,17 @@ First run, three steps:
 
 Virtual keys (the `vk-` prefix) are created in `/admin`. Sharing one key across devices does not distinguish between devices — create one key per device if you need that.
 
-## Development & Testing
+## Documentation
 
-```bash
-npm install
-cp .env.example .env.local   # optional: works without it (defaults to ./data/token-tracker.db; dev auto-generates GATEWAY_SECRET)
-npm run dev                  # http://localhost:3000
-npm test                     # vitest unit tests (proxy chain/parsers/routing/crypto/auth; workers capped at half the CPUs)
-npm run lint                 # ESLint 9 flat config (`next lint` was removed in Next 16)
-```
+The detailed docs are written in Chinese.
 
-The SQLite database is created automatically on the first request (with incremental migrations); no manual setup needed.
-
-## API Overview
-
-| Route | Auth | Description |
-|---|---|---|
-| `/v1/*`, `/v1beta/*` | Virtual key | Proxy entry points (pass-through) |
-| `/raw/*` | Virtual key | Raw pass-through entry: strips the `/raw` prefix and forwards the inner path upstream (for endpoints outside `/v1`, `/v1beta`) |
-| `/api/auth/login` | Raw API key (+ optional TOTP) | Login to exchange for a session token |
-| `/api/cli` | **None (public, read-only)** | Public usage snapshot: all-time `summary` + `today` (`?tzOffset=` to align the day boundary; token/cache/request aggregates only — no model names, no cost) |
-| `/api/dashboard` and other stats APIs | Session token (`X-API-Key` header) | Dashboard data |
-| `/api/admin/*` | Session token | Admin operations |
-| `/admin`, `/` | Page + session token | Admin UI / Dashboard |
-
-> All `/api/*` routes only accept the session token obtained from login, except `login` / `setup` / `logout` and the registered public read-only exception `/api/cli`. Script example:
-> ```bash
-> TOKEN=$(curl -s -X POST http://host:3000/api/auth/login \
->   -H 'Content-Type: application/json' \
->   -d '{"apiKey":"your-api-key"}' | jq -r .token)
-> curl -s http://host:3000/api/dashboard -H "X-API-Key: $TOKEN"
-> ```
-
-## Environment Variables
-
-| Variable | Required | Description |
-|---|---|---|
-| `SQLITE_DATABASE_PATH` | No | Path to the SQLite database file; defaults to `./data/token-tracker.db` (Docker compose sets it explicitly) |
-| `ADMIN_API_KEY` | Suggested | Admin API keys, comma-separated; weak keys are allowed for personal/home deployments, with strength hints in the UI (>=16 chars with 2+ classes recommended in production); a configured weak key does not reopen the first-run wizard; if unset and the DB has no key, a first-run setup wizard appears (legacy name `API_KEYS` deprecated) |
-| `GATEWAY_SECRET` | Yes in production | Gateway master key (AES-256-GCM), generate with `openssl rand -hex 32`; if missing, the proxy and admin APIs return 503. `npm run dev` auto-generates and reuses `<db dir>/.gateway-secret` (dev only; `next build/start` never generates) |
-| `SESSION_TOKEN_TTL_HOURS` | No | Session token lifetime (hours, default 24, sliding renewal) |
-| `TRUSTED_PROXY` | No | Set to true when a reverse proxy sets `X-Real-IP`, restoring precise IP rate limiting |
-| `API_CACHE_TTL_MS` | No | SELECT cache TTL (ms, default 10000) |
-| `GATEWAY_MAX_BODY_MB` | No | Max proxy request body (MB, default 32) |
-| `ALLOW_PRIVATE_UPSTREAMS` | No | Allow upstreams pointing at private/loopback addresses (escape hatch for self-hosted LLMs) |
-
-## Security Notes
-
-> **⚠️ First-run wizard (fail-open)**: if `ADMIN_API_KEY` is not set and the DB has no key, anyone who can reach the web UI can be the first to claim the admin key. **In production, always set `ADMIN_API_KEY`**, or protect the first-configuration window with a firewall / internal network. The wizard's rate limiting only prevents brute force, not first-run takeover.
-
-> **⚠️ Serve public deployments over HTTPS**: session tokens and virtual keys travel in plaintext headers. Terminate TLS in a reverse proxy (Caddy / Nginx) and forward to `127.0.0.1:3001` with `X-Real-IP` + `TRUSTED_PROXY=true`. Upstream, proxy, and sync URLs support both HTTP and HTTPS for local/internal deployments; private addresses remain protected by SSRF rules (`ALLOW_PRIVATE_UPSTREAMS=true` for internal targets, with a loopback exception for sync).
-
-> **🔑 Secret hygiene**: `.env*` (except `.env.example`), `*.pem`, `*.p12`, `*.pfx`, `id_rsa*`, `credentials*`, `secrets*`, `**/.gateway-secret` are gitignored; run `chmod 600` on your local `.env` files.
-
-> **⚠️ Losing `GATEWAY_SECRET` is irreversible**: the dev-generated key lives in `<db dir>/.gateway-secret`. Encrypted upstream keys, virtual keys, and sync tokens in the database can only be decrypted with it; **if the database already exists and this file is missing, `npm run dev` refuses to start** instead of silently generating a new one. Back up that file together with the database.
-
-Forgot the login key? Delete the `admin_api_key` row from the SQLite `settings` table to fall back to the `ADMIN_API_KEY` env.
+| Doc | Contents |
+|---|---|
+| [docs/architecture.md](./docs/architecture.md) | Architecture diagram, request paths, accounting chain, sync topology |
+| [docs/screenshots.md](./docs/screenshots.md) | Screenshots: dashboard, usage trends, records, mobile |
+| [docs/development.md](./docs/development.md) | Local dev & tests, API overview, environment variables |
+| [docs/security.md](./docs/security.md) | First-run fail-open window, HTTPS, secret hygiene, lockout recovery |
+| [docs/agents/](./docs/agents/) | Contributor conventions (schema / API / gateway / sync / metrics / tests) |
 
 ## License
 

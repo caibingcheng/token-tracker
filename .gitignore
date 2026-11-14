@@ -65,6 +65,10 @@ drizzle/
 # Docs (plan/spec)
 /docs/*
 !/docs/agents/
+!/docs/architecture.md
+!/docs/development.md
+!/docs/screenshots.md
+!/docs/security.md
 /specs/
 
 # Local dev tooling
