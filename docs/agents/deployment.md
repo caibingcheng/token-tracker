@@ -93,12 +93,40 @@ docker compose up -d
 
 ### GitHub Container Registry
 
+`latest` = **最近一次正式 tag 构建出的镜像**；dev tag、PR、分支 push、`workflow_dispatch` 都不更新它。
+
 | 触发条件 | 镜像标签 | 用途 |
 |---------|---------|------|
-| tag `v*.*.*`（如 `v1.3.0`） | `ghcr.io/caibingcheng/token-tracker:vX.Y.Z` + `:<short-sha>` | 生产发布 |
-| tag `v*.*.*-dev*`（如 `v1.3.0-dev.1`） | 同上 + `:dev` | 开发版发布 |
-| `workflow_dispatch` | 同上 | 手动重建 |
+| tag `vX.Y.Z`（如 `v1.3.0`） | `ghcr.io/caibingcheng/token-tracker:vX.Y.Z` + `:<short-sha>` + `:latest` | 生产发布 |
+| tag `vX.Y.Z-devN`（如 `v1.3.0-dev.1`） | 同上（不含 `:latest`）+ `:dev` | 开发版发布 |
+| `workflow_dispatch` | 仅 `:<short-sha>` | 手动重建，不动任何版本/浮动标签 |
+
+`.github/workflows/docker.yml` 的顺序是 **校验 → 构建 → smoke test → 推送**，浮动标签（`:latest` / `:dev`）最后推送：
+
+1. `Verify tag ancestry`：只接受 `^vX.Y.Z$`（commit 必须落在 `origin/main` 历史内）与 `^vX.Y.Z-dev...$`（必须落在 `origin/dev` 历史内）；其它命名（如 `-rc.1`）直接失败，因此不会进 `latest`。
+2. `Build image`：`load: true` + `push: false`，镜像只进 runner 本地。
+3. `Smoke test image`：用固定测试密钥起容器，轮询 `http://127.0.0.1:3000/api/cli`（会真实建库并跑一次聚合查询），失败则 job 红且不推送任何标签。
+4. `Push image`：先推不可变标签（版本号、short-sha），最后推浮动标签。
 
 构建时 CI 传 `--build-arg APP_VERSION=${{ github.ref_name }}`（tag 构建即 `v1.3.0`），Dockerfile builder 阶段
 转为 `NEXT_PUBLIC_APP_VERSION`，`next.config.js` 的 `env` 将其内联进客户端 bundle，侧栏底部展示。
 不传参（本地 `npm run build`、`docker compose --build`）回退 `dev`；`workflow_dispatch` 在分支上触发时显示分支名。
+
+### 发布流程
+
+`.github/workflows/ci.yml` 在 PR → main 时跑 `npm ci` / `npm run lint` / `npm test` / `npm run build`（job id：`lint-and-test`、`build`）。dev 的 push 由 `pr-dev-to-main.yml` 汇总成一个长期复用的 PR，因此不在 dev push 上重复跑 CI。
+
+1. dev 上开发并 push → 自动创建/复用 `dev → main` PR → CI 绿 → 人工 review 后 **Merge**。
+2. 在 main 上打 tag（约定 annotated，可追溯谁在何时打的；不改写已有的 lightweight tag）：
+   ```bash
+   git checkout main && git pull
+   git tag -a v1.6.0 -m "v1.6.0"
+   git push origin v1.6.0
+   ```
+3. tag push 触发 `docker.yml`：ancestry 校验 → 构建 → smoke test → 推送。
+4. 校验或 smoke test 失败时镜像不发布。修完后要重打同一版本需先删远端 tag，否则直接发下一个 patch 版本；不要删已有 GHCR 镜像版本。
+
+GitHub 侧一次性配置（无法进仓库，需在 Settings 里手工做）：
+
+- **main branch protection**：Require a pull request before merging；Require status checks 勾选 `lint-and-test` 与 `build`（等第一次 CI 成功、检查项出现后再勾；job id 之后不要改）。
+- **tag ruleset**（`v*`）：限制创建/更新/删除权限给发布账号本身。ruleset 只控权限，不替代 workflow 里的 ancestry 校验。

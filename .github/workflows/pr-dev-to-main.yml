@@ -1,4 +1,4 @@
-name: Create PR dev into main
+name: Create or update dev → main PR
 
 on:
   push:
@@ -36,8 +36,8 @@ jobs:
             gh pr create \
               --base main \
               --head dev \
-              --title "Auto merge dev into main" \
-              --body "This PR was created automatically by GitHub Actions."
+              --title "dev → main" \
+              --body "由 push 到 \`dev\` 自动创建并复用：本 PR 持续累积 dev 上尚未进入 main 的提交，人工 review 后手动合并。"
           else
             echo "Reusing existing PR #$existing_pr"
           fi

@@ -1,6 +1,6 @@
 # Token Tracker — 个人 AI Gateway
 
-[English](./README.en.md) · [架构](./docs/architecture.md) · [截图](./docs/screenshots.md) · [开发 / API / 环境变量](./docs/development.md) · [安全与部署](./docs/security.md) · [CI (main)](https://github.com/caibingcheng/token-tracker/actions/workflows/docker.yml) · [Docker 镜像](https://ghcr.io/caibingcheng/token-tracker)
+[English](./README.en.md) · [架构](./docs/architecture.md) · [截图](./docs/screenshots.md) · [开发 / API / 环境变量](./docs/development.md) · [安全与部署](./docs/security.md) · [CI (main)](https://github.com/caibingcheng/token-tracker/actions/workflows/ci.yml) · [Docker 镜像](https://ghcr.io/caibingcheng/token-tracker)
 
 一个轻量级个人 AI Gateway：把多个上游 LLM API（OpenAI 兼容 / Anthropic / Gemini）统一到一个标准协议入口后面，透明转发请求与响应，并在透传过程中自动解析、记录 token 用量。自带用量仪表盘与管理面板。
 
