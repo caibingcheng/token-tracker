@@ -18,7 +18,15 @@ describe("detectBalanceProvider", () => {
   it("detects deepseek by host", () => {
     expect(detectBalanceProvider("https://api.deepseek.com")).toBe("deepseek");
     expect(detectBalanceProvider("https://api.deepseek.com/v1")).toBe("deepseek");
-    expect(detectBalanceProvider("https://deepseek.example.com")).toBe("deepseek");
+  });
+
+  it("requires hostname match: lookalike domains are not detected", () => {
+    // 子串包含会让这些域名命中，随后自动刷新会把该 upstream 的 key 发给官方端点
+    expect(detectBalanceProvider("https://deepseek.example.com")).toBeNull();
+    expect(detectBalanceProvider("https://my-ollama.com/v1")).toBeNull();
+    expect(detectBalanceProvider("https://ollama.com.evil.example/v1")).toBeNull();
+    expect(detectBalanceProvider("https://openrouter.ai.evil.example/v1")).toBeNull();
+    expect(detectBalanceProvider("https://relay.example.com/ollama.com/v1")).toBeNull();
   });
 
   it("detects openrouter by host", () => {
@@ -43,15 +51,26 @@ describe("detectBalanceProvider", () => {
     expect(detectBalanceProvider("https://api.z.ai/v1")).toBe("glm");
     expect(detectBalanceProvider("https://open.bigmodel.cn/api/paas/v4")).toBe("glm");
     expect(detectBalanceProvider("https://opencode.ai/v1")).toBe("opencode-go");
+    expect(detectBalanceProvider("https://ollama.com/v1")).toBe("ollama-cloud");
+    expect(detectBalanceProvider("https://ollama.com/api")).toBe("ollama-cloud");
+    expect(detectBalanceProvider("https://ollama.ai/v1")).toBe("ollama-cloud");
+    expect(detectBalanceProvider("https://api.ollama.com/v1")).toBe("ollama-cloud");
+    // 合法 DNS 尾点（WHATWG URL 会保留）不能漏判
+    expect(detectBalanceProvider("https://ollama.com./v1")).toBe("ollama-cloud");
   });
 
-  it("falls back to name keywords when URL is unrecognized", () => {
+  it("falls back to name keywords only for baseUrl-derived endpoints", () => {
     expect(detectBalanceProvider("https://relay.example.com/v1", "kimi-main")).toBe("kimi");
-    expect(detectBalanceProvider("https://relay.example.com/v1", "Kimi for Coding")).toBe("kimi-coding");
+    // Kimi for Coding 的 endpoint 固定为 api.kimi.com，不能靠 name 触发
+    expect(detectBalanceProvider("https://relay.example.com/v1", "Kimi for Coding")).toBe("kimi");
     expect(detectBalanceProvider("https://relay.example.com/v1", "glm-zai")).toBe("glm");
     expect(detectBalanceProvider("https://relay.example.com/v1", "DeepSeek Relay")).toBe("deepseek");
-    expect(detectBalanceProvider("https://relay.example.com/v1", "opencode go")).toBe("opencode-go");
     expect(detectBalanceProvider("https://relay.example.com/v1", "random")).toBeNull();
+    // 固定端点 provider 只能靠 hostname 命中：否则本地/自建上游的 key 会被发往官方域名
+    expect(detectBalanceProvider("http://localhost:11434/v1", "Ollama")).toBeNull();
+    expect(detectBalanceProvider("https://relay.example.com/v1", "Ollama Cloud")).toBeNull();
+    expect(detectBalanceProvider("https://relay.example.com/v1", "opencode go")).toBeNull();
+    expect(detectBalanceProvider("https://relay.example.com/v1", "openrouter")).toBeNull();
   });
 
   it("URL match wins over name", () => {
@@ -424,6 +443,110 @@ describe("fetchBalance - opencode-go", () => {
   it("throws when usage is missing", async () => {
     setOutboundFetchImpl(vi.fn(async () => new Response(JSON.stringify({}), { status: 200 })));
     await expect(fetchBalance("https://opencode.ai/v1", "bad")).rejects.toThrow();
+  });
+});
+
+describe("fetchBalance - ollama-cloud", () => {
+  it("reports included/purchased credits with period countdown", async () => {
+    const until = new Date(Date.now() + 12 * 86_400_000).toISOString();
+    const fetchMock = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          included: {
+            balance_usd: 72.5,
+            allowance_usd: 100,
+            period: { from: new Date(Date.now() - 18 * 86_400_000).toISOString(), until },
+          },
+          purchased: { balance_usd: 25 },
+        }),
+        { status: 200 }
+      )
+    );
+    setOutboundFetchImpl(fetchMock);
+
+    const result = await fetchBalance("https://ollama.com/v1", "ollama_sk_test");
+    expect(result).toEqual({ balance: "$72.50/$100.00 + $25.00 (12d)", currency: "" });
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://ollama.com/api/balance");
+    expect(new Headers(init.headers).get("authorization")).toBe("Bearer ollama_sk_test");
+    expect(init.redirect).toBe("manual");
+  });
+
+  it("converts legacy session/weekly remaining percent into used windows", async () => {
+    setOutboundFetchImpl(
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            included: {
+              session: {
+                remaining_percent: 75,
+                resets_at: new Date(Date.now() + 2 * 3_600_000).toISOString(),
+              },
+              weekly: { remaining_percent: 40 },
+            },
+            purchased: { balance_usd: 0 },
+          }),
+          { status: 200 }
+        )
+      )
+    );
+
+    const result = await fetchBalance("https://ollama.com/v1", "ollama_sk_test");
+    expect(result).toEqual({ balance: "5h 25% (2h) · wk 60%", currency: "" });
+  });
+
+  it("throws on unexpected payload and on non-ok status", async () => {
+    setOutboundFetchImpl(vi.fn(async () => new Response(JSON.stringify({}), { status: 200 })));
+    await expect(fetchBalance("https://ollama.com/v1", "bad")).rejects.toThrow();
+
+    setOutboundFetchImpl(vi.fn(async () => new Response("nope", { status: 401 })));
+    await expect(fetchBalance("https://ollama.com/v1", "bad")).rejects.toThrow(
+      "Ollama Cloud balance API returned 401"
+    );
+
+    // 429 限流（10 req/min/用户）：同样只报状态码，不污染已有 balance
+    setOutboundFetchImpl(vi.fn(async () => new Response("", { status: 429 })));
+    await expect(fetchBalance("https://ollama.com/v1", "bad")).rejects.toThrow(
+      "Ollama Cloud balance API returned 429"
+    );
+
+    // 200 但 body 不是 JSON
+    setOutboundFetchImpl(vi.fn(async () => new Response("<html>", { status: 200 })));
+    await expect(fetchBalance("https://ollama.com/v1", "bad")).rejects.toThrow();
+  });
+
+  it("rejects non-finite / null numeric fields instead of showing $0.00", async () => {
+    // Number(null) === 0，不做 typeof 检查会显示成 $0.00
+    setOutboundFetchImpl(
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({ included: { balance_usd: null, allowance_usd: 100 } }),
+          { status: 200 }
+        )
+      )
+    );
+    await expect(fetchBalance("https://ollama.com/v1", "k")).rejects.toThrow(
+      "Unexpected Ollama Cloud balance response"
+    );
+
+    // JSON 数字 1e400 → Infinity：不能算成 0% 已用，回落金额分支
+    setOutboundFetchImpl(
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            included: {
+              balance_usd: 3,
+              session: { remaining_percent: 1e400 },
+            },
+          }),
+          { status: 200 }
+        )
+      )
+    );
+    expect(await fetchBalance("https://ollama.com/v1", "k")).toEqual({
+      balance: "$3.00",
+      currency: "",
+    });
   });
 });
 
