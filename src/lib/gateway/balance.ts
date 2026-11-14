@@ -108,6 +108,8 @@ export async function fetchBalance(
       return fetchGlmQuota(baseUrl, apiKey, dispatcher);
     case "opencode-go":
       return fetchOpencodeGoUsage(apiKey, dispatcher);
+    case "ollama-cloud":
+      return fetchOllamaCloudBalance(apiKey, dispatcher);
   }
 }
 
@@ -368,6 +370,79 @@ interface OpencodeGoUsageResponse {
     weekly?: OpencodeGoUsageEntry;
     monthly?: OpencodeGoUsageEntry;
   };
+}
+
+interface OllamaCloudLimit {
+  remaining_percent?: number;
+  resets_at?: string;
+}
+
+interface OllamaCloudBalanceResponse {
+  included?: {
+    // 新套餐：period 内的剩余额度 / 总额度
+    balance_usd?: number;
+    allowance_usd?: number;
+    period?: { from?: string; until?: string };
+    // 旧套餐：session / weekly 剩余百分比
+    session?: OllamaCloudLimit;
+    weekly?: OllamaCloudLimit;
+  };
+  purchased?: { balance_usd?: number };
+}
+
+// Ollama Cloud 余额：固定 endpoint https://ollama.com/api/balance（Bearer）。
+// 摘要里自带 $ 单位（chip 只渲染 balance 字符串，不显示 currency）。
+async function fetchOllamaCloudBalance(
+  apiKey: string,
+  dispatcher: ReturnType<typeof getOutboundDispatcher>
+): Promise<BalanceResult> {
+  const res = await outboundFetch("https://ollama.com/api/balance", {
+    headers: { Authorization: `Bearer ${apiKey}` },
+    redirect: "manual",
+    ...(dispatcher ? { dispatcher } : {}),
+  });
+  if (!res.ok) {
+    throw new Error(`Ollama Cloud balance API returned ${res.status}`);
+  }
+  const json = (await res.json()) as OllamaCloudBalanceResponse;
+  const included = json.included ?? {};
+  // 只认真正的有限 number：Number(null) === 0 会把缺失字段误显示成 $0.00，
+  // 而 JSON 里的 1e400 会解析成 Infinity
+  const finiteOf = (v: unknown): number | null =>
+    typeof v === "number" && Number.isFinite(v) ? v : null;
+  // 购买额度只算未过期的余额，单独作后缀
+  const purchased = finiteOf(json.purchased?.balance_usd) ?? 0;
+  const extra = purchased > 0 ? ` + $${purchased.toFixed(2)}` : "";
+
+  // 旧套餐：session(5h) / weekly 窗口的剩余百分比 → 已用百分比
+  const lanes: BalanceWindow[] = [];
+  const pushLimit = (label: string, limit?: OllamaCloudLimit) => {
+    const remaining = finiteOf(limit?.remaining_percent);
+    if (remaining === null) return;
+    lanes.push({
+      label,
+      percent: clampPct(100 - remaining, 100),
+      resetAt: toResetAt(limit?.resets_at),
+    });
+  };
+  pushLimit("5h", included.session);
+  pushLimit("wk", included.weekly);
+  const summary = summarizeWindows(lanes);
+  if (summary) return { balance: `${summary}${extra}`, currency: "" };
+
+  const balanceUsd = finiteOf(included.balance_usd);
+  if (balanceUsd === null) {
+    throw new Error("Unexpected Ollama Cloud balance response");
+  }
+  const allowanceUsd = finiteOf(included.allowance_usd);
+  const head =
+    allowanceUsd !== null && allowanceUsd > 0
+      ? `$${balanceUsd.toFixed(2)}/$${allowanceUsd.toFixed(2)}`
+      : `$${balanceUsd.toFixed(2)}`;
+  const resetAt = toResetAt(included.period?.until);
+  const reset =
+    resetAt !== undefined ? ` (${formatResetIn(resetAt - Date.now())})` : "";
+  return { balance: `${head}${extra}${reset}`, currency: "" };
 }
 
 // OpenCode Go 用量：rolling(5h) / weekly / monthly 百分比窗口

@@ -80,6 +80,7 @@ const BALANCE_MODE_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "kimi-coding", label: "Kimi for Coding" },
   { value: "glm", label: "GLM (Z.ai Coding Plan)" },
   { value: "opencode-go", label: "OpenCode Go" },
+  { value: "ollama-cloud", label: "Ollama Cloud" },
 ];
 // 表单跟随探测：baseUrl/name 可识别 → 对应 provider，否则 off（none）
 const followBalanceMode = (baseUrl: string, name: string): string =>

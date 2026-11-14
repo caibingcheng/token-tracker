@@ -2,6 +2,7 @@
 // 覆盖：全 key 链任一成功即恢复、404 放宽分支（model 标记清除）、401 不放宽、5xx 不放宽。
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import { mkdtempSync, rmSync } from "fs";
+import { closeDb } from "@/lib/db";
 import { tmpdir } from "os";
 import { join } from "path";
 import { eq } from "drizzle-orm";
@@ -28,6 +29,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  closeDb();
   rmSync(dir, { recursive: true, force: true });
   if (ORIG_DB === undefined) delete process.env.SQLITE_DATABASE_PATH;
   else process.env.SQLITE_DATABASE_PATH = ORIG_DB;

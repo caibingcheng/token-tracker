@@ -5,7 +5,7 @@ import { join } from "path";
 import { NextRequest } from "next/server";
 import { GET as cliGET, resetCliSnapshot } from "./route";
 import { GET as dashboardGET } from "@/app/api/dashboard/route";
-import { db, initDatabase, tokenRecords } from "@/lib/db";
+import { closeDb, db, initDatabase, tokenRecords } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { localDateKeyFromUtcDate } from "@/lib/timezone-utils";
 import { getTokenEpoch, setAdminApiKey } from "@/lib/auth/settings";
@@ -27,6 +27,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  closeDb();
   rmSync(dir, { recursive: true, force: true });
   if (ORIG_DB === undefined) delete process.env.SQLITE_DATABASE_PATH;
   else process.env.SQLITE_DATABASE_PATH = ORIG_DB;

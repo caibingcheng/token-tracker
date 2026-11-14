@@ -13,7 +13,7 @@ import {
   resetSyncState,
 } from "./config";
 import { isValidInstanceName, isValidInstanceUid } from "@/lib/ingest/validate";
-import { initDatabase } from "@/lib/db";
+import { closeDb, initDatabase } from "@/lib/db";
 import { getSetting } from "@/lib/auth/settings";
 
 const ORIG_DB = process.env.SQLITE_DATABASE_PATH;
@@ -27,6 +27,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  closeDb();
   rmSync(dir, { recursive: true, force: true });
   if (ORIG_DB === undefined) delete process.env.SQLITE_DATABASE_PATH;
   else process.env.SQLITE_DATABASE_PATH = ORIG_DB;

@@ -4,7 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { SyncPusher, BATCH_SIZE, describeFetchError } from "./pusher";
 import { sql } from "drizzle-orm";
-import { db, initDatabase, tokenRecords } from "@/lib/db";
+import { closeDb, db, initDatabase, tokenRecords } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { encryptSecret } from "@/lib/gateway/crypto";
 import { getSetting, setSetting, deleteSetting } from "@/lib/auth/settings";
@@ -25,6 +25,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  closeDb();
   rmSync(dir, { recursive: true, force: true });
   if (ORIG_DB === undefined) delete process.env.SQLITE_DATABASE_PATH;
   else process.env.SQLITE_DATABASE_PATH = ORIG_DB;

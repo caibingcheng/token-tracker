@@ -1,6 +1,7 @@
 // Upstream PATCH/DELETE 与探活生命周期联动集成测试（临时 SQLite + 真实 handler + 签名 token）
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import { mkdtempSync, rmSync } from "fs";
+import { closeDb } from "@/lib/db";
 import { tmpdir } from "os";
 import { join } from "path";
 import { NextRequest } from "next/server";
@@ -33,6 +34,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  closeDb();
   rmSync(dir, { recursive: true, force: true });
   if (ORIG_DB === undefined) delete process.env.SQLITE_DATABASE_PATH;
   else process.env.SQLITE_DATABASE_PATH = ORIG_DB;

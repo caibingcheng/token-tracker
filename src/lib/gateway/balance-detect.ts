@@ -7,7 +7,8 @@ export type BalanceProvider =
   | "kimi"
   | "kimi-coding"
   | "glm"
-  | "opencode-go";
+  | "opencode-go"
+  | "ollama-cloud";
 
 // auto = 按 baseUrl/name 探测（无识别规则 = off）；none = 不自动获取
 export type BalanceFetchMode = BalanceProvider | "auto" | "none";
@@ -21,6 +22,7 @@ export const BALANCE_FETCH_MODES: BalanceFetchMode[] = [
   "kimi-coding",
   "glm",
   "opencode-go",
+  "ollama-cloud",
 ];
 
 export function isBalanceFetchMode(v: unknown): v is BalanceFetchMode {
@@ -32,22 +34,45 @@ export function normalizeBalanceFetchMode(v: unknown): BalanceFetchMode {
   return isBalanceFetchMode(v) ? v : "auto";
 }
 
-// 根据 baseUrl 识别内置 provider；URL 无法识别时回退到 name 关键字
+// baseUrl → 小写 hostname（去掉 DNS 尾点 `ollama.com.`）；不可解析返回 ""（回退到 name 关键字）
+function hostnameOf(baseUrl: string): string {
+  try {
+    return new URL(baseUrl).hostname.toLowerCase().replace(/\.$/, "");
+  } catch {
+    return "";
+  }
+}
+
+// 精确域名或其子域：evil-ollama.com / ollama.com.evil.example 均不命中（子串包含会命中，
+// 误判后自动刷新会把该 upstream 的真实 key 发给真正的官方端点）
+function isHostOrSubdomain(host: string, domain: string): boolean {
+  return host === domain || host.endsWith(`.${domain}`);
+}
+
+// 根据 baseUrl 的 hostname 识别内置 provider；URL 无法识别时回退到 name 关键字
+//（name 是用户自定义标签，只能靠关键字；hostname 是可控标识，必须精确匹配）
 export function detectBalanceProvider(baseUrl: string, name?: string): BalanceProvider | null {
-  const url = baseUrl.toLowerCase();
-  if (url.includes("openrouter.ai")) return "openrouter";
-  if (url.includes("deepseek.com") || url.includes("deepseek")) return "deepseek";
-  if (url.includes("api.kimi.com")) return "kimi-coding";
-  if (url.includes("moonshot")) return "kimi";
-  if (url.includes("z.ai") || url.includes("bigmodel.cn")) return "glm";
-  if (url.includes("opencode.ai")) return "opencode-go";
+  const host = hostnameOf(baseUrl);
+  if (host) {
+    if (isHostOrSubdomain(host, "openrouter.ai")) return "openrouter";
+    if (isHostOrSubdomain(host, "deepseek.com")) return "deepseek";
+    if (isHostOrSubdomain(host, "api.kimi.com")) return "kimi-coding";
+    if (isHostOrSubdomain(host, "moonshot.cn") || isHostOrSubdomain(host, "moonshot.ai"))
+      return "kimi";
+    if (isHostOrSubdomain(host, "z.ai") || isHostOrSubdomain(host, "bigmodel.cn")) return "glm";
+    if (isHostOrSubdomain(host, "opencode.ai")) return "opencode-go";
+    if (isHostOrSubdomain(host, "ollama.com") || isHostOrSubdomain(host, "ollama.ai"))
+      return "ollama-cloud";
+  }
   if (!name) return null;
   const n = name.toLowerCase();
-  if (n.includes("opencode")) return "opencode-go";
-  if (n.includes("kimi")) return /cod/.test(n) ? "kimi-coding" : "kimi";
+  // 只允许 endpoint 随 baseUrl 走的 provider 用 name 回退：deepseek / kimi / glm 的
+  // 余额接口拼在 baseUrl 上，key 发往用户自己配的 host。endpoint 固定为第三方域名的
+  // （ollama-cloud / openrouter / kimi-coding / opencode-go）必须靠 hostname 或手动 mode，
+  // 否则本地 `http://localhost:11434` + name "Ollama" 会把本地 key 发到 ollama.com
+  if (n.includes("kimi")) return "kimi";
   if (n.includes("glm") || n.includes("zhipu") || n.includes("z.ai") || n.includes("bigmodel"))
     return "glm";
   if (n.includes("deepseek")) return "deepseek";
-  if (n.includes("openrouter")) return "openrouter";
   return null;
 }
