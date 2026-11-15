@@ -3,7 +3,7 @@
 // safeCompare 防时序侧信道）；admin 列表可回显明文供复制（与 virtual_keys 惯例一致），
 // 创建时额外展示一次明文提示立即配置到 B 端。
 
-import { eq, desc, sql } from "drizzle-orm";
+import { eq, desc } from "drizzle-orm";
 import { db, initDatabase, ingestTokensTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { randomBytes } from "crypto";

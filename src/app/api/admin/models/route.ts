@@ -115,7 +115,6 @@ export const GET = withAuth(async () => {
   }));
 
   const upstreamRoutes = rows.map(toUpstreamRoute);
-  const upstreamById = new Map<number, any>(rows.map((r: any) => [r.id, r]));
 
   // 命名路由 + 目标池（join upstream 取 classifier 名供 UI 展示）
   const routeRows = await db

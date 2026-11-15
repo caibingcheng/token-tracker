@@ -27,10 +27,6 @@ afterAll(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-function countLogs(): number {
-  return db.select().from(adminAuditLogsTable).all().length;
-}
-
 describe("recordAuditLog", () => {
   it("writes an audit record with serialized details", async () => {
     await recordAuditLog({

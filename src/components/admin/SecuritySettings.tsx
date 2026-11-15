@@ -63,7 +63,7 @@ export default function SecuritySettings() {
   const [ttlBusy, setTtlBusy] = useState(false);
   const [ttlError, setTtlError] = useState<string | null>(null);
   const [ttlSaved, setTtlSaved] = useState(false);
-  const [streamData, setStreamData] = useState<StreamTimeoutData | null>(null);
+  const [, setStreamData] = useState<StreamTimeoutData | null>(null);
   const [streamDraft, setStreamDraft] = useState("");
   const [streamBusy, setStreamBusy] = useState(false);
   const [streamError, setStreamError] = useState<string | null>(null);

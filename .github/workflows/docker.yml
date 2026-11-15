@@ -11,6 +11,11 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
+# 串行发布：latest / dev 是浮动标签，并发推送会让浮动标签与构建顺序错位
+concurrency:
+  group: docker-publish
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -19,12 +24,38 @@ jobs:
       packages: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
-      - uses: docker/setup-buildx-action@v3
+      # 发布约束（fail-closed）：tag 必须落在对应分支的历史内。
+      # 只接受两种命名，其它（如 -rc.1）直接失败，避免 metadata 的 latest 规则
+      # 把预发布版推成正式版。
+      - name: Verify tag ancestry
+        if: github.ref_type == 'tag'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            base=main
+          elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-dev([.-]?[0-9]+)*$ ]]; then
+            base=dev
+          else
+            echo "::error::unsupported tag '$TAG': expected vX.Y.Z or vX.Y.Z-devN"
+            exit 1
+          fi
+          git fetch --no-tags origin "+refs/heads/$base:refs/remotes/origin/$base"
+          if ! git merge-base --is-ancestor HEAD "origin/$base"; then
+            echo "::error::tag '$TAG' points to a commit outside origin/$base"
+            exit 1
+          fi
+          echo "OK: $TAG is on origin/$base"
+
+      - uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -32,22 +63,85 @@ jobs:
 
       - name: Extract metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=ref,event=tag
-            type=raw,value=dev,enable=${{ contains(github.ref_name, '-dev') }}
+            type=raw,value=dev,enable=${{ github.ref_type == 'tag' && contains(github.ref_name, '-dev') }}
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' && !contains(github.ref_name, '-dev') }}
             type=sha,format=short
 
-      - name: Build and push
-        uses: docker/build-push-action@v6
+      # 先只构建并 load 到本地 runner，smoke test 通过后才推送
+      - name: Build image
+        uses: docker/build-push-action@v7
         with:
           context: .
-          push: true
+          load: true
+          push: false
           build-args: |
             APP_VERSION=${{ github.ref_name }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # 构建成功 != 镜像能启动。这里跑一次真实启动 + 首次建库 + 一次统计查询
+      - name: Smoke test image
+        env:
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          image="$(printf '%s' "$IMAGE_TAGS" | tr ',' '\n' | head -n1)"
+          # 每次随机生成，仓库里不留任何形似凭证的字面量（临时容器 + 空库，用完即弃）
+          docker run -d --name smoke \
+            -p 127.0.0.1:3000:3000 \
+            -e GATEWAY_SECRET="$(openssl rand -hex 32)" \
+            -e ADMIN_API_KEY="$(openssl rand -hex 16)" \
+            -e SQLITE_DATABASE_PATH=/tmp/token-tracker.db \
+            "$image"
+          ok=0
+          for _ in $(seq 1 60); do
+            if curl -fsS -o /dev/null http://127.0.0.1:3000/api/cli; then
+              ok=1
+              break
+            fi
+            if [ "$(docker inspect -f '{{.State.Running}}' smoke 2>/dev/null || echo false)" != "true" ]; then
+              break
+            fi
+            sleep 2
+          done
+          docker logs smoke 2>&1 | tail -n 40 || true
+          docker rm -f smoke >/dev/null 2>&1 || true
+          if [ "$ok" != 1 ]; then
+            echo "::error::smoke test failed: container never served /api/cli"
+            exit 1
+          fi
+
+      # 浮动标签（latest / dev）最后推：部分推送失败时不会让浮动标签先指向新镜像
+      - name: Push image
+        env:
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          # metadata-action 的 tags 输出可能是逗号或换行分隔，统一成每行一个并去掉空项
+          tags="$(printf '%s' "$IMAGE_TAGS" | tr ',' '\n' | grep -v '^[[:space:]]*$' || true)"
+          if [ -z "$tags" ]; then
+            echo "::error::no image tags to push (metadata output was empty)"
+            exit 1
+          fi
+          while IFS= read -r t; do
+            case "$t" in
+              *:latest|*:dev) continue ;;
+            esac
+            echo "Pushing $t"
+            docker push "$t"
+          done <<< "$tags"
+          while IFS= read -r t; do
+            case "$t" in
+              *:latest|*:dev) ;;
+              *) continue ;;
+            esac
+            echo "Pushing $t"
+            docker push "$t"
+          done <<< "$tags"

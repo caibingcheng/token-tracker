@@ -1,6 +1,6 @@
 # Token Tracker — Personal AI Gateway
 
-[中文](./README.md) · [Architecture](./docs/architecture.md) · [Screenshots](./docs/screenshots.md) · [Dev / API / Env](./docs/development.md) · [Security & Deployment](./docs/security.md) · [CI (main)](https://github.com/caibingcheng/token-tracker/actions/workflows/docker.yml) · [Docker Image](https://ghcr.io/caibingcheng/token-tracker)
+[中文](./README.md) · [Architecture](./docs/architecture.md) · [Screenshots](./docs/screenshots.md) · [Dev / API / Env](./docs/development.md) · [Security & Deployment](./docs/security.md) · [CI (main)](https://github.com/caibingcheng/token-tracker/actions/workflows/ci.yml) · [Docker Image](https://ghcr.io/caibingcheng/token-tracker)
 
 A lightweight personal AI Gateway: unify access to multiple upstream LLM APIs (OpenAI-compatible / Anthropic / Gemini) behind a single set of standard protocol endpoints, proxy requests and responses transparently, and automatically parse and record token usage along the way. Ships with a Token Usage Dashboard and an admin UI.
 

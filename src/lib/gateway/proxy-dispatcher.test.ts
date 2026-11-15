@@ -9,7 +9,6 @@ import {
 } from "@/lib/gateway/proxy-dispatcher";
 import { createGuardedLookup } from "@/lib/gateway/outbound-guard";
 import { outboundFetch } from "@/lib/gateway/outbound-fetch";
-import { assertOutboundUrlAllowed } from "@/lib/gateway/url-guard";
 import { Agent, ProxyAgent } from "undici";
 
 const ORIG_ALLOW = process.env.ALLOW_PRIVATE_UPSTREAMS;

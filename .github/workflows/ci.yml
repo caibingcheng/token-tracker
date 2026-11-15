@@ -1,0 +1,49 @@
+name: CI
+
+# dev 的提交经 pr-dev-to-main.yml 自动汇总成一个 PR，故只在 PR 上检查，避免双跑
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # next build 会做构建期类型检查（tsconfig 排除了 *.test.ts）。
+      # 不注入 GATEWAY_SECRET：与 Dockerfile builder 阶段一致，build 期本就不需要它
+      - run: npm run build
+        env:
+          NEXT_TELEMETRY_DISABLED: 1

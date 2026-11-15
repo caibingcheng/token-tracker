@@ -4,7 +4,7 @@ import { closeDb } from "@/lib/db";
 import { tmpdir } from "os";
 import { join } from "path";
 import { NextRequest } from "next/server";
-import { setAdminApiKey, deleteAdminApiKey, deleteSetting } from "@/lib/auth/settings";
+import { setAdminApiKey, deleteSetting } from "@/lib/auth/settings";
 import { signSessionToken, keyFingerprint } from "@/lib/auth/session";
 
 const ORIG_DB = process.env.SQLITE_DATABASE_PATH;

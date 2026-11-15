@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { eq, desc, sql } from "drizzle-orm";
+import { desc, sql } from "drizzle-orm";
 import { db, initDatabase, virtualKeysTable, tokenRecords } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";
@@ -45,7 +45,7 @@ function parseQuotaField(
   return { ok: false };
 }
 
-export const GET = withAuth(async (request: NextRequest) => {
+export const GET = withAuth(async (_request: NextRequest) => {
   return withSkipCache(async () => {
     await initDatabase();
     const rows = await db.select().from(virtualKeysTable).orderBy(desc(virtualKeysTable.id));

@@ -158,7 +158,7 @@ describe("POST /ingest/records", () => {
   });
 
   it("rejects missing/invalid instanceUid with 400", async () => {
-    const { records, ...noUid } = body();
+    const { records: _records, ...noUid } = body();
     const res = await POST(post(noUid));
     expect(res.status).toBe(400);
     const res2 = await POST(post({ ...body(), instanceUid: "bad-uid" }));

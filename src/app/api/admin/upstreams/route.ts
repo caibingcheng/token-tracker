@@ -15,7 +15,7 @@ import {
   InvalidUpstreamUrlError,
   sanitizeProxyUrlForDisplay,
 } from "@/lib/gateway/url-guard";
-import { encryptSecret, GatewaySecretMissingError } from "@/lib/gateway/crypto";
+import { encryptSecret } from "@/lib/gateway/crypto";
 import {
   isValidHeaderTransforms,
   normalizeHeaderTransforms,
@@ -40,13 +40,6 @@ import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 import { isReservedRemoteName, REMOTE_NAME_PREFIX } from "@/lib/ingest/validate";
 
 const REMOTE_PREFIX_LABEL = REMOTE_NAME_PREFIX.slice(0, -1);
-
-function gatewaySecretError() {
-  return NextResponse.json(
-    { success: false, error: "GATEWAY_SECRET is not configured" },
-    { status: 503 }
-  );
-}
 
 export const GET = withAuth(async () => {
   return withSkipCache(async () => {
