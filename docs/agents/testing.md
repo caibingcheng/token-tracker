@@ -37,7 +37,8 @@
   - `src/lib/stats-query`：静态断言聚合口径（Total Input = `SUM(input_tokens) + SUM(cache_read)`；防止 totalInput 回退为纯 `SUM(input_tokens)` 或 totalInputUncached 再次减去 `cache_read`）+ 日期过滤必须直比较（sargable，防 strftime 套列导致索引失效）+ **agent 维度静态断言**（不再按 `agent` 列过滤、`user_agent IN (uas)` / `IS NULL` 条件、exclude.agents 仍按 agent 列 NOT IN）
   - `src/lib/latency-query`：percentile 线性插值、归一化 model × provider 分组、active 过滤（已删除 model 不显示）、tok/s 守卫（latency ≤ ttft 排除）、非流式行口径（不进 TTFT 统计但计入 avgLatency/count）、时区分组（getTimezoneOffset 语义：UTC+8 = -480）、排序（p50 升序 nulls 最后）
   - `src/lib/timezone-utils`：`localDateKeyToUtcStartISO` 时区换算（含互逆 round-trip）
-  - `src/lib/agent-utils` / `src/lib/auth/settings-agent-aliases`：UA token 提取、内置映射、手动 alias 优先级与大小写、unknown、反找（多 UA→一 agent、无匹配）；parse/isValid 边界、load 回退、set 后 invalidateQueryCache
+  - `src/lib/agent-utils` / `src/lib/auth/settings-agent-aliases`：UA token 提取、内置映射、手动 alias 优先级与大小写、unknown、反找（多 UA→一 agent、无匹配）、多选反找（多 agent 取 UA 并集、`unknown` 与具体 agent 同选、未命中名单）；parse/isValid 边界、load 回退、set 后 invalidateQueryCache
+  - `src/lib/filter-params`：多值筛选参数解析（单值/多值、空串与 `all` 视为不筛选、去重保序、单值 128 字符上限、原始参数个数上限）
   - `src/app/api/admin/settings/agent-aliases/route.test`：401/400/往返（withSkipCache 立即可读、loadAgentAliases 同源）
   - `src/lib/records-columns` / `src/app/api/admin/settings/records-columns/route.test`：可见列 id 列表（默认全列、已知 id 校验、非空/无重复、读侧丢弃未知 id 并按定义序归一、坏 JSON/空数组回退全列）；路由 401、默认 GET 全列、PUT 落库明文 JSON 往返、非法输入 400 不改存量、存量坏值回退默认
   - `src/lib/audit-columns`：审计日志表可见列 id 列表（默认全列、已知 id 校验、按定义序归一、坏 JSON/空值回退全列）
@@ -76,7 +77,7 @@
   - `src/lib/gateway/url-guard`（运行时部分）：`assertOutboundUrlAllowed` 三 scope 矩阵 + 字面 IP 不依赖 DNS 的拦截 + `isLoopbackIp` 精度
   - `src/lib/gateway/proxy-dispatcher`（**ProxyAgent 防 rebinding**）：`buildProxyAgentOptions().proxyTls.lookup` 存在且按地址分类；本地 TCP 假代理 + `https://localhost` 代理主机 → 建连前拦截（**连接数 0** + `ERR_BLOCKED_OUTBOUND_ADDRESS`），`ALLOW_PRIVATE_UPSTREAMS=true` 才真正连上；运行时允许公网 HTTP 代理、拒绝私网字面 IP 代理；sync 专用 Agent 与直连 Agent 区分
   - `src/lib/sync/pusher-loopback.test`（**真实出站**）：无 mock，`http://localhost` / `http://127.0.0.1` 目标真实推送成功（ingest token、payload、游标推进）；非 loopback 私网 HTTP/HTTPS 目标被拦下（0 请求、token 不出网、游标不动、`lastError.type=config`）
-  - `src/app/api/dashboard/route.test` / `src/app/api/records/route.test`：Dashboard/Records API 集成（含 agent 参数按派生工具名反找 / unknown 走 IS NULL / 未知 agent 400 / records 行 `keyName`）
+  - `src/app/api/dashboard/route.test` / `src/app/api/records/route.test`：Dashboard/Records API 集成（含 agent 参数按派生工具名反找 / unknown 走 IS NULL / 未知 agent 400 / 多选：重复 query 参数、UA 并集、provider 与 model 多值并集、混合未知名 400、手动 model alias 下的归一化名筛选 / records 行 `keyName`）
   - `src/lib/ingest/validate.test`：payload 校验（instance 格式、结构错误 400、批量上限、部分接受 skippedInvalid、token 非负、userAgent 截断、sessionId 兼容——string/null/缺失（旧 B）→ 落库口径、trim + 截断 256、非 string 类型 skip、空批）
   - `src/app/ingest/records/route.test`：ingest 端点集成（临时 SQLite + 真实 handler + 真实 token）——401/禁用、缺 instanceUid 400、2MB、400 超限、uid TOFU 绑定与 instance_mismatch、字段改写（remote 前缀 + vk=-1 + remote_instance_uid + sessionId + createdAt 保留）、同 epoch 去重重推、epoch 变化重置水位、部分接受、同实例并发串行化、**同名不同 uid 双设备水位独立**、**同 uid 改名 instance_name 刷新**
   - `src/lib/sync/pusher.test`：推送 worker（mock fetch）——**存量公网 http 配置可推送 + 非环回私网配置 fail-closed（不发请求、`lastError.type=config`、游标不动）+ 环回 http 可推送 + `redirect:manual` 与受保护 dispatcher** ——成功推进（含 -1 哨兵夹心、redirect=manual、payload 携带 instanceUid + sessionId、boundUid ack 锁定）、401 不 drop、5xx/网络不 drop、400 五十次自动 drop 累计计数、skippedInvalid 计入 dropped、未配置不启动、多批推送；错误诊断 `describeFetchError`（ECONNREFUSED + Docker localhost 提示、ENOTFOUND DNS 提示、TLS 证书提示、TimeoutError、AggregateError 多地址展开、无 cause 回退 err.message）+ HTTP 401/404 提示后缀

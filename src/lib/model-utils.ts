@@ -52,6 +52,39 @@ export function resolveNormalizedModelFilter(
   });
 }
 
+// 多选版本：每个归一化名分别解析后取并集；不命中的名字收集到 unknown。
+export function resolveNormalizedModelFilters(
+  normalizedModels: string[],
+  allRawModels: string[],
+  providerByModel?: Map<string, string>,
+  groups?: HiddenProviderGroup[],
+  aliases: ModelAliasRule[] = []
+): { filter: string[] | null; unknown: string[] } {
+  if (normalizedModels.length === 0) return { filter: null, unknown: [] };
+  const matched: string[] = [];
+  const seen = new Set<string>();
+  const unknown: string[] = [];
+  for (const normalized of normalizedModels) {
+    const resolved = resolveNormalizedModelFilter(
+      normalized,
+      allRawModels,
+      providerByModel,
+      groups,
+      aliases
+    );
+    if (resolved.length === 0) {
+      unknown.push(normalized);
+      continue;
+    }
+    for (const raw of resolved) {
+      if (seen.has(raw)) continue;
+      seen.add(raw);
+      matched.push(raw);
+    }
+  }
+  return { filter: matched.length > 0 ? matched : null, unknown };
+}
+
 export function aggregateByNormalizedModel(
   items: StatItem[],
   groups?: HiddenProviderGroup[],

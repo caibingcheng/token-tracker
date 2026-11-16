@@ -27,9 +27,9 @@ import { aggregateProviders, type ProviderStat } from "@/lib/provider-stats";
 import { TOP_N_DISPLAY } from "@/lib/model-utils";
 import {
   resolveDashboardFilters,
-  validateFilterOrThrow,
   FilterValidationError,
 } from "@/lib/dashboard-utils";
+import { parseFilterValues, FilterParamError } from "@/lib/filter-params";
 import {
   localDateKeyFromUtcDate,
 } from "@/lib/timezone-utils";
@@ -629,24 +629,11 @@ export const GET = withAuth(async (request: NextRequest) => {
 
     const { searchParams } = new URL(request.url);
     const range = searchParams.get("range") || "7d";
-    const provider = searchParams.get("provider") || "all";
-    const model = searchParams.get("model") || "all";
-    const agent = searchParams.get("agent") || "all";
+    // 多选筛选：重复参数（?agent=a&agent=b），空值/"all" 等于不筛选
+    const providers = parseFilterValues(searchParams, "provider");
+    const models = parseFilterValues(searchParams, "model");
+    const agents = parseFilterValues(searchParams, "agent");
     const tzOffsetParam = searchParams.get("tzOffset");
-
-    // 过滤参数限长，防超长参数进入缓存 key 撑爆内存
-    for (const [name, value] of [
-      ["provider", provider],
-      ["model", model],
-      ["agent", agent],
-    ] as const) {
-      if (value.length > 128) {
-        return NextResponse.json(
-          { success: false, error: `Parameter "${name}" is too long` },
-          { status: 400 }
-        );
-      }
-    }
 
     let timezoneOffsetMinutes: number | undefined;
     if (tzOffsetParam !== null) {
@@ -677,18 +664,17 @@ export const GET = withAuth(async (request: NextRequest) => {
     }
 
     const { providerFilter, modelFilter, agentUaFilter } = await resolveDashboardFilters(
-      provider,
-      model,
-      agent
+      providers,
+      models,
+      agents
     );
 
-    validateFilterOrThrow(provider, providerFilter, model, modelFilter);
-
+    // provider / model 字符串入参已由上面的联合解析取代，保留 "all" 走预计算 filter 分支
     const data = await queryDashboard(
       range,
-      provider,
+      "all",
       providerFilter?.slice().sort() ?? null,
-      model,
+      "all",
       modelFilter?.slice().sort() ?? null,
       agentUaFilter,
       timezoneOffsetMinutes,
@@ -697,7 +683,7 @@ export const GET = withAuth(async (request: NextRequest) => {
     );
     return NextResponse.json({ success: true, data });
   } catch (error) {
-    if (error instanceof FilterValidationError) {
+    if (error instanceof FilterValidationError || error instanceof FilterParamError) {
       return NextResponse.json(
         { success: false, error: error.message },
         { status: 400 }

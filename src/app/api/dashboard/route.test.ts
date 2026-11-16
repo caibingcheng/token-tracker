@@ -9,6 +9,7 @@ import {
   setAdminApiKey,
   getTokenEpoch,
   deleteSetting,
+  setModelAliasesSetting,
 } from "@/lib/auth/settings";
 import { signSessionToken, keyFingerprint } from "@/lib/auth/session";
 import { withSkipCache } from "@/lib/db/cache";
@@ -183,6 +184,7 @@ beforeEach(async () => {
   });
   await deleteSetting("token_epoch").catch(() => {});
   await deleteSetting("agent_aliases").catch(() => {});
+  await deleteSetting("model_aliases").catch(() => {});
   await setAdminApiKey(ADMIN_KEY);
 });
 
@@ -243,6 +245,79 @@ describe("dashboard route agent filter（UA 反找）", () => {
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json.data.total[0].totalInput).toBe(500);
+    expect(json.data.total[0].count).toBe(1);
+  });
+
+  it("多选 agent：UA 并集（unknown 与具体 agent 同选）", async () => {
+    await insertRecord({ agent: "vk-a", userAgent: "claude-cli/2.1.5 (external, cli)", inputTokens: 100 });
+    await insertRecord({ agent: "vk-b", userAgent: "opencode/1.18.14", inputTokens: 300 });
+    await insertRecord({ agent: "vk-c", userAgent: null, inputTokens: 500 });
+
+    const token = await makeToken();
+    const res = await dashboardGET(
+      req("/api/dashboard?range=30d&agent=claude-code&agent=unknown", token)
+    );
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.data.total[0].totalInput).toBe(600);
+    expect(json.data.total[0].count).toBe(2);
+  });
+
+  it("多选 agent 里有未知名字 → 400（列出未命中的名字）", async () => {
+    await insertRecord({ agent: "vk-a", userAgent: "claude-cli/2.1.5 (external, cli)" });
+    const token = await makeToken();
+    const res = await dashboardGET(
+      req("/api/dashboard?range=30d&agent=claude-code&agent=nonexistent", token)
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("Unknown agent: nonexistent");
+  });
+
+  it("多选 provider：并集", async () => {
+    await insertRecord({ provider: "openai", model: "gpt-4o", inputTokens: 100 });
+    await insertRecord({ provider: "anthropic", model: "claude-sonnet-4", inputTokens: 300 });
+    await insertRecord({ provider: "azure", model: "gpt-4o", inputTokens: 500 });
+
+    const token = await makeToken();
+    const res = await dashboardGET(
+      req("/api/dashboard?range=30d&provider=openai&provider=anthropic", token)
+    );
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.data.total[0].totalInput).toBe(400);
+    expect(json.data.total[0].count).toBe(2);
+  });
+
+  it("多选 model：并集 + 未命名单独 400", async () => {
+    await insertRecord({ provider: "openai", model: "gpt-4o", inputTokens: 100 });
+    await insertRecord({ provider: "anthropic", model: "claude-sonnet-4", inputTokens: 300 });
+
+    const token = await makeToken();
+    const ok = await dashboardGET(
+      req("/api/dashboard?range=30d&model=gpt-4o&model=claude-sonnet-4", token)
+    );
+    expect(ok.status).toBe(200);
+    expect((await ok.json()).data.total[0].totalInput).toBe(400);
+
+    const bad = await dashboardGET(
+      req("/api/dashboard?range=30d&model=gpt-4o&model=nonexistent", token)
+    );
+    expect(bad.status).toBe(400);
+    expect((await bad.json()).error).toBe("Unknown model: nonexistent");
+  });
+
+  it("手动 model alias 下的归一化名可筛选（与 /api/records 一致）", async () => {
+    await setModelAliasesSetting([{ name: "my-model", aliases: ["gpt-4o"] }]);
+    await insertRecord({ provider: "openai", model: "gpt-4o", inputTokens: 120 });
+    await insertRecord({ provider: "anthropic", model: "claude-sonnet-4", inputTokens: 300 });
+
+    const token = await makeToken();
+    const res = await dashboardGET(
+      req("/api/dashboard?range=30d&model=my-model", token)
+    );
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.data.total[0].totalInput).toBe(120);
     expect(json.data.total[0].count).toBe(1);
   });
 

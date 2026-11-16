@@ -4,6 +4,7 @@ import {
   BUILTIN_AGENT_MAP,
   resolveAgentName,
   resolveAgentUserAgents,
+  resolveAgentUserAgentsMulti,
   classifyAgentToken,
   UNKNOWN_AGENT,
 } from "@/lib/agent-utils";
@@ -157,5 +158,47 @@ describe("resolveAgentUserAgents（反找）", () => {
 
   it("无匹配 → null", () => {
     expect(resolveAgentUserAgents("nonexistent", UAS)).toBeNull();
+  });
+});
+describe("resolveAgentUserAgentsMulti（多选反找）", () => {
+  const UAS: Array<string | null> = [
+    "claude-cli/2.1.5 (external, cli)",
+    "opencode/1.18.14",
+    null,
+  ];
+
+  it("空数组 → 不筛选", () => {
+    expect(resolveAgentUserAgentsMulti([], UAS)).toEqual({
+      filter: null,
+      unknownNames: [],
+    });
+  });
+
+  it("多个 agent → UA 并集", () => {
+    expect(resolveAgentUserAgentsMulti(["claude-code", "opencode"], UAS)).toEqual({
+      filter: { uas: ["claude-cli/2.1.5 (external, cli)", "opencode/1.18.14"] },
+      unknownNames: [],
+    });
+  });
+
+  it("unknown 与其他 agent 同选 → uas + unknown 同时成立", () => {
+    expect(resolveAgentUserAgentsMulti(["opencode", UNKNOWN_AGENT], UAS)).toEqual({
+      filter: { uas: ["opencode/1.18.14"], unknown: true },
+      unknownNames: [],
+    });
+  });
+
+  it("只选 unknown → { unknown: true }", () => {
+    expect(resolveAgentUserAgentsMulti([UNKNOWN_AGENT], UAS)).toEqual({
+      filter: { unknown: true },
+      unknownNames: [],
+    });
+  });
+
+  it("含不命中的名字 → 收集到 unknownNames，filter 为 null", () => {
+    expect(resolveAgentUserAgentsMulti(["opencode", "nope"], UAS)).toEqual({
+      filter: null,
+      unknownNames: ["nope"],
+    });
   });
 });

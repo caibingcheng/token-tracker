@@ -187,4 +187,49 @@ describe("records route", () => {
     expect(badRes.status).toBe(400);
     expect((await badRes.json()).error).toBe("Unknown agent: nonexistent");
   });
+
+  it("多选 agent：UA 并集（unknown 与具体 agent 同选）", async () => {
+    await insertRecord({ agent: "vk-a", userAgent: "claude-cli/2.1.5 (external, cli)" });
+    await insertRecord({ agent: "vk-b", userAgent: "opencode/1.18.14" });
+    await insertRecord({ agent: "vk-c" });
+
+    const token = await makeToken();
+    const res = await json(
+      await GET(req("/api/records?agent=opencode&agent=unknown", "GET", undefined, token))
+    );
+    expect(res.success).toBe(true);
+    expect(res.data.map((r: any) => r.keyName).sort()).toEqual(["vk-b", "vk-c"]);
+  });
+
+  it("多选 provider / model：并集 + 未命名单独 400", async () => {
+    await insertRecord({ provider: "openai", model: "gpt-4o" });
+    await insertRecord({ provider: "anthropic", model: "claude-sonnet-4" });
+    await insertRecord({ provider: "azure", model: "gpt-4o" });
+
+    const token = await makeToken();
+    const res = await json(
+      await GET(
+        req("/api/records?provider=openai&provider=anthropic", "GET", undefined, token)
+      )
+    );
+    expect(res.success).toBe(true);
+    expect(res.data.map((r: any) => r.providerName).sort()).toEqual([
+      "anthropic",
+      "openai",
+    ]);
+
+    const models = await json(
+      await GET(
+        req("/api/records?model=gpt-4o&model=claude-sonnet-4", "GET", undefined, token)
+      )
+    );
+    expect(models.success).toBe(true);
+    expect(models.data).toHaveLength(3);
+
+    const bad = await GET(
+      req("/api/records?provider=openai&provider=nonexistent", "GET", undefined, token)
+    );
+    expect(bad.status).toBe(400);
+    expect((await bad.json()).error).toBe("Unknown provider: nonexistent");
+  });
 });

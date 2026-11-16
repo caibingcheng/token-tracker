@@ -16,6 +16,7 @@ import UsageHeatmap, { HeatmapData } from "./UsageHeatmap";
 import { getClientTimezoneOffsetMinutes } from "@/lib/timezone-utils";
 import { apiFetch } from "@/lib/client/api-client";
 import { useSidebarActions, NumberFormatToggle } from "./AppSidebar";
+import MultiSelect from "./MultiSelect";
 
 interface ModelStat {
   group: string;
@@ -36,6 +37,11 @@ interface ModelStat {
 }
 
 const DAILY_RANGE_OPTIONS = [3, 7, 14, 30];
+
+// 多选筛选里恰好选了一个时把该值当默认值传下去，多选/未选时退回 "all"
+function singleSelection(values: string[]): string {
+  return values.length === 1 ? values[0] : "all";
+}
 
 function formatTimeAgo(date: Date | null): string {
   if (!date) return "Never";
@@ -77,16 +83,17 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
   const [totalDays, setTotalDays] = useState<number>(0);
 
   const [providers, setProviders] = useState<Array<{ id: string; name: string }>>([]);
-  const [selectedProvider, setSelectedProvider] = useState<string>("all");
-  const selectedProviderRef = useRef<string>("all");
+  // 空数组 = 不筛选（All）；多选值以重复 query 参数传给 /api/dashboard
+  const [selectedProviders, setSelectedProviders] = useState<string[]>([]);
+  const selectedProvidersRef = useRef<string[]>([]);
 
   const [models, setModels] = useState<Array<{ id: string; name: string }>>([]);
-  const [selectedModel, setSelectedModel] = useState<string>("all");
-  const selectedModelRef = useRef<string>("all");
+  const [selectedModels, setSelectedModels] = useState<string[]>([]);
+  const selectedModelsRef = useRef<string[]>([]);
 
   const [agents, setAgents] = useState<Array<{ id: string; name: string }>>([]);
-  const [selectedAgent, setSelectedAgent] = useState<string>("all");
-  const selectedAgentRef = useRef<string>("all");
+  const [selectedAgents, setSelectedAgents] = useState<string[]>([]);
+  const selectedAgentsRef = useRef<string[]>([]);
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -155,16 +162,16 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
   }, [dailyRange]);
 
   useEffect(() => {
-    selectedModelRef.current = selectedModel;
-  }, [selectedModel]);
+    selectedModelsRef.current = selectedModels;
+  }, [selectedModels]);
 
   useEffect(() => {
-    selectedProviderRef.current = selectedProvider;
-  }, [selectedProvider]);
+    selectedProvidersRef.current = selectedProviders;
+  }, [selectedProviders]);
 
   useEffect(() => {
-    selectedAgentRef.current = selectedAgent;
-  }, [selectedAgent]);
+    selectedAgentsRef.current = selectedAgents;
+  }, [selectedAgents]);
 
   const fetchProviders = useCallback(async () => {
     try {
@@ -216,14 +223,20 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
       "tzOffset",
       String(clientTimezoneOffsetMinutes)
     );
-    if (selectedProviderRef.current !== "all") {
-      url.searchParams.set("provider", selectedProviderRef.current);
+    if (selectedProvidersRef.current.length > 0) {
+      for (const value of selectedProvidersRef.current) {
+        url.searchParams.append("provider", value);
+      }
     }
-    if (selectedModelRef.current !== "all") {
-      url.searchParams.set("model", selectedModelRef.current);
+    if (selectedModelsRef.current.length > 0) {
+      for (const value of selectedModelsRef.current) {
+        url.searchParams.append("model", value);
+      }
     }
-    if (selectedAgentRef.current !== "all") {
-      url.searchParams.set("agent", selectedAgentRef.current);
+    if (selectedAgentsRef.current.length > 0) {
+      for (const value of selectedAgentsRef.current) {
+        url.searchParams.append("agent", value);
+      }
     }
     return url.toString();
   }, [clientTimezoneOffsetMinutes]);
@@ -523,31 +536,28 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
     }
   }, [isRangeInitialized, scheduleRefresh]);
 
-  const handleProviderChange = useCallback(
-    (e: React.ChangeEvent<HTMLSelectElement>) => {
-      const value = e.target.value;
-      setSelectedProvider(value);
-      selectedProviderRef.current = value;
+  const handleProvidersChange = useCallback(
+    (next: string[]) => {
+      setSelectedProviders(next);
+      selectedProvidersRef.current = next;
       scheduleRefresh({ skipLoading: true });
     },
     [scheduleRefresh]
   );
 
-  const handleModelChange = useCallback(
-    (e: React.ChangeEvent<HTMLSelectElement>) => {
-      const value = e.target.value;
-      setSelectedModel(value);
-      selectedModelRef.current = value;
+  const handleModelsChange = useCallback(
+    (next: string[]) => {
+      setSelectedModels(next);
+      selectedModelsRef.current = next;
       scheduleRefresh({ skipLoading: true });
     },
     [scheduleRefresh]
   );
 
-  const handleAgentChange = useCallback(
-    (e: React.ChangeEvent<HTMLSelectElement>) => {
-      const value = e.target.value;
-      setSelectedAgent(value);
-      selectedAgentRef.current = value;
+  const handleAgentsChange = useCallback(
+    (next: string[]) => {
+      setSelectedAgents(next);
+      selectedAgentsRef.current = next;
       scheduleRefresh({ skipLoading: true });
     },
     [scheduleRefresh]
@@ -619,42 +629,27 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
         <div className="hidden md:block max-w-7xl mx-auto">
           <div className="sticky top-0 z-20 -mx-8 bg-gray-50 px-8 py-3 mb-6">
             <div className="flex flex-wrap items-center gap-2">
-              <select
-                value={selectedAgent}
-                onChange={handleAgentChange}
-                className="rounded border border-gray-300 bg-white px-3 py-1.5 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-              >
-                <option value="all">All Agents</option>
-                {agents.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.name}
-                  </option>
-                ))}
-              </select>
-              <select
-                value={selectedProvider}
-                onChange={handleProviderChange}
-                className="rounded border border-gray-300 bg-white px-3 py-1.5 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-              >
-                <option value="all">All Providers</option>
-                {providers.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
-              <select
-                value={selectedModel}
-                onChange={handleModelChange}
-                className="rounded border border-gray-300 bg-white px-3 py-1.5 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-              >
-                <option value="all">All Models</option>
-                {models.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name}
-                  </option>
-                ))}
-              </select>
+              <MultiSelect
+                label="Agents"
+                allLabel="All Agents"
+                options={agents}
+                value={selectedAgents}
+                onChange={handleAgentsChange}
+              />
+              <MultiSelect
+                label="Providers"
+                allLabel="All Providers"
+                options={providers}
+                value={selectedProviders}
+                onChange={handleProvidersChange}
+              />
+              <MultiSelect
+                label="Models"
+                allLabel="All Models"
+                options={models}
+                value={selectedModels}
+                onChange={handleModelsChange}
+              />
             </div>
             {lastActiveAt && (
               <p className="text-xs text-gray-400 mt-2">
@@ -732,9 +727,9 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
         <PriceSimulatorModal
           isOpen={isSimulatorOpen}
           onClose={() => setIsSimulatorOpen(false)}
-          defaultAgent={selectedAgent}
-          defaultProvider={selectedProvider}
-          defaultModel={selectedModel}
+          defaultAgent={singleSelection(selectedAgents)}
+          defaultProvider={singleSelection(selectedProviders)}
+          defaultModel={singleSelection(selectedModels)}
           agents={agents}
           providers={providers}
           models={models}

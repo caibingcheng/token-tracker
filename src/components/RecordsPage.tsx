@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import RecordsTable from "./RecordsTable";
 import ColumnPicker, { ColumnChecklist } from "./ColumnPicker";
+import MultiSelect from "./MultiSelect";
 import { DEFAULT_RECORD_COLUMNS, RECORD_COLUMNS, normalizeRecordColumns, type RecordColumnId } from "@/lib/records-columns";
 import { apiFetch } from "@/lib/client/api-client";
 import { useBodyScrollLock } from "@/hooks/useBodyScrollLock";
@@ -23,6 +24,11 @@ const FILTERS: Array<{ key: FilterKey; label: string; endpoint: string; allLabel
   { key: "provider", label: "Provider", endpoint: "/api/providers", allLabel: "All Providers" },
   { key: "model", label: "Model", endpoint: "/api/models", allLabel: "All Models" },
 ];
+
+// URL 里的空串 / "all"（旧链接）视为未筛选
+function isActiveFilter(value: string): boolean {
+  return value !== "" && value !== "all";
+}
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100, 200] as const;
 
@@ -81,19 +87,20 @@ export default function RecordsPage() {
   // 移动端筛选抽屉（筛选 + 行数 + 列可见性）
   const [filterSheetOpen, setFilterSheetOpen] = useState(false);
 
+  // URL 里每个维度可带多个同名参数（?agent=a&agent=b）；空数组 = 不筛选
   const selected = useMemo(
     () => ({
-      provider: searchParams.get("provider") ?? "all",
-      model: searchParams.get("model") ?? "all",
-      agent: searchParams.get("agent") ?? "all",
+      provider: searchParams.getAll("provider").filter(isActiveFilter),
+      model: searchParams.getAll("model").filter(isActiveFilter),
+      agent: searchParams.getAll("agent").filter(isActiveFilter),
     }),
     [searchParams]
   );
   const hasFilter =
-    selected.provider !== "all" ||
-    selected.model !== "all" ||
-    selected.agent !== "all";
-  const activeFilterCount = FILTERS.filter((filter) => selected[filter.key] !== "all").length;
+    selected.provider.length > 0 ||
+    selected.model.length > 0 ||
+    selected.agent.length > 0;
+  const activeFilterCount = FILTERS.filter((filter) => selected[filter.key].length > 0).length;
 
   // 移动端抽屉：Esc 关闭（抽屉是浮层，Esc 是键盘用户的退出路径）
   useEffect(() => {
@@ -210,13 +217,10 @@ export default function RecordsPage() {
   }, [searchParams]);
 
   const setFilter = useCallback(
-    (key: FilterKey, value: string) => {
+    (key: FilterKey, values: string[]) => {
       const params = new URLSearchParams(queryRef.current);
-      if (value === "all") {
-        params.delete(key);
-      } else {
-        params.set(key, value);
-      }
+      params.delete(key);
+      for (const value of values) params.append(key, value);
       const query = params.toString();
       queryRef.current = query;
       // replace: 筛选变化不进浏览器历史，避免后退键要按很多次才离开页面
@@ -282,20 +286,14 @@ export default function RecordsPage() {
           <div className="hidden md:flex md:flex-wrap md:items-center md:justify-between md:gap-2">
             <div className="grid grid-cols-3 gap-2 md:flex md:flex-wrap md:items-center md:gap-2">
               {FILTERS.map((filter) => (
-                <select
+                <MultiSelect
                   key={filter.key}
+                  label={filter.label}
+                  allLabel={filter.allLabel}
+                  options={options[filter.key]}
                   value={selected[filter.key]}
-                  onChange={(e) => setFilter(filter.key, e.target.value)}
-                  aria-label={filter.allLabel}
-                  className="min-h-[40px] w-full min-w-0 max-w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-base md:text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 md:w-auto md:min-h-0 md:px-3"
-                >
-                  <option value="all">{filter.allLabel}</option>
-                  {options[filter.key].map((option) => (
-                    <option key={option.id} value={option.id}>
-                      {option.name}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(next) => setFilter(filter.key, next)}
+                />
               ))}
               {hasFilter && (
                 <button
@@ -392,24 +390,18 @@ export default function RecordsPage() {
               <div className="flex-1 space-y-5 overflow-y-auto overscroll-contain px-4 py-4">
                 <div className="space-y-3">
                   {FILTERS.map((filter) => (
-                    <label key={filter.key} className="block">
+                    <div key={filter.key}>
                       <span className="mb-1 block text-xs font-medium uppercase text-gray-500">
                         {filter.label}
                       </span>
-                      <select
+                      <MultiSelect
+                        label={filter.label}
+                        allLabel={filter.allLabel}
+                        options={options[filter.key]}
                         value={selected[filter.key]}
-                        onChange={(e) => setFilter(filter.key, e.target.value)}
-                        aria-label={filter.allLabel}
-                        className="min-h-[44px] w-full rounded-lg border border-gray-300 bg-white px-3 text-base shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                      >
-                        <option value="all">{filter.allLabel}</option>
-                        {options[filter.key].map((option) => (
-                          <option key={option.id} value={option.id}>
-                            {option.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
+                        onChange={(next) => setFilter(filter.key, next)}
+                      />
+                    </div>
                   ))}
                 </div>
 
