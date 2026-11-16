@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { apiFetch } from "@/lib/client/api-client";
+import { linkAction, pillAction } from "./buttons";
 import {
   AdminMobileCard,
   AdminMobileCards,
@@ -47,7 +48,7 @@ interface PutResult {
   error: string;
 }
 
-// 行级 Actions 桌面样式：文本链接 Edit · Delete / Save · Cancel（对齐 ModelsPanel routing rules）
+// 行级 Actions 桌面样式：文本链接 Edit · Delete / Save · Cancel（样式见 ./buttons）
 function DesktopActions({
   editing,
   busy,
@@ -73,7 +74,7 @@ function DesktopActions({
             type="button"
             onClick={onSave}
             disabled={busy || !canSave}
-            className="text-xs font-medium text-blue-600 hover:text-blue-800 disabled:opacity-50"
+            className={linkAction.primary}
           >
             {busy ? "Saving…" : "Save"}
           </button>
@@ -82,7 +83,7 @@ function DesktopActions({
             type="button"
             onClick={onCancel}
             disabled={busy}
-            className="text-xs text-gray-500 hover:text-gray-700 disabled:opacity-50"
+            className={linkAction.neutral}
           >
             Cancel
           </button>
@@ -93,7 +94,7 @@ function DesktopActions({
             type="button"
             onClick={onEdit}
             disabled={busy}
-            className="text-xs text-gray-600 hover:text-gray-800 disabled:opacity-50"
+            className={linkAction.primary}
           >
             Edit
           </button>
@@ -102,7 +103,7 @@ function DesktopActions({
             type="button"
             onClick={onDelete}
             disabled={busy}
-            className="text-xs text-red-500 hover:text-red-700 disabled:opacity-50"
+            className={linkAction.danger}
           >
             Delete
           </button>
@@ -112,7 +113,7 @@ function DesktopActions({
   );
 }
 
-// 行级 Actions 移动端样式：border 按钮（保留 min-h-[40px] 触摸区）
+// 行级 Actions 移动端样式：带边框按钮（样式见 ./buttons，含 min-h-[40px] 触摸区）
 function MobileActions({
   editing,
   busy,
@@ -136,7 +137,7 @@ function MobileActions({
         type="button"
         onClick={onSave}
         disabled={busy || !canSave}
-        className="rounded border border-blue-200 bg-blue-50 px-2 py-1 text-xs text-blue-600 hover:bg-blue-100 disabled:opacity-50 min-h-[40px]"
+        className={pillAction.primary}
       >
         {busy ? "Saving…" : "Save"}
       </button>
@@ -144,7 +145,7 @@ function MobileActions({
         type="button"
         onClick={onCancel}
         disabled={busy}
-        className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 disabled:opacity-50 min-h-[40px]"
+        className={pillAction.neutral}
       >
         Cancel
       </button>
@@ -155,7 +156,7 @@ function MobileActions({
         type="button"
         onClick={onEdit}
         disabled={busy}
-        className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 disabled:opacity-50 min-h-[40px]"
+        className={pillAction.primary}
       >
         Edit
       </button>
@@ -163,7 +164,7 @@ function MobileActions({
         type="button"
         onClick={onDelete}
         disabled={busy}
-        className="rounded border border-red-200 px-2 py-1 text-xs text-red-500 hover:bg-red-50 disabled:opacity-50 min-h-[40px]"
+        className={pillAction.danger}
       >
         Delete
       </button>
@@ -997,7 +998,7 @@ export default function DisplaySettings() {
                           type="button"
                           onClick={() => adoptObservedAgent(o.token, editingObservedName)}
                           disabled={agentAliasesBusy || !editingObservedName.trim()}
-                          className="text-xs font-medium text-blue-600 hover:text-blue-800 disabled:opacity-50"
+                          className={linkAction.primary}
                         >
                           {agentAliasesBusy ? "Saving…" : "Apply"}
                         </button>
@@ -1006,7 +1007,7 @@ export default function DisplaySettings() {
                           type="button"
                           onClick={() => setEditingObserved(null)}
                           disabled={agentAliasesBusy}
-                          className="text-xs text-gray-500 hover:text-gray-700 disabled:opacity-50"
+                          className={linkAction.neutral}
                         >
                           Cancel
                         </button>
@@ -1031,7 +1032,7 @@ export default function DisplaySettings() {
                             setEditingObservedName(o.name);
                           }}
                           disabled={agentAliasesBusy}
-                          className="text-xs text-gray-600 hover:text-gray-800 disabled:opacity-50"
+                          className={linkAction.primary}
                         >
                           Edit
                         </button>
@@ -1066,7 +1067,7 @@ export default function DisplaySettings() {
                         type="button"
                         onClick={() => adoptObservedAgent(o.token, editingObservedName)}
                         disabled={agentAliasesBusy || !editingObservedName.trim()}
-                        className="rounded border border-blue-200 bg-blue-50 px-2 py-1 text-xs text-blue-600 hover:bg-blue-100 disabled:opacity-50 min-h-[40px]"
+                        className={pillAction.primary}
                       >
                         {agentAliasesBusy ? "Saving…" : "Apply"}
                       </button>
@@ -1074,7 +1075,7 @@ export default function DisplaySettings() {
                         type="button"
                         onClick={() => setEditingObserved(null)}
                         disabled={agentAliasesBusy}
-                        className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 disabled:opacity-50 min-h-[40px]"
+                        className={pillAction.neutral}
                       >
                         Cancel
                       </button>
@@ -1103,7 +1104,7 @@ export default function DisplaySettings() {
                             setEditingObservedName(o.name);
                           }}
                           disabled={agentAliasesBusy}
-                          className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 disabled:opacity-50 min-h-[40px]"
+                          className={pillAction.primary}
                         >
                           Edit
                         </button>

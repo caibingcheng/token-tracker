@@ -14,6 +14,7 @@ import type { ModelProbeConfig, ProbeConfig } from "@/lib/gateway/probe-config";
 import type { ClassifierModelEntry } from "@/lib/gateway/classifier/types";
 import { useBodyScrollLock } from "@/hooks/useBodyScrollLock";
 import ModalPortal from "@/components/ModalPortal";
+import { linkAction, pillAction, statusChip } from "./buttons";
 
 export interface UpstreamProbeStatus {
   lastAt: number; // 0 = 尚未探测
@@ -1045,7 +1046,7 @@ export default function UpstreamsPanel() {
                       type="button"
                       onClick={() => toggleKeyPending(k)}
                       title={effectiveEnabled ? "Disable key (applied on Save)" : "Enable key (applied on Save)"}
-                      className="ml-0.5 text-gray-400 hover:text-blue-600"
+                      className={linkAction.neutral}
                     >
                       {effectiveEnabled ? "Disable" : "Enable"}
                     </button>
@@ -1053,7 +1054,7 @@ export default function UpstreamsPanel() {
                       type="button"
                       onClick={() => handleDeleteKey(k)}
                       title="Delete key"
-                      className="text-gray-400 hover:text-red-600"
+                      className={linkAction.danger}
                     >
                       ×
                     </button>
@@ -1622,7 +1623,7 @@ export default function UpstreamsPanel() {
                 </span>
                 {!u.enabled && (
                   <span
-                    className="rounded bg-gray-700 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white"
+                    className={statusChip.off}
                     title="Disabled — excluded from routing and failover. Click Enable to restore."
                   >
                     disabled
@@ -1699,7 +1700,7 @@ export default function UpstreamsPanel() {
                     type="button"
                     onClick={() => handleProbeNow(u)}
                     disabled={probing[u.id]}
-                    className="rounded border border-red-200 px-2.5 py-1 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50"
+                    className={pillAction.danger}
                   >
                     {probing[u.id] ? "Probing..." : "Probe now"}
                   </button>
@@ -1707,28 +1708,28 @@ export default function UpstreamsPanel() {
                 <button
                   type="button"
                   onClick={() => handleTest(u)}
-                  className="rounded border border-gray-300 px-2.5 py-1 text-xs text-gray-600 hover:bg-gray-50"
+                  className={pillAction.neutral}
                 >
                   Test
                 </button>
                 <button
                   type="button"
                   onClick={() => handleToggleEnabled(u)}
-                  className="rounded border border-gray-300 px-2.5 py-1 text-xs text-gray-600 hover:bg-gray-50"
+                  className={pillAction.neutral}
                 >
                   {u.enabled ? "Disable" : "Enable"}
                 </button>
                 <button
                   type="button"
                   onClick={() => handleEdit(u)}
-                  className="rounded border border-gray-300 px-2.5 py-1 text-xs text-gray-600 hover:bg-gray-50"
+                  className={pillAction.primary}
                 >
                   Edit
                 </button>
                 <button
                   type="button"
                   onClick={() => handleDelete(u)}
-                  className="rounded border border-red-200 px-2.5 py-1 text-xs text-red-600 hover:bg-red-50"
+                  className={pillAction.danger}
                 >
                   Delete
                 </button>
@@ -1903,7 +1904,7 @@ export default function UpstreamsPanel() {
                       </code>
                       {!key.enabled && (
                         <span
-                          className="rounded bg-gray-700 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white"
+                          className={statusChip.off}
                           title="Disabled — this key is not used for routing or failover. Click Enable to restore."
                         >
                           disabled
