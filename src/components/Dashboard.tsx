@@ -615,8 +615,11 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
   return (
     <main className="min-h-screen bg-gray-50 p-4 pb-20 md:p-8 md:pb-8">
       <div className="md:hidden flex flex-col gap-4">
-          <h1 className="text-lg font-bold text-gray-900 truncate">
-            Token Tracker
+          <h1 className="flex items-baseline gap-2 text-lg font-bold text-gray-900">
+            <span className="truncate">Token Tracker</span>
+            <span className="shrink-0 text-[11px] font-normal leading-none text-gray-400 select-all">
+              {process.env.NEXT_PUBLIC_APP_VERSION || "dev"}
+            </span>
           </h1>
           <MobileSummary
             stats={stats}
