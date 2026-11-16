@@ -3,6 +3,7 @@
 > 上级文档：`AGENTS.md`。改统计口径 / 聚合 / 定价 / 归一化 / 匿名化 / 时区前必读。
 
 ## 聚合口径
+- **全部记录一律计入聚合**：聚合统计不再支持按 upstream / vk 名剔除（原 Hidden Sources 功能已删除）；要排除某些记录只能删除它们，或依靠筛选（`provider`/`model`/`agent` 参数做 inclusion）。settings 表遗留的 `hidden_sources` 行代码不读不写，仅存量查阅
 - 展示层所有 **Total Input** 按 `SUM(input_tokens) + SUM(cache_read)` 计算（含 cache）。
 - **Uncached Input** = `SUM(input_tokens)`（不含 cache）。
 - **Cached Input** = `SUM(cache_read)`（单独列示）。
@@ -47,21 +48,12 @@
 - **注意**：TTFT = 首个 SSE chunk 到达时间，个别上游先推空 chunk 会略微低估真实首 token 时间，对比用途足够
 
 ## Provider 匿名化
-- **数据源**：settings 表 `hidden_providers`（admin panel Display tab 编辑，唯一来源，未保存 → 空；无 env fallback，与 model_aliases/hidden_sources 语义一致）
+- **数据源**：settings 表 `hidden_providers`（admin panel Display tab 编辑，唯一来源，未保存 → 空；无 env fallback，与 model_aliases 语义一致）
 - **唯一 async 入口**：`loadHiddenProviderGroups()`（settings 单一来源）；纯函数一律接收 `groups` 参数显式传参（`anonymizeProvider` / `resolveProviderFilter` / `deanonymizeProvider` / `parseHiddenProviderGroups`），不直接读 env
 - **分组语法**：分号分组的通配匹配，如 `CustomA:vendor*`；被隐藏的 provider 在 UI 显示为 "Provider A", "Provider B"... 或自定义名称
 - **Provider 维度归并**：同一组内多个真实 provider 在 Provider 维度统计中合并为一行（Top Providers、每日堆叠图、Speed/latency 表），由 `providerGroupKey()` 计算聚合键；组名同时作为 `ProviderStat.provider` 与 `ProviderStat.providerName`，保证前端堆叠图跨日 series 连续；Model 维度仍按归一化 model 名独立聚合，不受影响
 - **缓存失效**：`setHiddenProvidersSetting` 写入时调用 `invalidateModelCache()` 清空 `normalizeModel` 的 `rawToCanonical`，面板改分组后立即生效
 - **相关文件**：`src/lib/provider-utils.ts`（`providerGroupKey`、`anonymizeProvider`、`resolveProviderFilter`）、`src/lib/model-registry.ts`（`isProviderHidden`）
-
-## Hidden Sources（隐藏 vk / upstream 数据源，`hidden_sources`）
-
-- **语义**：每个名字两个**独立维度**——`upstreams`/`virtualKeys` = 隐藏（从筛选器下拉、分组榜单消失但总计仍计入）；`excludedUpstreams`/`excludedVirtualKeys` = 从聚合统计（总卡片、daily、heatmap、hourly、latency）中剔除。四态均可表达（含「剔除但没隐藏」）。数据零删除，仅查询层过滤，取消勾选立即完整恢复
-- **匹配口径**：upstream → `token_records.provider`；vk → `token_records.agent`（均为写入时名字快照）；`'unknown'` 遗留记录永远计入总计、不列入可隐藏列表（UI 占位名 `(unknown)`）
-- **查询层**：`buildWhereClause` 第 6 参数 `exclude?: {providers, agents}`（`notInArray`，空数组跳过）；`executeStatsQuery`（stats-query.ts）与 `queryLatencyStats`（latency-query.ts，⚠️ 直接调 buildWhereClause 需自行 `loadHiddenSources()`）恒以 excluded 列表传入（与隐藏状态无关）；`/api/records` 明细不受影响
-- **distinct 路由**：`/api/agents` **默认返回派生工具名**（`user_agent` 解析，NULL UA 追加 `(unknown)`；hidden vk 过滤不适用）；`?dimension=key` 时按 `agent` 列（vk 名）返回并始终过滤隐藏 vk（不受排除状态影响，`'unknown'` 映射 `(unknown)` 显示，供 DisplaySettings vk 建议列表）；`/api/providers` 在**匿名化之前**按真实名排除（`?includeHidden=1` 跳过过滤且跳过匿名化返回真实名，供管理面板建议列表）；`/api/models` 行级过滤（provider NOT IN ∪ agent NOT IN），隐藏源独有 model 一并消失；三路由均支持 `?includeHidden=1`
-- **缓存**：settings 写入经 `withSkipCache`（查询缓存 TTL 10s，settings 变更必须主动失效）
-- **删除联动**：upstream/vk DELETE 接受 `?hideHistory=1`（删除确认框复选框，默认不勾），服务端追加名字进 hidden 列表（幂等去重）
 
 ## 官方价参考（`model_prices` + models.dev）
 
@@ -78,10 +70,10 @@
 
 ## Agent 维度派生（Dashboard Agent = 客户端工具名）
 
-- **语义**：`token_records.agent` 列 = **来源 key 名**（本地 vk 名 / 远程 `remote/{instance}/{vk名}`），继续承担 Hidden Sources vk 维度、同步协议与 ingest 改写（零改动）；Dashboard 的 **Agent 维度显示客户端工具名**（claude-code、opencode 等），由 `user_agent` 列**查询时派生**（不回填、不改历史数据），Records 表 Agent（派生）+ Key（`agent` 列原值）双列展示，另带 Session 列（`session_id`：客户端 header 原值，未携带时回退网关会话指纹；无筛选）
+- **语义**：`token_records.agent` 列 = **来源 key 名**（本地 vk 名 / 远程 `remote/{instance}/{vk名}`），继续承担同步协议与 ingest 改写（零改动）；Dashboard 的 **Agent 维度显示客户端工具名**（claude-code、opencode 等），由 `user_agent` 列**查询时派生**（不回填、不改历史数据），Records 表 Agent（派生）+ Key（`agent` 列原值）双列展示，另带 Session 列（`session_id`：客户端 header 原值，未携带时回退网关会话指纹；无筛选）
 - **解析规则**（`src/lib/agent-utils.ts`，纯逻辑可单测）：UA 首段 token（第一个 `/` 前，lowercase）→ 手动 `agent_aliases` 精确匹配（大小写不敏感）→ 内置 `BUILTIN_AGENT_MAP`（claude-cli→claude-code、codex_cli_rs/codex→codex、geminicli→gemini-cli、aider→aider、cursor-agent→cursor 等）→ 未命中回退 token 本身；null/空 UA → `unknown`（筛选 UI 显示 `(unknown)`）
 - **注册新 agent 工具**：无需改代码——在 Display pane Agent Aliases 添加 {name, aliases[]} 即可（多 UA token 可映射同一工具名），写入 `setAgentAliasesSetting` 主动 `invalidateQueryCache()` 立即生效
-- **过滤器**：Dashboard/Records 的 `agent` 参数是**派生工具名**，支持重复 query 参数；服务端由 `resolveAgentUserAgentsMulti` 逐名反找并取 UA 并集（空值、上限与 400 语义见上文「多维筛选」）。具体 agent 走 `user_agent IN (...)`，`unknown` 走 `user_agent IS NULL`，二者同选时由 `buildAgentUaWhereClause` 合成 OR。`/api/cli` 不支持维度过滤（`agent`/`provider`/`range` 一律忽略，不解析、不报 400）。`buildWhereClause` 的第 4 参数即此 UA 过滤（类型 `AgentUaFilter`），`exclude.agents`（Hidden Sources excludedVirtualKeys）仍按 `agent` 列 NOT IN 排除，两维度并行
+- **过滤器**：Dashboard/Records 的 `agent` 参数是**派生工具名**，支持重复 query 参数；服务端由 `resolveAgentUserAgentsMulti` 逐名反找并取 UA 并集（空值、上限与 400 语义见上文「多维筛选」）。具体 agent 走 `user_agent IN (...)`，`unknown` 走 `user_agent IS NULL`，二者同选时由 `buildAgentUaWhereClause` 合成 OR。`/api/cli` 不支持维度过滤（`agent`/`provider`/`range` 一律忽略，不解析、不报 400）。`buildWhereClause` 的第 4 参数即此 UA 过滤（类型 `AgentUaFilter`）
 - **注意**：反找需 `selectDistinct(user_agent)` 全表扫描（无索引）；个人规模（日均约 1000 行）+ 10s 查询缓存可接受。远程记录（vk=-1）按自身 UA 派生，与本地同名工具合并为一个 agent；instance 区分仍靠 provider 的 `remote/{instance}/` 前缀
 
 ## Model 归一化

@@ -48,7 +48,7 @@ flowchart LR
 1. 虚拟 key 校验通过后，请求进入路由层：命名路由（含可选 LLM 分类器）→ 自动路由 → upstream key 故障转移链
 2. 透传过程中增量解析上游 `usage`（OpenAI / Anthropic / Gemini 三种格式，流式与非流式同口径）
 3. 写 `token_records`：`model` 记发往 upstream 的真实名，`request_model` 记客户端原始名；`input_tokens` 不含 cache read，`cache_read` / `cache_write` 独立列
-4. Dashboard / Records 读库聚合，展示层再叠加模型别名归一化、Provider 匿名化与 Hidden Sources
+4. Dashboard / Records 读库聚合，展示层再叠加模型别名归一化与 Provider 匿名化
 
 ## 多实例同步拓扑
 

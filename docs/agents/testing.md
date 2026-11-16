@@ -34,7 +34,7 @@
   - `src/lib/gateway/url-utils`：`joinUrlPath` 前缀去重 + `sanitizePathSegments` `..` 段净化（逃逸返回 null）
   - `src/lib/net/client-ip`：限流 IP 可信源（TRUSTED_PROXY 开关、XFF 伪造防护）
   - `src/lib/auth/totp-lock`：TOTP 失败计数 + 指数锁定（settings 表持久化，防重启清零）
-  - `src/lib/stats-query`：静态断言聚合口径（Total Input = `SUM(input_tokens) + SUM(cache_read)`；防止 totalInput 回退为纯 `SUM(input_tokens)` 或 totalInputUncached 再次减去 `cache_read`）+ 日期过滤必须直比较（sargable，防 strftime 套列导致索引失效）+ **agent 维度静态断言**（不再按 `agent` 列过滤、`user_agent IN (uas)` / `IS NULL` 条件、exclude.agents 仍按 agent 列 NOT IN）
+  - `src/lib/stats-query`：静态断言聚合口径（Total Input = `SUM(input_tokens) + SUM(cache_read)`；防止 totalInput 回退为纯 `SUM(input_tokens)` 或 totalInputUncached 再次减去 `cache_read`）+ 日期过滤必须直比较（sargable，防 strftime 套列导致索引失效）+ **agent 维度静态断言**（不再按 `agent` 列过滤、`user_agent IN (uas)` / `IS NULL` 条件）
   - `src/lib/latency-query`：percentile 线性插值、归一化 model × provider 分组、active 过滤（已删除 model 不显示）、tok/s 守卫（latency ≤ ttft 排除）、非流式行口径（不进 TTFT 统计但计入 avgLatency/count）、时区分组（getTimezoneOffset 语义：UTC+8 = -480）、排序（p50 升序 nulls 最后）
   - `src/lib/timezone-utils`：`localDateKeyToUtcStartISO` 时区换算（含互逆 round-trip）
   - `src/lib/agent-utils` / `src/lib/auth/settings-agent-aliases`：UA token 提取、内置映射、手动 alias 优先级与大小写、unknown、反找（多 UA→一 agent、无匹配）、多选反找（多 agent 取 UA 并集、`unknown` 与具体 agent 同选、未命中名单）；parse/isValid 边界、load 回退、set 后 invalidateQueryCache
@@ -54,7 +54,7 @@
   - `src/app/api/admin/auth/api-key/route.test`：401、弱/强新 key 均落库 + token_epoch+1
   - `src/lib/client/api-client`：会话 token 只写 **sessionStorage**（localStorage 不写不读）、apiLogin 落 token、apiFetch 带 `X-API-Key` 与滑动续期回写、401 清空 token
   - `src/lib/auth/recovery-codes`（**原子消费**）：并发复用同一码只成功一次（含归一化等价写法）、并发不同码互不干扰、落库标记不可复活
-  - `src/lib/auth/settings-display` / `settings-hidden-sources` / `settings-stream`：settings 读写与回退优先级（含 stream timeout 函数族、hidden providers/sources）
+  - `src/lib/auth/settings-display` / `settings-stream`：settings 读写与回退优先级（含 stream timeout 函数族、hidden providers）
   - `src/lib/admin/audit`：审计日志写入
   - `src/lib/clipboard` / `src/lib/mask-utils`：剪贴板 fallback / 密钥掩码
   - `src/lib/provider-utils-async`：匿名化分组解析 + 归一化索引
@@ -62,7 +62,6 @@
   - `src/app/api/admin/named-routes/route.test`：命名路由 CRUD（POST 带首目标、重复 name+protocol → 409、目标协议不匹配 → 400、未声明分类器模型 → 400、切回规则分类器、改名（含 trim + 撞名 409 + 空名/超长 400）、DELETE 级联目标）+ 目标子资源（增/改/删、重复目标 → 409、未知路由 → 404）
   - `src/app/api/admin/models-dev/upload/route.test`：快照上传校验（大小/结构/全非法 400）+ litellm 格式自动识别转换上传成功 + 审计 source
   - `src/app/api/admin/models-dev/refresh/route.test`：双源 refresh（github 分支走 Litellm URL、非法 setting 值回退默认）+ 审计含 source
-  - `src/app/api/admin/settings/hidden-sources/route.test`：Hidden Sources API + 统计剔除 + 删除联动
   - `src/app/api/admin/upstreams/test-connection|fetch-models/route.test`：SSRF 校验（私网 400 不发请求）+ 存储 key 模式 + 3xx 不跟随
   - `src/app/api/admin/upstreams/route.test`：proxy_url 加密落库（密文 ≠ 明文可解密还原）、GET/PATCH 不泄漏凭据（仅脱敏 host）、PATCH null 清除/省略保持/换代理、非法 proxyUrl 400、其他字段更新不触碰密文 + GET 列表 `probe` 字段（从未探测 null / 探测后带结果）
   - `src/lib/gateway/proxy-deps.test`：probeUpstream 集成（临时 SQLite + mock fetch）——全 key 链任一成功即恢复、404 放宽恢复并清被探测 model 标记（DB 残留行同步清）、401/5xx 不放宽、无 key 保持 unhealthy

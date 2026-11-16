@@ -304,23 +304,11 @@ describe("aggregateLatencyByModel provider group merge", () => {
   });
 });
 
-describe("queryLatencyStats hidden sources exclusion (静态断言防回归)", () => {
+describe("queryLatencyStats range date filter", () => {
   const SOURCE = readFileSync(
     join(process.cwd(), "src/lib/latency-query.ts"),
     "utf8"
   );
-
-  it("入口必须自行加载 loadHiddenSources（不依赖 executeStatsQuery）", () => {
-    expect(SOURCE).toMatch(/await loadHiddenSources\(\)/);
-    expect(SOURCE).toMatch(/hiddenSources\.excludedUpstreams/);
-    expect(SOURCE).toMatch(/hiddenSources\.excludedVirtualKeys/);
-  });
-
-  it("buildWhereClause 调用必须传 exclude 参数", () => {
-    expect(SOURCE).toMatch(
-      /timezoneOffsetMinutes,\n\s+exclude\n\s*\);/
-    );
-  });
 
   it("uses computeRangeStartDateKey for range date filter", () => {
     expect(SOURCE).toMatch(

@@ -56,7 +56,7 @@
 **管理面板与界面**
 
 - upstreams / 虚拟 keys / 命名路由 / 模型定价 / 同步 / 审计日志分区
-- 模型别名归一化（展示层聚合）、Provider 匿名化分组、Hidden Sources（隐藏/剔除两维度独立）
+- 模型别名归一化（展示层聚合）、Provider 匿名化分组
 - Records / Audit 表格列可见性可配，审计日志按 action 筛选 + 分页
 - 桌面侧栏可收起为图标栏；移动端为底栏导航 + 表格卡片视图 + 全屏弹窗，可安装为 PWA（无 Service Worker，离线未启用）
 

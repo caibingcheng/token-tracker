@@ -207,7 +207,6 @@ export default function UpstreamsPanel() {
   const [pendingDelete, setPendingDelete] = useState<UpstreamItem | null>(null);
   // 选型 / 删除确认弹窗打开时锁背景滚动（两弹窗不会同时开）
   useBodyScrollLock(modelPicker !== null || pendingDelete !== null);
-  const [hideHistory, setHideHistory] = useState(false);
   // 编辑表单中 key 启停的本地暂存（点击 Save 后才提交生效）
   const [pendingKeyEnabled, setPendingKeyEnabled] = useState<Record<number, boolean>>({});
 
@@ -477,14 +476,12 @@ export default function UpstreamsPanel() {
 
   const handleDelete = async (u: UpstreamItem) => {
     setPendingDelete(u);
-    setHideHistory(false);
   };
 
   const confirmDelete = async () => {
     if (!pendingDelete) return;
     setPendingDelete(null);
-    const query = hideHistory ? "?hideHistory=1" : "";
-    await apiFetch(`/api/admin/upstreams/${pendingDelete.id}${query}`, {
+    await apiFetch(`/api/admin/upstreams/${pendingDelete.id}`, {
       method: "DELETE",
     });
     loadUpstreams();
@@ -1954,21 +1951,6 @@ export default function UpstreamsPanel() {
                   {pendingDelete.name}
                 </code>
                 ? Its usage records are kept in history.
-              </p>
-              <label className="mt-4 flex items-center gap-3 min-h-[40px] cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={hideHistory}
-                  onChange={(e) => setHideHistory(e.target.checked)}
-                  className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                />
-                <span className="text-sm text-gray-700">
-                  Also hide its historical data
-                </span>
-              </label>
-              <p className="mt-1 text-xs text-gray-400">
-                Adds it to Hidden Sources (Display tab) so its records disappear
-                from filters and totals. Uncheck later to restore.
               </p>
             </div>
             <div className="flex items-center justify-end gap-2 border-t px-5 py-3">

@@ -56,7 +56,7 @@ I've tried a number of existing solutions (LiteLLM, NEW API, OmniRoute — all g
 **Admin UI & interface**
 
 - Sections for upstreams / virtual keys / named routes / model pricing / sync / audit logs
-- Model alias normalization (display-level rollup), provider anonymization groups, hidden sources (hide vs exclude are independent dimensions)
+- Model alias normalization (display-level rollup), provider anonymization groups
 - Configurable column visibility for the Records / Audit tables, plus action filtering and pagination for audit logs
 - Collapsible desktop sidebar (icon-only); on mobile a bottom tab bar, card views for tables, and full-screen modals — installable as a PWA (no Service Worker, offline not enabled)
 

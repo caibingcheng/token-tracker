@@ -77,35 +77,6 @@ describe("stats-query sargable date filter", () => {
   });
 });
 
-describe("stats-query hidden sources exclusion (静态断言防回归)", () => {
-  it("buildWhereClause 必须支持 exclude 参数（providers/agents NOT IN）", () => {
-    // 第 6 个可选参数 + notInArray 排除条件
-    expect(SOURCE).toMatch(
-      /exclude\?: \{ providers: string\[\]; agents: string\[\] \}/
-    );
-    expect(SOURCE).toMatch(/notInArray\(tokenRecords\.provider, exclude\.providers\)/);
-    expect(SOURCE).toMatch(/notInArray\(tokenRecords\.agent, exclude\.agents\)/);
-  });
-
-  it("排除列表为空数组时跳过该条件（不污染普通查询）", () => {
-    expect(SOURCE).toMatch(/exclude\.providers\.length > 0/);
-    expect(SOURCE).toMatch(/exclude\.agents\.length > 0/);
-  });
-
-  it("executeStatsQuery 必须加载 loadHiddenSources 并从 excluded 独立列表构造 exclude", () => {
-    expect(SOURCE).toMatch(/await loadHiddenSources\(\)/);
-    expect(SOURCE).toMatch(/hiddenSources\.excludedUpstreams/);
-    expect(SOURCE).toMatch(/hiddenSources\.excludedVirtualKeys/);
-  });
-
-  it("全部 buildWhereClause 调用点均传入 exclude（防止漏改某分支）", () => {
-    const calls = SOURCE.match(/^    const whereClause = buildWhereClause\(\n/gm) || [];
-    expect(calls.length).toBe(5);
-    const withExclude = SOURCE.match(/buildWhereClause\(\n      dateFilter,\n      providerFilter,\n      modelFilter,\n      agentUaFilter,\n      timezoneOffsetMinutes,\n      exclude\n    \)/g) || [];
-    expect(withExclude.length).toBe(5);
-  });
-});
-
 describe("stats-query agent dimension (派生工具名按 UA 反找过滤)", () => {
   it("buildWhereClause 不再按 agent 列过滤，改为 user_agent 条件", () => {
     expect(SOURCE).not.toMatch(/eq\(tokenRecords\.agent, agentUaFilter\)/);
@@ -119,10 +90,6 @@ describe("stats-query agent dimension (派生工具名按 UA 反找过滤)", () 
 
   it("工具名派生代理 → user_agent IN (uas) 条件", () => {
     expect(SOURCE).toMatch(/inArray\(tokenRecords\.userAgent, agentUaFilter\.uas\)/);
-  });
-
-  it("exclude.agents（Hidden Sources excludedVirtualKeys）仍按 agent 列 NOT IN 排除", () => {
-    expect(SOURCE).toMatch(/notInArray\(tokenRecords\.agent, exclude\.agents\)/);
   });
 });
 
