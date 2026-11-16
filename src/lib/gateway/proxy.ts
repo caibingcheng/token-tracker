@@ -1375,7 +1375,7 @@ async function passthroughResponse(
     clientSignal?: AbortSignal; // 客户端请求 signal（断开检测）
   }
 ): Promise<Response> {
-  const { meta, deps, protocol, virtualKeyId, virtualModelName, recordUsage = true, startTime, clientSignal } = opts;
+  const { meta, deps, bodyJson, protocol, virtualKeyId, virtualModelName, recordUsage = true, startTime, clientSignal } = opts;
   const headers = new Headers(PROXY_RESPONSE_HEADERS);
   copyHeader(upstreamResponse.headers, headers, "content-type");
   copyHeader(upstreamResponse.headers, headers, "x-ratelimit-remaining-requests");
