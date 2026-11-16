@@ -7,7 +7,24 @@
 - **Uncached Input** = `SUM(input_tokens)`（不含 cache）。
 - **Cached Input** = `SUM(cache_read)`（单独列示）。
 - 仅单请求（逐条记录 / `/api/records`）展示区分 `Input (Uncached)` 与 `Input (Cached)`；聚合卡片与图表统一展示 Total Input 含 cache，避免重复扣减。
-- `status` 列：`NULL` = 正常；`'estimated'` = 2xx、未解析到 usage、响应 body 已完整读完且未标记中断（流式与非流式均适用），按请求 `messages` / `contents`（OpenAI responses 风格为 `input`）与 assistant 输出文本估算兜底，估算 `input + output > 0` 时写入（非 ASCII 1 字 ≈ 1 token、ASCII 4 字 ≈ 1 token；流式 output 由 `StreamUsageExtractor` 累计字符后统一取整，thinking/reasoning 与 tool_calls 参数不计入会低估；`cache_read` / `cache_write` 恒为 0，估算 token 计入聚合与派生成本但非真实用量；RecordsTable 徽标 Estimated）；`'no_usage'` = 2xx 但未解析到 usage 且未生成有效 `estimated` 记录（可估算内容合计为 0）；`'client_aborted'` / `'stream_interrupted'` = 中断，**不进入估算**（响应未完成；已收到协议终止事件 `[DONE]` / `response.completed` / `message_stop` 或非流式读完后的客户端断开不算中断，Gemini 流无终止事件仍可能误标）；`'classifier'` = 命名路由 LLM 分类器决策消耗的独立记录（model=分类器真实名，request_model=虚拟名，计入聚合成本，RecordsTable 徽标 Classifier）。聚合不因 status 剔除任何行。
+- `status` 列语义见下表，值集合以 `src/lib/gateway/proxy.ts` 为准（不新增状态前先与实现对齐）；估算兜底的字符口径细节见 `gateway.md` 的「写库」条目，两处必须一致：
+
+| `status` | 触发条件 | token / cache 口径 | RecordsTable 徽标 | 计入聚合 |
+|---|---|---|---|---|
+| `NULL` | 2xx、解析到上游 usage 且未标记中断（流式与非流式均适用） | 全部取上游真值：`input_tokens`（不含 cache）、`cache_read`、`cache_write`、`output_tokens` | `-` | 是，真实用量 |
+| `estimated` | 2xx、未解析到 usage、响应 body 已完整读完（`responseComplete`）且未标记中断；估算 `input + output > 0` | `input_tokens` 按请求 `messages` / `contents`（responses 风格 `input`）JSON 序列化估算；`output_tokens` 非流式取 assistant 文本、流式取 `StreamUsageExtractor.contentTokens`；`cache_read` / `cache_write` 恒为 0 | `Estimated` | 是，计入聚合与派生成本，但非真实用量 |
+| `no_usage` | 2xx、未解析到 usage、且未进入估算分支（估算 `input + output == 0`，或响应未完整读完） | 全 0 | `No usage` | 是（不贡献数值） |
+| `client_aborted` | 客户端中途断开（`cancel()` / abort 信号），且未 `responseComplete`、未 `sawTerminal` | 已解析到 usage 则写真值，否则全 0；**不进入估算** | `Client aborted` | 是 |
+| `stream_interrupted` | 上游流中断 / 流式空闲超时（pump 抛错且非客户端主动断开） | 同上 | `Stream interrupted` | 是 |
+| `classifier` | 命名路由 LLM 分类器决策的独立记录（`src/lib/gateway/classifier/`），分类器失败也记 | 分类器返回的 usage，失败或无 usage 时全 0；`cache_read` / `cache_write` 恒为 0 | `Classifier` | 是，计入成本 |
+
+表外三条必须记住的：
+
+- `estimated` 与 `no_usage` 的分流条件是「估算 `input + output` 是否 > 0」，不是「流式 vs 非流式」——两种都可能落到任一状态。
+- `client_aborted` / `stream_interrupted` 永不进入估算分支：估算的 output 可能缺尾部，残缺值写进统计比 `no_usage` 更差。已收到协议终止事件（`[DONE]` / `response.completed` / `message_stop`）或非流式读完后的客户端断开不算中断；Gemini 流无终止事件，仍可能误标 `client_aborted`。
+- `classifier` 行同时是一条真实记录：`model` = 分类器真实名，`request_model` = 虚拟名。
+
+聚合不因 status 剔除任何行。
 
 ## Dashboard 视图
 - `src/components/UsageHeatmap.tsx`：头部 GitHub 风格 365 天使用热力图，按 input + output tokens 分档着色，移动端横向滚动。
