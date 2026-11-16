@@ -7,7 +7,7 @@
 - **Uncached Input** = `SUM(input_tokens)`（不含 cache）。
 - **Cached Input** = `SUM(cache_read)`（单独列示）。
 - 仅单请求（逐条记录 / `/api/records`）展示区分 `Input (Uncached)` 与 `Input (Cached)`；聚合卡片与图表统一展示 Total Input 含 cache，避免重复扣减。
-- `status` 列：`NULL` = 正常；`'no_usage'` = 2xx 但响应无 usage；`'client_aborted'` / `'stream_interrupted'` = 中断（响应未完成；已收到协议终止事件 `[DONE]` / `response.completed` / `message_stop` 或非流式读完后的客户端断开不算中断，Gemini 流无终止事件仍可能误标）；`'classifier'` = 命名路由 LLM 分类器决策消耗的独立记录（model=分类器真实名，request_model=虚拟名，计入聚合成本，RecordsTable 徽标 Classifier）。聚合不因 status 剔除任何行。
+- `status` 列：`NULL` = 正常；`'estimated'` = 2xx、未解析到 usage、响应 body 已完整读完且未标记中断（流式与非流式均适用），按请求 `messages` / `contents`（OpenAI responses 风格为 `input`）与 assistant 输出文本估算兜底，估算 `input + output > 0` 时写入（非 ASCII 1 字 ≈ 1 token、ASCII 4 字 ≈ 1 token；流式 output 由 `StreamUsageExtractor` 累计字符后统一取整，thinking/reasoning 与 tool_calls 参数不计入会低估；`cache_read` / `cache_write` 恒为 0，估算 token 计入聚合与派生成本但非真实用量；RecordsTable 徽标 Estimated）；`'no_usage'` = 2xx 但未解析到 usage 且未生成有效 `estimated` 记录（可估算内容合计为 0）；`'client_aborted'` / `'stream_interrupted'` = 中断，**不进入估算**（响应未完成；已收到协议终止事件 `[DONE]` / `response.completed` / `message_stop` 或非流式读完后的客户端断开不算中断，Gemini 流无终止事件仍可能误标）；`'classifier'` = 命名路由 LLM 分类器决策消耗的独立记录（model=分类器真实名，request_model=虚拟名，计入聚合成本，RecordsTable 徽标 Classifier）。聚合不因 status 剔除任何行。
 
 ## Dashboard 视图
 - `src/components/UsageHeatmap.tsx`：头部 GitHub 风格 365 天使用热力图，按 input + output tokens 分档着色，移动端横向滚动。

@@ -202,3 +202,70 @@ describe("StreamUsageExtractor sawTerminal", () => {
     expect(feedAll(GEMINI_SSE + "data: [DONE]\n\n", "gemini").sawTerminal).toBe(false);
   });
 });
+
+describe("StreamUsageExtractor contentTokens (usage 兜底估算)", () => {
+  // 不预调 finish：用例需同时断言 finish() 返回值与 contentTokens
+  function feed(sse: string, protocol: Protocol) {
+    const extractor = new StreamUsageExtractor(protocol);
+    extractor.feed(new TextEncoder().encode(sse));
+    return extractor;
+  }
+
+  it("OpenAI: accumulates delta content, still null usage without usage chunk", () => {
+    const sse =
+      'data: {"id":"1","choices":[{"delta":{"content":"Hello world"}}]}\n\n' +
+      'data: {"id":"1","choices":[{"delta":{"content":"你好"}}]}\n\n' +
+      "data: [DONE]\n\n";
+    const extractor = feed(sse, "openai");
+    expect(extractor.finish()).toBeNull();
+    // "Hello world" 11 ASCII → 3；"你好" → 2
+    expect(extractor.contentTokens).toBe(5);
+  });
+
+  it("Anthropic: accumulates content_block_delta text", () => {
+    const sse =
+      'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"abcd"}}\n\n' +
+      'data: {"type":"message_stop"}\n\n';
+    const extractor = feed(sse, "anthropic");
+    expect(extractor.finish()).toBeNull();
+    expect(extractor.contentTokens).toBe(1);
+  });
+
+  it("Gemini: accumulates candidates parts text", () => {
+    const sse =
+      'data: {"candidates":[{"content":{"parts":[{"text":"hello"},{"text":"世界"}]}}]}\n\n';
+    const extractor = feed(sse, "gemini");
+    expect(extractor.finish()).toBeNull();
+    expect(extractor.contentTokens).toBe(4); // ceil(5/4)=2 + 2
+  });
+
+  it("openai usage chunk (empty choices) adds nothing", () => {
+    const sse =
+      'data: {"id":"1","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5}}\n\n' +
+      "data: [DONE]\n\n";
+    const extractor = feed(sse, "openai");
+    expect(extractor.finish()).not.toBeNull();
+    expect(extractor.contentTokens).toBe(0);
+  });
+
+  it("openai: delta splitting does not change estimate (no per-delta rounding)", () => {
+    // 同一 11 个 ASCII 字符：整段一次 delta 与拆成 11 个单字符 delta 结果必须一致
+    const whole =
+      'data: {"choices":[{"delta":{"content":"hello world"}}]}\n\n' + "data: [DONE]\n\n";
+    const perChar =
+      Array.from("hello world")
+        .map((ch) => `data: {"choices":[{"delta":{"content":${JSON.stringify(ch)}}}]}\n\n`)
+        .join("") + "data: [DONE]\n\n";
+    expect(feed(whole, "openai").contentTokens).toBe(3);
+    expect(feed(perChar, "openai").contentTokens).toBe(3);
+  });
+
+  it("mixed ascii + non-ascii split arbitrarily stays stable", () => {
+    const sse =
+      'data: {"type":"content_block_delta","delta":{"text":"ab"}}\n\n' +
+      'data: {"type":"content_block_delta","delta":{"text":"你"}}\n\n' +
+      'data: {"type":"content_block_delta","delta":{"text":"cd"}}\n\n';
+    // 4 ASCII → ceil(4/4)=1；1 非 ASCII → 1；合计 2
+    expect(feed(sse, "anthropic").contentTokens).toBe(2);
+  });
+});

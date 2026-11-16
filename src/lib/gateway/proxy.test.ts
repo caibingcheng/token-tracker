@@ -731,7 +731,7 @@ describe("handleProxyRequest - usage capture & write-back", () => {
     );
   });
 
-  it("records status=no_usage when response has no usage", async () => {
+  it("estimates tokens when response has no usage", async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(JSON.stringify({ choices: [{ text: "hi" }] }), {
         status: 200,
@@ -750,7 +750,7 @@ describe("handleProxyRequest - usage capture & write-back", () => {
     await res.text();
 
     expect(deps.onUsage).toHaveBeenCalledWith(
-      expect.objectContaining({ status: "no_usage", inputTokens: 0, outputTokens: 0 })
+      expect.objectContaining({ status: "estimated", inputTokens: 0, outputTokens: 1 })
     );
   });
 
@@ -787,6 +787,134 @@ describe("handleProxyRequest - usage capture & write-back", () => {
     };
     expect(usageCall.ttftMs!).toBeGreaterThanOrEqual(0);
     expect(usageCall.latencyMs!).toBeGreaterThanOrEqual(0);
+  });
+
+  it("injects stream_options.include_usage for OpenAI streaming chat when missing", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        'data: {"id":"1","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}\n\ndata: [DONE]\n\n',
+        { status: 200, headers: { "content-type": "text/event-stream" } }
+      )
+    );
+
+    const deps = mkDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", stream: true },
+      }),
+      deps
+    );
+    await res.text();
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const sent = JSON.parse(new TextDecoder().decode(init.body as Uint8Array));
+    expect(sent.stream_options).toEqual({ include_usage: true });
+  });
+
+  it("keeps client-provided stream_options.include_usage", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+
+    const deps = mkDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", stream: true, stream_options: { include_usage: false } },
+      }),
+      deps
+    );
+    await res.text();
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const sent = JSON.parse(new TextDecoder().decode(init.body as Uint8Array));
+    expect(sent.stream_options).toEqual({ include_usage: false });
+  });
+
+  it("preserves explicitly set non-boolean include_usage instead of masking it", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+
+    const deps = mkDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", stream: true, stream_options: { include_usage: null } },
+      }),
+      deps
+    );
+    await res.text();
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const sent = JSON.parse(new TextDecoder().decode(init.body as Uint8Array));
+    expect(sent.stream_options).toEqual({ include_usage: null });
+  });
+
+  it("keeps other stream_options fields when injecting include_usage", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+
+    const deps = mkDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", stream: true, stream_options: { include_obfuscation: false } },
+      }),
+      deps
+    );
+    await res.text();
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const sent = JSON.parse(new TextDecoder().decode(init.body as Uint8Array));
+    expect(sent.stream_options).toEqual({ include_obfuscation: false, include_usage: true });
+  });
+
+  it("does not add stream_options to non-streaming or non-chat requests", async () => {
+    const okResponse = () =>
+      new Response(JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    fetchMock.mockResolvedValueOnce(okResponse()).mockResolvedValueOnce(okResponse());
+
+    const deps = mkDeps();
+    const res1 = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o" },
+      }),
+      deps
+    );
+    await res1.text();
+    const [, init1] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(new TextDecoder().decode(init1.body as Uint8Array))).not.toHaveProperty(
+      "stream_options"
+    );
+
+    const res2 = await handleProxyRequest(
+      makeRequest("/v1/responses", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", stream: true },
+      }),
+      deps
+    );
+    await res2.text();
+    const [, init2] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(JSON.parse(new TextDecoder().decode(init2.body as Uint8Array))).not.toHaveProperty(
+      "stream_options"
+    );
   });
 
   it("does not record usage for 4xx business errors", async () => {
@@ -1144,7 +1272,7 @@ describe("handleProxyRequest - request health status", () => {
     // response body should error out because controller.error() was called
     await expect(res.text()).rejects.toThrow();
     expect(deps.onUsage).toHaveBeenCalledWith(
-      expect.objectContaining({ status: "stream_interrupted" })
+      expect.objectContaining({ status: "stream_interrupted", inputTokens: 0, outputTokens: 0 })
     );
   });
 
@@ -1234,9 +1362,100 @@ describe("handleProxyRequest - request health status", () => {
     expect(usageCall.outputTokens).toBe(5);
   });
 
-  it("keeps status no_usage on normal non-streaming response without usage", async () => {
+  it("estimates usage for streaming response without usage chunk", async () => {
+    const sse =
+      'data: {"id":"1","choices":[{"delta":{"content":"Hello world"}}]}\n\n' +
+      'data: {"id":"1","choices":[{"delta":{"content":"你好"}}]}\n\n' +
+      "data: [DONE]\n\n";
     fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ choices: [{ text: "hi" }] }), {
+      new Response(sse, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      })
+    );
+
+    const deps = mkDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", stream: true, messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+    await res.text();
+
+    // "Hello world"(11 ASCII→3) + "你好"(2 非 ASCII→2) = 5 output；input 按 messages 估算 > 0
+    expect(deps.onUsage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "estimated",
+        inputTokens: expect.any(Number),
+        outputTokens: 5,
+      })
+    );
+    const usageCall = vi.mocked(deps.onUsage!).mock.calls[0]![0] as { inputTokens: number };
+    expect(usageCall.inputTokens).toBeGreaterThan(0);
+  });
+
+  it("does not estimate when client aborts mid-stream", async () => {
+    // 无终止事件的真中断：[DONE] 未到 → streamStatus=client_aborted，不估算
+    fetchMock.mockResolvedValueOnce(
+      makeHangingStreamingResponse(
+        new TextEncoder().encode(
+          'data: {"id":"1","choices":[{"delta":{"content":"Hello world"}}]}\n\n'
+        )
+      )
+    );
+
+    const deps = mkDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", stream: true, messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+
+    const reader = res.body!.getReader();
+    await reader.read();
+    await reader.cancel();
+    await new Promise((r) => setTimeout(r, 50));
+
+    // 残缺 output 不估算：估出的值既非真实用量也非完整估算
+    expect(deps.onUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "client_aborted", inputTokens: 0, outputTokens: 0 })
+    );
+  });
+
+  it("estimates when client cancels after terminal event (content complete)", async () => {
+    // [DONE] 已到 = 内容完整，客户端随后的 cancel 不丢 content，估算值完整
+    const encoder = new TextEncoder();
+    const sse =
+      'data: {"id":"1","choices":[{"delta":{"content":"Hello world"}}]}\n\n' +
+      "data: [DONE]\n\n";
+    fetchMock.mockResolvedValueOnce(makeHangingStreamingResponse(encoder.encode(sse)));
+
+    const deps = mkDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", stream: true, messages: [{ role: "user", content: "hi" }] },
+      }),
+      deps
+    );
+
+    const reader = res.body!.getReader();
+    await reader.read();
+    await reader.cancel();
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(deps.onUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "estimated", outputTokens: 3 })
+    );
+  });
+
+  it("keeps status no_usage when nothing to estimate", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ id: "x" }), {
         status: 200,
         headers: { "content-type": "application/json" },
       })
