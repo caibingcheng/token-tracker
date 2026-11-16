@@ -5,6 +5,7 @@ import { apiFetch } from "@/lib/client/api-client";
 import { filterModelsByQuery } from "@/lib/model-search";
 import { useBodyScrollLock } from "@/hooks/useBodyScrollLock";
 import ModalPortal from "@/components/ModalPortal";
+import { pillAction } from "./buttons";
 import type { UpstreamItem } from "./UpstreamsPanel";
 
 interface ModelsData {
@@ -157,7 +158,7 @@ export default function UpstreamModelsManager({
       <button
         type="button"
         onClick={openModal}
-        className="inline-flex min-h-[40px] items-center text-xs text-gray-500 hover:text-blue-600 md:min-h-0"
+        className={pillAction.neutral}
       >
         Models
       </button>

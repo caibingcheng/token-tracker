@@ -14,7 +14,7 @@ import type { ModelProbeConfig, ProbeConfig } from "@/lib/gateway/probe-config";
 import type { ClassifierModelEntry } from "@/lib/gateway/classifier/types";
 import { useBodyScrollLock } from "@/hooks/useBodyScrollLock";
 import ModalPortal from "@/components/ModalPortal";
-import { linkAction, pillAction, statusChip } from "./buttons";
+import { tapAction, pillAction, statusChip } from "./buttons";
 
 export interface UpstreamProbeStatus {
   lastAt: number; // 0 = 尚未探测
@@ -1046,7 +1046,7 @@ export default function UpstreamsPanel() {
                       type="button"
                       onClick={() => toggleKeyPending(k)}
                       title={effectiveEnabled ? "Disable key (applied on Save)" : "Enable key (applied on Save)"}
-                      className={linkAction.neutral}
+                      className={tapAction.neutral}
                     >
                       {effectiveEnabled ? "Disable" : "Enable"}
                     </button>
@@ -1054,7 +1054,7 @@ export default function UpstreamsPanel() {
                       type="button"
                       onClick={() => handleDeleteKey(k)}
                       title="Delete key"
-                      className={linkAction.danger}
+                      className={tapAction.danger}
                     >
                       ×
                     </button>
@@ -1700,7 +1700,7 @@ export default function UpstreamsPanel() {
                     type="button"
                     onClick={() => handleProbeNow(u)}
                     disabled={probing[u.id]}
-                    className={pillAction.danger}
+                    className={pillAction.neutral}
                   >
                     {probing[u.id] ? "Probing..." : "Probe now"}
                   </button>
@@ -1778,7 +1778,7 @@ export default function UpstreamsPanel() {
                       type="button"
                       onClick={() => handleTestAllModels(u)}
                       disabled={testingAll[u.id] || u.enabledModels.length === 0}
-                      className="rounded border border-gray-300 px-2 text-[11px] text-gray-500 hover:bg-gray-50 disabled:opacity-40 min-h-[40px] md:min-h-0 md:py-0.5"
+                      className={pillAction.neutral}
                       title="Test all models against this upstream"
                     >
                       {testingAll[u.id] ? "Testing..." : "Test all"}

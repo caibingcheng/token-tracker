@@ -1,14 +1,26 @@
 // Admin 行内操作按钮统一样式。语义色固定：primary=蓝（Edit/Save 等主操作与
 // 非破坏性动作）、danger=红（Delete 等破坏性动作）、warning=琥珀（解绑/跳过等
 // 可逆但需留意的动作）、neutral=灰（Cancel/Test/Copy 等次要动作）。
-// 形态规则：表格行（AdminTd 单元格内）用 linkAction 文字链（仅桌面渲染，无需
-// 40px 触摸区）；移动卡片与单轨响应式按钮组用 pillAction。
+// 形态规则：表格行（AdminTd 单元格内，仅桌面渲染）用 linkAction；卡片、表单流式
+// 位置（不适合放带边框按钮）用 tapAction（文字链 + 40px 触摸区）；其余响应式按钮组
+// 用 pillAction。
 
 export const linkAction = {
   primary: "text-xs text-blue-600 hover:text-blue-800 disabled:opacity-50",
   danger: "text-xs text-red-500 hover:text-red-700 disabled:opacity-50",
   warning: "text-xs text-amber-600 hover:text-amber-800 disabled:opacity-50",
   neutral: "text-xs text-gray-500 hover:text-gray-700 disabled:opacity-50",
+} as const;
+
+const tapArea = "inline-flex items-center min-h-[40px] md:min-h-0";
+
+// 文字链 + 移动端 40px 触摸区：用于响应式布局/弹窗内紧跟在文本或 chip 后面的轻量操作
+// （如 key chip 里的 Disable/×、移动卡片里代码行旁的 Copy）
+export const tapAction = {
+  primary: `${linkAction.primary} ${tapArea}`,
+  danger: `${linkAction.danger} ${tapArea}`,
+  warning: `${linkAction.warning} ${tapArea}`,
+  neutral: `${linkAction.neutral} ${tapArea}`,
 } as const;
 
 export const pillAction = {

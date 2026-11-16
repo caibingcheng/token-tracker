@@ -17,7 +17,7 @@ import {
   AdminTableHead,
   AdminTd,
 } from "./table";
-import { linkAction, pillAction, statusChip } from "./buttons";
+import { linkAction, tapAction, pillAction, statusChip } from "./buttons";
 
 // Admin Sync tab：多实例同步管理。
 // - A 角色能力：ingest token 管理（创建/启停/解绑/删除）+ 实例水位查看/删除
@@ -963,7 +963,7 @@ export default function SyncPanel() {
                           <button
                             type="button"
                             onClick={() => copyTokenKey(token)}
-                            className="inline-flex min-h-[40px] items-center text-xs text-gray-500 md:min-h-0"
+                            className={tapAction.neutral}
                           >
                             {copiedToken === token.id ? "Copied!" : "Copy"}
                           </button>
