@@ -299,6 +299,32 @@ describe("/api/admin/upstreams - proxy_url", () => {
   });
 });
 
+describe("/api/admin/upstreams - list ordering", () => {
+  it("disabled 的 upstream 排到列表末尾，enabled 内部按 priority 升序", async () => {
+    const token = await makeToken();
+    const create = async (name: string, priority: number, enabled: boolean) => {
+      const res = await LIST_POST(
+        req("/api/admin/upstreams", "POST", token, {
+          name,
+          protocol: "openai",
+          baseUrl: "https://8.8.8.8",
+          enabledModels: ["gpt-4o"],
+          priority,
+          enabled,
+        })
+      );
+      expect(res.status).toBe(201);
+    };
+    await create("up-p5-enabled", 5, true);
+    await create("up-p0-disabled", 0, false);
+    await create("up-p3-enabled", 3, true);
+
+    const res = await LIST_GET(req("/api/admin/upstreams", "GET", token));
+    const names = ((await res.json()).data as { name: string }[]).map((u) => u.name);
+    expect(names).toEqual(["up-p3-enabled", "up-p5-enabled", "up-p0-disabled"]);
+  });
+});
+
 describe("/api/admin/upstreams - probe status", () => {
   afterEach(() => {
     vi.unstubAllGlobals();

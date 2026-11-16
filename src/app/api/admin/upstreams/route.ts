@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { eq, count } from "drizzle-orm";
+import { desc, eq, count } from "drizzle-orm";
 import { db, initDatabase, upstreamsTable, upstreamKeysTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";
@@ -44,7 +44,11 @@ const REMOTE_PREFIX_LABEL = REMOTE_NAME_PREFIX.slice(0, -1);
 export const GET = withAuth(async () => {
   return withSkipCache(async () => {
     await initDatabase();
-    const rows = await db.select().from(upstreamsTable).orderBy(upstreamsTable.priority);
+    // enabled 的排前面，组内按 priority（小者先）；disabled 沉到列表末尾
+    const rows = await db
+      .select()
+      .from(upstreamsTable)
+      .orderBy(desc(upstreamsTable.enabled), upstreamsTable.priority);
     const keyCounts = await db
       .select({ upstreamId: upstreamKeysTable.upstreamId, count: count() })
       .from(upstreamKeysTable)
