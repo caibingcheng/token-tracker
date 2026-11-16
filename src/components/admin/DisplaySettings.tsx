@@ -1024,19 +1024,17 @@ export default function DisplaySettings() {
                         >
                           {o.source}
                         </span>
-                        {o.source !== "manual" && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setEditingObserved(o.token);
-                              setEditingObservedName(o.name);
-                            }}
-                            disabled={agentAliasesBusy}
-                            className="text-xs text-gray-600 hover:text-gray-800 disabled:opacity-50"
-                          >
-                            Edit
-                          </button>
-                        )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingObserved(o.token);
+                            setEditingObservedName(o.name);
+                          }}
+                          disabled={agentAliasesBusy}
+                          className="text-xs text-gray-600 hover:text-gray-800 disabled:opacity-50"
+                        >
+                          Edit
+                        </button>
                       </div>
                     )}
                   </AdminTd>
@@ -1098,19 +1096,17 @@ export default function DisplaySettings() {
                         >
                           {o.source}
                         </span>
-                        {o.source !== "manual" && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setEditingObserved(o.token);
-                              setEditingObservedName(o.name);
-                            }}
-                            disabled={agentAliasesBusy}
-                            className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 disabled:opacity-50 min-h-[40px]"
-                          >
-                            Edit
-                          </button>
-                        )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingObserved(o.token);
+                            setEditingObservedName(o.name);
+                          }}
+                          disabled={agentAliasesBusy}
+                          className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 disabled:opacity-50 min-h-[40px]"
+                        >
+                          Edit
+                        </button>
                       </div>
                     </div>
                     <code className="mt-1 block font-mono text-xs text-gray-600 break-all">{o.token}</code>
@@ -1124,7 +1120,7 @@ export default function DisplaySettings() {
           </AdminMobileCards>
           <p className="text-xs text-gray-400">
             Editing a built-in or as-is row adds it to the manual rules above;
-            changes apply immediately.
+            editing a manual row renames its rule. Changes apply immediately.
           </p>
         </div>
 
