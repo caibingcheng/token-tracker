@@ -17,6 +17,7 @@ import {
   AdminTableHead,
   AdminTd,
 } from "./table";
+import { linkAction, tapAction, pillAction, statusChip } from "./buttons";
 
 // Admin Sync tab：多实例同步管理。
 // - A 角色能力：ingest token 管理（创建/启停/解绑/删除）+ 实例水位查看/删除
@@ -886,7 +887,7 @@ export default function SyncPanel() {
                           <button
                             type="button"
                             onClick={() => copyTokenKey(token)}
-                            className="inline-flex min-h-[40px] items-center text-xs text-gray-500 hover:text-blue-600 md:min-h-0"
+                            className={linkAction.neutral}
                           >
                             {copiedToken === token.id ? "Copied!" : "Copy"}
                           </button>
@@ -894,34 +895,34 @@ export default function SyncPanel() {
                       </div>
                     </AdminTd>
                     <AdminTd>
-                      <button
-                        type="button"
-                        onClick={() => toggleToken(token)}
-                        title={
-                          token.enabled
-                            ? "Enabled — this instance can push records to /ingest/records"
-                            : "Disabled — pushes with this token are rejected (401). Click to re-enable."
-                        }
-                        className={`rounded px-2 py-0.5 text-xs font-medium ${
-                          token.enabled
-                            ? "bg-green-100 text-green-700 hover:bg-green-200"
-                            : "bg-gray-100 text-gray-500 hover:bg-gray-200"
-                        }`}
-                      >
+                      <span className={token.enabled ? statusChip.on : statusChip.off}>
                         {token.enabled ? "enabled" : "disabled"}
-                      </button>
+                      </span>
                     </AdminTd>
                     <AdminTd mono className="break-all max-w-[200px]">
                       {token.boundUid ?? <span className="text-gray-400">(unbound)</span>}
                     </AdminTd>
                     <AdminTd className="text-xs text-gray-500">{formatDate(token.lastUsedAt)}</AdminTd>
                     <AdminTd align="right" className="whitespace-nowrap text-xs">
+                      <button
+                        type="button"
+                        onClick={() => toggleToken(token)}
+                        title={
+                          token.enabled
+                            ? "Enabled — this instance can push records to /ingest/records. Click to disable."
+                            : "Disabled — pushes with this token are rejected (401). Click to enable."
+                        }
+                        className={linkAction.neutral}
+                      >
+                        {token.enabled ? "Disable" : "Enable"}
+                      </button>
+                      {" · "}
                       {token.boundUid && (
                         <>
                           <button
                             type="button"
                             onClick={() => unbindToken(token)}
-                            className="text-amber-600 hover:text-amber-800"
+                            className={linkAction.warning}
                           >
                             Unbind
                           </button>
@@ -931,7 +932,7 @@ export default function SyncPanel() {
                       <button
                         type="button"
                         onClick={() => deleteToken(token)}
-                        className="text-red-500 hover:text-red-700"
+                        className={linkAction.danger}
                       >
                         Delete
                       </button>
@@ -962,7 +963,7 @@ export default function SyncPanel() {
                           <button
                             type="button"
                             onClick={() => copyTokenKey(token)}
-                            className="inline-flex min-h-[40px] items-center text-xs text-gray-500 md:min-h-0"
+                            className={tapAction.neutral}
                           >
                             {copiedToken === token.id ? "Copied!" : "Copy"}
                           </button>
@@ -970,35 +971,33 @@ export default function SyncPanel() {
                       )}
                     </div>
                     <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => toggleToken(token)}
-                        title={
-                          token.enabled
-                            ? "Enabled — this instance can push records to /ingest/records"
-                            : "Disabled — pushes with this token are rejected (401). Click to re-enable."
-                        }
-                        className={`rounded px-2 text-[11px] font-medium min-h-[40px] md:min-h-0 md:py-1 ${
-                          token.enabled
-                            ? "bg-green-100 text-green-700"
-                            : "bg-gray-100 text-gray-500"
-                        }`}
-                      >
+                      <span className={token.enabled ? statusChip.on : statusChip.off}>
                         {token.enabled ? "enabled" : "disabled"}
-                      </button>
+                      </span>
                     </div>
                   </div>
-                  <div className="mt-2 flex items-center gap-3 text-xs">
+                  <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => toggleToken(token)}
+                      className={pillAction.neutral}
+                    >
+                      {token.enabled ? "Disable" : "Enable"}
+                    </button>
                     {token.boundUid && (
                       <button
                         type="button"
                         onClick={() => unbindToken(token)}
-                        className="text-amber-600"
+                        className={pillAction.warning}
                       >
                         Unbind
                       </button>
                     )}
-                    <button type="button" onClick={() => deleteToken(token)} className="text-red-500">
+                    <button
+                      type="button"
+                      onClick={() => deleteToken(token)}
+                      className={pillAction.danger}
+                    >
                       Delete
                     </button>
                   </div>
@@ -1046,7 +1045,7 @@ export default function SyncPanel() {
                       <button
                         type="button"
                         onClick={() => deleteInstance(inst)}
-                        className="text-red-500 hover:text-red-700"
+                        className={linkAction.danger}
                       >
                         Delete
                       </button>
@@ -1070,7 +1069,7 @@ export default function SyncPanel() {
                       <p className="mt-0.5 font-mono text-[10px] text-gray-400 break-all">{inst.uid}</p>
                       <p className="mt-0.5 text-[11px] text-gray-400">{formatDate(inst.updatedAt)}</p>
                     </div>
-                    <button type="button" onClick={() => deleteInstance(inst)} className="inline-flex min-h-[40px] items-center text-xs text-red-500 md:min-h-0">
+                    <button type="button" onClick={() => deleteInstance(inst)} className={pillAction.danger}>
                       Delete
                     </button>
                   </div>

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { apiFetch } from "@/lib/client/api-client";
+import { linkAction, pillAction } from "./buttons";
 import {
   AdminMobileCard,
   AdminMobileCards,
@@ -42,22 +43,12 @@ interface AgentAliasRule {
   pending?: boolean;
 }
 
-interface HiddenSourcesData {
-  upstreams: string[];
-  virtualKeys: string[];
-  excludedUpstreams: string[];
-  excludedVirtualKeys: string[];
-}
-
 interface PutResult {
   ok: boolean;
   error: string;
 }
 
-const UNKNOWN_AGENT = "unknown";
-const UNKNOWN_DISPLAY = "(unknown)";
-
-// 行级 Actions 桌面样式：文本链接 Edit · Delete / Save · Cancel（对齐 ModelsPanel routing rules）
+// 行级 Actions 桌面样式：文本链接 Edit · Delete / Save · Cancel（样式见 ./buttons）
 function DesktopActions({
   editing,
   busy,
@@ -83,7 +74,7 @@ function DesktopActions({
             type="button"
             onClick={onSave}
             disabled={busy || !canSave}
-            className="text-xs font-medium text-blue-600 hover:text-blue-800 disabled:opacity-50"
+            className={linkAction.primary}
           >
             {busy ? "Saving…" : "Save"}
           </button>
@@ -92,7 +83,7 @@ function DesktopActions({
             type="button"
             onClick={onCancel}
             disabled={busy}
-            className="text-xs text-gray-500 hover:text-gray-700 disabled:opacity-50"
+            className={linkAction.neutral}
           >
             Cancel
           </button>
@@ -103,7 +94,7 @@ function DesktopActions({
             type="button"
             onClick={onEdit}
             disabled={busy}
-            className="text-xs text-gray-600 hover:text-gray-800 disabled:opacity-50"
+            className={linkAction.primary}
           >
             Edit
           </button>
@@ -112,7 +103,7 @@ function DesktopActions({
             type="button"
             onClick={onDelete}
             disabled={busy}
-            className="text-xs text-red-500 hover:text-red-700 disabled:opacity-50"
+            className={linkAction.danger}
           >
             Delete
           </button>
@@ -122,7 +113,7 @@ function DesktopActions({
   );
 }
 
-// 行级 Actions 移动端样式：border 按钮（保留 min-h-[40px] 触摸区）
+// 行级 Actions 移动端样式：带边框按钮（样式见 ./buttons，含 min-h-[40px] 触摸区）
 function MobileActions({
   editing,
   busy,
@@ -146,7 +137,7 @@ function MobileActions({
         type="button"
         onClick={onSave}
         disabled={busy || !canSave}
-        className="rounded border border-blue-200 bg-blue-50 px-2 py-1 text-xs text-blue-600 hover:bg-blue-100 disabled:opacity-50 min-h-[40px]"
+        className={pillAction.primary}
       >
         {busy ? "Saving…" : "Save"}
       </button>
@@ -154,7 +145,7 @@ function MobileActions({
         type="button"
         onClick={onCancel}
         disabled={busy}
-        className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 disabled:opacity-50 min-h-[40px]"
+        className={pillAction.neutral}
       >
         Cancel
       </button>
@@ -165,7 +156,7 @@ function MobileActions({
         type="button"
         onClick={onEdit}
         disabled={busy}
-        className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 disabled:opacity-50 min-h-[40px]"
+        className={pillAction.primary}
       >
         Edit
       </button>
@@ -173,7 +164,7 @@ function MobileActions({
         type="button"
         onClick={onDelete}
         disabled={busy}
-        className="rounded border border-red-200 px-2 py-1 text-xs text-red-500 hover:bg-red-50 disabled:opacity-50 min-h-[40px]"
+        className={pillAction.danger}
       >
         Delete
       </button>
@@ -207,27 +198,14 @@ export default function DisplaySettings() {
   const [editingObserved, setEditingObserved] = useState<string | null>(null);
   const [editingObservedName, setEditingObservedName] = useState("");
 
-  const [hiddenSources, setHiddenSources] = useState<HiddenSourcesData | null>(null);
-  const [hiddenSourcesBusy, setHiddenSourcesBusy] = useState(false);
-  const [hiddenSourcesError, setHiddenSourcesError] = useState<string | null>(null);
-
-  const [providerOptions, setProviderOptions] = useState<string[]>([]);
-  const [agentOptionsRaw, setAgentOptionsRaw] = useState<string[]>([]);
-
   const load = useCallback(async () => {
-    const [res, aliasesRes, hsRes, providersRes, agentsRes, agentAliasesRes] = await Promise.all([
+    const [res, aliasesRes, agentAliasesRes] = await Promise.all([
       apiFetch("/api/admin/settings/display"),
       apiFetch("/api/admin/settings/aliases"),
-      apiFetch("/api/admin/settings/hidden-sources"),
-      apiFetch("/api/providers?includeHidden=1"),
-      apiFetch("/api/agents?dimension=key&includeHidden=1"),
       apiFetch("/api/admin/settings/agent-aliases"),
     ]);
     const json = await res.json();
     const aliasesJson = await aliasesRes.json();
-    const hsJson = await hsRes.json();
-    const providersJson = await providersRes.json();
-    const agentsJson = await agentsRes.json();
     const agentAliasesJson = await agentAliasesRes.json();
     if (json.success) {
       const d = json.data as DisplayData;
@@ -246,18 +224,6 @@ export default function DisplaySettings() {
       };
       setAgentRules(d.rules.map((r) => ({ name: r.name, aliases: r.aliases.join(", ") })));
       setObservedAgents(Array.isArray(d.observed) ? d.observed : []);
-    }
-    if (hsJson.success) {
-      const d = hsJson.data as { config: HiddenSourcesData };
-      setHiddenSources(d.config);
-    }
-    if (providersJson.success) {
-      const list = providersJson.data as Array<{ id: string; name: string }>;
-      setProviderOptions(list.map((p) => p.id));
-    }
-    if (agentsJson.success) {
-      const list = agentsJson.data as Array<{ id: string; name: string }>;
-      setAgentOptionsRaw(list.map((a) => a.id));
     }
   }, []);
 
@@ -561,59 +527,6 @@ export default function DisplaySettings() {
     }
     setAgentAliasesBusy(false);
   };
-
-  // ---- Hidden Sources：勾选即保存（乐观更新 + 失败回滚 + in-flight 锁）----
-  const applyHiddenSources = async (
-    mutate: (prev: HiddenSourcesData) => HiddenSourcesData
-  ) => {
-    if (!hiddenSources || hiddenSourcesBusy) return;
-    const prev = hiddenSources;
-    const next = mutate(prev);
-    setHiddenSources(next);
-    setHiddenSourcesBusy(true);
-    setHiddenSourcesError(null);
-    const result = await putSetting("/api/admin/settings/hidden-sources", { config: next });
-    if (!result.ok) {
-      setHiddenSourcesError(result.error);
-      setHiddenSources(prev);
-    }
-    setHiddenSourcesBusy(false);
-  };
-
-  const toggleHiddenSource = (field: "upstreams" | "virtualKeys", name: string) => {
-    void applyHiddenSources((prev) => {
-      const list = prev[field];
-      const next = list.includes(name) ? list.filter((n) => n !== name) : [...list, name];
-      return { ...prev, [field]: next };
-    });
-  };
-
-  const toggleExcludedSource = (
-    field: "excludedUpstreams" | "excludedVirtualKeys",
-    name: string
-  ) => {
-    void applyHiddenSources((prev) => {
-      const list = prev[field];
-      const next = list.includes(name) ? list.filter((n) => n !== name) : [...list, name];
-      return { ...prev, [field]: next };
-    });
-  };
-
-  // 选项 = 数据库现有名字 ∪ 已勾选隐藏/排除历史名字（记录删除后仍可取消）
-  const upstreamOptions = (hs: HiddenSourcesData): string[] =>
-    Array.from(
-      new Set([...providerOptions, ...hs.upstreams, ...hs.excludedUpstreams])
-    ).sort((a, b) => a.localeCompare(b));
-  const agentOptions = (hs: HiddenSourcesData): string[] =>
-    Array.from(
-      new Set([
-        ...agentOptionsRaw,
-        ...hs.virtualKeys,
-        ...hs.excludedVirtualKeys,
-      ])
-    )
-      .filter((name) => name !== UNKNOWN_AGENT)
-      .sort((a, b) => a.localeCompare(b));
 
   return (
     <div className="rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
@@ -1085,7 +998,7 @@ export default function DisplaySettings() {
                           type="button"
                           onClick={() => adoptObservedAgent(o.token, editingObservedName)}
                           disabled={agentAliasesBusy || !editingObservedName.trim()}
-                          className="text-xs font-medium text-blue-600 hover:text-blue-800 disabled:opacity-50"
+                          className={linkAction.primary}
                         >
                           {agentAliasesBusy ? "Saving…" : "Apply"}
                         </button>
@@ -1094,7 +1007,7 @@ export default function DisplaySettings() {
                           type="button"
                           onClick={() => setEditingObserved(null)}
                           disabled={agentAliasesBusy}
-                          className="text-xs text-gray-500 hover:text-gray-700 disabled:opacity-50"
+                          className={linkAction.neutral}
                         >
                           Cancel
                         </button>
@@ -1112,19 +1025,17 @@ export default function DisplaySettings() {
                         >
                           {o.source}
                         </span>
-                        {o.source !== "manual" && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setEditingObserved(o.token);
-                              setEditingObservedName(o.name);
-                            }}
-                            disabled={agentAliasesBusy}
-                            className="text-xs text-gray-600 hover:text-gray-800 disabled:opacity-50"
-                          >
-                            Edit
-                          </button>
-                        )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingObserved(o.token);
+                            setEditingObservedName(o.name);
+                          }}
+                          disabled={agentAliasesBusy}
+                          className={linkAction.primary}
+                        >
+                          Edit
+                        </button>
                       </div>
                     )}
                   </AdminTd>
@@ -1156,7 +1067,7 @@ export default function DisplaySettings() {
                         type="button"
                         onClick={() => adoptObservedAgent(o.token, editingObservedName)}
                         disabled={agentAliasesBusy || !editingObservedName.trim()}
-                        className="rounded border border-blue-200 bg-blue-50 px-2 py-1 text-xs text-blue-600 hover:bg-blue-100 disabled:opacity-50 min-h-[40px]"
+                        className={pillAction.primary}
                       >
                         {agentAliasesBusy ? "Saving…" : "Apply"}
                       </button>
@@ -1164,7 +1075,7 @@ export default function DisplaySettings() {
                         type="button"
                         onClick={() => setEditingObserved(null)}
                         disabled={agentAliasesBusy}
-                        className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 disabled:opacity-50 min-h-[40px]"
+                        className={pillAction.neutral}
                       >
                         Cancel
                       </button>
@@ -1186,19 +1097,17 @@ export default function DisplaySettings() {
                         >
                           {o.source}
                         </span>
-                        {o.source !== "manual" && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setEditingObserved(o.token);
-                              setEditingObservedName(o.name);
-                            }}
-                            disabled={agentAliasesBusy}
-                            className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 disabled:opacity-50 min-h-[40px]"
-                          >
-                            Edit
-                          </button>
-                        )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingObserved(o.token);
+                            setEditingObservedName(o.name);
+                          }}
+                          disabled={agentAliasesBusy}
+                          className={pillAction.primary}
+                        >
+                          Edit
+                        </button>
                       </div>
                     </div>
                     <code className="mt-1 block font-mono text-xs text-gray-600 break-all">{o.token}</code>
@@ -1212,238 +1121,13 @@ export default function DisplaySettings() {
           </AdminMobileCards>
           <p className="text-xs text-gray-400">
             Editing a built-in or as-is row adds it to the manual rules above;
-            changes apply immediately.
+            editing a manual row renames its rule. Changes apply immediately.
           </p>
         </div>
 
         {agentAliasesError && (
           <div className="mt-3 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-600">
             {agentAliasesError}
-          </div>
-        )}
-      </div>
-
-      <div className="mt-8 border-t border-gray-100 pt-6">
-        <h3 className="mb-1 text-base font-semibold text-gray-900">
-          Hidden Sources
-        </h3>
-        <p className="mb-4 text-sm text-gray-500">
-          Hide deprecated virtual keys / upstreams by name, and optionally
-          exclude each one from aggregate totals. Hidden sources disappear
-          from filters and rankings; excluded sources are removed from all
-          aggregate stats (total cards, daily, heatmap, hourly, latency).
-          The two are independent per source. No data
-          is ever deleted — unchecking fully restores everything.
-        </p>
-
-        {hiddenSources && (
-          <div className="space-y-4">
-            <div>
-              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">
-                Upstreams
-              </p>
-              <AdminTable>
-                <AdminTableHead
-                  columns={[
-                    { label: "Upstream" },
-                    { label: "Hide", align: "right" },
-                    { label: "Exclude", align: "right" },
-                  ]}
-                />
-                <AdminTableBody>
-                  {upstreamOptions(hiddenSources).map((name) => {
-                    const hidden = hiddenSources.upstreams.includes(name);
-                    const excluded = hiddenSources.excludedUpstreams.includes(name);
-                    return (
-                      <tr key={name}>
-                        <AdminTd>
-                          <span className="block truncate text-sm font-medium text-gray-700" title={name}>
-                            {name}
-                          </span>
-                          <span className="block text-xs text-gray-400">
-                            {excluded ? "Excluded from totals" : "Counted in totals"}
-                          </span>
-                        </AdminTd>
-                        <AdminTd align="right">
-                          <input
-                            type="checkbox"
-                            checked={hidden}
-                            onChange={() => toggleHiddenSource("upstreams", name)}
-                            disabled={hiddenSourcesBusy}
-                            className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
-                          />
-                        </AdminTd>
-                        <AdminTd align="right">
-                          <input
-                            type="checkbox"
-                            checked={excluded}
-                            onChange={() => toggleExcludedSource("excludedUpstreams", name)}
-                            disabled={hiddenSourcesBusy}
-                            className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
-                          />
-                        </AdminTd>
-                      </tr>
-                    );
-                  })}
-                  {upstreamOptions(hiddenSources).length === 0 && (
-                    <AdminTableEmptyRow colSpan={3}>No providers with records yet.</AdminTableEmptyRow>
-                  )}
-                </AdminTableBody>
-              </AdminTable>
-              <AdminMobileCards>
-                {upstreamOptions(hiddenSources).map((name) => {
-                  const hidden = hiddenSources.upstreams.includes(name);
-                  const excluded = hiddenSources.excludedUpstreams.includes(name);
-                  return (
-                    <AdminMobileCard key={name}>
-                      <div className="flex items-center gap-3">
-                        <div className="min-w-0 flex-1">
-                          <span className="block truncate text-sm font-medium text-gray-700" title={name}>
-                            {name}
-                          </span>
-                          <span className="block text-xs text-gray-400">
-                            {excluded ? "Excluded from totals" : "Counted in totals"}
-                          </span>
-                        </div>
-                        <label className="flex shrink-0 cursor-pointer items-center gap-1.5">
-                          <input
-                            type="checkbox"
-                            checked={hidden}
-                            onChange={() => toggleHiddenSource("upstreams", name)}
-                            disabled={hiddenSourcesBusy}
-                            className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
-                          />
-                          <span className="text-xs text-gray-500">Hide</span>
-                        </label>
-                        <label className="flex shrink-0 cursor-pointer items-center gap-1.5">
-                          <input
-                            type="checkbox"
-                            checked={excluded}
-                            onChange={() => toggleExcludedSource("excludedUpstreams", name)}
-                            disabled={hiddenSourcesBusy}
-                            className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
-                          />
-                          <span className="text-xs text-gray-500">Exclude</span>
-                        </label>
-                      </div>
-                    </AdminMobileCard>
-                  );
-                })}
-                {upstreamOptions(hiddenSources).length === 0 && (
-                  <AdminMobileEmpty>No providers with records yet.</AdminMobileEmpty>
-                )}
-              </AdminMobileCards>
-            </div>
-
-            <div>
-              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">
-                Virtual Keys
-              </p>
-              <AdminTable>
-                <AdminTableHead
-                  columns={[
-                    { label: "Virtual Key" },
-                    { label: "Hide", align: "right" },
-                    { label: "Exclude", align: "right" },
-                  ]}
-                />
-                <AdminTableBody>
-                  {agentOptions(hiddenSources).map((name) => {
-                    const hidden = hiddenSources.virtualKeys.includes(name);
-                    const excluded = hiddenSources.excludedVirtualKeys.includes(name);
-                    return (
-                      <tr key={name}>
-                        <AdminTd>
-                          <span className="block truncate text-sm font-medium text-gray-700" title={name}>
-                            {name}
-                          </span>
-                          <span className="block text-xs text-gray-400">
-                            {excluded ? "Excluded from totals" : "Counted in totals"}
-                          </span>
-                        </AdminTd>
-                        <AdminTd align="right">
-                          <input
-                            type="checkbox"
-                            checked={hidden}
-                            onChange={() => toggleHiddenSource("virtualKeys", name)}
-                            disabled={hiddenSourcesBusy}
-                            className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
-                          />
-                        </AdminTd>
-                        <AdminTd align="right">
-                          <input
-                            type="checkbox"
-                            checked={excluded}
-                            onChange={() => toggleExcludedSource("excludedVirtualKeys", name)}
-                            disabled={hiddenSourcesBusy}
-                            className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
-                          />
-                        </AdminTd>
-                      </tr>
-                    );
-                  })}
-                  {agentOptions(hiddenSources).length === 0 && (
-                    <AdminTableEmptyRow colSpan={3}>No virtual keys with records yet.</AdminTableEmptyRow>
-                  )}
-                </AdminTableBody>
-              </AdminTable>
-              <AdminMobileCards>
-                {agentOptions(hiddenSources).map((name) => {
-                  const hidden = hiddenSources.virtualKeys.includes(name);
-                  const excluded = hiddenSources.excludedVirtualKeys.includes(name);
-                  return (
-                    <AdminMobileCard key={name}>
-                      <div className="flex items-center gap-3">
-                        <div className="min-w-0 flex-1">
-                          <span className="block truncate text-sm font-medium text-gray-700" title={name}>
-                            {name}
-                          </span>
-                          <span className="block text-xs text-gray-400">
-                            {excluded ? "Excluded from totals" : "Counted in totals"}
-                          </span>
-                        </div>
-                        <label className="flex shrink-0 cursor-pointer items-center gap-1.5">
-                          <input
-                            type="checkbox"
-                            checked={hidden}
-                            onChange={() => toggleHiddenSource("virtualKeys", name)}
-                            disabled={hiddenSourcesBusy}
-                            className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
-                          />
-                          <span className="text-xs text-gray-500">Hide</span>
-                        </label>
-                        <label className="flex shrink-0 cursor-pointer items-center gap-1.5">
-                          <input
-                            type="checkbox"
-                            checked={excluded}
-                            onChange={() => toggleExcludedSource("excludedVirtualKeys", name)}
-                            disabled={hiddenSourcesBusy}
-                            className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
-                          />
-                          <span className="text-xs text-gray-500">Exclude</span>
-                        </label>
-                      </div>
-                    </AdminMobileCard>
-                  );
-                })}
-                {agentOptions(hiddenSources).length === 0 && (
-                  <AdminMobileEmpty>No virtual keys with records yet.</AdminMobileEmpty>
-                )}
-              </AdminMobileCards>
-              <p className="mt-2 text-xs text-gray-400">
-                Attributed to{" "}
-                <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">
-                  {UNKNOWN_DISPLAY}
-                </code>{" "}
-                records are always counted and never hidden.
-              </p>
-            </div>
-
-            {hiddenSourcesError && (
-              <div className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-600">
-                {hiddenSourcesError}
-              </div>
-            )}
           </div>
         )}
       </div>

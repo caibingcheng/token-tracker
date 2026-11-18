@@ -1,12 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db, initDatabase } from "@/lib/db";
 import { tokenRecords } from "@/lib/db";
-import { sql, desc, eq, and, gte, lte, inArray, isNull, SQL } from "drizzle-orm";
-import { resolveProviderFilter, loadHiddenProviderGroups, anonymizeProvider } from "@/lib/provider-utils";
-import { normalizeModel, resolveNormalizedModelFilter } from "@/lib/model-utils";
+import { sql, desc, eq, and, gte, lte, inArray, SQL } from "drizzle-orm";
+import { resolveProviderFilters, loadHiddenProviderGroups, anonymizeProvider } from "@/lib/provider-utils";
+import { normalizeModel, resolveNormalizedModelFilters } from "@/lib/model-utils";
 import { getDisplayName } from "@/lib/model-registry";
 import { loadModelAliases, loadAgentAliases } from "@/lib/auth/settings";
-import { resolveAgentName, resolveAgentUserAgents } from "@/lib/agent-utils";
+import { resolveAgentName, resolveAgentUserAgentsMulti } from "@/lib/agent-utils";
+import { buildAgentUaWhereClause } from "@/lib/stats-query";
+import { parseFilterValues, FilterParamError } from "@/lib/filter-params";
 import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";
 
@@ -26,24 +28,13 @@ export const GET = withAuth(async (request: NextRequest) => {
       const limit = Math.min(200, Math.max(1, parseInt(searchParams.get("limit") || "50", 10)));
       const offset = (page - 1) * limit;
 
-      // 筛选条件（过滤参数限长，防缓存 key 膨胀）
-      const modelParam = searchParams.get("model");
-      const provider = searchParams.get("provider");
-      const agent = searchParams.get("agent");
-      for (const [name, value] of [
-        ["model", modelParam],
-        ["provider", provider],
-        ["agent", agent],
-      ] as const) {
-        if (value !== null && value.length > 128) {
-          return NextResponse.json(
-            { success: false, error: `Parameter "${name}" is too long` },
-            { status: 400 }
-          );
-        }
-      }
+      // 筛选条件（多选：重复参数；空值/"all" 等于不筛选；单值链接行为不变）
+      const modelParams = parseFilterValues(searchParams, "model");
+      const providerParams = parseFilterValues(searchParams, "provider");
+      const agentParams = parseFilterValues(searchParams, "agent");
+
       let providerFilter: string[] | null = null;
-      if (provider) {
+      if (providerParams.length > 0) {
         const allProviderRows = await db
           .selectDistinct({ provider: tokenRecords.provider })
           .from(tokenRecords);
@@ -51,18 +42,25 @@ export const GET = withAuth(async (request: NextRequest) => {
           .map((r: any) => r.provider)
           .filter((n: any): n is string => n !== null && n !== undefined);
 
-        providerFilter = resolveProviderFilter(provider, allProviderNames, groups);
-
-        if (!providerFilter || providerFilter.length === 0) {
+        const resolved = resolveProviderFilters(
+          providerParams,
+          allProviderNames,
+          groups
+        );
+        if (resolved.unknown.length > 0) {
           return NextResponse.json(
-            { success: false, error: `Unknown provider: ${provider}` },
+            {
+              success: false,
+              error: `Unknown provider: ${resolved.unknown.join(", ")}`,
+            },
             { status: 400 }
           );
         }
+        providerFilter = resolved.filter;
       }
 
       let modelFilter: string[] | null = null;
-      if (modelParam) {
+      if (modelParams.length > 0) {
         const allModelRows = await db
           .selectDistinct({ model: tokenRecords.model, provider: tokenRecords.provider })
           .from(tokenRecords);
@@ -76,35 +74,48 @@ export const GET = withAuth(async (request: NextRequest) => {
           }
         }
 
-        modelFilter = resolveNormalizedModelFilter(modelParam, allRawModels, providerByModel, groups, aliases);
-
-        if (!modelFilter || modelFilter.length === 0) {
+        const resolved = resolveNormalizedModelFilters(
+          modelParams,
+          allRawModels,
+          providerByModel,
+          groups,
+          aliases
+        );
+        if (resolved.unknown.length > 0) {
           return NextResponse.json(
-            { success: false, error: `Unknown model: ${modelParam}` },
+            {
+              success: false,
+              error: `Unknown model: ${resolved.unknown.join(", ")}`,
+            },
             { status: 400 }
           );
         }
+        modelFilter = resolved.filter;
       }
 
       const conditions: SQL[] = [];
 
-      if (agent) {
+      if (agentParams.length > 0) {
         const uaRows = await db
           .selectDistinct({ ua: tokenRecords.userAgent })
           .from(tokenRecords);
         const allUas: Array<string | null> = uaRows.map((r: any) => r.ua);
-        const uaFilter = resolveAgentUserAgents(agent, allUas, agentAliases);
-        if (!uaFilter) {
+        const resolved = resolveAgentUserAgentsMulti(
+          agentParams,
+          allUas,
+          agentAliases
+        );
+        if (resolved.unknownNames.length > 0) {
           return NextResponse.json(
-            { success: false, error: `Unknown agent: ${agent}` },
+            {
+              success: false,
+              error: `Unknown agent: ${resolved.unknownNames.join(", ")}`,
+            },
             { status: 400 }
           );
         }
-        if ("unknown" in uaFilter) {
-          conditions.push(isNull(tokenRecords.userAgent));
-        } else {
-          conditions.push(inArray(tokenRecords.userAgent, uaFilter.uas));
-        }
+        const agentCondition = buildAgentUaWhereClause(resolved.filter);
+        if (agentCondition) conditions.push(agentCondition);
       }
 
       if (modelFilter) {
@@ -200,6 +211,12 @@ export const GET = withAuth(async (request: NextRequest) => {
         },
       });
     } catch (error) {
+      if (error instanceof FilterParamError) {
+        return NextResponse.json(
+          { success: false, error: error.message },
+          { status: 400 }
+        );
+      }
       console.error("Records error:", error);
       return NextResponse.json(
         { success: false, error: "Internal server error" },

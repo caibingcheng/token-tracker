@@ -334,19 +334,6 @@ export const DELETE = withAuth(async (request: NextRequest, ctx: any) => {
     // 探活清理：停 timer + 清内存态（含 model 标记），并清除 upstream_model_health 残留行
     healthTracker.removeUpstream(id);
     await db.delete(upstreamModelHealthTable).where(eq(upstreamModelHealthTable.upstreamId, id));
-    // 可选联动：同时隐藏其历史数据（追加进 hidden_sources，不自动隐藏）
-    if (request.nextUrl.searchParams.get("hideHistory") === "1") {
-      const { loadHiddenSources, setHiddenSourcesSetting } = await import(
-        "@/lib/auth/settings"
-      );
-      const cfg = await loadHiddenSources();
-      if (!cfg.upstreams.includes(upstream.name)) {
-        await setHiddenSourcesSetting({
-          ...cfg,
-          upstreams: [...cfg.upstreams, upstream.name],
-        });
-      }
-    }
     const { ip, userAgent } = extractClientInfo(request);
     await recordAuditLog({
       action: "upstream_deleted",

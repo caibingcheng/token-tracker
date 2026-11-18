@@ -11,6 +11,7 @@ import {
 import { CopyableCode } from "./CopyableCode";
 import PricePickerModal from "./PricePickerModal";
 import NamedRoutesPanel from "./NamedRoutesPanel";
+import { linkAction, pillAction } from "./buttons";
 import {
   AdminMobileCard,
   AdminMobileCards,
@@ -1300,7 +1301,7 @@ export default function ModelsPanel() {
                         <button
                           type="button"
                           onClick={() => setPricePickerModel(row.model)}
-                          className="text-xs text-blue-600 hover:text-blue-800"
+                          className={linkAction.primary}
                         >
                           {row.inputPrice === null ? "Select price" : "Edit"}
                         </button>
@@ -1310,7 +1311,7 @@ export default function ModelsPanel() {
                             <button
                               type="button"
                               onClick={() => deletePrice(row)}
-                              className="text-xs text-red-500 hover:text-red-700"
+                              className={linkAction.danger}
                             >
                               Delete
                             </button>
@@ -1348,7 +1349,7 @@ export default function ModelsPanel() {
                       <button
                         type="button"
                         onClick={() => setPricePickerModel(row.model)}
-                        className="rounded bg-blue-600 px-3 py-2 text-xs font-medium text-white hover:bg-blue-700 min-h-[40px] md:min-h-0"
+                        className={pillAction.primary}
                       >
                         {row.inputPrice === null ? "Select price" : "Edit"}
                       </button>
@@ -1356,7 +1357,7 @@ export default function ModelsPanel() {
                         <button
                           type="button"
                           onClick={() => deletePrice(row)}
-                          className="inline-flex min-h-[40px] items-center text-xs text-red-500 hover:text-red-700 md:min-h-0"
+                          className={pillAction.danger}
                         >
                           Delete
                         </button>

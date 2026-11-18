@@ -8,6 +8,7 @@ import { modelMatchesPattern, type Protocol } from "@/lib/gateway/model-router";
 import { CopyableCode } from "./CopyableCode";
 import ActionMenu from "./ActionMenu";
 import { copyText } from "@/lib/clipboard";
+import { pillAction, statusChip } from "./buttons";
 import { useBodyScrollLock } from "@/hooks/useBodyScrollLock";
 import ModalPortal from "@/components/ModalPortal";
 import { QuotaBar, MiniQuotaBar, type QuotaUsageData } from "./QuotaProgress";
@@ -173,7 +174,6 @@ export default function VirtualKeysPanel() {
   const [pendingDelete, setPendingDelete] = useState<VirtualKeyItem | null>(null);
   // 删除确认弹窗打开时锁背景滚动
   useBodyScrollLock(pendingDelete !== null);
-  const [hideHistory, setHideHistory] = useState(false);
 
   const [editingId, setEditingId] = useState<number | null>(null);
   const [modelsData, setModelsData] = useState<ModelsData | null>(null);
@@ -307,14 +307,12 @@ export default function VirtualKeysPanel() {
 
   const remove = async (key: VirtualKeyItem) => {
     setPendingDelete(key);
-    setHideHistory(false);
   };
 
   const confirmRemove = async () => {
     if (!pendingDelete) return;
     setPendingDelete(null);
-    const query = hideHistory ? "?hideHistory=1" : "";
-    await apiFetch(`/api/admin/virtual-keys/${pendingDelete.id}${query}`, {
+    await apiFetch(`/api/admin/virtual-keys/${pendingDelete.id}`, {
       method: "DELETE",
     });
     if (expandedId === pendingDelete.id) {
@@ -551,7 +549,7 @@ export default function VirtualKeysPanel() {
                 </span>
                 {!key.enabled && (
                   <span
-                    className="rounded bg-gray-700 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white"
+                    className={statusChip.off}
                     title="Disabled — the gateway rejects requests with this key. Click Enable to restore."
                   >
                     disabled
@@ -577,35 +575,35 @@ export default function VirtualKeysPanel() {
                 <button
                   type="button"
                   onClick={() => copyKey(key)}
-                  className="text-xs text-gray-500 hover:text-blue-600"
+                  className={pillAction.neutral}
                 >
                   {copied === key.id ? "Copied!" : "Copy"}
                 </button>
                 <button
                   type="button"
                   onClick={() => toggleUsage(key)}
-                  className="rounded border border-gray-300 px-2.5 py-1 text-xs text-gray-600 hover:bg-gray-50"
+                  className={pillAction.neutral}
                 >
                   Usage
                 </button>
                 <button
                   type="button"
                   onClick={() => startEdit(key)}
-                  className="rounded border border-gray-300 px-2.5 py-1 text-xs text-gray-600 hover:bg-gray-50"
+                  className={pillAction.primary}
                 >
                   Edit
                 </button>
                 <button
                   type="button"
                   onClick={() => toggleEnabled(key)}
-                  className="rounded border border-gray-300 px-2.5 py-1 text-xs text-gray-600 hover:bg-gray-50"
+                  className={pillAction.neutral}
                 >
                   {key.enabled ? "Disable" : "Enable"}
                 </button>
                 <button
                   type="button"
                   onClick={() => remove(key)}
-                  className="rounded border border-red-200 px-2.5 py-1 text-xs text-red-600 hover:bg-red-50"
+                  className={pillAction.danger}
                 >
                   Delete
                 </button>
@@ -728,7 +726,7 @@ export default function VirtualKeysPanel() {
                     type="button"
                     onClick={() => refreshUsage(key)}
                     disabled={refreshingId === key.id}
-                    className="rounded border border-gray-300 px-2.5 py-1 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-50 min-h-[40px] md:min-h-0"
+                    className={pillAction.neutral}
                   >
                     {refreshingId === key.id ? "Refreshing..." : "Refresh"}
                   </button>
@@ -888,21 +886,6 @@ export default function VirtualKeysPanel() {
                   {pendingDelete.name}
                 </code>
                 ? Its usage records are kept in history.
-              </p>
-              <label className="mt-4 flex items-center gap-3 min-h-[40px] cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={hideHistory}
-                  onChange={(e) => setHideHistory(e.target.checked)}
-                  className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                />
-                <span className="text-sm text-gray-700">
-                  Also hide its historical data
-                </span>
-              </label>
-              <p className="mt-1 text-xs text-gray-400">
-                Adds it to Hidden Sources (Display tab) so its records disappear
-                from filters and totals. Uncheck later to restore.
               </p>
             </div>
             <div className="flex items-center justify-end gap-2 border-t px-5 py-3">

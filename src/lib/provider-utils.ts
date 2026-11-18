@@ -264,6 +264,34 @@ export function resolveProviderFilter(
 }
 
 /**
+ * 多选版本：每个展示名分别解析后取并集。unknown 收集不命中的名字，
+ * 由调用方决定 400；全都不命中时 filter 为 null。
+ */
+export function resolveProviderFilters(
+  displayNames: string[],
+  allProviders: string[],
+  groups: HiddenProviderGroup[]
+): { filter: string[] | null; unknown: string[] } {
+  if (displayNames.length === 0) return { filter: null, unknown: [] };
+  const matched: string[] = [];
+  const seen = new Set<string>();
+  const unknown: string[] = [];
+  for (const name of displayNames) {
+    const resolved = resolveProviderFilter(name, allProviders, groups);
+    if (resolved.length === 0) {
+      unknown.push(name);
+      continue;
+    }
+    for (const provider of resolved) {
+      if (seen.has(provider)) continue;
+      seen.add(provider);
+      matched.push(provider);
+    }
+  }
+  return { filter: matched.length > 0 ? matched : null, unknown };
+}
+
+/**
  * Legacy backward-compatible function: resolves an anonymized name to a
  * single real provider name.
  *

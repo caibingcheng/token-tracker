@@ -17,6 +17,7 @@ import {
   AdminTableHead,
   AdminTd,
 } from "./table";
+import { linkAction, pillAction, statusChip } from "./buttons";
 
 interface TargetRow {
   id: number;
@@ -389,9 +390,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
 
   const targetActions = (row: NamedRouteRow, target: TargetRow, compact: boolean) => {
     const editing = editingTarget?.id === target.id;
-    const btn = compact
-      ? "min-h-[40px] rounded border px-3 py-1.5 text-xs"
-      : "text-xs";
+    const act = compact ? pillAction : linkAction;
     // 桌面端按钮靠最右（与 Model Pricing 一致）；移动端卡片内保持左对齐
     const wrap = compact ? "flex flex-wrap items-center gap-2" : "flex items-center justify-end gap-2";
     if (editing) {
@@ -401,14 +400,14 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
             type="button"
             onClick={() => saveTarget(row)}
             disabled={busyId === target.id}
-            className={compact ? `${btn} border-blue-200 bg-blue-50 text-blue-600 disabled:opacity-50` : `${btn} font-medium text-blue-600 hover:text-blue-800 disabled:opacity-50`}
+            className={act.primary}
           >
             Save
           </button>
           <button
             type="button"
             onClick={() => setEditingTarget(null)}
-            className={compact ? `${btn} border-gray-200 text-gray-500` : `${btn} text-gray-500 hover:text-gray-700`}
+            className={act.neutral}
           >
             Cancel
           </button>
@@ -427,14 +426,14 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
               priority: String(target.priority),
             })
           }
-          className={compact ? `${btn} border-gray-200 text-gray-600` : `${btn} text-gray-600 hover:text-gray-800`}
+          className={act.primary}
         >
           Edit
         </button>
         <button
           type="button"
           onClick={() => deleteTarget(row, target)}
-          className={compact ? `${btn} border-red-200 text-red-500` : `${btn} text-red-500 hover:text-red-700`}
+          className={act.danger}
         >
           Delete
         </button>
@@ -649,6 +648,9 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
                   {row.targets.length} targets
                 </span>
                 <div className="ml-auto flex flex-wrap items-center gap-2">
+                  <span className={row.enabled ? statusChip.on : statusChip.off}>
+                    {row.enabled ? "enabled" : "disabled"}
+                  </span>
                   <button
                     type="button"
                     onClick={(e) => {
@@ -656,11 +658,9 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
                       toggleEnabled(row);
                     }}
                     disabled={busyId === row.id}
-                    className={`rounded px-2 py-0.5 text-xs ${
-                      row.enabled ? "bg-green-50 text-green-700" : "bg-gray-100 text-gray-500"
-                    } disabled:opacity-50 min-h-[40px] md:min-h-0`}
+                    className={pillAction.neutral}
                   >
-                    {row.enabled ? "enabled" : "disabled"}
+                    {row.enabled ? "Disable" : "Enable"}
                   </button>
                   <button
                     type="button"
@@ -668,7 +668,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
                       e.stopPropagation();
                       deleteRoute(row);
                     }}
-                    className="inline-flex items-center text-xs text-red-500 hover:text-red-700 min-h-[40px] md:min-h-0"
+                    className={pillAction.danger}
                   >
                     Delete
                   </button>

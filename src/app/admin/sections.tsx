@@ -73,7 +73,7 @@ export const ADMIN_SECTIONS: AdminSection[] = [
   { id: "models", label: "Models", description: "Prices, models.dev, named routes", Icon: IconModels },
   { id: "virtual-keys", label: "Virtual Keys", description: "Client keys, quotas, rate limits", Icon: IconVirtualKeys },
   { id: "security", label: "Security", description: "Admin key, TOTP, session policy", Icon: IconSecurity },
-  { id: "display", label: "Display", description: "Aliases, hidden sources", Icon: IconDisplay },
+  { id: "display", label: "Display", description: "Aliases, provider anonymization", Icon: IconDisplay },
   { id: "sync", label: "Sync", description: "Multi-instance push and ingest", Icon: IconSync },
   { id: "audit", label: "Audit", description: "Admin operation log", Icon: IconAudit },
 ];

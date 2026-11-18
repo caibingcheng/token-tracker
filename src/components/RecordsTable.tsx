@@ -27,9 +27,10 @@ export interface Record {
 }
 
 interface RecordsTableProps {
-  selectedProvider?: string;
-  selectedModel?: string;
-  selectedAgent?: string;
+  // 多选筛选：空数组 = 不筛选；值以重复 query 参数传给 /api/records
+  selectedProvider?: string[];
+  selectedModel?: string[];
+  selectedAgent?: string[];
   pageSize?: number;
   autoRefresh?: boolean;
   refreshKey?: number;
@@ -53,6 +54,12 @@ function StatusBadge({ status }: { status?: string | null }) {
       return (
         <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800">
           No usage
+        </span>
+      );
+    case "estimated":
+      return (
+        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">
+          Estimated
         </span>
       );
     case "client_aborted":
@@ -141,9 +148,9 @@ function ChevronDownIcon() {
 }
 
 export default function RecordsTable({
-  selectedProvider = "all",
-  selectedModel = "all",
-  selectedAgent = "all",
+  selectedProvider = [],
+  selectedModel = [],
+  selectedAgent = [],
   pageSize = DEFAULT_PAGE_SIZE,
   autoRefresh = false,
   refreshKey = 0,
@@ -176,7 +183,12 @@ export default function RecordsTable({
 
   // 筛选或行数变化就回到第 1 页：在 render 阶段同步 state（React 会丢弃本次渲染并立即重渲染），
   // 避免「条件变化 → 先用旧页码请求一次 → reset effect 再请求一次」的重复请求
-  const conditionKey = `${selectedProvider}|${selectedModel}|${selectedAgent}|${pageSize}`;
+  const conditionKey = JSON.stringify([
+    selectedProvider,
+    selectedModel,
+    selectedAgent,
+    pageSize,
+  ]);
   const [lastConditionKey, setLastConditionKey] = useState(conditionKey);
   if (lastConditionKey !== conditionKey) {
     setLastConditionKey(conditionKey);
@@ -206,14 +218,14 @@ export default function RecordsTable({
     const url = new URL("/api/records", window.location.origin);
     url.searchParams.set("page", String(page));
     url.searchParams.set("limit", String(pageSize));
-    if (selectedProvider !== "all") {
-      url.searchParams.set("provider", selectedProvider);
+    if (selectedProvider.length > 0) {
+      for (const value of selectedProvider) url.searchParams.append("provider", value);
     }
-    if (selectedModel !== "all") {
-      url.searchParams.set("model", selectedModel);
+    if (selectedModel.length > 0) {
+      for (const value of selectedModel) url.searchParams.append("model", value);
     }
-    if (selectedAgent !== "all") {
-      url.searchParams.set("agent", selectedAgent);
+    if (selectedAgent.length > 0) {
+      for (const value of selectedAgent) url.searchParams.append("agent", value);
     }
 
     apiFetch(url.toString())

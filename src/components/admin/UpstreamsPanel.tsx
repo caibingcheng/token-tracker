@@ -14,6 +14,7 @@ import type { ModelProbeConfig, ProbeConfig } from "@/lib/gateway/probe-config";
 import type { ClassifierModelEntry } from "@/lib/gateway/classifier/types";
 import { useBodyScrollLock } from "@/hooks/useBodyScrollLock";
 import ModalPortal from "@/components/ModalPortal";
+import { tapAction, pillAction, statusChip } from "./buttons";
 
 export interface UpstreamProbeStatus {
   lastAt: number; // 0 = 尚未探测
@@ -207,7 +208,6 @@ export default function UpstreamsPanel() {
   const [pendingDelete, setPendingDelete] = useState<UpstreamItem | null>(null);
   // 选型 / 删除确认弹窗打开时锁背景滚动（两弹窗不会同时开）
   useBodyScrollLock(modelPicker !== null || pendingDelete !== null);
-  const [hideHistory, setHideHistory] = useState(false);
   // 编辑表单中 key 启停的本地暂存（点击 Save 后才提交生效）
   const [pendingKeyEnabled, setPendingKeyEnabled] = useState<Record<number, boolean>>({});
 
@@ -477,14 +477,12 @@ export default function UpstreamsPanel() {
 
   const handleDelete = async (u: UpstreamItem) => {
     setPendingDelete(u);
-    setHideHistory(false);
   };
 
   const confirmDelete = async () => {
     if (!pendingDelete) return;
     setPendingDelete(null);
-    const query = hideHistory ? "?hideHistory=1" : "";
-    await apiFetch(`/api/admin/upstreams/${pendingDelete.id}${query}`, {
+    await apiFetch(`/api/admin/upstreams/${pendingDelete.id}`, {
       method: "DELETE",
     });
     loadUpstreams();
@@ -1048,7 +1046,7 @@ export default function UpstreamsPanel() {
                       type="button"
                       onClick={() => toggleKeyPending(k)}
                       title={effectiveEnabled ? "Disable key (applied on Save)" : "Enable key (applied on Save)"}
-                      className="ml-0.5 text-gray-400 hover:text-blue-600"
+                      className={tapAction.neutral}
                     >
                       {effectiveEnabled ? "Disable" : "Enable"}
                     </button>
@@ -1056,7 +1054,7 @@ export default function UpstreamsPanel() {
                       type="button"
                       onClick={() => handleDeleteKey(k)}
                       title="Delete key"
-                      className="text-gray-400 hover:text-red-600"
+                      className={tapAction.danger}
                     >
                       ×
                     </button>
@@ -1625,7 +1623,7 @@ export default function UpstreamsPanel() {
                 </span>
                 {!u.enabled && (
                   <span
-                    className="rounded bg-gray-700 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white"
+                    className={statusChip.off}
                     title="Disabled — excluded from routing and failover. Click Enable to restore."
                   >
                     disabled
@@ -1702,7 +1700,7 @@ export default function UpstreamsPanel() {
                     type="button"
                     onClick={() => handleProbeNow(u)}
                     disabled={probing[u.id]}
-                    className="rounded border border-red-200 px-2.5 py-1 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50"
+                    className={pillAction.neutral}
                   >
                     {probing[u.id] ? "Probing..." : "Probe now"}
                   </button>
@@ -1710,28 +1708,28 @@ export default function UpstreamsPanel() {
                 <button
                   type="button"
                   onClick={() => handleTest(u)}
-                  className="rounded border border-gray-300 px-2.5 py-1 text-xs text-gray-600 hover:bg-gray-50"
+                  className={pillAction.neutral}
                 >
                   Test
                 </button>
                 <button
                   type="button"
                   onClick={() => handleToggleEnabled(u)}
-                  className="rounded border border-gray-300 px-2.5 py-1 text-xs text-gray-600 hover:bg-gray-50"
+                  className={pillAction.neutral}
                 >
                   {u.enabled ? "Disable" : "Enable"}
                 </button>
                 <button
                   type="button"
                   onClick={() => handleEdit(u)}
-                  className="rounded border border-gray-300 px-2.5 py-1 text-xs text-gray-600 hover:bg-gray-50"
+                  className={pillAction.primary}
                 >
                   Edit
                 </button>
                 <button
                   type="button"
                   onClick={() => handleDelete(u)}
-                  className="rounded border border-red-200 px-2.5 py-1 text-xs text-red-600 hover:bg-red-50"
+                  className={pillAction.danger}
                 >
                   Delete
                 </button>
@@ -1780,7 +1778,7 @@ export default function UpstreamsPanel() {
                       type="button"
                       onClick={() => handleTestAllModels(u)}
                       disabled={testingAll[u.id] || u.enabledModels.length === 0}
-                      className="rounded border border-gray-300 px-2 text-[11px] text-gray-500 hover:bg-gray-50 disabled:opacity-40 min-h-[40px] md:min-h-0 md:py-0.5"
+                      className={pillAction.neutral}
                       title="Test all models against this upstream"
                     >
                       {testingAll[u.id] ? "Testing..." : "Test all"}
@@ -1906,7 +1904,7 @@ export default function UpstreamsPanel() {
                       </code>
                       {!key.enabled && (
                         <span
-                          className="rounded bg-gray-700 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white"
+                          className={statusChip.off}
                           title="Disabled — this key is not used for routing or failover. Click Enable to restore."
                         >
                           disabled
@@ -1954,21 +1952,6 @@ export default function UpstreamsPanel() {
                   {pendingDelete.name}
                 </code>
                 ? Its usage records are kept in history.
-              </p>
-              <label className="mt-4 flex items-center gap-3 min-h-[40px] cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={hideHistory}
-                  onChange={(e) => setHideHistory(e.target.checked)}
-                  className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                />
-                <span className="text-sm text-gray-700">
-                  Also hide its historical data
-                </span>
-              </label>
-              <p className="mt-1 text-xs text-gray-400">
-                Adds it to Hidden Sources (Display tab) so its records disappear
-                from filters and totals. Uncheck later to restore.
               </p>
             </div>
             <div className="flex items-center justify-end gap-2 border-t px-5 py-3">

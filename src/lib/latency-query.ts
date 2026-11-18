@@ -6,7 +6,6 @@ import {
 } from "@/lib/timezone-utils";
 import { normalizeModel } from "@/lib/model-utils";
 import { loadUpstreamModelRows, RECENT_ACTIVITY_WINDOW_MS } from "@/lib/model-prices-service";
-import { loadHiddenSources } from "@/lib/auth/settings";
 import { toNum } from "@/lib/number-utils";
 import { providerGroupKey, type HiddenProviderGroup } from "@/lib/provider-utils";
 import type { ModelAliasRule } from "@/lib/model-registry";
@@ -274,20 +273,12 @@ export async function queryLatencyStats(params: {
     timezoneOffsetMinutes
   );
 
-  // 独立排除列表（不依赖隐藏状态；空数组由 buildWhereClause 跳过）
-  const hiddenSources = await loadHiddenSources();
-  const exclude = {
-    providers: hiddenSources.excludedUpstreams,
-    agents: hiddenSources.excludedVirtualKeys,
-  };
-
   const whereClause = buildWhereClause(
     dateFilter,
     providerFilter ?? null,
     modelFilter ?? null,
     agentUaFilter ?? null,
-    timezoneOffsetMinutes,
-    exclude
+    timezoneOffsetMinutes
   );
 
   let query = db

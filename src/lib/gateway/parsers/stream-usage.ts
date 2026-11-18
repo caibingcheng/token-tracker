@@ -83,6 +83,17 @@ export class StreamUsageExtractor {
   private anthropicOutputTokens = 0;
   private anthropicFound = false;
 
+  // 流内 assistant 输出内容的累计字符数（usage 缺失时兜底估 output 用）。
+  // 按字符计数而不是逐 delta 取整：SSE 常把同一段文本拆成多个 delta，
+  // 每段各自 Math.ceil(ascii/4) 会把 11 个 ASCII 字符估成 4 个 token 而非 3 个。
+  // 逐字累加计数仍为 O(1) 内存，不持有原文；thinking/reasoning 不计入（会低估）。
+  private contentAsciiChars = 0;
+  private contentNonAsciiChars = 0;
+
+  get contentTokens(): number {
+    return this.contentNonAsciiChars + Math.ceil(this.contentAsciiChars / 4);
+  }
+
   constructor(private protocol: Protocol) {}
 
   feed(chunk: Uint8Array): void {
@@ -156,20 +167,30 @@ export class StreamUsageExtractor {
   private matchesProtocol(data: string): boolean {
     switch (this.protocol) {
       case "anthropic":
+        // content_block_delta 为文本增量事件：usage 缺失兜底时需累计 output
         return (
           data.includes('"message_start"') ||
           data.includes('"message_delta"') ||
-          data.includes('"message_stop"')
+          data.includes('"message_stop"') ||
+          data.includes('"content_block_delta"')
         );
       case "gemini":
-        return data.includes('"usageMetadata"');
+        return data.includes('"usageMetadata"') || data.includes('"candidates"');
       default:
-        return data.includes('"usage"') || data.includes('"response.completed"');
+        // choices 覆盖全部 chat chunk（含 content delta 与 usage chunk）；
+        // response.output_text.delta 为 responses API 流式文本增量事件
+        return (
+          data.includes('"usage"') ||
+          data.includes('"response.completed"') ||
+          data.includes('"choices"') ||
+          data.includes('"response.output_text.delta"')
+        );
     }
   }
 
   private applyEvent(json: unknown): void {
     const event = json as Record<string, unknown>;
+    this.accumulateContent(event);
     if (this.protocol === "anthropic") {
       const type = event?.type;
       if (type === "message_start") {
@@ -202,6 +223,55 @@ export class StreamUsageExtractor {
     const usage = openAiUsageOf(event);
     if (usage && typeof usage === "object") {
       this.lastOpenAiUsage = usage;
+    }
+  }
+
+  // 累计流内输出文本字符数（usage 兜底用）；事件里无输出文本时零开销
+  private accumulateContent(event: Record<string, unknown>): void {
+    if (this.protocol === "anthropic") {
+      if (event.type === "content_block_delta") {
+        const delta = event.delta as Record<string, unknown> | undefined;
+        if (typeof delta?.text === "string") this.countContentChars(delta.text);
+      }
+      return;
+    }
+    if (this.protocol === "gemini") {
+      const candidates = event.candidates;
+      if (Array.isArray(candidates)) {
+        for (const candidate of candidates) {
+          const parts = (candidate as Record<string, unknown>)?.content as
+            | Record<string, unknown>
+            | undefined;
+          if (!Array.isArray(parts?.parts)) continue;
+          for (const part of parts.parts) {
+            const text = (part as Record<string, unknown>)?.text;
+            if (typeof text === "string") this.countContentChars(text);
+          }
+        }
+      }
+      return;
+    }
+    if (event.type === "response.output_text.delta") {
+      const delta = event.delta;
+      if (typeof delta === "string") this.countContentChars(delta);
+      return;
+    }
+    const choices = event.choices;
+    if (Array.isArray(choices)) {
+      for (const choice of choices) {
+        const delta = (choice as Record<string, unknown>)?.delta as
+          | Record<string, unknown>
+          | undefined;
+        if (typeof delta?.content === "string") this.countContentChars(delta.content);
+      }
+    }
+  }
+
+  // 只累加字符数，取整留到 contentTokens 读取时统一做（避免跨 delta 重复取整）
+  private countContentChars(text: string): void {
+    for (const ch of text) {
+      if (ch.codePointAt(0)! > 127) this.contentNonAsciiChars++;
+      else this.contentAsciiChars++;
     }
   }
 

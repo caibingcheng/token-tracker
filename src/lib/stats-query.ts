@@ -1,5 +1,5 @@
 import { db, tokenRecords, getDateGroupExpr } from "@/lib/db";
-import { sql, and, eq, inArray, notInArray, isNull } from "drizzle-orm";
+import { sql, and, eq, inArray, isNull, or, type SQL } from "drizzle-orm";
 import {
   localDateKeyToUtcStartISO,
   computeRangeStartDateKey,
@@ -12,7 +12,7 @@ import {
   type StatItem,
 } from "@/lib/model-utils";
 import { resolveProviderFilter, loadHiddenProviderGroups } from "@/lib/provider-utils";
-import { loadModelAliases, loadHiddenSources } from "@/lib/auth/settings";
+import { loadModelAliases } from "@/lib/auth/settings";
 import type { AgentUaFilter } from "@/lib/agent-utils";
 import { toNum } from "@/lib/number-utils";
 import { loadPriceMap, computeModelCost } from "@/lib/pricing";
@@ -37,17 +37,31 @@ export type StatsQueryResult =
   | StatItemWithGroupAndModel[]
   | StatItem[];
 
+// Agent 多选：unknown（IS NULL）与具体 UA 集合可同时成立，合成 OR；
+// 单选时只有一条分支，行为与之前一致。
+export function buildAgentUaWhereClause(
+  agentUaFilter: AgentUaFilter
+): SQL | null {
+  if (!agentUaFilter) return null;
+  const conditions: SQL[] = [];
+  if ("unknown" in agentUaFilter) {
+    conditions.push(isNull(tokenRecords.userAgent));
+  }
+  if ("uas" in agentUaFilter && agentUaFilter.uas.length > 0) {
+    conditions.push(inArray(tokenRecords.userAgent, agentUaFilter.uas));
+  }
+  if (conditions.length === 0) return null;
+  return conditions.length === 1 ? conditions[0] : or(...conditions)!;
+}
+
 // Helper to build combined WHERE clause
-// agentUaFilter：Agent 维度（派生工具名）按 UA 反找后的集合——unknown → IS NULL
-// （user_agent 列可空）；否则 user_agent IN (uas)。exclude.agents（Hidden Sources
-// excludedVirtualKeys）仍按 agent 列（来源 key 名）NOT IN 排除，语义不变。
+// agentUaFilter：Agent 维度（派生工具名）按 UA 反找后的集合，见 buildAgentUaWhereClause。
 export function buildWhereClause(
   dateFilter: Date | string | null,
   providerFilter: string[] | null,
   modelFilter: string[] | null,
   agentUaFilter: AgentUaFilter,
-  timezoneOffsetMinutes?: number,
-  exclude?: { providers: string[]; agents: string[] }
+  timezoneOffsetMinutes?: number
 ) {
   const conditions = [];
 
@@ -79,24 +93,8 @@ export function buildWhereClause(
     }
   }
 
-  if (agentUaFilter) {
-    if ("unknown" in agentUaFilter) {
-      conditions.push(isNull(tokenRecords.userAgent));
-    } else if (agentUaFilter.uas.length > 0) {
-      conditions.push(inArray(tokenRecords.userAgent, agentUaFilter.uas));
-    }
-  }
-
-  // 独立排除的隐藏数据源（excluded 列表，与隐藏状态无关）：provider/agent 列均 notNull，
-  // 直接 NOT IN 排除；'unknown' 等遗留值不在排除列表中时自然保留
-  if (exclude) {
-    if (exclude.providers.length > 0) {
-      conditions.push(notInArray(tokenRecords.provider, exclude.providers));
-    }
-    if (exclude.agents.length > 0) {
-      conditions.push(notInArray(tokenRecords.agent, exclude.agents));
-    }
-  }
+  const agentCondition = buildAgentUaWhereClause(agentUaFilter);
+  if (agentCondition) conditions.push(agentCondition);
 
   return conditions.length > 0 ? and(...conditions) : null;
 }
@@ -115,12 +113,6 @@ export async function executeStatsQuery(params: {
 }): Promise<StatsQueryResult> {
   const groups = await loadHiddenProviderGroups();
   const aliases = await loadModelAliases();
-  const hiddenSources = await loadHiddenSources();
-  // 独立排除列表（不依赖隐藏状态；空数组由 buildWhereClause 跳过）
-  const exclude = {
-    providers: hiddenSources.excludedUpstreams,
-    agents: hiddenSources.excludedVirtualKeys,
-  };
   const {
     groupBy,
     range,
@@ -223,8 +215,7 @@ export async function executeStatsQuery(params: {
       providerFilter,
       modelFilter,
       agentUaFilter,
-      timezoneOffsetMinutes,
-      exclude
+      timezoneOffsetMinutes
     );
     if (whereClause) {
       query = query.where(whereClause);
@@ -256,8 +247,7 @@ export async function executeStatsQuery(params: {
       providerFilter,
       modelFilter,
       agentUaFilter,
-      timezoneOffsetMinutes,
-      exclude
+      timezoneOffsetMinutes
     );
     if (whereClause) {
       query = query.where(whereClause);
@@ -293,8 +283,7 @@ export async function executeStatsQuery(params: {
       providerFilter,
       modelFilter,
       agentUaFilter,
-      timezoneOffsetMinutes,
-      exclude
+      timezoneOffsetMinutes
     );
     if (whereClause) {
       query = query.where(whereClause);
@@ -313,8 +302,7 @@ export async function executeStatsQuery(params: {
       providerFilter,
       modelFilter,
       agentUaFilter,
-      timezoneOffsetMinutes,
-      exclude
+      timezoneOffsetMinutes
     );
 
     const effectiveLimit = limit === null ? null : TOP_N_RAW_MODELS;
@@ -400,8 +388,7 @@ export async function executeStatsQuery(params: {
       providerFilter,
       modelFilter,
       agentUaFilter,
-      timezoneOffsetMinutes,
-      exclude
+      timezoneOffsetMinutes
     );
     if (whereClause) {
       query = query.where(whereClause);

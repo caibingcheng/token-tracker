@@ -23,6 +23,7 @@ import {
 } from "./parsers";
 import { StreamUsageExtractor } from "./parsers/stream-usage";
 import type { ParsedUsage } from "./parsers/types";
+import { estimateInputTokens, estimateOutputTokens } from "./estimate";
 import { checkQuota, hasQuotaLimits } from "./quota";
 import type { QuotaUsage } from "./quota";
 import { rewriteModelNonStreaming, createSseModelRewriter } from "./response-rewriter";
@@ -397,7 +398,7 @@ export async function handleProxyRequest(
     return proxyError(405, "Method not allowed", "method_not_allowed");
   }
 
-  const bodyBuffer = await readRequestBody(request);
+  let bodyBuffer = await readRequestBody(request);
   if (bodyBuffer === null) {
     return proxyError(413, "Request body exceeds size limit", "invalid_request_error");
   }
@@ -408,6 +409,34 @@ export async function handleProxyRequest(
       bodyJson = JSON.parse(new TextDecoder().decode(bodyBuffer));
     } catch {
       return proxyError(400, "Invalid JSON body", "invalid_request_error");
+    }
+  }
+
+  // OpenAI chat 流式：客户端/agent 常不带 stream_options.include_usage，上游（尤其
+  // 第三方中转）因此不在流里发 usage chunk → 记成 no_usage。缺省时注入 true；
+  // 客户端显式设置（含 false）不覆盖。
+  if (
+    path === "/v1/chat/completions" &&
+    typeof bodyJson === "object" &&
+    bodyJson !== null &&
+    (bodyJson as Record<string, unknown>).stream === true
+  ) {
+    const bodyObj = bodyJson as Record<string, unknown>;
+    const existing = bodyObj.stream_options;
+    const existingObj =
+      existing && typeof existing === "object" && !Array.isArray(existing)
+        ? (existing as Record<string, unknown>)
+        : null;
+    // 显式设置（含非法值）一律保留：非法请求应交上游校验，不在网关上静默修正
+    const hasExplicit =
+      existingObj !== null &&
+      Object.prototype.hasOwnProperty.call(existingObj, "include_usage");
+    if (!hasExplicit) {
+      bodyJson = {
+        ...bodyObj,
+        stream_options: { ...(existingObj ?? {}), include_usage: true },
+      };
+      bodyBuffer = new TextEncoder().encode(JSON.stringify(bodyJson));
     }
   }
 
@@ -1346,7 +1375,7 @@ async function passthroughResponse(
     clientSignal?: AbortSignal; // 客户端请求 signal（断开检测）
   }
 ): Promise<Response> {
-  const { meta, deps, protocol, virtualKeyId, virtualModelName, recordUsage = true, startTime, clientSignal } = opts;
+  const { meta, deps, bodyJson, protocol, virtualKeyId, virtualModelName, recordUsage = true, startTime, clientSignal } = opts;
   const headers = new Headers(PROXY_RESPONSE_HEADERS);
   copyHeader(upstreamResponse.headers, headers, "content-type");
   copyHeader(upstreamResponse.headers, headers, "x-ratelimit-remaining-requests");
@@ -1492,7 +1521,30 @@ async function passthroughResponse(
                 new TextDecoder().decode(concatUint8Arrays(chunks)),
                 protocol
               );
-        const usage = toRecordUsage(parsed, meta, streamStatus);
+        let usage = toRecordUsage(parsed, meta, streamStatus);
+        // usage 解析失败且上游流已真正读完（responseComplete）：上游（多为第三方中转）
+        // 不发 usage 时按请求 messages / 流内输出文本估算兜底，记 status='estimated'。
+        // 流被提前截断（含 sawTerminal 已置位但未读完）不估算：output 可能缺尾部，
+        // 残缺估算值写进统计比 no_usage 更差；估算不出任何内容也保持 no_usage。
+        if (!parsed && !streamStatus && responseComplete) {
+          const inputTokens = estimateInputTokens(bodyJson, protocol);
+          const outputTokens = isStreaming
+            ? (extractor?.contentTokens ?? 0)
+            : estimateOutputTokens(
+                new TextDecoder().decode(concatUint8Arrays(chunks)),
+                protocol
+              );
+          if (inputTokens + outputTokens > 0) {
+            usage = {
+              ...meta,
+              inputTokens,
+              outputTokens,
+              cacheRead: 0,
+              cacheWrite: 0,
+              status: "estimated",
+            };
+          }
+        }
         // latencyMs 必须在流完全结束后计算：proxy 主流程的初始值只覆盖到
         // 响应头（≈TTFT 窗口），不含流式生成/body 传输阶段
         const finalLatencyMs =
