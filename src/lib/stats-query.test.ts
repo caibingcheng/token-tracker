@@ -21,7 +21,7 @@ describe("stats-query aggregation semantics", () => {
     const totalInputAssignments = SOURCE.match(
       /totalInput:\s*\n\s+sql<number>`SUM\(\$\{tokenRecords\.inputTokens\}\) \+ SUM\(\$\{tokenRecords\.cacheRead\}\)`,/g
     );
-    expect(totalInputAssignments?.length).toBe(6);
+    expect(totalInputAssignments?.length).toBe(7);
   });
 
   it("totalInput must not regress to pure SUM(input_tokens) without cache_read", () => {
@@ -35,7 +35,7 @@ describe("stats-query aggregation semantics", () => {
     const uncachedAssignments = SOURCE.match(
       /totalInputUncached: sql<number>`SUM\(\$\{tokenRecords\.inputTokens\}\)`,/g
     );
-    expect(uncachedAssignments?.length).toBe(6);
+    expect(uncachedAssignments?.length).toBe(7);
   });
 
   it("totalInputUncached must not regress to subtracting cache_read", () => {
@@ -48,7 +48,7 @@ describe("stats-query aggregation semantics", () => {
     const cachedAssignments = SOURCE.match(
       /totalInputCached: sql<number>`SUM\(\$\{tokenRecords\.cacheRead\}\)`,/g
     );
-    expect(cachedAssignments?.length).toBe(6);
+    expect(cachedAssignments?.length).toBe(7);
   });
 
   it("orderBy uses SUM(input_tokens) DESC without cache_read", () => {

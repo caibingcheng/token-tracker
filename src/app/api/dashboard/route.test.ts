@@ -329,4 +329,30 @@ describe("dashboard route agent filter（UA 反找）", () => {
     const json = await res.json();
     expect(json.error).toBe("Unknown agent: nonexistent");
   });
+
+  it("返回按派生 agent 名聚合的 topAgents / dailyAgents", async () => {
+    await insertRecord({ userAgent: "claude-cli/2.1.5 (external, cli)", inputTokens: 100 });
+    await insertRecord({ userAgent: "opencode/1.18.14", inputTokens: 300 });
+    await insertRecord({ userAgent: null, inputTokens: 500 });
+
+    const token = await makeToken();
+    const res = await dashboardGET(req("/api/dashboard?range=30d", token));
+    expect(res.status).toBe(200);
+    const json = await res.json();
+
+    expect(json.data.topAgents.map((a: { agent: string }) => a.agent)).toEqual([
+      "unknown",
+      "opencode",
+      "claude-code",
+    ]);
+    expect(json.data.topAgents[1].totalInput).toBe(300);
+
+    const dailyKeys = Object.keys(json.data.dailyAgents);
+    expect(dailyKeys).toHaveLength(1);
+    expect(json.data.dailyAgents[dailyKeys[0]].map((a: { agent: string }) => a.agent)).toEqual([
+      "unknown",
+      "opencode",
+      "claude-code",
+    ]);
+  });
 });

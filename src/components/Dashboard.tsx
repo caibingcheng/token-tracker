@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import StatsCards, { Stats } from "./StatsCards";
 import DailyUsageChart, {
+  AgentStat,
   DailyData,
   LatencyModelStat,
   LatencyDayStat,
@@ -66,6 +67,8 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
   const [dailyTopModels, setDailyTopModels] = useState<Record<string, ModelStat[]>>({});
   const [topProviders, setTopProviders] = useState<ProviderStat[]>([]);
   const [dailyProviders, setDailyProviders] = useState<Record<string, ProviderStat[]>>({});
+  const [topAgents, setTopAgents] = useState<AgentStat[]>([]);
+  const [dailyAgents, setDailyAgents] = useState<Record<string, AgentStat[]>>({});
   const [dailyData, setDailyData] = useState<DailyData[]>([]);
   const [heatmapData, setHeatmapData] = useState<HeatmapData[]>([]);
   const [hourlyData, setHourlyData] = useState<DailyData[]>([]);
@@ -272,7 +275,7 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
           return;
         }
 
-        const { total, totalDays, totalTopModels, today, yesterday, daily, models, todayModels, dailyModels, topProviders, dailyProviders, heatmap, hourly, latency, timezoneOffsetMinutes: responseTimezoneOffsetMinutes } = json.data;
+        const { total, totalDays, totalTopModels, today, yesterday, daily, models, todayModels, dailyModels, topProviders, dailyProviders, topAgents, dailyAgents, heatmap, hourly, latency, timezoneOffsetMinutes: responseTimezoneOffsetMinutes } = json.data;
 
         setTotalDays(Number(totalDays) || 0);
 
@@ -425,6 +428,30 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
           }));
         }
         setDailyProviders(parsedDailyProviders);
+
+        setTopAgents(
+          topAgents?.map((a: AgentStat) => ({
+            agent: a.agent,
+            totalInput: Number(a.totalInput || 0),
+            totalInputCached: Number(a.totalInputCached || 0),
+            totalOutput: Number(a.totalOutput || 0),
+            count: Number(a.count || 0),
+          })) ?? []
+        );
+
+        const parsedDailyAgents: Record<string, AgentStat[]> = {};
+        for (const [date, list] of Object.entries(
+          (dailyAgents ?? {}) as Record<string, AgentStat[]>
+        )) {
+          parsedDailyAgents[date] = list.map((a) => ({
+            agent: a.agent,
+            totalInput: Number(a.totalInput || 0),
+            totalInputCached: Number(a.totalInputCached || 0),
+            totalOutput: Number(a.totalOutput || 0),
+            count: Number(a.count || 0),
+          }));
+        }
+        setDailyAgents(parsedDailyAgents);
 
         setDailyData(daily ?? []);
         setHeatmapData(heatmap ?? []);
@@ -711,6 +738,8 @@ export default function Dashboard({ priceUpdateTime }: DashboardProps) {
             dailyTopModels={dailyTopModels}
             topProviders={topProviders}
             dailyProviders={dailyProviders}
+            topAgents={topAgents}
+            dailyAgents={dailyAgents}
             hourly={hourlyData}
             latencyDaily={latencyDaily}
             latencyByModel={latencyByModel}
