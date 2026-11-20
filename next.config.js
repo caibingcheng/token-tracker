@@ -86,6 +86,8 @@ function createNextConfig(isDev) {
     experimental: {
       // 构建并发上限（容器/CI 上不要打满整机；本机 20 核 → 取一半以内）
       cpus: Math.max(1, Math.floor(availableParallelism() / 2)),
+      // 标记本次版本升级来源：安全公告修复（Next.js security upgrade 流程要求写入）
+      agentUpgrade: 'security',
     },
     async headers() {
       return [
