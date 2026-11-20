@@ -6,12 +6,14 @@ import {
   type StatsQueryResult,
   type TotalStatItem,
   type StatItemWithGroupAndModel,
+  type StatItemWithGroupAndUserAgent,
 } from "@/lib/stats-query";
 import { aggregateByNormalizedModel, type StatItem } from "@/lib/model-utils";
 import { getDisplayName, type ModelAliasRule } from "@/lib/model-registry";
 import { loadHiddenProviderGroups, type HiddenProviderGroup } from "@/lib/provider-utils";
-import { loadModelAliases } from "@/lib/auth/settings";
+import { loadModelAliases, loadAgentAliases } from "@/lib/auth/settings";
 import type { AgentUaFilter } from "@/lib/agent-utils";
+import { aggregateAgents, type AgentStat } from "@/lib/agent-stats";
 import { toNum } from "@/lib/number-utils";
 import {
   mergeAggregatedCosts,
@@ -49,6 +51,12 @@ function isStatItemsWithModel(
   data: StatsQueryResult
 ): data is StatItemWithGroupAndModel[] {
   return Array.isArray(data) && data.length > 0 && "model" in data[0];
+}
+
+function isStatItemsWithUserAgent(
+  data: StatsQueryResult
+): data is StatItemWithGroupAndUserAgent[] {
+  return Array.isArray(data) && data.length > 0 && "userAgent" in data[0];
 }
 
 function toCost(item: StatItem): AggregatedCost | null {
@@ -230,6 +238,8 @@ interface DashboardData {
   dailyModels: Record<string, ModelStat[]>;
   topProviders: ProviderStat[];
   dailyProviders: Record<string, ProviderStat[]>;
+  topAgents: AgentStat[];
+  dailyAgents: Record<string, AgentStat[]>;
   heatmap: DayData[];
   hourly: DayData[];
   latency: {
@@ -287,6 +297,7 @@ async function queryDashboard(
       heatmap,
       hourly,
       latency,
+      agentRange,
     ] = await Promise.all([
       executeStatsQuery({
         groupBy: "none",
@@ -392,6 +403,17 @@ async function queryDashboard(
         timezoneOffsetMinutes: timezoneOffsetMinutes ?? 0,
         groups,
         aliases,
+      }),
+      executeStatsQuery({
+        groupBy: "date-agent",
+        range,
+        provider,
+        granularity: "day",
+        providerFilter,
+        model,
+        modelFilter,
+        agentUaFilter,
+        timezoneOffsetMinutes,
       }),
     ]);
 
@@ -549,6 +571,26 @@ async function queryDashboard(
       dailyProvidersResult[date] = aggregateProviders(rows, groups);
     });
 
+    // Top agents（派生工具名，见 lib/agent-stats）：日桶不截断供 Others 层合并，
+    // 区间总计截断 Top 5
+    const agentAliases = await loadAgentAliases();
+    const agentRangeArr = isStatItemsWithUserAgent(agentRange) ? agentRange : [];
+    const topAgentsResult = aggregateAgents(agentRangeArr, agentAliases).slice(0, 5);
+    const agentRowsByDate = new Map<
+      string,
+      Array<StatItem & { userAgent?: string | null }>
+    >();
+    for (const row of agentRangeArr) {
+      const date = String(row.group);
+      const bucket = agentRowsByDate.get(date);
+      if (bucket) bucket.push(row);
+      else agentRowsByDate.set(date, [row]);
+    }
+    const dailyAgentsResult: Record<string, AgentStat[]> = {};
+    agentRowsByDate.forEach((rows, date) => {
+      dailyAgentsResult[date] = aggregateAgents(rows, agentAliases);
+    });
+
     return {
       total: totalResult,
       totalDays,
@@ -561,6 +603,8 @@ async function queryDashboard(
       dailyModels: Object.fromEntries(dailyTopModelsMap),
       topProviders: topProvidersResult,
       dailyProviders: dailyProvidersResult,
+      topAgents: topAgentsResult,
+      dailyAgents: dailyAgentsResult,
       heatmap: isStatItemsWithGroup(heatmap)
         ? heatmap.map((row) => ({
             group: String(row.group),

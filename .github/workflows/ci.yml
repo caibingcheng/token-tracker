@@ -22,6 +22,18 @@ jobs:
           node-version: 22
           cache: npm
 
+      # lock 必须由与 Dockerfile（node:22-slim）相同的 npm 主版本生成：本机 npm 11+ 会修剪
+      # optional peer 依赖，写出镜像与 CI 都装不了的 lock（表现为 EUSAGE: Missing: ... from lock file）。
+      # 断言而非静默升级：升 Node 时 CI 与 Dockerfile 必须同批改（见 AGENTS.md 硬约束）
+      - name: Verify npm matches Docker image
+        run: |
+          major=$(npm -v | cut -d. -f1)
+          if [ "$major" != "10" ]; then
+            echo "::error::CI npm is $major but Dockerfile uses node:22-slim (npm 10)."
+            echo "Regenerate package-lock.json with npm 10, or bump Dockerfile and this assertion together."
+            exit 1
+          fi
+
       - run: npm ci
       - run: npm run lint
       - run: npm test
@@ -39,6 +51,16 @@ jobs:
         with:
           node-version: 22
           cache: npm
+
+      # 同 lint-and-test：lock 与 Dockerfile 必须共用同一个 npm 主版本
+      - name: Verify npm matches Docker image
+        run: |
+          major=$(npm -v | cut -d. -f1)
+          if [ "$major" != "10" ]; then
+            echo "::error::CI npm is $major but Dockerfile uses node:22-slim (npm 10)."
+            echo "Regenerate package-lock.json with npm 10, or bump Dockerfile and this assertion together."
+            exit 1
+          fi
 
       - run: npm ci
 

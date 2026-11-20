@@ -10,8 +10,8 @@ const { PHASE_DEVELOPMENT_SERVER } = require('next/constants');
 
 // 本地开发零配置：SQLITE_DATABASE_PATH 有默认值（见 src/lib/db/index.ts），
 // GATEWAY_SECRET 缺失时生成一次并持久化到 <db 目录>/.gateway-secret（同 scripts/local-entrypoint.sh
-// 的思路）。必须在这里注入 process.env：middleware（edge）在编译期读取
-// process.env.GATEWAY_SECRET，进程内就位后才能带上；运行期再改文件已经太晚。
+// 的思路）。必须在这里注入 process.env：config 先于 server 启动执行，proxy 与路由在
+// 处理请求时从 process.env 读密钥，只有这里先就位才能用上；进程起来后再写文件已经太晚。
 // 仅 PHASE_DEVELOPMENT_SERVER 生效；build / start 缺 secret 仍按原逻辑 503。
 function ensureDevGatewaySecret() {
   if (process.env.GATEWAY_SECRET) return;
@@ -86,6 +86,8 @@ function createNextConfig(isDev) {
     experimental: {
       // 构建并发上限（容器/CI 上不要打满整机；本机 20 核 → 取一半以内）
       cpus: Math.max(1, Math.floor(availableParallelism() / 2)),
+      // 标记本次版本升级来源：安全公告修复（Next.js security upgrade 流程要求写入）
+      agentUpgrade: 'security',
     },
     async headers() {
       return [

@@ -1,5 +1,5 @@
 // 会话 token 的 httpOnly Cookie 形态（浏览器登录态持久化；脚本仍走 X-API-Key header）。
-// 纯字符串函数，Edge middleware 与 node route handler 通用（不依赖 node:crypto / DB）。
+// 纯字符串函数，proxy 与 node route handler 通用（不依赖 node:crypto / DB）。
 // 会话 token 本身 = session.ts 签发的 HMAC token，cookie 只是载体，JS 不可读。
 
 export const SESSION_COOKIE_NAME = "tt_session";

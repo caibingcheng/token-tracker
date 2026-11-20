@@ -31,10 +31,15 @@ export interface TotalStatItem extends StatItemWithGroup {
   lastActiveAt?: string;
 }
 
+export interface StatItemWithGroupAndUserAgent extends StatItemWithGroup {
+  userAgent: string | null;
+}
+
 export type StatsQueryResult =
   | TotalStatItem[]
   | StatItemWithGroup[]
   | StatItemWithGroupAndModel[]
+  | StatItemWithGroupAndUserAgent[]
   | StatItem[];
 
 // Agent 多选：unknown（IS NULL）与具体 UA 集合可同时成立，合成 OR；
@@ -294,6 +299,41 @@ export async function executeStatsQuery(params: {
     return rows.map((row: any) =>
       attachCost(row, priceMap, String(row.model))
     );
+  } else if (groupBy === "date-agent") {
+    // agent 名由 user_agent 查询时派生（见 lib/agent-utils），SQL 只按原始 UA 分组，
+    // 派生名合并交给调用方（aggregateAgents）
+    const effectiveGranularity = granularity || "day";
+    const groupExpr = getDateGroupExpr(
+      effectiveGranularity,
+      timezoneOffsetMinutes
+    );
+
+    query = db
+      .select({
+        group: groupExpr,
+        userAgent: tokenRecords.userAgent,
+        totalInput:
+          sql<number>`SUM(${tokenRecords.inputTokens}) + SUM(${tokenRecords.cacheRead})`,
+        totalInputCached: sql<number>`SUM(${tokenRecords.cacheRead})`,
+        totalInputUncached: sql<number>`SUM(${tokenRecords.inputTokens})`,
+        totalOutput: sql<number>`SUM(${tokenRecords.outputTokens})`,
+        totalCacheWrite: sql<number>`SUM(${tokenRecords.cacheWrite})`,
+        count: sql<number>`COUNT(*)`,
+      })
+      .from(tokenRecords)
+      .groupBy(groupExpr, tokenRecords.userAgent)
+      .orderBy(groupExpr);
+
+    const whereClause = buildWhereClause(
+      dateFilter,
+      providerFilter,
+      modelFilter,
+      agentUaFilter,
+      timezoneOffsetMinutes
+    );
+    if (whereClause) {
+      query = query.where(whereClause);
+    }
   } else if (groupBy === "model") {
     // 先按 (provider, 原始 model) 分组取 Top N，再应用层归一化合并
     // 当 modelFilter 生效时（按特定归一化 model 筛选），不限制原始 model 数量

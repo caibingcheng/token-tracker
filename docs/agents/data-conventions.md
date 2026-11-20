@@ -30,7 +30,7 @@
 ## Dashboard 视图
 - **多维筛选**（`src/components/MultiSelect.tsx`，Dashboard 与 Records 共用）：Agent / Provider / Model 三个下拉支持搜索、复选、Select all（作用于当前搜索结果）、Clear；空选 = 不筛选（等价旧 `all`）。选中值以**重复 query 参数**传递（`?agent=a&agent=b`），服务端 `parseFilterValues()`（`src/lib/filter-params.ts`）过滤空串与 `all` 并去重；每个维度按**去重前**的原始参数计数，值数 ≤100、单值 ≤128 字符，单值链接向后兼容。超限或任一名未命中均 →400，后者在错误信息中列出该维度未命中的名字。解析→SQL 条件：Provider/Model 由 `resolveProviderFilters` / `resolveNormalizedModelFilters`（带手动 model aliases，与 `/api/records` 一致）逐名解析取并集；Agent 由 `resolveAgentUserAgentsMulti` 取 UA 并集，多选时 `unknown` 与具体 agent 可同时命中（`buildAgentUaWhereClause` 生成 `OR(user_agent IS NULL, user_agent IN (...))`）
 - `src/components/UsageHeatmap.tsx`：头部 GitHub 风格 365 天使用热力图，按 input + output tokens 分档着色，移动端横向滚动。
-- `src/components/DailyUsageChart.tsx`：N 日使用趋势 + “Last N Days” 汇总卡片，其中第 5 张卡片展示 24 小时平均分布直方图（纯 CSS 柱）。
+- `src/components/DailyUsageChart.tsx`：N 日使用趋势 + “Last N Days” 汇总卡片，其中第 5 张卡片展示 24 小时平均分布直方图（纯 CSS 柱）。Token 卡片内三个同构子板块（**Top 5 Agents / Top 5 Upstreams / Top 5 Models**，按此顺序）：每日堆叠柱 + 每实体一条 cache ratio 虚线（右轴）+ 明细表，三块共用 `syncId="daily"`，点击任意图表日期三块联动
 - `src/components/StatsCards.tsx` / `TodayOverview.tsx` / `TopModelsCards.tsx`：其余统计卡片。
 - `src/components/DailyUsageChart.tsx`（Speed section，`SpeedTable`）：延迟统计消费层，`/api/dashboard` 响应的 `latency` 字段（byModel + daily）驱动。
 
@@ -59,7 +59,7 @@
 
 - **语义**：价格 = 官方价参考（非真实账单），**查询时计算**（record 不存价格/cost），`src/lib/pricing.ts` 的 `loadPriceMap()` 读全表（cache 价 NULL 回退 input_price，内存缓存）
 - **定价键**：一律按真实 model 名（`model_prices.model` = 发往 upstream 的真实名）；归一化 alias 仅作展示层 roll up 分组键；虚拟名（`request_model`）仅追溯，不参与定价
-- **成本链路**：`stats-query.ts` 在 model/date-model 分组输出行上按真实名附加 `cost`（`computeModelCost`，未定价 → 全 0）→ 归一化聚合时随行合并（`mergeAggregatedCosts`）；未定价 model 成本为 0，补价后历史立即重算
+- **成本链路**：`stats-query.ts` 在 model/date-model 分组输出行上按真实名附加 `cost`（`computeModelCost`，未定价 → 全 0）→ 归一化聚合时随行合并（`mergeAggregatedCosts`）；未定价 model 成本为 0，补价后历史立即重算。`date-agent` 分组**不附加 cost**（原因见「Agent 维度派生」的 Agent 维度无 cost 条）
 - **Price Simulation**（`src/lib/price-simulation.ts`，纯逻辑 + `simulatePricing`）：只试算不写库；数据范围独立于 dashboard 过滤（弹窗内 Agent/Provider/Model 自行拉 `/api/dashboard?range=30d`，打开时仅同步 Dashboard 中恰好单选的 Agent/Provider/Model，多选或未选的维度回退 `all`（弹窗内筛选仍为单选））；调整 cache rate 时 **Total Input 不变**，只在 cached / uncached 之间重分配（cacheWrite / output 不受影响），缺省跟随各区间实际 `cache_read / total_input`；单价可手改（空/非法/负值回退官方价）；展示层 Cache rate = `cache_read / total_input`
 - **写接口**：`/api/admin/model-prices` PUT/DELETE、select、auto-fill、aliases 均须 `withSkipCache()` + `invalidatePriceCache()`（pricing.ts 内存缓存）；价格变更后 Dashboard 立即反映
 - **models.dev 集成**（`src/lib/models-dev/`，纯逻辑可单测）：**双数据源** —— `https://models.dev/api.json`（USD/1M）+ GitHub LiteLLM `model_prices_and_context_window.json`（raw.githubusercontent 主源，jsDelivr CDN 回退；per-token → ×1e6 换算 USD/1M，`sample_spec` 剔除、`litellm_provider` 空/非字符串跳过、无 token 价条目保留为无价条目、batch/reasoning 细分价不取）；两源各自解析器统一输出 `ModelsDevData`，下游零感知；本地快照 `data/models-dev-cache.json`（`{fetchedAt, source, data}`），**单一当前快照语义**（文件 + 内存缓存不拆分，谁最后成功谁是当前快照；旧文件缺 `source` 字段回退 `"models.dev"` 零迁移），**懒刷新 7 天 TTL**（访问时超期则本次用旧快照、后台异步拉新）+ `POST /api/admin/models-dev/refresh` 强制刷新 + `POST /api/admin/models-dev/upload` 手动上传（`uploadSnapshot` 内存缓存 + 落盘立即生效；`sanitizeModelsDevData` 仅上传路径严格校验，非法条目丢弃）；拉取失败静默回退旧快照；**数值信任链兜底**：`isFiniteNonNegative`（有限非负）守卫贯穿 `toCandidate` 与 select 落库，所有快照来源（网络/手工文件/上传）的负数/NaN 价格均回退 0/null，防成本计算污染；**in-flight 竞态对策**：`runRefresh` 同源复用 promise、异源等待 settle 后串行发起（写盘顺序 = 发起顺序，无乱序覆盖）
@@ -75,6 +75,8 @@
 - **注册新 agent 工具**：无需改代码——在 Display pane Agent Aliases 添加 {name, aliases[]} 即可（多 UA token 可映射同一工具名），写入 `setAgentAliasesSetting` 主动 `invalidateQueryCache()` 立即生效
 - **过滤器**：Dashboard/Records 的 `agent` 参数是**派生工具名**，支持重复 query 参数；服务端由 `resolveAgentUserAgentsMulti` 逐名反找并取 UA 并集（空值、上限与 400 语义见上文「多维筛选」）。具体 agent 走 `user_agent IN (...)`，`unknown` 走 `user_agent IS NULL`，二者同选时由 `buildAgentUaWhereClause` 合成 OR。`/api/cli` 不支持维度过滤（`agent`/`provider`/`range` 一律忽略，不解析、不报 400）。`buildWhereClause` 的第 4 参数即此 UA 过滤（类型 `AgentUaFilter`）
 - **注意**：反找需 `selectDistinct(user_agent)` 全表扫描（无索引）；个人规模（日均约 1000 行）+ 10s 查询缓存可接受。远程记录（vk=-1）按自身 UA 派生，与本地同名工具合并为一个 agent；instance 区分仍靠 provider 的 `remote/{instance}/` 前缀
+- **趋势图 Agent 维度**（Top 5 Agents）：`stats-query` 的 `groupBy: "date-agent"` 只按 (日期, `user_agent`) 分组（SQL 层不派生名字），`aggregateAgents()`（`src/lib/agent-stats.ts`）再按派生名合并；`/api/dashboard` 的 `dailyAgents` **按日期分桶不截断**（图里 Others 层依赖每日全量），`topAgents` 按区间总计 `totalInput` 降序截断 Top 5；两者与其它 daily 查询同享 provider/model/agent 多维筛选。UA 为 NULL/空串/纯空白的记录按解析规则归为 `unknown` 行，会出现在图中与表中
+- **Agent 维度无 cost**：`date-agent` 分组不携 model 信息，无法按真实名定价，因此图表与表格都没有 cost 列（详见「官方价参考」的成本链路）；要看 agent 成本用顶部 Agent 筛选 + Daily Cost 卡片
 
 ## Model 归一化
 - **文件**：`src/lib/model-registry.ts`（纯归一化模块，不加载任何文件；`src/lib/model-utils.ts` 仅做薄封装）

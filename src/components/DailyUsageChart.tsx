@@ -9,7 +9,6 @@ import {
 } from "@/lib/timezone-utils";
 import {
   Bar,
-  Cell,
   ComposedChart,
   Line,
   XAxis,
@@ -85,6 +84,14 @@ export interface ProviderStat {
   count: number;
 }
 
+export interface AgentStat {
+  agent: string;
+  totalInput: number;
+  totalInputCached: number;
+  totalOutput: number;
+  count: number;
+}
+
 type SortField = 'totalInput' | 'totalInputCached' | 'cacheHitRate' | 'totalOutput' | 'count';
 
 type CostSortField = 'totalCost' | 'costPerMillionTokens' | 'inputCost' | 'cacheCost' | 'outputCost' | 'count' | 'avgCostPerReq';
@@ -123,6 +130,18 @@ function getLatencyMetricValue(m: LatencyModelStat, field: LatencySortField): nu
 }
 
 type ProviderSortField = 'totalInput' | 'totalInputCached' | 'cacheHitRate' | 'totalOutput' | 'totalCost' | 'count';
+
+type AgentSortField = 'totalInput' | 'totalInputCached' | 'cacheHitRate' | 'totalOutput' | 'count';
+
+function getAgentMetricValue(a: AgentStat, field: AgentSortField): number {
+  switch (field) {
+    case 'cacheHitRate': return a.totalInput > 0 ? a.totalInputCached / a.totalInput : 0;
+    case 'totalInput': return a.totalInput;
+    case 'totalInputCached': return a.totalInputCached;
+    case 'totalOutput': return a.totalOutput;
+    case 'count': return a.count;
+  }
+}
 
 function getProviderMetricValue(p: ProviderStat, field: ProviderSortField): number {
   switch (field) {
@@ -200,6 +219,8 @@ interface DailyUsageChartProps {
   dailyTopModels?: Record<string, TopModel[]>;
   topProviders?: ProviderStat[];
   dailyProviders?: Record<string, ProviderStat[]>;
+  topAgents?: AgentStat[];
+  dailyAgents?: Record<string, AgentStat[]>;
   hourly?: DailyData[];
   latencyDaily?: LatencyDayStat[];
   latencyByModel?: LatencyModelStat[];
@@ -211,10 +232,6 @@ interface DailyUsageChartProps {
 }
 
 const COLORS = {
-  input: "#3B82F6",
-  cache: "#93C5FD",
-  output: "#1E40AF",
-  hitRate: "#F59E0B",
   price: "#10B981",
   ttft: "#8B5CF6",
   ttftAvg: "#F43F5E",
@@ -629,13 +646,9 @@ function TokenBarTooltip({ active, payload, label }: {
   if (!active || !payload || payload.length === 0) return null;
   const reversed = [...payload].reverse();
   const filtered = reversed.filter((entry) => {
-    const name = String(entry.name || "");
     const dataKey = String(entry.dataKey ?? "");
     if (dataKey.startsWith("ratio-")) {
       return Number(entry.payload?.[`has-${dataKey}`]) > 0;
-    }
-    if (name === "Cache Hit Ratio") {
-      return Number(entry.payload?.hasCacheHitRate) > 0;
     }
     const v = entry.value;
     if (v == null) return false;
@@ -649,7 +662,7 @@ function TokenBarTooltip({ active, payload, label }: {
         {filtered.map((entry) => {
           const name = String(entry.name || "");
           const dataKey = String(entry.dataKey ?? "");
-          const value = name === "Cache Hit Ratio" || dataKey.startsWith("ratio-")
+          const value = dataKey.startsWith("ratio-")
             ? `${entry.value}%`
             : formatNumber(Number(entry.value), compact);
           return (
@@ -883,6 +896,130 @@ function TopProvidersTable({
   );
 }
 
+function TopAgentsTable({
+  agents,
+  selectedDate,
+}: {
+  agents: AgentStat[];
+  selectedDate: string | null;
+}) {
+  const { compact } = useNumberFormat();
+  const { sortBy, sortOrder, handleSort } = useSort<AgentSortField>('totalInput');
+  const totalInputSum = agents.reduce((sum, a) => sum + a.totalInput, 0);
+  const sortedAgents = useMemo(
+    () => sortByMetric(agents, (a) => getAgentMetricValue(a, sortBy), sortOrder),
+    [agents, sortBy, sortOrder]
+  );
+
+  return (
+    <div>
+      {agents.length === 0 ? (
+        <p className="text-gray-500">
+          {selectedDate ? "No data for selected date" : "No data available"}
+        </p>
+      ) : (
+        <>
+          <div className="md:hidden mb-3">
+            <select
+              value={sortBy}
+              onChange={(e) => handleSort(e.target.value as AgentSortField)}
+              className="text-xs border border-gray-200 rounded px-2 py-1.5 bg-white text-gray-700 w-full"
+            >
+              <option value="totalInput">Total Input</option>
+              <option value="totalInputCached">Cache Read</option>
+              <option value="cacheHitRate">Cache Hit Rate</option>
+              <option value="totalOutput">Total Output</option>
+              <option value="count">Requests</option>
+            </select>
+          </div>
+          <div className="hidden md:block overflow-x-auto">
+            <table className="w-full" style={{ tableLayout: "fixed" }}>
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="w-[26%] px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase overflow-hidden">Agent</th>
+                  <SortHeader className="w-[18%]" field="totalInput" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort}>Total Input</SortHeader>
+                  <SortHeader className="w-[16%]" field="totalInputCached" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort}>Cache Read</SortHeader>
+                  <SortHeader className="w-[14%]" field="cacheHitRate" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort}>Cache Hit Rate</SortHeader>
+                  <SortHeader className="w-[16%]" field="totalOutput" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort}>Total Output</SortHeader>
+                  <SortHeader className="w-[10%]" field="count" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort}>Requests</SortHeader>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200">
+                {sortedAgents.map((a) => {
+                  const percentage =
+                    totalInputSum > 0 ? (a.totalInput / totalInputSum) * 100 : 0;
+                  const cacheHitRate = a.totalInput > 0
+                    ? (a.totalInputCached / a.totalInput * 100).toFixed(1) + '%'
+                    : '0%';
+                  return (
+                    <tr
+                      key={a.agent}
+                      style={{
+                        background: `linear-gradient(to right, rgb(239 246 255) ${percentage}%, transparent ${percentage}%)`,
+                      }}
+                    >
+                      <td className="px-4 py-3 text-sm font-medium text-gray-900 overflow-hidden">{a.agent}</td>
+                      <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden"><AnimatedCell value={a.totalInput} /></td>
+                      <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden"><AnimatedCell value={a.totalInputCached} /></td>
+                      <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden">{cacheHitRate}</td>
+                      <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden"><AnimatedCell value={a.totalOutput} /></td>
+                      <td className="px-4 py-3 text-sm text-gray-600 text-right overflow-hidden"><AnimatedCell value={a.count} /></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="md:hidden space-y-3">
+            {sortedAgents.map((a) => {
+              const percentage =
+                totalInputSum > 0 ? (a.totalInput / totalInputSum) * 100 : 0;
+              return (
+                <div
+                  key={a.agent}
+                  className="rounded-lg border border-gray-200 overflow-hidden"
+                  style={{
+                    background: `linear-gradient(to right, rgb(239 246 255) ${percentage}%, transparent ${percentage}%)`,
+                  }}
+                >
+                  <div className="px-4 py-3 font-medium text-gray-900 border-b border-gray-100">
+                    {a.agent}
+                  </div>
+                  <div className="px-4 py-3 grid grid-cols-2 gap-3">
+                    <div>
+                      <p className="text-xs text-gray-500">Total Input</p>
+                      <p className="text-sm font-semibold text-gray-900">{formatNumber(a.totalInput, compact)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-500">Cache Read</p>
+                      <p className="text-sm font-semibold text-gray-900">{formatNumber(a.totalInputCached, compact)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-500">Cache Hit Rate</p>
+                      <p className="text-sm font-semibold text-gray-900">
+                        {a.totalInput > 0 ? (a.totalInputCached / a.totalInput * 100).toFixed(1) + '%' : '0%'}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-500">Total Output</p>
+                      <p className="text-sm font-semibold text-gray-900">{formatNumber(a.totalOutput, compact)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-500">Requests</p>
+                      <p className="text-sm font-semibold text-gray-900">{formatNumber(a.count, compact)}</p>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function SpeedTable({ byModel }: { byModel: LatencyModelStat[] }) {
   const { sortBy, sortOrder, handleSort } = useSort<LatencySortField>('outputTokensPerSec');
   const sortedModels = useMemo(
@@ -1041,6 +1178,8 @@ export default function DailyUsageChart({
   dailyTopModels,
   topProviders,
   dailyProviders,
+  topAgents,
+  dailyAgents,
   hourly,
   latencyDaily,
   latencyByModel,
@@ -1198,6 +1337,69 @@ export default function DailyUsageChart({
     [providerChartData]
   );
 
+  const activeAgents = useMemo(() => {
+    if (selectedDate) {
+      const day = dailyAgents?.[selectedDate] ?? [];
+      return [...day].sort((a, b) => b.totalInput - a.totalInput).slice(0, 5);
+    }
+    return topAgents ?? [];
+  }, [selectedDate, dailyAgents, topAgents]);
+
+  const agentChartData = useMemo(() => {
+    const top5Agents = (topAgents ?? []).slice(0, 5);
+    // 用索引键（而非 agent 名）做 dataKey：派生名可能带 . ，recharts 会当路径解析
+    const keyByAgent = new Map(
+      top5Agents.map((a, i) => [a.agent, `agent-${i}`] as const)
+    );
+    const lastNDays = getLastNDays(range, timezoneOffsetMinutes);
+    return lastNDays.map((date) => {
+      const row: Record<string, number | string> = { group: date };
+      const agentInput = new Map<string, { input: number; cached: number }>();
+      const dayAgents = dailyAgents?.[date] ?? [];
+      for (const a of dayAgents) {
+        const key = keyByAgent.get(a.agent);
+        if (key) {
+          agentInput.set(a.agent, {
+            input: (agentInput.get(a.agent)?.input || 0) + a.totalInput,
+            cached: (agentInput.get(a.agent)?.cached || 0) + a.totalInputCached,
+          });
+          row[key] = (Number(row[key]) || 0) + a.totalInput;
+        } else {
+          row.others = (Number(row.others) || 0) + a.totalInput;
+        }
+      }
+      top5Agents.forEach((a, i) => {
+        const stats = agentInput.get(a.agent);
+        const input = stats?.input ?? 0;
+        const cached = stats?.cached ?? 0;
+        row[`ratio-agent-${i}`] = input > 0 ? Number(((cached / input) * 100).toFixed(1)) : 0;
+        row[`has-ratio-agent-${i}`] = input > 0 ? 1 : 0;
+      });
+      return row;
+    });
+  }, [topAgents, dailyAgents, range, timezoneOffsetMinutes]);
+
+  const agentTokenDomain = useMemo(() => {
+    const max = Math.max(
+      ...agentChartData.map((d) =>
+        Object.entries(d).reduce(
+          (sum, [key, value]) =>
+            key === "group" || key.startsWith("ratio-") || key.startsWith("has-")
+              ? sum
+              : sum + (Number(value) || 0),
+          0
+        )
+      ),
+      0
+    );
+    return niceTokenDomain(max);
+  }, [agentChartData]);
+
+  const hasAgentOthers = useMemo(
+    () => agentChartData.some((d) => (Number(d.others) || 0) > 0),
+    [agentChartData]
+  );
+
   const modelChartData = useMemo(() => {
     const top5Models = (topModels ?? []).slice(0, 5);
     const keyByGroup = new Map(
@@ -1307,7 +1509,6 @@ export default function DailyUsageChart({
       if (existing) {
         const cached = Number(existing.totalInputCached) || 0;
         const uncached = Number(existing.totalInputUncached) || 0;
-        const totalInput = cached + uncached;
         return {
           ...existing,
           ...latencyFields,
@@ -1323,8 +1524,6 @@ export default function DailyUsageChart({
           costPerMillionCacheRead: Number(existing.costPerMillionCacheRead || 0),
           costPerMillionCacheWrite: Number(existing.costPerMillionCacheWrite || 0),
           costPerMillionOutput: Number(existing.costPerMillionOutput || 0),
-          cacheHitRate: totalInput > 0 ? Number(((cached / totalInput) * 100).toFixed(1)) : 0,
-          hasCacheHitRate: totalInput > 0 ? 1 : 0,
           dummy: 0,
         };
       }
@@ -1342,8 +1541,6 @@ export default function DailyUsageChart({
         costPerMillionCacheRead: 0,
         costPerMillionCacheWrite: 0,
         costPerMillionOutput: 0,
-        cacheHitRate: 0,
-        hasCacheHitRate: 0,
         dummy: 0,
         ...latencyFields,
       };
@@ -1351,14 +1548,6 @@ export default function DailyUsageChart({
 
     return mapped;
   }, [rawData, range, timezoneOffsetMinutes, latencyDaily]);
-
-  const tokenDomain = useMemo(() => {
-    const max = Math.max(
-      ...data.map((d) => d.totalInputCached + d.totalInputUncached + d.totalOutput),
-      0
-    );
-    return niceTokenDomain(max);
-  }, [data]);
 
   const priceDomain = useMemo(() => calculatePriceDomain(data), [data]);
 
@@ -1473,127 +1662,260 @@ export default function DailyUsageChart({
                   ? `Daily Token Usage - ${formatSelectedDateLabel(selectedDate, timezoneOffsetMinutes)}`
                   : "Daily Token Usage"}
               </h3>
-              <div className={showTopModels ? 'hidden md:block' : ''}>
-                <ChartLegend
-                  items={[
-                    { color: COLORS.cache, label: "Cache", bar: true },
-                    { color: COLORS.input, label: "Uncache", bar: true },
-                    { color: COLORS.output, label: "Output", bar: true },
-                    { color: COLORS.hitRate, label: "Cache Hit Ratio" },
-                  ]}
-                />
-                <div className="h-[280px]">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <ComposedChart
-                      data={data}
-                      margin={{ top: 10, right: 45, left: 55, bottom: 10 }}
-                      barCategoryGap="20%"
-                      syncId="daily"
-                      onClick={handleChartClick}
-                      onMouseMove={handleChartMouseMove}
-                      onMouseLeave={handleChartMouseLeave}
-                      className="cursor-pointer"
-                    >
-                      <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                      <XAxis
-                        dataKey="group"
-                        ticks={data.map((d) => d.group)}
-                        tick={(props) => {
-                          const index = props.index ?? 0;
-                          const interval = getXAxisInterval(range);
-                          const showLabel = interval === 0 || index % (interval + 1) === 0;
-                          return (
-                            <CustomXAxisTick
-                              {...props}
-                              selectedDate={selectedDate}
-                              hoveredDate={hoveredDate}
-                              index={showLabel ? index : -1}
+
+              {showTopModels && topAgents && topAgents.length > 0 && (
+                <div className="mt-8">
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-1 gap-2">
+                    <h4 className="text-lg font-semibold">
+                      {selectedDate
+                        ? `Top 5 Agents - ${formatSelectedDateLabel(selectedDate, timezoneOffsetMinutes)}`
+                        : "Top 5 Agents"}
+                    </h4>
+                  </div>
+                  <p className="text-xs text-gray-500 mb-3">
+                    {selectedDate
+                      ? `Showing top agents for ${selectedDate}`
+                      : "Daily usage stacked by client agent (derived from user agent); agents outside Top 5 merged into Others"}
+                  </p>
+                  <div className="hidden md:block mb-4">
+                    <ChartLegend
+                      items={[
+                        ...(topAgents ?? []).map((a, i) => ({
+                          color: PROVIDER_COLORS[i % PROVIDER_COLORS.length],
+                          label: a.agent,
+                          bar: true,
+                          key: `agent-${i}`,
+                        })),
+                        ...(hasAgentOthers
+                          ? [
+                              {
+                                color: PROVIDER_COLORS[PROVIDER_COLORS.length - 1],
+                                label: "Others",
+                                bar: true,
+                                key: "others",
+                              },
+                            ]
+                          : []),
+                      ]}
+                    />
+                    <div className="h-[240px]">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <ComposedChart
+                          data={agentChartData}
+                          margin={{ top: 10, right: 45, left: 55, bottom: 10 }}
+                          barCategoryGap="20%"
+                          syncId="daily"
+                          onClick={handleChartClick}
+                          onMouseMove={handleChartMouseMove}
+                          onMouseLeave={handleChartMouseLeave}
+                          className="cursor-pointer"
+                        >
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                          <XAxis
+                            dataKey="group"
+                            ticks={data.map((d) => d.group)}
+                            tick={(props) => {
+                              const index = props.index ?? 0;
+                              const interval = getXAxisInterval(range);
+                              const showLabel = interval === 0 || index % (interval + 1) === 0;
+                              return (
+                                <CustomXAxisTick
+                                  {...props}
+                                  selectedDate={selectedDate}
+                                  hoveredDate={hoveredDate}
+                                  index={showLabel ? index : -1}
+                                />
+                              );
+                            }}
+                            interval={0}
+                            minTickGap={15}
+                          />
+                          <YAxis
+                            yAxisId="left"
+                            tick={{ fontSize: 11 }}
+                            width={45}
+                            tickFormatter={(v: number) => formatAxisNumber(v)}
+                            domain={agentTokenDomain}
+                          />
+                          <YAxis
+                            yAxisId="right"
+                            orientation="right"
+                            tick={{ fontSize: 11 }}
+                            width={45}
+                            tickFormatter={(v: number) => `${v}%`}
+                            domain={[0, 100]}
+                          />
+                          <Tooltip content={<TokenBarTooltip />} cursor={false} />
+                          {(topAgents ?? []).slice(0, 5).map((a, i) => (
+                            <Bar
+                              key={`agent-${i}`}
+                              yAxisId="left"
+                              dataKey={`agent-${i}`}
+                              stackId="agents"
+                              fill={PROVIDER_COLORS[i % PROVIDER_COLORS.length]}
+                              name={a.agent}
                             />
-                          );
-                        }}
-                        interval={0}
-                        minTickGap={15}
-                      />
-                      <YAxis
-                        yAxisId="left"
-                        tick={{ fontSize: 11 }}
-                        width={45}
-                        tickFormatter={(v: number) => formatAxisNumber(v)}
-                        domain={tokenDomain}
-                      />
-                      <YAxis
-                        yAxisId="right"
-                        orientation="right"
-                        tick={{ fontSize: 11, fill: COLORS.hitRate }}
-                        width={45}
-                        tickFormatter={(v: number) => `${v}%`}
-                        domain={[0, 100]}
-                      />
-                      <Tooltip content={<TokenBarTooltip />} cursor={false} />
-                      <Bar
-                        yAxisId="left"
-                        dataKey="totalInputCached"
-                        stackId="tokens"
-                        fill={COLORS.cache}
-                        name="Cache"
-                      >
-                        {data.map((entry, index) => (
-                          <Cell
-                            key={`cell-cache-${index}`}
-                            fill={COLORS.cache}
-                          />
-                        ))}
-                      </Bar>
-                      <Bar
-                        yAxisId="left"
-                        dataKey="totalInputUncached"
-                        stackId="tokens"
-                        fill={COLORS.input}
-                        name="UnCache"
-                      >
-                        {data.map((entry, index) => (
-                          <Cell
-                            key={`cell-input-${index}`}
-                            fill={COLORS.input}
-                          />
-                        ))}
-                      </Bar>
-                      <Bar
-                        yAxisId="left"
-                        dataKey="totalOutput"
-                        stackId="tokens"
-                        fill={COLORS.output}
-                        name="Output"
-                      >
-                        {data.map((entry, index) => (
-                          <Cell
-                            key={`cell-output-${index}`}
-                            fill={COLORS.output}
-                          />
-                        ))}
-                      </Bar>
-                      <Line
-                        yAxisId="right"
-                        type="monotone"
-                        dataKey="cacheHitRate"
-                        stroke={COLORS.hitRate}
-                        strokeWidth={2}
-                        dot={false}
-                        activeDot={{ r: 4, fill: COLORS.hitRate, stroke: "#fff", strokeWidth: 1 }}
-                        name="Cache Hit Ratio"
-                      />
-                    </ComposedChart>
-                  </ResponsiveContainer>
+                          ))}
+                          {hasAgentOthers && (
+                            <Bar
+                              yAxisId="left"
+                              dataKey="others"
+                              stackId="agents"
+                              fill={PROVIDER_COLORS[PROVIDER_COLORS.length - 1]}
+                              name="Others"
+                            />
+                          )}
+                          {(topAgents ?? []).slice(0, 5).map((a, i) => (
+                            <Line
+                              key={`ratio-agent-${i}`}
+                              yAxisId="right"
+                              type="monotone"
+                              dataKey={`ratio-agent-${i}`}
+                              stroke={PROVIDER_COLORS[i % PROVIDER_COLORS.length]}
+                              strokeWidth={1.5}
+                              strokeDasharray="4 2"
+                              dot={false}
+                              name={`${a.agent} ratio`}
+                            />
+                          ))}
+                        </ComposedChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                  <TopAgentsTable agents={activeAgents} selectedDate={selectedDate} />
                 </div>
-              </div>
+              )}
+
+              {showTopModels && topProviders && topProviders.length > 0 && (
+                <div className="mt-8">
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-1 gap-2">
+                    <h4 className="text-lg font-semibold">
+                      {selectedDate
+                        ? `Top 5 Upstreams - ${formatSelectedDateLabel(selectedDate, timezoneOffsetMinutes)}`
+                        : "Top 5 Upstreams"}
+                    </h4>
+                  </div>
+                  <p className="text-xs text-gray-500 mb-3">
+                    {selectedDate
+                      ? `Showing top upstreams for ${selectedDate}`
+                      : "Daily usage stacked by upstream provider; providers outside Top 5 merged into Others"}
+                  </p>
+                  <div className="hidden md:block mb-4">
+                    <ChartLegend
+                      items={[
+                        ...(topProviders ?? []).map((p, i) => ({
+                          color: PROVIDER_COLORS[i % PROVIDER_COLORS.length],
+                          label: p.providerName,
+                          bar: true,
+                          key: p.provider,
+                        })),
+                        ...(hasProviderOthers
+                          ? [
+                              {
+                                color: PROVIDER_COLORS[PROVIDER_COLORS.length - 1],
+                                label: "Others",
+                                bar: true,
+                                key: "others",
+                              },
+                            ]
+                          : []),
+                      ]}
+                    />
+                    <div className="h-[240px]">
+                      <ResponsiveContainer width="100%" height="100%">
+                      <ComposedChart
+                        data={providerChartData}
+                        margin={{ top: 10, right: 45, left: 55, bottom: 10 }}
+                        barCategoryGap="20%"
+                        syncId="daily"
+                        onClick={handleChartClick}
+                        onMouseMove={handleChartMouseMove}
+                        onMouseLeave={handleChartMouseLeave}
+                        className="cursor-pointer"
+                      >
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                        <XAxis
+                          dataKey="group"
+                          ticks={data.map((d) => d.group)}
+                          tick={(props) => {
+                            const index = props.index ?? 0;
+                            const interval = getXAxisInterval(range);
+                            const showLabel = interval === 0 || index % (interval + 1) === 0;
+                            return (
+                              <CustomXAxisTick
+                                {...props}
+                                selectedDate={selectedDate}
+                                hoveredDate={hoveredDate}
+                                index={showLabel ? index : -1}
+                              />
+                            );
+                          }}
+                          interval={0}
+                          minTickGap={15}
+                        />
+                        <YAxis
+                          yAxisId="left"
+                          tick={{ fontSize: 11 }}
+                          width={45}
+                          tickFormatter={(v: number) => formatAxisNumber(v)}
+                          domain={providerTokenDomain}
+                        />
+                        <YAxis
+                          yAxisId="right"
+                          orientation="right"
+                          tick={{ fontSize: 11 }}
+                          width={45}
+                          tickFormatter={(v: number) => `${v}%`}
+                          domain={[0, 100]}
+                        />
+                        <Tooltip content={<TokenBarTooltip />} cursor={false} />
+                        {(topProviders ?? []).map((p, i) => (
+                          <Bar
+                            key={p.provider}
+                            yAxisId="left"
+                            dataKey={p.provider}
+                            stackId="providers"
+                            fill={PROVIDER_COLORS[i % PROVIDER_COLORS.length]}
+                            name={p.providerName}
+                          />
+                        ))}
+                        {hasProviderOthers && (
+                          <Bar
+                            yAxisId="left"
+                            dataKey="others"
+                            stackId="providers"
+                            fill={PROVIDER_COLORS[PROVIDER_COLORS.length - 1]}
+                            name="Others"
+                          />
+                        )}
+                        {(topProviders ?? []).slice(0, 5).map((p, i) => (
+                          <Line
+                            key={`ratio-${p.provider}`}
+                            yAxisId="right"
+                            type="monotone"
+                            dataKey={`ratio-provider-${i}`}
+                            stroke={PROVIDER_COLORS[i % PROVIDER_COLORS.length]}
+                            strokeWidth={1.5}
+                            strokeDasharray="4 2"
+                            dot={false}
+                            name={`${p.providerName} ratio`}
+                          />
+                        ))}
+                      </ComposedChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                  <TopProvidersTable providers={activeProviders} selectedDate={selectedDate} />
+                </div>
+              )}
 
               {showTopModels && (
                 <div className="mt-8">
                   <div className="mb-1">
                     <h4 className="text-lg font-semibold">
                       {selectedDate
-                        ? `Top 5 Model Families - ${formatSelectedDateLabel(selectedDate, timezoneOffsetMinutes)}`
-                        : "Top 5 Model Families"}
+                        ? `Top 5 Models - ${formatSelectedDateLabel(selectedDate, timezoneOffsetMinutes)}`
+                        : "Top 5 Models"}
                     </h4>
                   </div>
                   {activeTopModels.length === 0 ? (
@@ -1814,129 +2136,6 @@ export default function DailyUsageChart({
                       </div>
                     </>
                   )}
-                </div>
-              )}
-
-              {showTopModels && topProviders && topProviders.length > 0 && (
-                <div className="mt-8">
-                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-1 gap-2">
-                    <h4 className="text-lg font-semibold">
-                      {selectedDate
-                        ? `Top 5 Upstreams - ${formatSelectedDateLabel(selectedDate, timezoneOffsetMinutes)}`
-                        : "Top 5 Upstreams"}
-                    </h4>
-                  </div>
-                  <p className="text-xs text-gray-500 mb-3">
-                    {selectedDate
-                      ? `Showing top upstreams for ${selectedDate}`
-                      : "Daily usage stacked by upstream provider; providers outside Top 5 merged into Others"}
-                  </p>
-                  <div className="hidden md:block mb-4">
-                    <ChartLegend
-                      items={[
-                        ...(topProviders ?? []).map((p, i) => ({
-                          color: PROVIDER_COLORS[i % PROVIDER_COLORS.length],
-                          label: p.providerName,
-                          bar: true,
-                          key: p.provider,
-                        })),
-                        ...(hasProviderOthers
-                          ? [
-                              {
-                                color: PROVIDER_COLORS[PROVIDER_COLORS.length - 1],
-                                label: "Others",
-                                bar: true,
-                                key: "others",
-                              },
-                            ]
-                          : []),
-                      ]}
-                    />
-                    <div className="h-[240px]">
-                      <ResponsiveContainer width="100%" height="100%">
-                      <ComposedChart
-                        data={providerChartData}
-                        margin={{ top: 10, right: 45, left: 55, bottom: 10 }}
-                        barCategoryGap="20%"
-                        syncId="daily"
-                        onClick={handleChartClick}
-                        onMouseMove={handleChartMouseMove}
-                        onMouseLeave={handleChartMouseLeave}
-                        className="cursor-pointer"
-                      >
-                        <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                        <XAxis
-                          dataKey="group"
-                          ticks={data.map((d) => d.group)}
-                          tick={(props) => {
-                            const index = props.index ?? 0;
-                            const interval = getXAxisInterval(range);
-                            const showLabel = interval === 0 || index % (interval + 1) === 0;
-                            return (
-                              <CustomXAxisTick
-                                {...props}
-                                selectedDate={selectedDate}
-                                hoveredDate={hoveredDate}
-                                index={showLabel ? index : -1}
-                              />
-                            );
-                          }}
-                          interval={0}
-                          minTickGap={15}
-                        />
-                        <YAxis
-                          yAxisId="left"
-                          tick={{ fontSize: 11 }}
-                          width={45}
-                          tickFormatter={(v: number) => formatAxisNumber(v)}
-                          domain={providerTokenDomain}
-                        />
-                        <YAxis
-                          yAxisId="right"
-                          orientation="right"
-                          tick={{ fontSize: 11 }}
-                          width={45}
-                          tickFormatter={(v: number) => `${v}%`}
-                          domain={[0, 100]}
-                        />
-                        <Tooltip content={<TokenBarTooltip />} cursor={false} />
-                        {(topProviders ?? []).map((p, i) => (
-                          <Bar
-                            key={p.provider}
-                            yAxisId="left"
-                            dataKey={p.provider}
-                            stackId="providers"
-                            fill={PROVIDER_COLORS[i % PROVIDER_COLORS.length]}
-                            name={p.providerName}
-                          />
-                        ))}
-                        {hasProviderOthers && (
-                          <Bar
-                            yAxisId="left"
-                            dataKey="others"
-                            stackId="providers"
-                            fill={PROVIDER_COLORS[PROVIDER_COLORS.length - 1]}
-                            name="Others"
-                          />
-                        )}
-                        {(topProviders ?? []).slice(0, 5).map((p, i) => (
-                          <Line
-                            key={`ratio-${p.provider}`}
-                            yAxisId="right"
-                            type="monotone"
-                            dataKey={`ratio-provider-${i}`}
-                            stroke={PROVIDER_COLORS[i % PROVIDER_COLORS.length]}
-                            strokeWidth={1.5}
-                            strokeDasharray="4 2"
-                            dot={false}
-                            name={`${p.providerName} ratio`}
-                          />
-                        ))}
-                      </ComposedChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </div>
-                  <TopProvidersTable providers={activeProviders} selectedDate={selectedDate} />
                 </div>
               )}
             </div>

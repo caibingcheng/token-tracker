@@ -4,7 +4,7 @@
 
 - **Vitest 4 配置**（`vitest.config.mts`）：`maxWorkers: "25%"`（≤ CPU 一半，降低并行 SQLite/undici 的峰值 RSS）、`execArgv: ["--max-old-space-size=1536"]`（**Vitest 4 已移除 `poolOptions`**，execArgv 必须在顶层，否则被静默忽略）、`hookTimeout/testTimeout/teardownTimeout: 30s`（默认 10s/5s 在共享高负载机器上会误杀首启迁移 + 路由 import 的用例）、alias 用 `import.meta.dirname`（`.mts` 为 ESM，避开 Vite configLoader 的 `__dirname` 警告）
 - **native 依赖**：`better-sqlite3` 必须 ≥13（N-API）。11.x/12.x 在 Node 24 的 worker/进程退出期 GC 销毁 Statement 会触发 `node::RemoveEnvironmentCleanupHook Assertion failed` 让整个测试 worker native abort（不是 JS 异常，无法 catch）
-- **DB-backed 测试的清理约定**：用 `mkdtempSync` 建临时库的测试，`afterAll` 必须 **先 `closeDb()`（`src/lib/db/index.ts`）再 `rmSync(dir, { recursive: true, force: true })`**。Windows 上句柄未关时删库文件会 `EPERM`（unlink 也删不掉），表现为「1422 tests passed 但 suite 记 failed」；Linux 上不报错，所以 CI/Docker 不显形。`closeDb` 通过 `globalThis` 的 client registry 关闭**所有**实例的连接，因为 `vi.resetModules()`（middleware / auth:login / auth:session / auth:setup 的 `beforeEach`）会重建 `@/lib/db` 模块实例、每个实例各持一条连接，只关当前实例会留下历史句柄
+- **DB-backed 测试的清理约定**：用 `mkdtempSync` 建临时库的测试，`afterAll` 必须 **先 `closeDb()`（`src/lib/db/index.ts`）再 `rmSync(dir, { recursive: true, force: true })`**。Windows 上句柄未关时删库文件会 `EPERM`（unlink 也删不掉），表现为「1422 tests passed 但 suite 记 failed」；Linux 上不报错，所以 CI/Docker 不显形。`closeDb` 通过 `globalThis` 的 client registry 关闭**所有**实例的连接，因为 `vi.resetModules()`（`src/proxy.ts` / auth:login / auth:session / auth:setup 的 `beforeEach`）会重建 `@/lib/db` 模块实例、每个实例各持一条连接，只关当前实例会留下历史句柄
 - 首次引入 vitest（`src/**/*.test.ts`，`npm test`），测试范围均为不依赖 Next.js 运行时的纯逻辑模块：
   - `src/lib/gateway/parsers/`：三协议 usage 解析（含 `stream-usage` 增量提取：随机 chunk 边界对照批量 parser、多行 data、跨 chunk 事件、UTF-8 截断）
   - `src/lib/gateway/model-router`：精确/通配/priority 匹配、Gemini path 提取

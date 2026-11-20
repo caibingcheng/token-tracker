@@ -12,9 +12,10 @@ import {
   shouldSecureCookie,
 } from "@/lib/auth/session-cookie";
 
-// 验签 middleware（第一层防漏）：Edge runtime 无法访问 SQLite / node:crypto，
-// 因此这里只用 WebCrypto 验证会话 token 的 HMAC-SHA256 签名 + exp 过期检查；
-// epoch 检查与 DB key 校验由路由内 withAuth 完成。
+// 验签 proxy（第一层防漏）：Next 16 起 middleware 更名为 proxy，默认跑 Node.js runtime
+// （不再强制 Edge），所以这里能直接访问 SQLite / node:crypto；但仍只用 WebCrypto 验
+// 会话 token 的 HMAC-SHA256 签名 + exp 过期检查，保持与 signSessionToken 同一套派生方式，
+// epoch 检查与 DB key 校验继续留给路由内 withAuth。
 // matcher 排除 /api/auth/login 与 /api/auth/setup：login 携带原始 API key，
 // setup 是首次启动的 fail-open 入口（自身闸门校验），两者均无会话 token 可用。
 
@@ -27,7 +28,7 @@ function unauthorized(clearCookie?: string) {
   return res;
 }
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   // 本地免密码直通：仅 LOCAL_ADMIN_BYPASS=1 且 loopback Host（见 local-bypass.ts）
   if (canBypassAuth(request)) return NextResponse.next();
 
