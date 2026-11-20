@@ -1,28 +1,13 @@
-// Next.js instrumentation hook（由 next.config.js 的 experimental.instrumentationHook 启用，
-// 服务器运行时启动时调用一次）
+// Next.js instrumentation hook：Node.js 与 Edge 各编译一份，所以这里只做 runtime 分派。
 //
-// 周期性内存归还：实测 V8 的 major GC 触发阈值随堆上限缩放，生产容器运行数天后 RSS 从
-// ~42MB 基线涨到 ~100MB+ 且空闲后不回落。这里每 5 分钟检查一次 RSS，偏高时触发 full GC
-// 主动归还内存。依赖 --expose-gc（Dockerfile NODE_OPTIONS 已配置），无该 flag 时静默跳过。
+// Node-only 逻辑（process.memoryUsage / setInterval.unref）必须放在单独模块里按
+// process.env.NEXT_RUNTIME 条件加载：写在同一个文件里，Edge 编译会针对这些 Node API
+// 报 “A Node.js API is used ... not supported in the Edge Runtime”，并在 dev 下每个请求
+// 重复打印一次。分派放在 register 内部动态 import，Edge 编译时 NEXT_RUNTIME 被常量折叠
+// 成 'edge'，函数提前 return，整个 import 分支会被摇掉。
 
-const RECLAIM_INTERVAL_MS = 5 * 60 * 1000;
-const RECLAIM_RSS_THRESHOLD_BYTES = 64 * 1024 * 1024;
-
-export function register() {
-  // 仅 Node.js 服务器运行时执行：instrumentation 也会被 edge runtime（middleware）加载，
-  // edge 无 Node timer API（setInterval 返回的对象无 unref），跳过
-  if (typeof (globalThis as { EdgeRuntime?: string }).EdgeRuntime === "string") return;
-  if (process.env.NODE_ENV !== "production") return;
-  if (typeof globalThis.gc !== "function") return;
-
-  const g = globalThis as typeof globalThis & { __ttMemoryReclaimTimer?: NodeJS.Timeout };
-  if (g.__ttMemoryReclaimTimer) return;
-
-  const timer = setInterval(() => {
-    if (process.memoryUsage().rss > RECLAIM_RSS_THRESHOLD_BYTES) {
-      globalThis.gc?.();
-    }
-  }, RECLAIM_INTERVAL_MS);
-  if (typeof timer.unref === "function") timer.unref();
-  g.__ttMemoryReclaimTimer = timer;
+export async function register() {
+  if (process.env.NEXT_RUNTIME === "edge") return;
+  const { registerNode } = await import("./instrumentation.node");
+  registerNode();
 }
