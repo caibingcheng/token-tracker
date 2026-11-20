@@ -15,7 +15,7 @@ const DB_KEY = "Db-Strong-Key-9f3a2b";
 let dir: string;
 
 beforeAll(() => {
-  dir = mkdtempSync(join(tmpdir(), "tt-middleware-"));
+  dir = mkdtempSync(join(tmpdir(), "tt-proxy-"));
   process.env.SQLITE_DATABASE_PATH = join(dir, "test.db");
   process.env.GATEWAY_SECRET = "0123456789abcdef0123456789abcdef";
 });
@@ -39,8 +39,8 @@ function request(headers: Record<string, string> = {}): NextRequest {
 }
 
 async function run(headers: Record<string, string> = {}) {
-  const mod = await import("./middleware");
-  return mod.middleware(request(headers));
+  const mod = await import("./proxy");
+  return mod.proxy(request(headers));
 }
 
 async function validToken(): Promise<string> {
@@ -48,7 +48,7 @@ async function validToken(): Promise<string> {
   return signSessionToken(await getTokenEpoch(), keyFingerprint(DB_KEY));
 }
 
-describe("middleware - cookie 认证", () => {
+describe("proxy - cookie 认证", () => {
   it("无 header 无 cookie → 401，不下发 Set-Cookie", async () => {
     const res = await run();
     expect(res.status).toBe(401);
