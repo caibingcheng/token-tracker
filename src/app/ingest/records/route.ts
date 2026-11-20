@@ -9,7 +9,7 @@ import {
 import { ingestRecords } from "@/lib/ingest/watermark";
 import { getRateLimitKey } from "@/lib/net/client-ip";
 
-// /ingest/records：多实例同步接收端点（位于 /api 之外，middleware matcher 天然不拦）。
+// /ingest/records：多实例同步接收端点（位于 /api 之外，proxy matcher 天然不拦）。
 // 认证：Authorization: Bearer it-xxx（全表解密比对）；限流 + body 上限 + 严格字段校验。
 
 export const runtime = "nodejs";

@@ -73,7 +73,7 @@ export function withAuth(handler: RouteHandler): RouteHandler {
     const payload = verifySessionToken(token);
     if (!payload || isTokenExpired(payload)) return unauthorized(undefined, clearCookie);
 
-    // epoch 检查（middleware 无法访问 DB，必须留在这里）
+    // epoch 检查（留在这里而不是 proxy：第二层校验，proxy 只验签名+exp）
     const epoch = await getTokenEpoch();
     if (payload.epoch !== epoch) return unauthorized(undefined, clearCookie);
 

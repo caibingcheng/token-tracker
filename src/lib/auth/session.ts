@@ -18,7 +18,7 @@ export function getSessionTtlMs(): number {
   return DEFAULT_TTL_MS;
 }
 
-// 与 Edge 侧 middleware 保持一致的密钥派生方式（WebCrypto 侧为 SHA-256 摘要后导入 HMAC key）
+// 与 proxy 侧保持一致的密钥派生方式（WebCrypto 侧为 SHA-256 摘要后导入 HMAC key）
 export function deriveSessionKey(): Buffer {
   const secret = process.env.GATEWAY_SECRET;
   if (!secret) {

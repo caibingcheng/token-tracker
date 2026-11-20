@@ -5,7 +5,7 @@
 //   2. 请求 Host 为 loopback（localhost / 127.x / ::1）—— 纵深防御：即使有人把端口改绑到
 //      0.0.0.0，非本机 Host 的请求也不会被放行。注意 Host 头可被伪造，真正的边界是
 //      compose 文件只绑定 127.0.0.1。
-// 该文件必须保持 Edge runtime 兼容（middleware 引用）：只用 process.env + 字符串操作。
+// 该文件保持运行时无关（proxy 引用）：只用 process.env + 字符串操作。
 
 export function isLocalAdminBypassEnabled(): boolean {
   const v = process.env.LOCAL_ADMIN_BYPASS;

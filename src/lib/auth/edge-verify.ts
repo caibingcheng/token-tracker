@@ -1,7 +1,8 @@
-// Edge runtime 可用的会话 token 验签（WebCrypto HMAC-SHA256）。
+// 会话 token 验签（WebCrypto HMAC-SHA256）。
 // 与 node 侧 src/lib/auth/session.ts 保持相同的密钥派生方式：
 // SHA-256(GATEWAY_SECRET + ":session-token") 作为 HMAC key。
-// middleware 用（第一层防漏）；epoch/DB 校验仍由路由内 withAuth 完成。
+// proxy 用（第一层防漏）；epoch/DB 校验仍由路由内 withAuth 完成。
+// 模块名里的 Edge 是历史命名：Next 16 起 proxy 默认 Node.js runtime，WebCrypto 两边都可用。
 
 const KEY_SALT = ":session-token";
 const encoder = new TextEncoder();
@@ -64,7 +65,7 @@ export interface EdgeSessionPayload {
   exp: number;
 }
 
-// 解析 payload 并校验 exp；epoch/keyId 检查留给 withAuth（middleware 无法访问 DB）
+// 解析 payload 并校验 exp；epoch/keyId 检查留给 withAuth
 export function parseEdgeSessionPayload(payload: string): EdgeSessionPayload | null {
   let parsed: Record<string, unknown>;
   try {
