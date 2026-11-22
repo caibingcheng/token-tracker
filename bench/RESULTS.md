@@ -221,3 +221,99 @@ LABEL=P-final NODE_FLAGS="--max-old-space-size=128 --expose-gc --max-semi-space-
 1. **面板场景的堆扩容**：给 dashboard 的 10 个聚合查询加「查询期间降低 heap 上限」不可行；可行的是把 `queryLatencyStats` 之外的其他全表扫描也下推到 SQL（目前只有 latency 这一条是全表拉行）
 2. **换运行时**：网关拆 Go/Rust（~20MB）+ 前端静态导出，才可能真正稳定 <80MB，代价是重写 7000 行网关逻辑
 3. **接受现状**：纯网关 67MB 已达标，面板场景 90MB 对 512MB VPS 不构成压力
+
+## 10. 换运行时 spike（Phase 2，2026-11-22）
+
+> 目标：验证「瓶颈是不是 Next.js 运行时」。做法是用 496 行适配层把 `next/server` 换成 shim（业务代码零改动），
+> 服务端换 Hono、前端 `output: 'export'`。**spike 代码不入库**，在本地分支 `spike/runtime-hono` 与
+> `docs/handoffs/` 的交接文档里（本文件只保留可复用的数字与方法）。
+> 数字取 rebase 到 `origin/dev@0e9ab0f`（Next 16.4.6 + gateway usage 估算 + dashboard 多选筛选）之后的第二轮，
+> 6 轮采样全部在 `bench/out/r2-*`。第一轮在旧基线上结论一致（见 10.5 第 2 条）。
+
+### 10.1 两个镜像
+
+| 镜像 | 内容 | 构建 |
+|---|---|---|
+| `tt:next2` | `git archive HEAD`（含 Phase 1 全部改动）= 本节的基线 | `docker build -t tt:next2 /tmp/src-next2` |
+| `tt:spike2` | 同一份 `src/lib`/`src/components`，服务端换 Hono（esbuild bundle）+ 前端 `output: 'export'` | `docker build -f Dockerfile.spike -t tt:spike2 .`（`Dockerfile.spike` 在 `spike/runtime-hono` 分支） |
+
+runner 阶段逐字对齐：同 `node:22-slim`、同 `NODE_OPTIONS`（128/4/semi）、同 `--optimize-for-size`、
+同 `LD_PRELOAD=libjemalloc.so`。**唯一变量是「不再跑 .next/standalone/server.js」。**
+
+### 10.2 三场景对比（docker stats 口径，压测结束后的回落稳态）
+
+| 场景 | 指标 | tt:next2 | tt:spike2 | 变化 |
+|---|---|---|---|---|
+| 混合压测<br>(8 并发 + 4rps 面板, 240s) | 回落稳态 | **102.1** | **72.7** | **−29.4 MB / −29%** |
+| | anon 回落 | 83.1 | 62.1 | −21.0 MB |
+| | 峰值 | 159.9 | 131.2 | −18% |
+| | idle（压测前） | 55.1 | 25.6 | −54% |
+| | 吞吐 / p95 | 34.6 rps / 1698 ms | 38.0 rps / 1654 ms | 噪声内（±25%） |
+| 混合低 QPS<br>(2 并发 + 500ms think + 0.5rps, 600s) | 回落稳态 | **83.6** | **64.7** | **−18.9 MB / −23%** |
+| | anon 回落 | 74.9 | 56.9 | −18.0 MB |
+| | 峰值 | 138.6 | 129.1 | −7% |
+| | idle | 46.9 | 26.1 | −44% |
+| | 吞吐 / p95 | 3.1 rps / 1575 ms | 3.1 rps / 1583 ms | 持平 |
+| 纯网关<br>(2 并发 + 500ms think, 240s) | 回落稳态 | **57.8** | **50.0** | **−7.8 MB / −13%** |
+| | anon 回落 | 54.2 | 43.4 | −10.8 MB |
+| | 峰值 | 82.0 | 59.0 | −28% |
+| | idle | 48.6 | 29.0 | −40% |
+| | 吞吐 / p95 | 3.6 rps / 63.9 ms | 3.6 rps / 59.8 ms | 持平 |
+
+**`<80MB` 目标（混合场景口径）换运行时后三场景全部达成**（72.7 / 64.7 / 50.0）。
+纯网关比 Phase 1 的 67.1MB 再低一档，但那是另一轮的基线，不交叉比较。
+
+复现：
+
+```bash
+# spike 代码在本地分支 spike/runtime-hono（未 push、未入库）
+# Linux 侧副本（node_modules 必须是 linux 原生的，不能在 /mnt/c 下跑 npx tsx）
+git archive HEAD | tar -x -C ~/tt2 && cd ~/tt2 && npm ci
+cp <repo>/bench/run-spike-comparison.sh bench/ && bash bench/run-spike-comparison.sh
+# 换基线/重跑：PREFIX=r2- NEXT_IMAGE=tt:next2 SPIKE_IMAGE=tt:spike2 bash bench/run-spike-comparison.sh
+```
+
+### 10.3 归因：Next 运行时到底是哪一块
+
+| | idle anon | 混合稳态 anon | 负载增量 | 换运行时省下 |
+|---|---|---|---|---|
+| tt:next2 | 44.2 | 83.1 | +38.9 | — |
+| tt:spike2 | 23.8 | 62.1 | +38.3 | **−21.0（常数项）** |
+
+1. **Next 运行时 = 约 21MB 的常数项**：idle 从 55/44 掉到 26/24，混合稳态同步掉 21MB。
+   这部分是框架的模块图 + proxy 运行时 + 路由表，与跑什么查询无关。两轮测量里这个常数都是 21.0MB
+   （旧基线 20.9MB），非常稳定。
+2. **混合 vs 纯网关的 ~20MB 差值换运行时后一点没变**：Phase 1 测到 `78.8 − 59.1 = 19.7MB`（§5.2），
+   换运行时后 `62.1 − 43.4 = 18.7MB`。**这 20MB 与 Next 无关**，是 dashboard/records 聚合查询把
+   V8 堆撑上去后不缩回的工作集 —— 只有把聚合下推到 SQL（§9 第 1 条）才动得了。
+3. 峰值降 7–28%（混合压测 160→131、纯网关 82→59），降幅小于稳态，说明峰值里仍有较大一块
+   是 better-sqlite3 native 分配 + 请求体缓冲，与运行时无关。
+
+### 10.4 功能等价（不是只测内存）
+
+- `bench/e2e.sh` 打 spike：**33/33 通过**。含三协议流式 SSE（`[DONE]` / `message_stop`）、
+  逐条落库核对、无 key 401、未知模型 404、上游宕机 502 且不泄漏、`/v1/models` 并集、
+  8 个管理 API、Dashboard latency 聚合 `byModel=12 daily=3`。
+  用法：`E2E_SERVER_CMD="node build/server-spike.js" bash bench/e2e.sh`（该变量已入库，可对任意服务端跑）
+- **覆盖范围有限**：spike 只挂了 45 条静态路径路由 + 3 个 catch-all，`/api/admin/**/[id]` 这 17 条动态段
+  路由没挂（e2e 打的 8 个管理 API 全是静态路径）。所以 33/33 证明的是「网关链路 + 只读面板」等价，
+  不是全体 66 条等价。
+- 静态导出 + Hono 托管：`/`、`/admin`、`/records` 均 200，未知路径 404；
+  `next.config.js` 里 `headers()` 的 5 个安全头（CSP/XFO/nosniff/Referrer/Permissions）
+  逐字搬到 `src/server-spike/index.ts`，实测响应头与 Next 版一致。
+- 6 轮压测没有 5xx；`net: TypeError` 偶发（压测 1 次、低 QPS 7/4 次）为 loadgen 客户端侧错误，两侧同现。
+
+### 10.5 方法学注意
+
+1. **cgroup file 记账会让 docker stats 假性偏高**：某轮 `file` 峰值 177.2MB（136MB 的 db 页全记进了
+   这个 cgroup），`statsUsage = current − inactive_file` 只扣冷页，`active_file` 留在账上，
+   同一进程能读出 208MB。**跨轮次比较一律看 anon**（§1.1 的规矩在这里再次成立）。
+   本节 10.2 的「峰值」取 `load.statsUsage.max`，不用 `peakCurrent`（后者含 page cache）。
+2. **两轮独立测量**：第一轮在 rebase 前的基线（Next 16.4.3），混合压测 91.4→68.8、低 QPS 88.6→65.1、
+   纯网关 58.2→48.9；第二轮（本节，Next 16.4.6 + usage 估算 + 面板多选）整体水位抬了 4–10MB，
+   绝对值不同但**差值与结论完全一致**（anon 常数 20.9 与 21.0）。第一轮的原始采样随 WSL 重启丢失，
+   只保留聚合值；第二轮的 `bench/out/r2-*` 齐全。
+3. 单轮吞吐不作结论（§6 第 1 条）；本节的稳态内存单轮即可。
+4. spike 的 dispatcher 只挂了 45 条静态路径路由 + 3 个 catch-all 代理入口，
+   **20 条动态段路由（`[id]` 等）没有挂载**（bench 与 e2e 都不打它们），
+   `params` 恒为空对象。真正迁移时必须补参数抽取。

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 端到端功能验证：三协议透传（流式/非流式）、用量落库、模型并集、失败路径、管理 API。
 # 用法：bash bench/e2e.sh
+#       E2E_SERVER_CMD="node build/server-spike.js" bash bench/e2e.sh   # 换掉被测服务端（cwd=仓库根）
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$HERE")"
@@ -43,10 +44,17 @@ trap cleanup EXIT
 
 node "$HERE/mock-upstream.mjs" "$MOCK_PORT" >/tmp/e2e-mock.log 2>&1 &
 MPID=$!
-pushd "$ROOT/.next/standalone" >/dev/null
-PORT=$PORT HOSTNAME=127.0.0.1 node server.js >/tmp/e2e-server.log 2>&1 &
-SPID=$!
-popd >/dev/null
+if [[ -n "${E2E_SERVER_CMD:-}" ]]; then
+  # 可选：用别的服务端替掉 Next standalone（如 src/server-spike 的 build/server-spike.js），
+  # 断言集不变，用来验证「换运行时后 SSE 透传/落库/错误路径仍然一致」
+  ( cd "$ROOT" && PORT=$PORT HOSTNAME=127.0.0.1 exec $E2E_SERVER_CMD >/tmp/e2e-server.log 2>&1 ) &
+  SPID=$!
+else
+  pushd "$ROOT/.next/standalone" >/dev/null
+  PORT=$PORT HOSTNAME=127.0.0.1 node server.js >/tmp/e2e-server.log 2>&1 &
+  SPID=$!
+  popd >/dev/null
+fi
 
 for i in $(seq 1 90); do
   code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/auth/session" || true)
