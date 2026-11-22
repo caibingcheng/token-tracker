@@ -17,6 +17,19 @@ _bench_rand_hex() {
   node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("hex"))'
 }
 
+# 凭据落盘：独占创建（wx）+ 0600。
+# 不用 `>"$f"` + `chmod 600`：那样文件先以 umask 默认（通常 0644）出现，存在世界可读窗口；
+# 两个并发 bench 进程也会各自生成不同密钥互相覆盖（seed 写库与容器解密错位 → virtual_keys 解不开）。
+# 与 next.config.js 的 ensureDevGatewaySecret 同口径。EEXIST 表示对手已创建，直接复用它的值。
+_bench_write_once() {
+  node -e '
+    const fs = require("node:fs");
+    const [file, value] = process.argv.slice(1);
+    try { fs.writeFileSync(file, value, { mode: 0o600, flag: "wx" }); }
+    catch (err) { if (err.code !== "EEXIST") throw err; }
+  ' "$1" "$2"
+}
+
 # 生成（或复用）三项 bench 凭据，导出为 GATEWAY_SECRET / ADMIN_API_KEY / BENCH_VK
 bench_init_secrets() {
   mkdir -p "$BENCH_STATE"
@@ -25,24 +38,21 @@ bench_init_secrets() {
   local f
   f="$BENCH_STATE/gateway-secret"
   if [[ ! -s "$f" ]]; then
-    _bench_rand_hex >"$f"
-    chmod 600 "$f"
+    _bench_write_once "$f" "$(_bench_rand_hex)"
   fi
   GATEWAY_SECRET="$(cat "$f")"
   export GATEWAY_SECRET
 
   f="$BENCH_STATE/admin-key"
   if [[ ! -s "$f" ]]; then
-    _bench_rand_hex >"$f"
-    chmod 600 "$f"
+    _bench_write_once "$f" "$(_bench_rand_hex)"
   fi
   ADMIN_API_KEY="$(cat "$f")"
   export ADMIN_API_KEY
 
   f="$BENCH_STATE/virtual-key"
   if [[ ! -s "$f" ]]; then
-    node -e 'process.stdout.write("vk-bench" + require("node:crypto").randomBytes(24).toString("base64url") + "\n")' >"$f"
-    chmod 600 "$f"
+    _bench_write_once "$f" "$(node -e 'process.stdout.write("vk-bench" + require("node:crypto").randomBytes(24).toString("base64url") + "\n")')"
   fi
   BENCH_VK="$(cat "$f")"
   export BENCH_VK

@@ -18,12 +18,14 @@ export MOCK_BASE_URL="http://127.0.0.1:$MOCK_PORT"
 # virtual_keys 解不开，会整轮 401。
 E2E_DB_DIR="$HERE/e2e-data"
 E2E_DB="$E2E_DB_DIR/e2e.db"
+# 守卫必须在 rm / init-db / seed 之前：那三个动作会删库、建表、跑迁移，
+# 落到真实库（或经符号链接指到真实库）时先执行就是事故
+bench_guard_db "$E2E_DB"
 mkdir -p "$E2E_DB_DIR"
 rm -f "$E2E_DB" "$E2E_DB-wal" "$E2E_DB-shm"
 npx tsx "$HERE/init-db.ts" "$E2E_DB" >/dev/null
 node "$HERE/seed.mjs" "$E2E_DB" 3 200 >/dev/null
 export SQLITE_DATABASE_PATH="$E2E_DB"
-bench_guard_db "$E2E_DB"
 
 PASS=0
 FAIL=0

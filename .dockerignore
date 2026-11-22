@@ -4,5 +4,9 @@ node_modules
 .env*
 data/
 **/.gateway-secret
+# bench 只用于本机压测，绝不能进构建上下文：`src/lib/models-dev/snapshot.ts` 的动态 fs 路径让
+# Turbopack 无法静态收敛，会把整个项目目录写进 .nft.json trace 并复制进 .next/standalone，
+# 导致 `bench/docker-data/*.db`（136MB 测试库）跟着进镜像
+bench/
 *.md
 !.github
