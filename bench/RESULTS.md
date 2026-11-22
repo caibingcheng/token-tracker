@@ -225,8 +225,9 @@ LABEL=P-final NODE_FLAGS="--max-old-space-size=128 --expose-gc --max-semi-space-
 ## 10. 换运行时 spike（Phase 2，2026-11-22）
 
 > 目标：验证「瓶颈是不是 Next.js 运行时」。做法是用 496 行适配层把 `next/server` 换成 shim（业务代码零改动），
-> 服务端换 Hono、前端 `output: 'export'`。**spike 代码不入库**，在本地分支 `spike/runtime-hono` 与
-> `docs/handoffs/` 的交接文档里（本文件只保留可复用的数字与方法）。
+> 服务端换 Hono、前端 `output: 'export'`。**spike 代码不在 `dev` 上**，在分支 `bench/runtime-spike`
+> （`git checkout bench/runtime-spike`；该分支自带 `src/server-spike/README.md`）。本文件只保留可复用的数字与方法，
+> 完整交接见 `docs/handoffs/20261122181000-handoff-runtime-spike-result.md`。
 > 数字取 rebase 到 `origin/dev@0e9ab0f`（Next 16.4.6 + gateway usage 估算 + dashboard 多选筛选）之后的第二轮，
 > 6 轮采样全部在 `bench/out/r2-*`。第一轮在旧基线上结论一致（见 10.5 第 2 条）。
 
@@ -235,7 +236,7 @@ LABEL=P-final NODE_FLAGS="--max-old-space-size=128 --expose-gc --max-semi-space-
 | 镜像 | 内容 | 构建 |
 |---|---|---|
 | `tt:next2` | `git archive HEAD`（含 Phase 1 全部改动）= 本节的基线 | `docker build -t tt:next2 /tmp/src-next2` |
-| `tt:spike2` | 同一份 `src/lib`/`src/components`，服务端换 Hono（esbuild bundle）+ 前端 `output: 'export'` | `docker build -f Dockerfile.spike -t tt:spike2 .`（`Dockerfile.spike` 在 `spike/runtime-hono` 分支） |
+| `tt:spike2` | 同一份 `src/lib`/`src/components`，服务端换 Hono（esbuild bundle）+ 前端 `output: 'export'` | `docker build -f Dockerfile.spike -t tt:spike2 .`（`Dockerfile.spike` 在 `bench/runtime-spike` 分支） |
 
 runner 阶段逐字对齐：同 `node:22-slim`、同 `NODE_OPTIONS`（128/4/semi）、同 `--optimize-for-size`、
 同 `LD_PRELOAD=libjemalloc.so`。**唯一变量是「不再跑 .next/standalone/server.js」。**
@@ -266,7 +267,7 @@ runner 阶段逐字对齐：同 `node:22-slim`、同 `NODE_OPTIONS`（128/4/semi
 复现：
 
 ```bash
-# spike 代码在本地分支 spike/runtime-hono（未 push、未入库）
+# spike 代码在分支 bench/runtime-spike（详见该分支的 src/server-spike/README.md）
 # Linux 侧副本（node_modules 必须是 linux 原生的，不能在 /mnt/c 下跑 npx tsx）
 git archive HEAD | tar -x -C ~/tt2 && cd ~/tt2 && npm ci
 cp <repo>/bench/run-spike-comparison.sh bench/ && bash bench/run-spike-comparison.sh
