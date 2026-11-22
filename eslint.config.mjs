@@ -25,8 +25,8 @@ const eslintConfig = defineConfig([
     },
   },
   {
-    // CJS 配置文件必须用 require
-    files: ["*.config.js", "next.config.js"],
+    // CJS 文件（配置文件与本机性能脚本）必须用 require
+    files: ["*.config.js", "next.config.js", "bench/**/*.cjs"],
     rules: { "@typescript-eslint/no-require-imports": "off" },
   },
   globalIgnores([
