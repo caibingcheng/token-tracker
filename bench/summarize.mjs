@@ -7,7 +7,9 @@ import fs from "node:fs";
 const [, , file, idleBeforeArg, loadArg, idleAfterArg] = process.argv;
 const idleBefore = Number(idleBeforeArg || 40);
 const loadS = Number(loadArg || 300);
-const idleAfter = Number(idleAfterArg || 90);
+// 第四参数（idleAfterS）只为与 summarize-cgroup.mjs / 调用方保持同一 CLI：相位切分是位置式的，
+// 超出 load 窗口的采样一律计入 idleAfter，不需要窗口长度
+const _idleAfterS = Number(idleAfterArg || 90);
 
 const rows = fs
   .readFileSync(file, "utf8")

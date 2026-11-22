@@ -12,7 +12,9 @@ import fs from "node:fs";
 const [, , file, a, b, c] = process.argv;
 const idleBefore = Number(a || 40);
 const loadS = Number(b || 300);
-const idleAfter = Number(c || 120);
+// 第四参数（idleAfterS）只为与 summarize.mjs / 调用方保持同一 CLI：相位切分是位置式的，
+// 超出 load 窗口的采样一律计入 idleAfter，不需要窗口长度
+const _idleAfterS = Number(c || 120);
 
 const rows = fs
   .readFileSync(file, "utf8")

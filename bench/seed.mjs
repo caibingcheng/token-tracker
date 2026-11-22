@@ -242,7 +242,6 @@ const insertAll = db.transaction(() => {
   for (let d = DAYS - 1; d >= 0; d--) {
     const dayStart = new Date(today.getTime() - d * 86400000);
     const isToday = d === 0;
-    const span = isToday ? Math.max(1, Date.now() - dayStart.getTime()) : 86400000;
     const count = PER_DAY;
     for (let i = 0; i < count; i++) {
       // 日内分布：工作时段（9-23 点）权重 75%
