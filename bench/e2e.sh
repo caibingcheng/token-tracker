@@ -13,6 +13,12 @@ PORT=3009
 MOCK_PORT=18080   # 必须与 seed 时写入 upstreams.base_url 的端口一致
 export MOCK_BASE_URL="http://127.0.0.1:$MOCK_PORT"
 
+# 临时目录：让 node 自己给一个 OS 原生、正斜杠的路径。
+# 不能用固定 `/tmp/e2e-*`：MSYS（Git Bash）的 `/tmp` 在 Windows 下 node 解析不了，
+# `require("/tmp/x.json")` 直接 MODULE_NOT_FOUND，连带管理 API 断言集体 FAIL。
+# mkdtemp 顺带避开了固定文件名可被预置符号链接的问题。
+TMP="$(node -e 'const fs=require("node:fs"),os=require("node:os"),path=require("node:path");process.stdout.write(fs.mkdtempSync(path.join(os.tmpdir(),"tt-e2e-")).replace(/\\/g,"/"))')"
+
 # e2e 自包含：每次用自己的小库重建。
 # 不能复用 bench/data/bench.db —— 凭据轮换（GATEWAY_SECRET 变化）后那里的
 # virtual_keys 解不开，会整轮 401。
@@ -41,19 +47,20 @@ cleanup() {
   [[ -n "${SPID:-}" ]] && kill "$SPID" 2>/dev/null
   [[ -n "${MPID:-}" ]] && kill "$MPID" 2>/dev/null
   wait 2>/dev/null
+  [[ -n "${TMP:-}" ]] && rm -rf "$TMP"
 }
 trap cleanup EXIT
 
-node "$HERE/mock-upstream.mjs" "$MOCK_PORT" >/tmp/e2e-mock.log 2>&1 &
+node "$HERE/mock-upstream.mjs" "$MOCK_PORT" >"$TMP/mock.log" 2>&1 &
 MPID=$!
 if [[ -n "${E2E_SERVER_CMD:-}" ]]; then
   # 可选：用别的服务端替掉 Next standalone（如 src/server-spike 的 build/server-spike.js），
   # 断言集不变，用来验证「换运行时后 SSE 透传/落库/错误路径仍然一致」
-  ( cd "$ROOT" && PORT=$PORT HOSTNAME=127.0.0.1 exec $E2E_SERVER_CMD >/tmp/e2e-server.log 2>&1 ) &
+  ( cd "$ROOT" && PORT=$PORT HOSTNAME=127.0.0.1 exec $E2E_SERVER_CMD >"$TMP/server.log" 2>&1 ) &
   SPID=$!
 else
   pushd "$ROOT/.next/standalone" >/dev/null
-  PORT=$PORT HOSTNAME=127.0.0.1 node server.js >/tmp/e2e-server.log 2>&1 &
+  PORT=$PORT HOSTNAME=127.0.0.1 node server.js >"$TMP/server.log" 2>&1 &
   SPID=$!
   popd >/dev/null
 fi
@@ -63,7 +70,7 @@ for i in $(seq 1 90); do
   [[ "$code" == "401" ]] && break
   sleep 1
 done
-[[ "$code" == "401" ]] || { echo "server not ready ($code)"; tail -20 /tmp/e2e-server.log; exit 1; }
+[[ "$code" == "401" ]] || { echo "server not ready ($code)"; tail -20 "$TMP/server.log"; exit 1; }
 
 TOKEN=$(curl -s -X POST "$BASE/api/auth/login" -H 'content-type: application/json' \
   -d "{\"apiKey\":\"$ADMIN_API_KEY\"}" |
@@ -149,8 +156,8 @@ echo "$models" | grep -q 'gemini-2.5-pro' && ok "gemini models listed" || bad "g
 
 echo "== 8. 管理 API =="
 for p in /api/dashboard /api/dashboard?range=30d /api/records /api/providers /api/models /api/agents /api/model-pricing /api/admin/upstreams; do
-  code=$(curl -s -o /tmp/e2e-resp.json -w '%{http_code}' -H "X-API-Key: $TOKEN" "$BASE$p")
-  if [[ "$code" == "200" ]] && node -e 'const j=require("/tmp/e2e-resp.json"); if(j.success===false) process.exit(1)' 2>/dev/null; then
+  code=$(curl -s -o "$TMP/resp.json" -w '%{http_code}' -H "X-API-Key: $TOKEN" "$BASE$p")
+  if [[ "$code" == "200" ]] && node -e 'const j=require(process.argv[1]); if(j.success===false) process.exit(1)' "$TMP/resp.json" 2>/dev/null; then
     ok "$p"
   else
     bad "$p ($code)"
@@ -158,9 +165,9 @@ for p in /api/dashboard /api/dashboard?range=30d /api/records /api/providers /ap
 done
 
 echo "== 9. latency 聚合非空（Dashboard Speed 面板数据源）=="
-curl -s -H "X-API-Key: $TOKEN" "$BASE/api/dashboard?range=3d" >/tmp/e2e-dash.json
+curl -s -H "X-API-Key: $TOKEN" "$BASE/api/dashboard?range=3d" >"$TMP/dash.json"
 node -e '
-const j = require("/tmp/e2e-dash.json");
+const j = require(process.argv[1]);
 const d = j.data || {};
 const lat = d.latency || {};
 const byModel = lat.byModel || [];
@@ -170,16 +177,16 @@ if (!Array.isArray(daily) || daily.length === 0) { console.log("  \033[31mFAIL\0
 const bad = byModel.find(s => s.count <= 0 || (s.streamCount > 0 && !Number.isFinite(s.p50TtftMs)));
 if (bad) { console.log("  \033[31mFAIL\033[0m latency row invalid:", JSON.stringify(bad)); process.exit(1); }
 console.log("  PASS latency.byModel=" + byModel.length + " latency.daily=" + daily.length);
-' && PASS=$((PASS + 1)) || FAIL=$((FAIL + 1))
+' "$TMP/dash.json" && PASS=$((PASS + 1)) || FAIL=$((FAIL + 1))
 
 echo "== 10. 上游失败路径（停掉 mock 后应 502 且不泄漏）=="
 kill "$MPID" 2>/dev/null
 sleep 1
-code=$(curl -s -o /tmp/e2e-err.txt -w '%{http_code}' -X POST "$BASE/v1/chat/completions" \
+code=$(curl -s -o "$TMP/err.txt" -w '%{http_code}' -X POST "$BASE/v1/chat/completions" \
   -H "authorization: Bearer $VK" -H 'content-type: application/json' \
   -d '{"model":"gpt-5","messages":[]}')
 check "upstream down -> 502" "$code" "502"
-grep -qi "mock-\|127.0.0.1" /tmp/e2e-err.txt && bad "502 leaks upstream detail" || ok "502 does not leak upstream detail"
+grep -qi "mock-\|127.0.0.1" "$TMP/err.txt" && bad "502 leaks upstream detail" || ok "502 does not leak upstream detail"
 
 echo
 echo "===== e2e: PASS=$PASS FAIL=$FAIL ====="
