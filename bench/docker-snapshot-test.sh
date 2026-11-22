@@ -9,8 +9,9 @@ PORT=3000
 DATA="$HERE/docker-data"
 IDLE_MS="${1:-20000}"
 
-: "${GATEWAY_SECRET:=$(printf 'a%.0s' {1..64})}"
-: "${ADMIN_API_KEY:=bench-admin-key-0123456789abcdef0123456789abcdef}"
+source "$HERE/lib/env.sh"
+bench_init_secrets
+bench_guard_db "$DATA/token-tracker.db"
 
 cleanup() { docker rm -f "$NAME" >/dev/null 2>&1 || true; }
 trap cleanup EXIT

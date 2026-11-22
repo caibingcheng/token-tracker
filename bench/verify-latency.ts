@@ -1,6 +1,6 @@
 /**
  * 验证 queryLatencyStats 的游标路径与「全量数组 + 聚合函数」路径结果完全一致。
- * 用法：SQLITE_DATABASE_PATH=bench/data/bench.db GATEWAY_SECRET=... npx tsx bench/verify-latency.ts
+ * 用法：npx tsx bench/verify-latency.ts bench/data/bench.db
  *
  * 覆盖点：
  * 1. raw(true) 的列顺序与 select 顺序一致（错位会立刻表现为数值不同）
@@ -8,6 +8,7 @@
  * 3. 增量聚合与数组聚合的数值/排序完全相等
  */
 import { db, tokenRecords, initDatabase, closeDb } from "../src/lib/db/index";
+import { guardBenchPath } from "./lib/guard.mjs";
 import {
   queryLatencyStats,
   aggregateLatencyByModel,
@@ -23,6 +24,12 @@ function fail(msg: string): never {
 }
 
 async function main() {
+  // 只允许读 bench/ 自己的临时库：这个脚本会 initDatabase（建表/迁移）
+  process.env.SQLITE_DATABASE_PATH = guardBenchPath(
+    process.argv[2] || process.env.SQLITE_DATABASE_PATH,
+    "database"
+  );
+
   await initDatabase();
 
   const tz = 0;

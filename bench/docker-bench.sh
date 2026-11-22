@@ -20,9 +20,8 @@ PORT="${PORT:-3000}"
 MOCK_PORT=18080
 NAME="tt-bench-$LABEL"
 
-: "${GATEWAY_SECRET:=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
-: "${ADMIN_API_KEY:=bench-admin-key-0123456789abcdef0123456789abcdef}"
-export GATEWAY_SECRET ADMIN_API_KEY
+source "$HERE/lib/env.sh"
+bench_init_secrets
 
 DAYS="${DAYS:-30}"
 PER_DAY="${PER_DAY:-10000}"
@@ -35,6 +34,7 @@ ADMIN_RPS="${ADMIN_RPS:-4}"
 SCENARIO="${SCENARIO:-all}"
 
 mkdir -p "$OUT" "$DATA"
+bench_guard_db "$DATA/token-tracker.db"
 
 cleanup() {
   docker rm -f "$NAME" >/dev/null 2>&1 || true
@@ -46,7 +46,7 @@ trap cleanup EXIT
 echo "==> reset data"
 rm -f "$DATA"/token-tracker.db*
 # 建表必须先跑应用自己的迁移（seed 只写数据，不建表）
-SQLITE_DATABASE_PATH="$DATA/token-tracker.db" npx tsx "$HERE/init-db.ts" >/dev/null
+npx tsx "$HERE/init-db.ts" "$DATA/token-tracker.db" >/dev/null
 node "$HERE/seed.mjs" "$DATA/token-tracker.db" "$DAYS" "$PER_DAY"
 node "$HERE/check-vk.mjs" "$DATA/token-tracker.db" | head -3
 # 与生产一致的 models.dev 快照（避免压测期间走网络刷新）

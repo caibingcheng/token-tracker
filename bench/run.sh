@@ -38,9 +38,10 @@ if [[ -n "${MALLOC_CONF:-}" ]]; then export MALLOC_CONF; fi
 
 mkdir -p "$OUT" "$DB_DIR"
 
-export GATEWAY_SECRET="${GATEWAY_SECRET:-$(printf 'a%.0s' {1..64})}"
-export ADMIN_API_KEY="${ADMIN_API_KEY:-bench-admin-key-0123456789abcdef0123456789abcdef}"
+source "$HERE/lib/env.sh"
+bench_init_secrets
 export SQLITE_DATABASE_PATH="$DB"
+bench_guard_db "$DB"
 export ALLOW_PRIVATE_UPSTREAMS=true
 export NODE_ENV=production
 export MOCK_BASE_URL="http://127.0.0.1:$MOCK_PORT"
@@ -48,7 +49,7 @@ export MOCK_BASE_URL="http://127.0.0.1:$MOCK_PORT"
 if [[ ! " $* " =~ " --skip-seed " ]]; then
   echo "==> seed: $DAYS days x $PER_DAY rows/day"
   rm -f "$DB" "$DB-wal" "$DB-shm"
-  npx tsx "$HERE/init-db.ts" >/dev/null
+  npx tsx "$HERE/init-db.ts" "$DB" >/dev/null
   node "$HERE/seed.mjs" "$DB" "$DAYS" "$PER_DAY"
 fi
 

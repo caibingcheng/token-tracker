@@ -4,9 +4,17 @@
  */
 import Database from "better-sqlite3";
 import { createDecipheriv, createHash } from "node:crypto";
+import { guardBenchPath, benchSecret } from "./lib/guard.mjs";
 
-const dbPath = process.argv[2] || "bench/data/bench.db";
-const SECRET = process.env.GATEWAY_SECRET || "a".repeat(64);
+let dbPath;
+let SECRET;
+try {
+  dbPath = guardBenchPath(process.argv[2], "database");
+  SECRET = benchSecret();
+} catch (e) {
+  console.error(e instanceof Error ? e.message : e);
+  process.exit(1);
+}
 
 const KEY = /^[0-9a-fA-F]{64}$/.test(SECRET)
   ? Buffer.from(SECRET, "hex")
@@ -14,6 +22,11 @@ const KEY = /^[0-9a-fA-F]{64}$/.test(SECRET)
       const b = Buffer.from(SECRET, "base64");
       return b.length === 32 ? b : createHash("sha256").update(SECRET).digest();
     })();
+
+// 只回显前缀/长度：诊断「能不能解密」不需要打印明文
+function mask(s) {
+  return s.length <= 12 ? s : s.slice(0, 8) + "…(" + s.length + " chars)";
+}
 
 function decrypt(payload) {
   const [ivB64, tagB64, ctB64] = payload.split(":");
@@ -35,7 +48,9 @@ for (const vk of vks) {
   } catch (e) {
     plain = `<${e.message}>`;
   }
-  console.log(`  id=${vk.id} name=${vk.name} enabled=${vk.enabled} models=${vk.enabled_models} key=${plain}`);
+  console.log(
+    `  id=${vk.id} name=${vk.name} enabled=${vk.enabled} models=${vk.enabled_models} key=${mask(plain)}`
+  );
 }
 const uks = db.prepare("SELECT id, upstream_id, enabled, api_key_encrypted FROM upstream_keys").all();
 console.log(`upstreamKeys=${uks.length}`);
@@ -46,6 +61,6 @@ for (const k of uks) {
   } catch (e) {
     plain = `<${e.message}>`;
   }
-  console.log(`  id=${k.id} upstream=${k.upstream_id} enabled=${k.enabled} key=${plain}`);
+  console.log(`  id=${k.id} upstream=${k.upstream_id} enabled=${k.enabled} key=${mask(plain)}`);
 }
 db.close();

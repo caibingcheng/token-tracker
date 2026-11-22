@@ -4,16 +4,25 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$HERE")"
-# 基准测试专用固定假密钥（非生产凭证）；可用环境变量覆盖
-: "${GATEWAY_SECRET:=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
-: "${ADMIN_API_KEY:=bench-admin-key-0123456789abcdef0123456789abcdef}"
-export GATEWAY_SECRET ADMIN_API_KEY
-export SQLITE_DATABASE_PATH="$HERE/data/bench.db"
+source "$HERE/lib/env.sh"
+bench_init_secrets
 export ALLOW_PRIVATE_UPSTREAMS=true
 export NODE_ENV=production
 PORT=3009
 MOCK_PORT=18080   # 必须与 seed 时写入 upstreams.base_url 的端口一致
 export MOCK_BASE_URL="http://127.0.0.1:$MOCK_PORT"
+
+# e2e 自包含：每次用自己的小库重建。
+# 不能复用 bench/data/bench.db —— 凭据轮换（GATEWAY_SECRET 变化）后那里的
+# virtual_keys 解不开，会整轮 401。
+E2E_DB_DIR="$HERE/e2e-data"
+E2E_DB="$E2E_DB_DIR/e2e.db"
+mkdir -p "$E2E_DB_DIR"
+rm -f "$E2E_DB" "$E2E_DB-wal" "$E2E_DB-shm"
+npx tsx "$HERE/init-db.ts" "$E2E_DB" >/dev/null
+node "$HERE/seed.mjs" "$E2E_DB" 3 200 >/dev/null
+export SQLITE_DATABASE_PATH="$E2E_DB"
+bench_guard_db "$E2E_DB"
 
 PASS=0
 FAIL=0
@@ -21,7 +30,8 @@ ok() { PASS=$((PASS + 1)); printf "  \033[32mPASS\033[0m %s\n" "$1"; }
 bad() { FAIL=$((FAIL + 1)); printf "  \033[31mFAIL\033[0m %s\n" "$1"; }
 check() { if [[ "$2" == "$3" ]]; then ok "$1 ($2)"; else bad "$1 (got $2, want $3)"; fi; }
 
-VK="vk-bench0000000000000000000000000000000000"
+VK="$BENCH_VK"
+bench_guard_db "$SQLITE_DATABASE_PATH"
 BASE="http://127.0.0.1:$PORT"
 
 cleanup() {

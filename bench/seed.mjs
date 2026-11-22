@@ -15,25 +15,34 @@ import {
   randomBytes,
 } from "node:crypto";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { guardBenchPath, benchSecret, benchVirtualKey } from "./lib/guard.mjs";
 
-const dbPath = process.argv[2];
 const DAYS = Number(process.argv[3] || 30);
 const PER_DAY = Number(process.argv[4] || 10000);
-if (!dbPath) {
+if (!process.argv[2]) {
   console.error("usage: node bench/seed.mjs <dbPath> <days> <recordsPerDay>");
   process.exit(1);
 }
-
-const GATEWAY_SECRET = process.env.GATEWAY_SECRET;
-if (!GATEWAY_SECRET) {
-  console.error("GATEWAY_SECRET is required");
+// 只允许写 bench/ 目录内的临时库（会删表重建）
+let dbPath;
+let GATEWAY_SECRET;
+try {
+  dbPath = guardBenchPath(process.argv[2], "database");
+  GATEWAY_SECRET = benchSecret();
+} catch (e) {
+  console.error(e instanceof Error ? e.message : e);
   process.exit(1);
 }
 
 const MOCK_BASE_URL = process.env.MOCK_BASE_URL || "http://127.0.0.1:18080";
-export const BENCH_VK = "vk-bench0000000000000000000000000000000000";
-export const BENCH_ADMIN_KEY = process.env.ADMIN_API_KEY || "";
+// 由 bench/lib/env.sh 自动生成并复用（首次运行随机，存 bench/.state/，已 gitignore）
+let BENCH_VK;
+try {
+  BENCH_VK = benchVirtualKey();
+} catch (e) {
+  console.error(e instanceof Error ? e.message : e);
+  process.exit(1);
+}
 
 // ---- crypto：与 src/lib/gateway/crypto.ts 同格式 iv:tag:ciphertext(base64) ----
 const KEY = /^[0-9a-fA-F]{64}$/.test(GATEWAY_SECRET)
@@ -272,7 +281,8 @@ console.log(
       from: totals.minAt,
       to: totals.maxAt,
       vkId,
-      vk: BENCH_VK,
+      // 只回显前缀：完整值在 bench/.state/virtual-key，避免明文进日志
+      vkPrefix: BENCH_VK.slice(0, 12) + "…",
       seedSeconds: +((Date.now() - startedAt) / 1000).toFixed(1),
     },
     null,

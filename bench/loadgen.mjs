@@ -19,7 +19,7 @@ function opt(name, def) {
 }
 
 const BASE = opt("base", "http://127.0.0.1:3001");
-const VK = opt("vk", "vk-bench0000000000000000000000000000000000");
+const VK = opt("vk", process.env.BENCH_VK || "");
 const TOKEN = opt("token", "");
 const DURATION = Number(opt("duration", 300));
 const CONCURRENCY = Number(opt("concurrency", 8));

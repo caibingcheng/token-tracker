@@ -78,6 +78,8 @@ mise.toml
 /bench/data/
 /bench/out/
 /bench/docker-data/
+/bench/e2e-data/
+/bench/.state/
 **/bench/*.db
 **/bench/*.db-wal
 **/bench/*.db-shm

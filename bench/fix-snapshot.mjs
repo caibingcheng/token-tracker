@@ -4,8 +4,18 @@
  * node bench/fix-snapshot.mjs <path>
  */
 import fs from "node:fs";
+import { guardBenchPath } from "./lib/guard.mjs";
 
-const p = process.argv[2] || "bench/data/models-dev-cache.json";
+let p;
+try {
+  p = guardBenchPath(
+    process.argv[2] || "bench/data/models-dev-cache.json",
+    "snapshot file"
+  );
+} catch (e) {
+  console.error(e instanceof Error ? e.message : e);
+  process.exit(1);
+}
 const j = JSON.parse(fs.readFileSync(p, "utf8"));
 j.fetchedAt = new Date().toISOString();
 fs.writeFileSync(p, JSON.stringify(j));

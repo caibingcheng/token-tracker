@@ -2,6 +2,14 @@
 
 > 本文件记录 2026-11 这一轮内存优化的测量方法、原始数据和结论。
 > 所有数字都可以用 `bench/` 下的脚本复现；原始采样在 `bench/out/<label>/`（不入库）。
+>
+> **bench 不写死任何凭据**：首次运行 shell 脚本时自动生成 `GATEWAY_SECRET` / `ADMIN_API_KEY` /
+> 虚拟 key 到 `bench/.state/`（权限 600，已 gitignore），之后复用，保证 seed 写库、容器解密、
+> loadgen 发请求三方一致。删掉 `.state/` 会让旧库里的 virtual_keys 解不开，重新 seed 即可。
+>
+> **bench 只碰自己的临时库**：所有数据库操作都经 `bench/lib/guard.mjs` 的 `guardBenchPath()`
+> 校验路径必须落在 `bench/` 内，仓库正在用的 `data/token-tracker.db` 会被直接拒绝
+> （`init-db.ts` 会执行建表/迁移，指错路径是真实风险）。
 
 ## 1. 测量口径（先读这一节，否则数字会读错）
 
@@ -189,8 +197,11 @@ bash bench/docker-snapshot-test.sh 20000     # 快照空闲释放
 # 汇总（docker stats 口径 + anon）
 node bench/recalc-stats-usage.mjs before after gw nocache
 
-# 回归
-npx vitest run && npx tsx bench/verify-latency.ts && bash bench/e2e.sh
+# 回归（e2e 会用自己的 bench/e2e-data/e2e.db 重建，不受现有数据影响）
+npx vitest run
+npx tsx bench/init-db.ts bench/data/bench.db
+npx tsx bench/verify-latency.ts bench/data/bench.db
+bash bench/e2e.sh
 ```
 
 5.3 节引用的 WSL 裸跑对照（`A-256` / `E-latency` / `P-final` / `N-jemalloc-tune` / `O-opt4size`）用 `bench/run.sh` 生成，
