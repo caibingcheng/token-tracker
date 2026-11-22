@@ -4,6 +4,7 @@ import { offsetMinutesToSqlModifiers } from "@/lib/timezone-utils";
 import { migrateColumns, migrateTokenRecordsModelColumns, migrateNamedRoutesTables, migrateNamedRouteTargetsNullableUpstream, migrateSyncInstancesTable, migrateIngestTokensTable } from "./migrate";
 
 let db: any;
+let rawClient: any;
 let tokenRecords: any;
 let upstreamsTable: any;
 let upstreamKeysTable: any;
@@ -47,7 +48,18 @@ export function closeDb() {
   }
   registry.length = 0;
   db = undefined;
+  rawClient = undefined;
   initialized = false;
+}
+
+// 底层 better-sqlite3 句柄：大结果集需要 stmt.iterate() 游标逐行消费，
+// 而 drizzle 的 select 只能一次性返回完整数组（30 万行 → 上百 MB 常驻堆）。
+// 仅供「必须遍历全部行」的聚合查询使用，业务读写仍走 drizzle。
+export function getRawClient(): any {
+  if (!rawClient) {
+    throw new Error("SQLite client not initialized; call initDatabase() first");
+  }
+  return rawClient;
 }
 
 async function ensureClient() {
@@ -62,6 +74,7 @@ async function ensureClient() {
 
   mkdirSync(dirname(dbPath), { recursive: true });
   const client = new Database(dbPath);
+  rawClient = client;
   ((globalThis as any)[CLIENT_REGISTRY] ??= []).push(client);
   wrapDatabaseClient(client);
 

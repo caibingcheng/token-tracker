@@ -73,3 +73,11 @@ drizzle/
 
 # Local dev tooling
 mise.toml
+
+# 本地性能基准脚手架：只保留脚本，数据/输出不入库
+/bench/data/
+/bench/out/
+/bench/docker-data/
+**/bench/*.db
+**/bench/*.db-wal
+**/bench/*.db-shm

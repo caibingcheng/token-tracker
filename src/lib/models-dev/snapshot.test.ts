@@ -9,6 +9,7 @@ import {
   getSnapshot,
   refreshSnapshot,
   resetSnapshotCache,
+  releaseIdleSnapshotCache,
   fetchModelsDevData,
   convertLitellmToModelsDev,
   looksLikeLitellmStructure,
@@ -621,5 +622,49 @@ describe("in-flight refresh dedupe/serialization", () => {
     expect(onDisk.source).toBe("github");
     const snap = await getSnapshot({ filePath, fetchImpl: vi.fn() });
     expect(snap?.source).toBe("github");
+  });
+});
+
+describe("releaseIdleSnapshotCache", () => {
+  const NOW = new Date();
+
+  it("keeps the cache while it is still warm", async () => {
+    await uploadSnapshot(GOOD, { filePath, now: NOW });
+    expect(releaseIdleSnapshotCache(60_000)).toBe(false);
+    const read = await getSnapshot({ filePath, fetchImpl: vi.fn() });
+    expect(read?.data).toEqual(GOOD);
+  });
+
+  it("releases after the idle window and reloads from disk on next access", async () => {
+    await uploadSnapshot(GOOD, { filePath, now: NOW });
+    // idleMs=0 → 立即满足「闲置超过阈值」
+    expect(releaseIdleSnapshotCache(0)).toBe(true);
+    const fetchImpl = vi.fn();
+    const read = await getSnapshot({ filePath, fetchImpl });
+    // 释放只丢内存副本，数据仍在磁盘上（不触发网络刷新）
+    expect(read?.data).toEqual(GOOD);
+    expect(read?.fetchedAt).toBe(NOW.toISOString());
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("is a no-op when there is no cache", () => {
+    expect(releaseIdleSnapshotCache(0)).toBe(false);
+  });
+
+  it("does not release while a refresh is in flight", async () => {
+    let resolveFetch: (v: unknown) => void = () => {};
+    const fetchImpl = vi.fn(
+      () => new Promise((resolve) => {
+        resolveFetch = resolve;
+      })
+    );
+    const p = refreshSnapshot({ filePath, fetchImpl, now: NOW });
+    expect(releaseIdleSnapshotCache(0)).toBe(false);
+    resolveFetch({
+      ok: true,
+      json: async () => GOOD,
+    });
+    const r = await p;
+    expect(r.ok).toBe(true);
   });
 });

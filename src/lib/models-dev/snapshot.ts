@@ -288,6 +288,7 @@ export function uploadSnapshot(
   };
   const slim = slimSnapshot(snapshot);
   parsedCache = slim;
+  parsedCacheLastUsedAt = Date.now();
   inflightRefresh = null;
   writeSnapshotFile(snapshot, opts.filePath);
   return slim;
@@ -374,6 +375,7 @@ interface InflightRefresh {
 }
 
 let parsedCache: ModelsDevSnapshot | null = null;
+let parsedCacheLastUsedAt = 0;
 let inflightRefresh: InflightRefresh | null = null;
 
 // 发起/复用当前 source 的刷新（in-flight 竞态修复）：
@@ -407,6 +409,8 @@ async function runRefresh(opts: RefreshOpts): Promise<ModelsDevRefreshResult> {
 export async function getSnapshot(
   opts: RefreshOpts & { force?: boolean } = {}
 ): Promise<ModelsDevSnapshot | null> {
+  parsedCacheLastUsedAt = Date.now();
+  ensureIdleReleaseTimer();
   if (parsedCache) {
     const age = Date.now() - new Date(parsedCache.fetchedAt).getTime();
     const stale = age > SNAPSHOT_TTL_MS;
@@ -462,6 +466,7 @@ async function doRefresh(opts: RefreshOpts): Promise<ModelsDevRefreshResult> {
   // 内存驻留裁剪版；磁盘写完整版（刷新后磁盘快照保持数据完整，便于排查/复用）
   const slim = slimSnapshot(snapshot);
   parsedCache = slim;
+  parsedCacheLastUsedAt = Date.now();
   writeSnapshotFile(snapshot, opts.filePath);
   return { ok: true, snapshot: slim };
 }
@@ -470,4 +475,37 @@ async function doRefresh(opts: RefreshOpts): Promise<ModelsDevRefreshResult> {
 export function resetSnapshotCache(): void {
   parsedCache = null;
   inflightRefresh = null;
+}
+
+// ---- 空闲释放 ----
+// slim 快照本身约 10–30MB（236 provider × 全量 model 的价格条目）。个人部署可能
+// 几天才打开一次 Models/Price 面板，一直常驻不值得：闲置超过阈值就释放，下次访问
+// 重新读盘解析（~100ms）。Docker 口径实测：混合负载稳态 90MB → 74MB。
+const RELEASE_IDLE_MS = (() => {
+  const n = Number(process.env.MODELS_DEV_CACHE_IDLE_MS);
+  return Number.isFinite(n) && n >= 0 ? n : 10 * 60 * 1000;
+})();
+
+/** 返回是否真的释放了；in-flight 刷新期间不释放（避免刷新完成后又被覆盖回来） */
+export function releaseIdleSnapshotCache(
+  idleMs: number = RELEASE_IDLE_MS
+): boolean {
+  if (!parsedCache || inflightRefresh) return false;
+  if (Date.now() - parsedCacheLastUsedAt < idleMs) return false;
+  parsedCache = null;
+  return true;
+}
+
+// 懒启动：只有真正用到快照的进程才会有定时器（定时器 unref，不阻止进程退出）
+function ensureIdleReleaseTimer(): void {
+  if (RELEASE_IDLE_MS <= 0) return;
+  const g = globalThis as typeof globalThis & {
+    __modelsDevIdleReleaseTimer?: NodeJS.Timeout;
+  };
+  if (g.__modelsDevIdleReleaseTimer) return;
+  const timer = setInterval(() => {
+    releaseIdleSnapshotCache();
+  }, 60_000);
+  if (typeof timer.unref === "function") timer.unref();
+  g.__modelsDevIdleReleaseTimer = timer;
 }
