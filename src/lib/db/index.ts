@@ -18,6 +18,9 @@ let modelPricesTable: any;
 let ingestTokensTable: any;
 let syncInstancesTable: any;
 let initialized = false;
+// in-flight 初始化：并发调用 initDatabase()（多路由同时冷启动）只开一个连接、只跑一遍
+// DDL/迁移。失败置空，允许下次重试；成功则靠 initialized 短路。
+let initPromise: Promise<void> | undefined;
 
 // 未配置时的默认库路径（与 .env.example / docs / scripts/migrate-pg-to-sqlite.ts 一致）：
 // 本地开发零配置能起，Docker 由 compose / entrypoint 显式传入
@@ -30,8 +33,17 @@ const CLIENT_REGISTRY = Symbol.for("token-tracker.sqlite-clients");
 
 export async function initDatabase() {
   if (initialized) return;
-  await ensureClient();
-  initialized = true;
+  if (!initPromise) {
+    initPromise = ensureClient()
+      .then(() => {
+        initialized = true;
+      })
+      .catch((err) => {
+        initPromise = undefined;
+        throw err;
+      });
+  }
+  await initPromise;
 }
 
 // 关闭所有已打开的 SQLite 句柄并重置本实例状态。仅供测试 afterAll 使用：
@@ -49,6 +61,7 @@ export function closeDb() {
   registry.length = 0;
   db = undefined;
   rawClient = undefined;
+  initPromise = undefined;
   initialized = false;
 }
 
@@ -64,6 +77,17 @@ export function getRawClient(): any {
 
 async function ensureClient() {
   if (db) return;
+
+  // 上次初始化中途失败会留下「已登记、未提交状态」的句柄：先关掉，避免每次重试累积 fd
+  // （registry 里的条目继续保留，closeDb 对已关闭句柄是 no-op）。
+  if (rawClient) {
+    try {
+      rawClient.close();
+    } catch {
+      // 已关闭或连接失效，忽略
+    }
+    rawClient = undefined;
+  }
 
   const { default: Database } = await import("better-sqlite3");
   const { mkdirSync } = await import("fs");
@@ -88,19 +112,6 @@ async function ensureClient() {
   wrapDatabaseClient(client);
 
   const { drizzle } = await import("drizzle-orm/better-sqlite3");
-  db = drizzle(client, { schema: sqliteModule });
-  tokenRecords = sqliteModule.tokenRecords;
-  upstreamsTable = sqliteModule.upstreams;
-  upstreamKeysTable = sqliteModule.upstreamKeys;
-  virtualKeysTable = sqliteModule.virtualKeys;
-  settingsTable = sqliteModule.settings;
-  adminAuditLogsTable = sqliteModule.adminAuditLogs;
-  upstreamModelHealthTable = sqliteModule.upstreamModelHealth;
-  namedRoutesTable = sqliteModule.namedRoutes;
-  namedRouteTargetsTable = sqliteModule.namedRouteTargets;
-  modelPricesTable = sqliteModule.modelPrices;
-  ingestTokensTable = sqliteModule.ingestTokens;
-  syncInstancesTable = sqliteModule.syncInstances;
 
   client.exec(`
     CREATE TABLE IF NOT EXISTS token_records (
@@ -297,6 +308,21 @@ async function ensureClient() {
     CREATE INDEX IF NOT EXISTS idx_token_records_remote_instance_uid_created_at ON token_records(remote_instance_uid, created_at);
   `);
 
+  // 模块状态最后一次性提交：DDL/迁移任一步抛错时 db 保持 undefined，下次 initDatabase
+  // 才能重试；否则 `if (db) return` 会短路，带着残缺 schema 报初始化成功。
+  db = drizzle(client, { schema: sqliteModule });
+  tokenRecords = sqliteModule.tokenRecords;
+  upstreamsTable = sqliteModule.upstreams;
+  upstreamKeysTable = sqliteModule.upstreamKeys;
+  virtualKeysTable = sqliteModule.virtualKeys;
+  settingsTable = sqliteModule.settings;
+  adminAuditLogsTable = sqliteModule.adminAuditLogs;
+  upstreamModelHealthTable = sqliteModule.upstreamModelHealth;
+  namedRoutesTable = sqliteModule.namedRoutes;
+  namedRouteTargetsTable = sqliteModule.namedRouteTargets;
+  modelPricesTable = sqliteModule.modelPrices;
+  ingestTokensTable = sqliteModule.ingestTokens;
+  syncInstancesTable = sqliteModule.syncInstances;
   console.log("[DB] SQLite initialized at:", dbPath);
 }
 
