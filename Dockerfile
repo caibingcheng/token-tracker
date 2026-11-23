@@ -7,6 +7,11 @@ WORKDIR /app
 # 注意：它也会跳过所有第三方 postinstall —— 将来新增依赖若靠 postinstall 下载二进制，需在此显式放开。
 COPY package.json package-lock.json* ./
 RUN npm ci --ignore-scripts
+# optionalDependencies（@next/swc-<platform>-gnu）下载失败时 npm 静默跳过且仍 exit 0，
+# 要等到 `next build` 才炸出一句 "Turbopack is not supported on this platform"——看着像平台问题。
+# 这里提前失败并给出可操作提示。用 *-gnu 通配保留未来 arm64 构建，musl-only 不通过属正常。
+RUN ls node_modules/@next/swc-linux-*-gnu/*.node > /dev/null 2>&1 \
+  || (echo "ERROR: @next/swc native binding missing (optionalDependencies download failed) — rerun the build" >&2; exit 1)
 
 FROM node:22-slim AS builder
 WORKDIR /app
