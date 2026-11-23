@@ -1143,17 +1143,26 @@ export default function UpstreamsPanel() {
               </span>
             </label>
             {editingId && (keysByUpstream[editingId] ?? []).length > 0 && (
-              <div className="mb-2 flex flex-wrap gap-1.5">
+              <div className="mb-2 space-y-1">
                 {(keysByUpstream[editingId] ?? []).map((k) => {
                   const effectiveEnabled = pendingKeyEnabled[k.id] ?? k.enabled;
                   return (
-                  <span
+                  <div
                     key={k.id}
                     title={`${effectiveEnabled ? "Enabled" : "Disabled"}${pendingKeyEnabled[k.id] !== undefined ? " (pending save)" : ""}${k.lastStatus ? ` · last: ${k.lastStatus}` : ""}`}
-                    className="flex items-center gap-1.5 rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-600"
+                    className="flex max-w-full flex-wrap items-center gap-2 text-xs"
                   >
                     <span className={`h-1.5 w-1.5 rounded-full ${effectiveEnabled ? "bg-green-500" : "bg-gray-300"}`} />
-                    <code>{k.maskedKey}</code>
+                    <code className="max-w-[180px] truncate rounded bg-gray-100 px-1.5 py-0.5 text-[11px]">
+                      {k.maskedKey}
+                    </code>
+                    {!effectiveEnabled && <span className={statusChip.off}>disabled</span>}
+                    <span
+                      className="text-[11px] text-gray-400"
+                      title={`Added ${new Date(k.createdAt).toLocaleString()}`}
+                    >
+                      {new Date(k.createdAt).toLocaleDateString()}
+                    </span>
                     <button
                       type="button"
                       onClick={() => toggleKeyPending(k)}
@@ -1170,7 +1179,7 @@ export default function UpstreamsPanel() {
                     >
                       ×
                     </button>
-                  </span>
+                  </div>
                   );
                 })}
               </div>
