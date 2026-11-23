@@ -1,12 +1,24 @@
 node_modules
 .next
 .git
+# 凭据：.gitignore 已忽略 .npmrc（可能含 registry token），镜像里绝不需要
+.npmrc
+**/.npmrc
+.npm/
 .env*
+**/.env*
+# SQLite 库、主密钥、models.dev 缓存都在这里，绝不进镜像
 data/
 **/.gateway-secret
 # bench 只用于本机压测，绝不能进构建上下文：`src/lib/models-dev/snapshot.ts` 的动态 fs 路径让
 # Turbopack 无法静态收敛，会把整个项目目录写进 .nft.json trace 并复制进 .next/standalone，
 # 导致 `bench/docker-data/*.db`（136MB 测试库）跟着进镜像
 bench/
+# 构建不需要的内部文档与脚本；Turbopack 的 whole-project trace 会把它们原样
+# 复制进 .next/standalone，既增体积也把内部架构文档带进发布镜像
+docs/
+specs/
+scripts/
+# 仅 GitHub README 展示用，src/ 内零引用
+public/screenshots/
 *.md
-!.github

@@ -79,7 +79,7 @@ function createNextConfig(isDev) {
     // 及其 @img/libvips 平台二进制带进 standalone —— 实测占 37~46MB（还同时含 glibc
     // 与 musl 两套）。排除后 standalone 体积直接下降，运行时行为不变（无人 require sharp）。
     outputFileTracingExcludes: {
-    // key 必须是 `**`：Next 内部用 picomatch(glob)('next-server') 判定是否把排除项加入
+      // key 必须是 `**`：Next 内部用 picomatch(glob)('next-server') 判定是否把排除项加入
       // 服务端主 trace（见 next/dist/build/collect-build-traces.js），`/*` 匹配不上 `next-server`，
       // 而 sharp 正是从 next-server 的 trace 里被带进来的。
       '**': ['./node_modules/@img/**/*', './node_modules/sharp/**/*'],

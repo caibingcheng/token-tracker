@@ -106,7 +106,7 @@ docker compose up -d
 
 1. `Verify tag ancestry`：只接受 `^vX.Y.Z$`（commit 必须落在 `origin/main` 历史内）与 `^vX.Y.Z-dev...$`（必须落在 `origin/dev` 历史内）；其它命名（如 `-rc.1`）直接失败，因此不会进 `latest`。
 2. `Build image`：`load: true` + `push: false`，镜像只进 runner 本地。
-3. `Smoke test image`：用固定测试密钥起容器，轮询 `http://127.0.0.1:3000/api/cli`（会真实建库并跑一次聚合查询），失败则 job 红且不推送任何标签。
+3. `Smoke test image`：用每次随机生成的临时测试密钥起容器（`openssl rand`，临时容器 + 空库、用完即弃，仓库里不留任何形似凭证的字面量），轮询 `http://127.0.0.1:3000/api/cli`（会真实建库并跑一次聚合查询），失败则 job 红且不推送任何标签。
 4. `Push image`：先推不可变标签（版本号、short-sha），最后推浮动标签。
 
 构建时 CI 传 `--build-arg APP_VERSION=${{ github.ref_name }}`（tag 构建即 `v1.3.0`），Dockerfile builder 阶段

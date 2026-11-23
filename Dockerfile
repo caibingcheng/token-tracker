@@ -11,7 +11,7 @@ RUN npm ci --ignore-scripts
 # 要等到 `next build` 才炸出一句 "Turbopack is not supported on this platform"——看着像平台问题。
 # 这里提前失败并给出可操作提示。用 *-gnu 通配保留未来 arm64 构建，musl-only 不通过属正常。
 RUN ls node_modules/@next/swc-linux-*-gnu/*.node > /dev/null 2>&1 \
-  || (echo "ERROR: @next/swc native binding missing (optionalDependencies download failed) — rerun the build" >&2; exit 1)
+  || (echo "ERROR: @next/swc native binding missing (optionalDependencies download failed) — rerun with: docker build --no-cache ." >&2; exit 1)
 
 FROM node:22-slim AS builder
 WORKDIR /app
@@ -25,12 +25,20 @@ COPY . .
 
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
-# better-sqlite3 的 prebuilds 带了 4 个平台共 9MB，实际只会加载 linux-x64（glibc）：
-# 在 COPY 之前删掉其余平台，standalone 层才真正变小（COPY 之后 rm 只会多一个 whiteout，
-# `docker images` 的 SIZE 不会减）。保留 linux-*.node 便于未来加 arm64。
-RUN rm -f .next/standalone/node_modules/better-sqlite3/prebuilds/darwin-x64.node \
-          .next/standalone/node_modules/better-sqlite3/prebuilds/win32-x64.node \
-          .next/standalone/node_modules/better-sqlite3/prebuilds/linuxmusl-x64.node
+# better-sqlite3 的 prebuilds trace 进来 4 个平台变体（x64 / x64-musl / darwin-x64 / win32-x64），
+# 实际只会加载 linux-x64.node。在 COPY 之前删掉其余，standalone 层才真正变小
+# （COPY 之后 rm 只会多一个 whiteout，`docker images` 的 SIZE 不会减）。
+# 不用 -f：布局变更时应当构建失败，而不是静默回退成不省体积。
+RUN cd .next/standalone/node_modules/better-sqlite3/prebuilds \
+  && rm darwin-x64.node win32-x64.node linuxmusl-x64.node
+# whole-project trace 还会把源码/文档/构建配置拷进 standalone（见 .dockerignore 注释）。
+# 运行时只需要 server.js + .next + node_modules + public + package.json。
+RUN cd .next/standalone \
+  && rm -rf src docs specs scripts bench data \
+  && rm -f  Dockerfile docker-compose.example.yml docker-compose.local.yml \
+            docker-compose.yml tsconfig.tsbuildinfo mise.toml drizzle.config.ts \
+            eslint.config.mjs postcss.config.js tailwind.config.ts vercel.json \
+            vitest.config.mts AGENTS.md README.md README.en.md docker-entrypoint.sh
 
 FROM node:22-slim AS runner
 WORKDIR /app
