@@ -24,6 +24,9 @@
     "paths": {
       "@/*": [
         "./src/*"
+      ],
+      "next/server": [
+        "./src/server/next-shim.ts"
       ]
     },
     "target": "ES2017"

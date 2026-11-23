@@ -20,7 +20,7 @@ _bench_rand_hex() {
 # 凭据落盘：独占创建（wx）+ 0600。
 # 不用 `>"$f"` + `chmod 600`：那样文件先以 umask 默认（通常 0644）出现，存在世界可读窗口；
 # 两个并发 bench 进程也会各自生成不同密钥互相覆盖（seed 写库与容器解密错位 → virtual_keys 解不开）。
-# 与 next.config.js 的 ensureDevGatewaySecret 同口径。EEXIST 表示对手已创建，直接复用它的值。
+# 与 scripts/dev-secret.cjs 的 ensureDevGatewaySecret 同口径。EEXIST 表示对手已创建，直接复用它的值。
 _bench_write_once() {
   node -e '
     const fs = require("node:fs");

@@ -15,8 +15,9 @@ drizzle
 .npm/
 .netrc
 .yarnrc.yml
-# 机密文件名类（与 .gitignore 的 Secrets/credentials 段对齐）：whole-project trace 会把
-# 根级非隐藏文件原样拷进 .next/standalone，漏一个模式就是一条直通发布镜像的路径
+# 机密文件名类（与 .gitignore 的 Secrets/credentials 段对齐）：绝不进构建上下文——
+# `COPY . .` 会进 builder 层，且 docker.yml 的 `cache-to: type=gha` 会把 builder 层推到远端缓存，
+# 漏一个模式就是一条外泄路径（standalone trace 已废弃，但排除项因层缓存依旧必要）
 *.pem
 *.key
 *.keystore
@@ -39,15 +40,14 @@ secret.*
 # SQLite 库、主密钥、models.dev 缓存都在这里，绝不进镜像
 data/
 **/.gateway-secret
-# bench 只用于本机压测，绝不能进构建上下文：`src/lib/models-dev/snapshot.ts` 的动态 fs 路径让
-# Turbopack 无法静态收敛，会把整个项目目录写进 .nft.json trace 并复制进 .next/standalone，
-# 导致 `bench/docker-data/*.db`（136MB 测试库）跟着进镜像
+# 构建不需要的内部文档与脚本以外的素材（bench 仅本机压测）
 bench/
-# 构建不需要的内部文档与脚本；Turbopack 的 whole-project trace 会把它们原样
-# 复制进 .next/standalone，既增体积也把内部架构文档带进发布镜像
+# 内部文档；不进构建上下文（scripts/ 必须在上下文里：npm run build 依赖 gen-routes/build-server）
 docs/
 specs/
-scripts/
+# 构建产物，防旧产物混进上下文（out/ build/ 由 builder 现场生成）
+out/
+build/
 # 仅 GitHub README 展示用，src/ 内零引用
 public/screenshots/
 *.md

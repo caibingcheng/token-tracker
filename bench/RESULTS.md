@@ -318,3 +318,89 @@ cp <repo>/bench/run-spike-comparison.sh bench/ && bash bench/run-spike-compariso
 4. spike 的 dispatcher 只挂了 45 条静态路径路由 + 3 个 catch-all 代理入口，
    **20 条动态段路由（`[id]` 等）没有挂载**（bench 与 e2e 都不打它们），
    `params` 恒为空对象。真正迁移时必须补参数抽取。
+
+## 11. 正式迁移落地实测（Hono 替换 Next 服务端，2026-11-23）
+
+> §10 的 spike 已转正：65 个 route 移到 `src/routes/`、`next/server` 由 shim 别名兜住、
+> 路由注册 codegen（`scripts/gen-routes.mjs`）、前端 `output:'export'`、生产单 bundle
+> `build/server.js` + `out/` + 单架构 better-sqlite3 三件套进镜像。
+> 回归：vitest 1469/1469、tsc 0、eslint 0、`bench/e2e.sh` **35/35**（新增 2 条动态段
+> `[id]` 正向断言，补掉 §10.5 第 4 条的盲区）、`npm run build` 0、容器冒烟全过、
+> dev 双进程（next dev :3000 + Hono :3001 同源 rewrite）链路验证通过。
+
+### 11.1 环境差异（先读，否则数字读错）
+
+- **换机**：本轮 docker-stats 显示 31.02GiB —— §10 的测试机是 8GB WSL2。
+  **吞吐/p95 不与 §10 跨轮比较**，只记录不作结论；内存口径（flags + heap 上限主导）
+  可比性较高，但仍受 §6 单轮噪声约束。
+- `docker-bench.sh` 修了一个潜伏 bug：`--network host` 下没把 `PORT` 传进容器
+  （镜像默认 3000），`PORT=` 覆盖从未生效过，宿主机 :3000 空闲时才碰巧能跑。
+  本机 :3000 被 nghttpx 占用，补 `-e PORT="$PORT"` 后以 `PORT=30110` 运行。
+
+### 11.2 混合场景（SCENARIO=all：8 并发网关 + 4 rps 管理 API，300s 压测）
+
+镜像 `tt:hono`， LABEL `hono`，原始采样 `bench/out/hono/`，单轮：
+
+| 指标 | tt:next2（§10.2） | tt:spike2（§10.2） | **tt:hono（本轮）** |
+|---|---|---|---|
+| idle（压测前，docker stats） | 55.1 | 25.6 | **32.0** |
+| 压测回落稳态（docker stats） | 102.1 | 72.7 | **45.6** |
+| anon 回落稳态 | 83.1 | 62.1 | **43.1** |
+| 压测稳态（docker stats） | —（§10 未列） | — | **69.6** |
+| 峰值（docker stats） | 159.9 | 131.2 | **98.1** |
+| anon 峰值 | — | — | **94.9** |
+| 吞吐 / p95 / 失败 | 34.6 rps / 1698ms | 38.0 rps / 1654ms | **98.8 rps / 231.8ms / 0 fail**（换机，仅记录） |
+
+吞吐注脚：29661 请求全部成功（fail=0，p50 44.7ms / p99 1188.7ms）。§10.2 的 rps 是
+8GB WSL2 上的数字，两者不可比。
+
+### 11.3 判定
+
+| §5.1 遗留目标 | 本轮 |
+|---|---|
+| **含面板常驻 < 80MB**（上一轮 ❌ 90.3） | ✅ **45.6**（anon 43.1），余量 45%+ |
+| 峰值不再冲 300MB | ✅ 98.1 |
+| idle 水位 | ✅ 32.0（§10.2 spike 为 25.6，换机差异内） |
+
+§10.3 的归因在正式版成立：Next 的 ~21MB 常数项已消掉，且本轮回落稳态比 spike 还低
+~27MB（换机 + 正式版路由/静态托管差异，单轮不归因）。**纯网关 / 低 QPS 两场景本轮未重测**
+（守卫只放行了默认混合场景的单次授权；纯网关迁移前已达标 67.1，且负载是混合的子集）。
+
+### 11.4 复现
+
+```bash
+docker build -t tt:hono .
+IMAGE=tt:hono LABEL=hono PORT=30110 bash bench/docker-bench.sh   # :3000 被占的机器必须带 PORT
+node bench/recalc-stats-usage.mjs hono
+```
+
+### 11.5 同机 A/B：tt:next-base vs tt:hono（回答「CPU 变化」）
+
+§11.2 的跨机限制用基线镜像消除：`tt:next-base` = `git archive HEAD`（迁移前代码），
+同一台 31GiB 机器、同一 seed/库、同 flags、同 `PORT=30110`，两轮各一次（单轮）：
+
+| 指标 | tt:next-base | tt:hono | 变化 |
+|---|---|---|---|
+| **压测期 CPU avg**（cgroup cpuPct） | **105.4%**（max 136） | **91.9%**（max 119） | **−13.5pp / −13%** |
+| 单请求 CPU（load avg ÷ rps） | 1.22 %core·s | 0.93 %core·s | **−23.5%** |
+| idle CPU（前/后） | 0.2% / 0.9% | 0.1% / 1.6% | 均≈0，噪声内 |
+| 吞吐 rps | 86.7 | **98.8** | **+14%** |
+| p50 / p95 / p99（ms） | 49.2 / 282.8 / 2173 | 44.7 / 231.8 / **1189** | −9% / −18% / −45% |
+| 失败 | 0 / 26013 | 0 / 29661 | 均 fail=0 |
+| idle（docker stats） | 46.6 | **32.0** | −31% |
+| 压测回落稳态 | 71.4 | **45.6** | **−36%** |
+| 回落 anon | 67.0 | **43.1** | −36% |
+| 峰值 | 118.7 | 98.1 | −17% |
+
+结论（同机、单轮口径）：**CPU 全面下降**——同负载压测期 −13.5pp，按单请求归一 −23.5%；
+同时吞吐 +14%、p99 尾延近腰斩。方向与 §10.3 的归因一致：省掉 Next 运行时的框架开销
+（模块图/路由表/proxy 层）不只是省内存，也省每请求的 CPU。
+idle CPU 两侧都≈0，无劣化。单轮 + 闭环负载（吞吐越高、压测期 CPU 基数越大）是本节的主要方法学限制。
+
+复现（基线镜像）：
+
+```bash
+git archive HEAD | tar -x -C /tmp/tt-next-base && docker build -t tt:next-base /tmp/tt-next-base
+IMAGE=tt:next-base LABEL=next-base PORT=30110 bash bench/docker-bench.sh
+node bench/recalc-stats-usage.mjs next-base hono
+```

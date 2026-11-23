@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # 端到端功能验证：三协议透传（流式/非流式）、用量落库、模型并集、失败路径、管理 API。
 # 用法：bash bench/e2e.sh
-#       E2E_SERVER_CMD="node build/server-spike.js" bash bench/e2e.sh   # 换掉被测服务端（cwd=仓库根）
+# 默认被测服务端 = Hono bundle（npm run build 产出的 build/server.js，需要同目录下的 out/ 静态导出）；
+# E2E_SERVER_CMD="<cmd>" bash bench/e2e.sh 可换掉被测服务端（cwd=仓库根）
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$HERE")"
@@ -54,15 +55,14 @@ trap cleanup EXIT
 node "$HERE/mock-upstream.mjs" "$MOCK_PORT" >"$TMP/mock.log" 2>&1 &
 MPID=$!
 if [[ -n "${E2E_SERVER_CMD:-}" ]]; then
-  # 可选：用别的服务端替掉 Next standalone（如 src/server-spike 的 build/server-spike.js），
+  # 可选：用别的服务端替掉默认的 Hono bundle，
   # 断言集不变，用来验证「换运行时后 SSE 透传/落库/错误路径仍然一致」
   ( cd "$ROOT" && PORT=$PORT HOSTNAME=127.0.0.1 exec $E2E_SERVER_CMD >"$TMP/server.log" 2>&1 ) &
   SPID=$!
 else
-  pushd "$ROOT/.next/standalone" >/dev/null
-  PORT=$PORT HOSTNAME=127.0.0.1 node server.js >"$TMP/server.log" 2>&1 &
+  # exec：让 SPID 直接指向 node 进程，cleanup 的 kill 才能真正收掉服务端（子 shell 会被绕过）
+  ( cd "$ROOT" && PORT=$PORT HOSTNAME=127.0.0.1 exec node build/server.js >"$TMP/server.log" 2>&1 ) &
   SPID=$!
-  popd >/dev/null
 fi
 
 for i in $(seq 1 90); do
@@ -163,6 +163,18 @@ for p in /api/dashboard /api/dashboard?range=30d /api/records /api/providers /ap
     bad "$p ($code)"
   fi
 done
+
+upid=$(curl -s -H "X-API-Key: $TOKEN" "$BASE/api/admin/upstreams" |
+  node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const j=JSON.parse(d);console.log(j.data?.[0]?.id ?? "")}catch{console.log("")}})')
+if [[ -n "$upid" ]]; then
+  code=$(curl -s -o "$TMP/dyn.json" -w '%{http_code}' -H "X-API-Key: $TOKEN" "$BASE/api/admin/upstreams/$upid")
+  # 正向断言：params.id 拿不到值时 Number(undefined)=NaN → 也是 404，必须 200 才能证明 :id 映射生效
+  check "dynamic [id] route 200" "$code" "200"
+  node -e 'const j=require(process.argv[1]); process.exit(j.success===true?0:1)' "$TMP/dyn.json" 2>/dev/null \
+    && ok "dynamic [id] payload" || bad "dynamic [id] payload"
+else
+  bad "dynamic [id] route (no upstream id from list)"
+fi
 
 echo "== 9. latency 聚合非空（Dashboard Speed 面板数据源）=="
 curl -s -H "X-API-Key: $TOKEN" "$BASE/api/dashboard?range=3d" >"$TMP/dash.json"

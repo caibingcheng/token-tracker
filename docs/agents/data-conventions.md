@@ -97,4 +97,4 @@
 - Dashboard 的所有日期/时间分组与显示均按**浏览器时区**对齐。
 - `Dashboard.tsx` 通过 `new Date().getTimezoneOffset()` 获取客户端偏移分钟数，并通过 `tzOffset` 查询参数传递给 `/api/dashboard`。
 - 服务端使用 `src/lib/timezone-utils.ts` 中的助手函数将 UTC 的 `created_at` 转换为本地日期/小时进行分组和过滤。
-- `/api/cli` 的 `today` 走同一套 `tzOffset` 语义（严格十进制整数，缺省 0 = UTC），日界分组与 `/api/dashboard` 的 `today` 完全一致（同一 `timezoneOffsetMinutes` + `2d` 窗口）；两者数值相等由 `src/app/api/cli/route.test.ts` 的对比用例锁定。
+- `/api/cli` 的 `today` 走同一套 `tzOffset` 语义（严格十进制整数，缺省 0 = UTC），日界分组与 `/api/dashboard` 的 `today` 完全一致（同一 `timezoneOffsetMinutes` + `2d` 窗口）；两者数值相等由 `src/routes/api/cli/route.test.ts` 的对比用例锁定。

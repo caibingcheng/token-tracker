@@ -4,7 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { NextRequest } from "next/server";
 import { GET as cliGET, resetCliSnapshot } from "./route";
-import { GET as dashboardGET } from "@/app/api/dashboard/route";
+import { GET as dashboardGET } from "@/routes/api/dashboard/route";
 import { closeDb, db, initDatabase, tokenRecords } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { localDateKeyFromUtcDate } from "@/lib/timezone-utils";

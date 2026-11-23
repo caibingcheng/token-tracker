@@ -11,13 +11,12 @@ export ALLOW_PRIVATE_UPSTREAMS=true
 export NODE_ENV=production
 PORT=3005
 
-pushd "$ROOT/.next/standalone" >/dev/null
-PORT=$PORT HOSTNAME=127.0.0.1 \
+# cwd=仓库根：build/server.js 的静态根 out/ 与 better-sqlite3 都相对 cwd 解析；exec 让 SPID 直接指向 node
+( cd "$ROOT" && PORT=$PORT HOSTNAME=127.0.0.1 \
   NODE_OPTIONS="--require $HERE/probe.cjs --max-old-space-size=256 --expose-gc --max-semi-space-size=8" \
   PROBE_OUT="$HERE/out/probe-endpoints.jsonl" \
-  node server.js >"$HERE/out/probe-endpoints-server.log" 2>&1 &
+  exec node build/server.js >"$HERE/out/probe-endpoints-server.log" 2>&1 ) &
 SPID=$!
-popd >/dev/null
 
 for i in $(seq 1 120); do
   code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/api/auth/session" || true)

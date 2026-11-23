@@ -24,4 +24,4 @@ fi
 
 chown node:node "$DATA_DIR" "$ENV_FILE"
 
-exec gosu node sh -c 'set -a; . "$0"; set +a; exec node server.js' "$ENV_FILE"
+exec gosu node sh -c 'set -a; . "$0"; set +a; exec node --optimize-for-size build/server.js' "$ENV_FILE"

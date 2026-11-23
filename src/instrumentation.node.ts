@@ -1,4 +1,5 @@
-// 仅在 Node.js 服务器运行时加载（由 ./instrumentation.ts 按 NEXT_RUNTIME 分派）。
+// 仅 Node.js 服务器运行时加载（由 src/server/index.ts 在启动时直接调用 registerNode()）。
+// 曾经的 NEXT_RUNTIME 分派层 src/instrumentation.ts 随 Next 服务端移除已删除。
 //
 // 周期性内存归还：实测 V8 的 major GC 触发阈值随堆上限缩放，生产容器运行数天后 RSS 从
 // ~42MB 基线涨到 ~100MB+ 且空闲后不回落。这里定期检查 RSS，偏高时触发 full GC

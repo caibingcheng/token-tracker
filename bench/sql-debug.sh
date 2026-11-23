@@ -11,10 +11,9 @@ export NODE_ENV=production
 export API_CACHE_DEBUG=true
 PORT=3007
 
-pushd "$ROOT/.next/standalone" >/dev/null
-PORT=$PORT HOSTNAME=127.0.0.1 node server.js >"$HERE/out/sqldebug-server.log" 2>&1 &
+# cwd=仓库根（build/server.js 的 out/ 与 node_modules 相对 cwd），exec 让 SPID 指向 node
+( cd "$ROOT" && PORT=$PORT HOSTNAME=127.0.0.1 exec node build/server.js >"$HERE/out/sqldebug-server.log" 2>&1 ) &
 SPID=$!
-popd >/dev/null
 
 for i in $(seq 1 60); do
   code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/api/auth/session" || true)

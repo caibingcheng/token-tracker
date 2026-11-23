@@ -3,6 +3,9 @@ node_modules/
 
 # Next.js
 .next/
+# 本仓两个构建产物：静态导出（next build output:'export'）与 esbuild 服务端 bundle
+out/
+build/
 # Next 自动生成，内容属实现细节（next dev 写 .next/dev/types，next build 写 .next/types）
 next-env.d.ts
 

@@ -66,6 +66,7 @@ if [[ -n "${EXTRA_ENV:-}" ]]; then read -r -a EXTRA_ARGS <<<"$EXTRA_ENV"; fi
 docker run -d --name "$NAME" \
   --network host \
   -v "$DATA:/app/data" \
+  -e PORT="$PORT" \
   -e SQLITE_DATABASE_PATH=/app/data/token-tracker.db \
   -e ALLOW_PRIVATE_UPSTREAMS=true \
   -e GATEWAY_SECRET="$GATEWAY_SECRET" \

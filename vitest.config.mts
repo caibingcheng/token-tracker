@@ -6,6 +6,8 @@ export default defineConfig({
     alias: {
       // import.meta.dirname（Node >= 20.11）：避免 Vite configLoader 的 __dirname 兼容警告
       "@": path.resolve(import.meta.dirname, "src"),
+      // 与 tsconfig paths 同步：route 单测构造 NextRequest 走 shim（见 src/server/next-shim.ts 头注释）
+      "next/server": path.resolve(import.meta.dirname, "src/server/next-shim.ts"),
     },
   },
   test: {

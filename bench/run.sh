@@ -55,7 +55,7 @@ fi
 
 if [[ ! " $* " =~ " --skip-build " ]]; then
   echo "==> build"
-  (cd "$ROOT" && npx next build >"$OUT/build.log" 2>&1) || {
+  (cd "$ROOT" && npm run build >"$OUT/build.log" 2>&1) || {
     echo "build failed, see $OUT/build.log"
     tail -30 "$OUT/build.log"
     exit 1
@@ -73,21 +73,18 @@ echo "==> mock upstream on $MOCK_PORT"
 node "$HERE/mock-upstream.mjs" "$MOCK_PORT" >"$OUT/mock.log" 2>&1 &
 MOCK_PID=$!
 
-# 与生产同构：跑 Next standalone server.js（Dockerfile 的启动方式），
-# 而不是 `next start`（后者额外加载 Next CLI，基线 RSS 高 ~30MB）
-STANDALONE="$ROOT/.next/standalone"
-if [[ ! -f "$STANDALONE/server.js" ]]; then
-  echo "missing $STANDALONE/server.js — run next build with output:'standalone'"
+# 与生产同构：跑 esbuild bundle build/server.js（Dockerfile 的 CMD），
+# 而不是 `next start`（已无 Next 服务端；bundle 不加载任何 Next CLI，基线 RSS 可比）
+SERVER="$ROOT/build/server.js"
+if [[ ! -f "$SERVER" ]]; then
+  echo "missing $SERVER — run npm run build（gen-routes + next build + esbuild）"
   exit 1
 fi
-mkdir -p "$STANDALONE/.next" "$STANDALONE/public"
-cp -r "$ROOT/.next/static" "$STANDALONE/.next/" 2>/dev/null || true
-cp -r "$ROOT/public/." "$STANDALONE/public/" 2>/dev/null || true
 
 PROBE_OUT="$OUT/probe.jsonl" \
 NODE_OPTIONS="--require $HERE/probe.cjs $NODE_FLAGS" \
 PORT="$PORT" HOSTNAME=127.0.0.1 \
-  bash -c "cd '$STANDALONE' && exec env LD_PRELOAD='$JEMALLOC' node ${NODE_ARGS:-} server.js" >"$OUT/server.log" 2>&1 &
+  bash -c "cd '$ROOT' && exec env LD_PRELOAD='$JEMALLOC' node ${NODE_ARGS:-} build/server.js" >"$OUT/server.log" 2>&1 &
 SERVER_PID=$!
 
 echo "==> waiting for server (pid $SERVER_PID)"
