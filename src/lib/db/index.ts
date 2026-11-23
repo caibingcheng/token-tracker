@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { wrapDatabaseClient } from "./cache";
+import { wrapDatabaseClient, invalidateQueryCache } from "./cache";
 import { offsetMinutesToSqlModifiers } from "@/lib/timezone-utils";
 import { migrateColumns, migrateTokenRecordsModelColumns, migrateNamedRoutesTables, migrateNamedRouteTargetsNullableUpstream, migrateSyncInstancesTable, migrateIngestTokensTable } from "./migrate";
 
@@ -70,6 +70,9 @@ export function closeDb() {
   initPromise = undefined;
   epoch += 1;
   initialized = false;
+  // closeDb 后同一库文件可能已变（测试重建临时库）：不清空的话 10s TTL 内同 SQL
+  // 会命中上一轮的缓存条目
+  invalidateQueryCache();
 }
 
 // 底层 better-sqlite3 句柄：大结果集需要 stmt.iterate() 游标逐行消费，
@@ -327,7 +330,17 @@ async function ensureClient() {
   // 结构，若这些读被缓存，迁移中途失败后 10s 内重试会读到「迁移前」快照并重复
   // ALTER TABLE（duplicate column name），重试路径在最需要它时反而必定失败。
   if (epoch !== myEpoch) {
-    // closeDb 在初始化期间被调用：不提交状态（句柄已由 closeDb 关闭）
+    // closeDb 在初始化期间被调用：不提交状态。若 closeDb 早于 new Database，句柄此时
+    // 仍打开且已登记，需要自己摘牌关掉；rawClient 也可能已被迟到的本轮覆盖，一并复位。
+    const registry: any[] = (globalThis as any)[CLIENT_REGISTRY] ?? [];
+    const idx = registry.lastIndexOf(client);
+    if (idx >= 0) registry.splice(idx, 1);
+    try {
+      client.close();
+    } catch {
+      // 已由 closeDb 关闭
+    }
+    if (rawClient === client) rawClient = undefined;
     throw new Error("database closed during initialization");
   }
   wrapDatabaseClient(client);
