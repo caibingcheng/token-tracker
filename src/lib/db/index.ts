@@ -74,6 +74,10 @@ async function ensureClient() {
 
   mkdirSync(dirname(dbPath), { recursive: true });
   const client = new Database(dbPath);
+  // 先登记再配置：pragma 若抛错，句柄已在 CLIENT_REGISTRY 里，closeDb() 才能关掉；
+  // 否则 fd 悬挂到进程退出，下次 ensureClient 会再开一个。
+  rawClient = client;
+  ((globalThis as any)[CLIENT_REGISTRY] ??= []).push(client);
   // 页缓存上限：better-sqlite3 编译期默认 SQLITE_DEFAULT_CACHE_SIZE=-16000（≈15.6MB），
   // 这块是 SQLite 自己 malloc 的 native 内存（anon，V8 的 GC 定时器收不回来）。
   // 实测（32MB / 30 万行库，dashboard 全表聚合 + 总量 + distinct 扫描）：cache_size
@@ -81,8 +85,6 @@ async function ensureClient() {
   // 本就不吃缓存复用，热页由 OS page cache 兜底，不在进程占用里）。
   // 代价：库页超出 2MB 时会更多走 read()，宿主内存紧张时那批页被回收后需重新读盘。
   client.pragma("cache_size = -2000");
-  rawClient = client;
-  ((globalThis as any)[CLIENT_REGISTRY] ??= []).push(client);
   wrapDatabaseClient(client);
 
   const { drizzle } = await import("drizzle-orm/better-sqlite3");
