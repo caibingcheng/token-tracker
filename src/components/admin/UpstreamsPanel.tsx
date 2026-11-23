@@ -13,6 +13,7 @@ import { PROBE_PRESETS } from "@/lib/gateway/probe-config";
 import type { ModelProbeConfig, ProbeConfig } from "@/lib/gateway/probe-config";
 import type { ClassifierModelEntry } from "@/lib/gateway/classifier/types";
 import { useBodyScrollLock } from "@/hooks/useBodyScrollLock";
+import { useModalDismiss } from "@/hooks/useModalDismiss";
 import ModalPortal from "@/components/ModalPortal";
 import { tapAction, pillAction, statusChip } from "./buttons";
 
@@ -208,6 +209,13 @@ export default function UpstreamsPanel() {
   const [pendingDelete, setPendingDelete] = useState<UpstreamItem | null>(null);
   // 选型 / 删除确认弹窗打开时锁背景滚动（两弹窗不会同时开）
   useBodyScrollLock(modelPicker !== null || pendingDelete !== null);
+  const dismissModelPicker = useModalDismiss(modelPicker !== null, () => {
+    setModelPicker(null);
+    setPickerQuery("");
+  });
+  const dismissPendingDelete = useModalDismiss(pendingDelete !== null, () =>
+    setPendingDelete(null)
+  );
   // 编辑表单中 key 启停的本地暂存（点击 Save 后才提交生效）
   const [pendingKeyEnabled, setPendingKeyEnabled] = useState<Record<number, boolean>>({});
 
@@ -1424,7 +1432,10 @@ export default function UpstreamsPanel() {
 
       {modelPicker && (
         <ModalPortal>
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+          {...dismissModelPicker}
+        >
           <div className="flex h-full w-full flex-col rounded-none bg-white shadow-xl md:h-auto md:max-h-[80vh] md:w-full md:max-w-2xl md:rounded-lg md:py-0">
             <div className="flex items-center justify-between border-b px-5 py-3">
               <h3 className="font-semibold">
@@ -1933,7 +1944,10 @@ export default function UpstreamsPanel() {
 
       {pendingDelete && (
         <ModalPortal>
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+          {...dismissPendingDelete}
+        >
           <div className="flex h-full w-full flex-col rounded-none bg-white shadow-xl md:h-auto md:max-w-md md:rounded-lg">
             <div className="flex items-center justify-between border-b px-5 py-3">
               <h3 className="font-semibold">Delete upstream</h3>

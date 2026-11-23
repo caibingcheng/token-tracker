@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/client/api-client";
 import { filterModelsByQuery } from "@/lib/model-search";
 import { useBodyScrollLock } from "@/hooks/useBodyScrollLock";
+import { useModalDismiss } from "@/hooks/useModalDismiss";
 import ModalPortal from "@/components/ModalPortal";
 import { pillAction } from "./buttons";
 import type { UpstreamItem } from "./UpstreamsPanel";
@@ -24,6 +25,7 @@ export default function UpstreamModelsManager({
 }) {
   const [open, setOpen] = useState(false);
   useBodyScrollLock(open);
+  const dismiss = useModalDismiss(open, () => setOpen(false));
   const [data, setData] = useState<ModelsData | null>(null);
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -201,7 +203,10 @@ export default function UpstreamModelsManager({
 
   return (
     <ModalPortal>
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      {...dismiss}
+    >
       <div className="flex h-full w-full flex-col rounded-none bg-white shadow-xl md:h-auto md:max-h-[80vh] md:w-full md:max-w-2xl md:rounded-lg">
         <div className="flex items-center justify-between border-b px-5 py-3">
           <h3 className="font-semibold">

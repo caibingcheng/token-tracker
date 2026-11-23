@@ -10,6 +10,7 @@ import ActionMenu from "./ActionMenu";
 import { copyText } from "@/lib/clipboard";
 import { pillAction, statusChip } from "./buttons";
 import { useBodyScrollLock } from "@/hooks/useBodyScrollLock";
+import { useModalDismiss } from "@/hooks/useModalDismiss";
 import ModalPortal from "@/components/ModalPortal";
 import { QuotaBar, MiniQuotaBar, type QuotaUsageData } from "./QuotaProgress";
 import {
@@ -174,6 +175,7 @@ export default function VirtualKeysPanel() {
   const [pendingDelete, setPendingDelete] = useState<VirtualKeyItem | null>(null);
   // 删除确认弹窗打开时锁背景滚动
   useBodyScrollLock(pendingDelete !== null);
+  const dismissDelete = useModalDismiss(pendingDelete !== null, () => setPendingDelete(null));
 
   const [editingId, setEditingId] = useState<number | null>(null);
   const [modelsData, setModelsData] = useState<ModelsData | null>(null);
@@ -867,7 +869,10 @@ export default function VirtualKeysPanel() {
 
       {pendingDelete && (
         <ModalPortal>
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+          {...dismissDelete}
+        >
           <div className="flex h-full w-full flex-col rounded-none bg-white shadow-xl md:h-auto md:max-w-md md:rounded-lg">
             <div className="flex items-center justify-between border-b px-5 py-3">
               <h3 className="font-semibold">Revoke &amp; delete key</h3>

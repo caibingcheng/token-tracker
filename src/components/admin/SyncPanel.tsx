@@ -6,6 +6,7 @@ import { CopyableCode } from "./CopyableCode";
 import { copyText } from "@/lib/clipboard";
 import { maskVirtualKey } from "@/lib/mask-utils";
 import { useBodyScrollLock } from "@/hooks/useBodyScrollLock";
+import { useModalDismiss } from "@/hooks/useModalDismiss";
 import ModalPortal from "@/components/ModalPortal";
 import {
   AdminMobileCard,
@@ -139,6 +140,10 @@ export default function SyncPanel() {
   const [pendingDeleteInstance, setPendingDeleteInstance] = useState<SyncInstanceItem | null>(null);
   // 删除确认弹窗打开时锁背景滚动
   useBodyScrollLock(pendingDeleteInstance !== null);
+  const dismissDeleteInstance = useModalDismiss(
+    pendingDeleteInstance !== null,
+    () => setPendingDeleteInstance(null)
+  );
   const [deleteInstanceRecords, setDeleteInstanceRecords] = useState(false);
 
   // ---- B 端配置 ----
@@ -1091,7 +1096,10 @@ export default function SyncPanel() {
 
       {pendingDeleteInstance && (
         <ModalPortal>
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+          {...dismissDeleteInstance}
+        >
           <div className="flex h-full w-full flex-col rounded-none bg-white shadow-xl md:h-auto md:max-w-md md:rounded-lg">
             <div className="flex items-center justify-between border-b px-5 py-3">
               <h3 className="font-semibold">Delete sync instance</h3>

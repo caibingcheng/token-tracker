@@ -16,6 +16,7 @@
 - 任何 UI 改动必须同时考虑移动端（<768px）：新表格必须做「桌面 table + `md:hidden` 卡片」双轨；
   新弹窗移动端全屏（`w-full h-full md:...`）；新导航/按钮触摸区 ≥40px；input 移动端字号 ≥16px
 - 移动端专属 UI 一律 `md:hidden` 门控，桌面端 DOM 只新增不修改
+- **弹层退出路径**：全屏弹窗 / 确认框除右上角 × / Cancel 外，还必须能用 **Esc** 与 **点击遮罩** 退出——用 `useModalDismiss(open, onClose)`（`src/hooks/useModalDismiss.ts`，Esc 监听 + 遮罩 `onMouseDown` 且仅当 `target === currentTarget` 时关闭，卡片内按下拖到遮罩松手不误关），返回值展开到固定全屏遮罩 div 上，`onClose` 与 × 保持一致（含额外状态复位）。唯一例外：Security 的 Recovery Codes 明文弹窗——一次性展示、误关即丢失，必须点「I saved them」确认（回退重生成需当前 TOTP）。Records 筛选抽屉的遮罩已单独实现同等行为；下拉菜单（`ActionMenu` / `ColumnPicker`）不涉及遮罩，用 `useDismissOnEscape(open, onClose)` 补齐 Esc（`MultiSelect` 保留自己的 capture + `stopPropagation` 实现：嵌套在移动端抽屉里时 Esc 只关面板、不连带关抽屉）
 - **弹层滚动隔离**：全屏弹窗 / 底部抽屉的内部滚动容器一律 `overflow-y-auto overscroll-contain`（否则滑到底后会链式滚动背后页面），并在弹窗打开时用 `useBodyScrollLock(open)`（`src/hooks/useBodyScrollLock.ts`，引用计数 + body 固定+负 top 保留滚动位置）锁 body；新弹窗两个都要加
 - **弹层必须走 portal**：`src/components/ModalPortal.tsx`（`createPortal` 到 `document.body`）。页面里任意 `transform / filter / contain / will-change` 祖先都会让 `position: fixed` 退化成相对该祖先定位——表现为遮罩和卡片整体下移、顶部露出未压暗的页面（Records 筛选抽屉、Upstreams 选型、PricePicker、Sync/VirtualKeys 删除确认、Recovery codes、Price Simulation 均已接入）。
 - **z-index 分层（移动端）**：页面内容 / sticky 筛选栏 ≤ `z-20` → 底栏 `MobileTabBar` `z-40` → 弹层（全屏弹窗 / 底部抽屉）`z-50`。底栏**不能**用 `z-50`：它与弹窗同级但 DOM 在后，会盖住全屏弹窗底部的 Cancel/Save（如 Upstreams 的 Fetch Models 选型弹窗）
