@@ -1,10 +1,39 @@
 node_modules
+**/node_modules
 .next
 .git
+.github
+.opencode
+.vscode
+.idea
+.DS_Store
+next-env.d.ts
+drizzle
 # 凭据：.gitignore 已忽略 .npmrc（可能含 registry token），镜像里绝不需要
 .npmrc
 **/.npmrc
 .npm/
+.netrc
+.yarnrc.yml
+# 机密文件名类（与 .gitignore 的 Secrets/credentials 段对齐）：whole-project trace 会把
+# 根级非隐藏文件原样拷进 .next/standalone，漏一个模式就是一条直通发布镜像的路径
+*.pem
+*.key
+*.keystore
+id_rsa
+id_rsa.*
+credentials
+credentials.*
+*credentials.json
+*credential.json
+secrets
+secrets.*
+secret.*
+*.secret
+# 自定义 SQLITE_DATABASE_PATH 时库可能落在仓库根
+*.db
+*.db-wal
+*.db-shm
 .env*
 **/.env*
 # SQLite 库、主密钥、models.dev 缓存都在这里，绝不进镜像

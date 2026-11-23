@@ -25,14 +25,16 @@ COPY . .
 
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
-# better-sqlite3 的 prebuilds trace 进来 4 个平台变体（x64 / x64-musl / darwin-x64 / win32-x64），
-# 实际只会加载 linux-x64.node。在 COPY 之前删掉其余，standalone 层才真正变小
-# （COPY 之后 rm 只会多一个 whiteout，`docker images` 的 SIZE 不会减）。
-# 不用 -f：布局变更时应当构建失败，而不是静默回退成不省体积。
+# better-sqlite3 的 prebuilds 共 8 个平台变体，trace 只带进与构建机同架构的 x64 四个。
+# 用通配删可以兼顾未来的 arm64 构建；末尾断言保证「删完只剩 1 个 linux-*.node」——
+# 布局变更时构建失败，而不是静默回退成不省体积。
 RUN cd .next/standalone/node_modules/better-sqlite3/prebuilds \
-  && rm darwin-x64.node win32-x64.node linuxmusl-x64.node
+  && rm -f darwin-*.node win32-*.node linuxmusl-*.node \
+  && [ "$(ls | wc -l)" -eq 1 ] && ls linux-*.node > /dev/null
 # whole-project trace 还会把源码/文档/构建配置拷进 standalone（见 .dockerignore 注释）。
-# 运行时只需要 server.js + .next + node_modules + public + package.json。
+# 主防线是 .dockerignore，这里只处理仍会进上下文的 `src` 与根级文件，属兜底。
+# 有意保留 next.config.js / tsconfig.json / package*.json：均无机密，体积可忽，
+# 避免 Next 运行时读配置时踩坑。
 RUN cd .next/standalone \
   && rm -rf src docs specs scripts bench data \
   && rm -f  Dockerfile docker-compose.example.yml docker-compose.local.yml \
