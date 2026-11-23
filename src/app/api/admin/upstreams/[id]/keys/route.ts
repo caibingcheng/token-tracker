@@ -3,12 +3,21 @@ import { eq } from "drizzle-orm";
 import { db, initDatabase, upstreamsTable, upstreamKeysTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";
-import { encryptSecret, GatewaySecretMissingError } from "@/lib/gateway/crypto";
+import { encryptSecret, decryptSecret, GatewaySecretMissingError } from "@/lib/gateway/crypto";
+import { computeKeyHint, formatMaskedKey } from "@/lib/gateway/key-hint";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 
-function maskKey(plain: string): string {
-  if (plain.length <= 10) return `${plain.slice(0, 2)}***`;
-  return `${plain.slice(0, 6)}***${plain.slice(-4)}`;
+// 掩码现算（不落库）：解密 → 脱敏提示位。
+// 缺 master key 属配置错误：上抛给 GET 统一 503（AGENTS 红线「GATEWAY_SECRET 缺失时
+// admin API 返回 503，不静默降级」）；单行密文损坏（换过 secret / 被篡改）只影响该行，
+// 回落 key #<id>，不阻塞列表也不回显失败原因。
+function maskStoredKey(row: any): string {
+  try {
+    return formatMaskedKey(computeKeyHint(decryptSecret(row.apiKeyEncrypted)), row.id);
+  } catch (err) {
+    if (err instanceof GatewaySecretMissingError) throw err;
+    return formatMaskedKey(null, row.id);
+  }
 }
 
 function gatewaySecretError() {
@@ -33,17 +42,22 @@ export const GET = withAuth(async (request: NextRequest, ctx: any) => {
       .from(upstreamKeysTable)
       .where(eq(upstreamKeysTable.upstreamId, upstreamId))
       .orderBy(upstreamKeysTable.id);
-    return NextResponse.json({
-      success: true,
-      data: rows.map((k: any) => ({
-        id: k.id,
-        upstreamId: k.upstreamId,
-        maskedKey: maskKey(k.apiKeyEncrypted),
-        enabled: k.enabled === 1,
-        lastStatus: k.lastStatus,
-        createdAt: k.createdAt,
-      })),
-    });
+    try {
+      return NextResponse.json({
+        success: true,
+        data: rows.map((k: any) => ({
+          id: k.id,
+          upstreamId: k.upstreamId,
+          maskedKey: maskStoredKey(k),
+          enabled: k.enabled === 1,
+          lastStatus: k.lastStatus,
+          createdAt: k.createdAt,
+        })),
+      });
+    } catch (err) {
+      if (err instanceof GatewaySecretMissingError) return gatewaySecretError();
+      throw err;
+    }
   });
 });
 
@@ -106,7 +120,7 @@ export const POST = withAuth(async (request: NextRequest, ctx: any) => {
         data: {
           id: result[0].id,
           upstreamId: result[0].upstreamId,
-          maskedKey: maskKey(encrypted),
+          maskedKey: formatMaskedKey(computeKeyHint(apiKey), result[0].id),
           enabled: result[0].enabled === 1,
           lastStatus: result[0].lastStatus,
           createdAt: result[0].createdAt,
