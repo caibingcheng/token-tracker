@@ -75,6 +75,15 @@ function createNextConfig(isDev) {
   /** @type {import('next').NextConfig} */
   return {
     output: 'standalone',
+    // 本应用不使用任何图片（无 next/image、无 <img>），但 output tracing 会把 sharp
+    // 及其 @img/libvips 平台二进制带进 standalone —— 实测占 37~46MB（还同时含 glibc
+    // 与 musl 两套）。排除后 standalone 体积直接下降，运行时行为不变（无人 require sharp）。
+    outputFileTracingExcludes: {
+    // key 必须是 `**`：Next 内部用 picomatch(glob)('next-server') 判定是否把排除项加入
+      // 服务端主 trace（见 next/dist/build/collect-build-traces.js），`/*` 匹配不上 `next-server`，
+      // 而 sharp 正是从 next-server 的 trace 里被带进来的。
+      '**': ['./node_modules/@img/**/*', './node_modules/sharp/**/*'],
+    },
     // 版本号在构建期内联进客户端 bundle：Docker 构建传 ARG APP_VERSION（CI 用 git tag），
     // 本地 npm run dev / 未传参构建回退 dev
     env: {

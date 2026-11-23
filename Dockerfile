@@ -24,6 +24,12 @@ COPY . .
 
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
+# better-sqlite3 的 prebuilds 带了 4 个平台共 9MB，实际只会加载 linux-x64（glibc）：
+# 在 COPY 之前删掉其余平台，standalone 层才真正变小（COPY 之后 rm 只会多一个 whiteout，
+# `docker images` 的 SIZE 不会减）。保留 linux-*.node 便于未来加 arm64。
+RUN rm -f .next/standalone/node_modules/better-sqlite3/prebuilds/darwin-x64.node \
+          .next/standalone/node_modules/better-sqlite3/prebuilds/win32-x64.node \
+          .next/standalone/node_modules/better-sqlite3/prebuilds/linuxmusl-x64.node
 
 FROM node:22-slim AS runner
 WORKDIR /app
