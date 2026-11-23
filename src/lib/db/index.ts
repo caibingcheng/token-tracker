@@ -21,6 +21,9 @@ let initialized = false;
 // in-flight 初始化：并发调用 initDatabase()（多路由同时冷启动）只开一个连接、只跑一遍
 // DDL/迁移。失败置空，允许下次重试；成功则靠 initialized 短路。
 let initPromise: Promise<void> | undefined;
+// closeDb 递增（仅测试路径）：正在飞的 ensureClient 在提交状态前校验它，
+// 避免 closeDb 之后又被一次迟到的初始化「复活」成 initialized=true + db 已关闭。
+let epoch = 0;
 
 // 未配置时的默认库路径（与 .env.example / docs / scripts/migrate-pg-to-sqlite.ts 一致）：
 // 本地开发零配置能起，Docker 由 compose / entrypoint 显式传入
@@ -34,14 +37,17 @@ const CLIENT_REGISTRY = Symbol.for("token-tracker.sqlite-clients");
 export async function initDatabase() {
   if (initialized) return;
   if (!initPromise) {
-    initPromise = ensureClient()
+    const p = ensureClient()
       .then(() => {
+        // closeDb 已复位并可能已起了新一轮 init：旧 promise 不得改状态
+        if (initPromise !== p) return;
         initialized = true;
       })
       .catch((err) => {
-        initPromise = undefined;
+        if (initPromise === p) initPromise = undefined;
         throw err;
       });
+    initPromise = p;
   }
   await initPromise;
 }
@@ -62,6 +68,7 @@ export function closeDb() {
   db = undefined;
   rawClient = undefined;
   initPromise = undefined;
+  epoch += 1;
   initialized = false;
 }
 
@@ -78,9 +85,12 @@ export function getRawClient(): any {
 async function ensureClient() {
   if (db) return;
 
-  // 上次初始化中途失败会留下「已登记、未提交状态」的句柄：先关掉，避免每次重试累积 fd
-  // （registry 里的条目继续保留，closeDb 对已关闭句柄是 no-op）。
+  // 上次初始化中途失败会留下「已登记、未提交状态」的句柄：摘牌并关掉，避免重试时
+  // 死条目在 globalThis registry 里无上界累积（生产不走 closeDb，没有其他回收路径）。
   if (rawClient) {
+    const registry: any[] = (globalThis as any)[CLIENT_REGISTRY] ?? [];
+    const idx = registry.lastIndexOf(rawClient);
+    if (idx >= 0) registry.splice(idx, 1);
     try {
       rawClient.close();
     } catch {
@@ -88,6 +98,9 @@ async function ensureClient() {
     }
     rawClient = undefined;
   }
+
+  // closeDb 递增 epoch：若初始化期间被打断，结尾不提交状态（见下方提交处）
+  const myEpoch = epoch;
 
   const { default: Database } = await import("better-sqlite3");
   const { mkdirSync } = await import("fs");
@@ -109,7 +122,6 @@ async function ensureClient() {
   // 本就不吃缓存复用，热页由 OS page cache 兜底，不在进程占用里）。
   // 代价：库页超出 2MB 时会更多走 read()，宿主内存紧张时那批页被回收后需重新读盘。
   client.pragma("cache_size = -2000");
-  wrapDatabaseClient(client);
 
   const { drizzle } = await import("drizzle-orm/better-sqlite3");
 
@@ -310,6 +322,15 @@ async function ensureClient() {
 
   // 模块状态最后一次性提交：DDL/迁移任一步抛错时 db 保持 undefined，下次 initDatabase
   // 才能重试；否则 `if (db) return` 会短路，带着残缺 schema 报初始化成功。
+  //
+  // 查询缓存也在这一步才启用：migrate* 用 `PRAGMA table_info` / `sqlite_master` 探测存量
+  // 结构，若这些读被缓存，迁移中途失败后 10s 内重试会读到「迁移前」快照并重复
+  // ALTER TABLE（duplicate column name），重试路径在最需要它时反而必定失败。
+  if (epoch !== myEpoch) {
+    // closeDb 在初始化期间被调用：不提交状态（句柄已由 closeDb 关闭）
+    throw new Error("database closed during initialization");
+  }
+  wrapDatabaseClient(client);
   db = drizzle(client, { schema: sqliteModule });
   tokenRecords = sqliteModule.tokenRecords;
   upstreamsTable = sqliteModule.upstreams;
