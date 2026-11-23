@@ -1,12 +1,12 @@
 FROM node:22-slim AS deps
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-  python3 make g++ \
-  && rm -rf /var/lib/apt/lists/*
-
+# better-sqlite3 13 通过 lib/<platform>.js 直接 require prebuilds/linux-x64.node 加载（不查 build/），
+# 但包内存在 binding.gyp 会让 npm 自动跑一次 node-gyp rebuild。--ignore-scripts 跳过这段编译，
+# 因此 deps / builder 都不再需要 python3/make/g++（原先每个 stage 各装一次 apt）。
+# 注意：它也会跳过所有第三方 postinstall —— 将来新增依赖若靠 postinstall 下载二进制，需在此显式放开。
 COPY package.json package-lock.json* ./
-RUN npm ci
+RUN npm ci --ignore-scripts
 
 FROM node:22-slim AS builder
 WORKDIR /app
@@ -14,10 +14,6 @@ WORKDIR /app
 # 版本号由 CI 传 tag（v1.3.0）；手动构建不传则为 dev。build 阶段内联进 bundle
 ARG APP_VERSION=dev
 ENV NEXT_PUBLIC_APP_VERSION=$APP_VERSION
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-  python3 make g++ \
-  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
