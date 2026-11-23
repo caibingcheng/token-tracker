@@ -74,6 +74,13 @@ async function ensureClient() {
 
   mkdirSync(dirname(dbPath), { recursive: true });
   const client = new Database(dbPath);
+  // 页缓存上限：better-sqlite3 编译期默认 SQLITE_DEFAULT_CACHE_SIZE=-16000（≈15.6MB），
+  // 这块是 SQLite 自己 malloc 的 native 内存（anon，V8 的 GC 定时器收不回来）。
+  // 实测（32MB / 30 万行库，dashboard 全表聚合 + 总量 + distinct 扫描）：cache_size
+  // -16000 → cgroup anon +29.8MB，-2000 → +9.1MB；耗时 216ms → 214ms（顺序全表扫描
+  // 本就不吃缓存复用，热页由 OS page cache 兜底，不在进程占用里）。
+  // 代价：库页超出 2MB 时会更多走 read()，宿主内存紧张时那批页被回收后需重新读盘。
+  client.pragma("cache_size = -2000");
   rawClient = client;
   ((globalThis as any)[CLIENT_REGISTRY] ??= []).push(client);
   wrapDatabaseClient(client);
