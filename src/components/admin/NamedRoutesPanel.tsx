@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/client/api-client";
 import type { Protocol } from "@/lib/gateway/model-router";
 import { CopyableCode } from "./CopyableCode";
+import { useConfirm } from "./ConfirmDialog";
 import {
   AdminMobileCard,
   AdminMobileCards,
@@ -90,6 +91,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
   const [firstPriority, setFirstPriority] = useState("0");
 
   const [busyId, setBusyId] = useState<number | null>(null);
+  const [confirm, confirmDialog] = useConfirm();
   // 同步 in-flight guard：busyId 是 state，同一渲染帧内连按 Enter 时闭包仍读到旧值，
   // 只靠 disabled 拦不住重复 PATCH
   const inFlight = useRef(new Set<number>());
@@ -274,7 +276,20 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
   };
 
   const deleteRoute = async (row: NamedRouteRow) => {
-    if (!window.confirm(`Delete named route "${row.name}" (${row.protocol}) and its targets?`)) return;
+    const ok = await confirm({
+      title: "Delete named route",
+      tone: "danger",
+      confirmLabel: "Delete",
+      message: (
+        <p>
+          Delete named route{" "}
+          <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">{row.name}</code> (
+          {row.protocol}) and all of its targets? Requests using this route name will fall back to
+          the auto-routed upstreams (or fail if none match).
+        </p>
+      ),
+    });
+    if (!ok) return;
     try {
       const res = await apiFetch(`/api/admin/named-routes/${row.id}`, { method: "DELETE" });
       const json = await res.json();
@@ -353,7 +368,22 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
   };
 
   const deleteTarget = async (row: NamedRouteRow, target: TargetRow) => {
-    if (!window.confirm(`Delete target ${target.upstreamName} → ${target.targetModel}?`)) return;
+    const ok = await confirm({
+      title: "Delete target",
+      tone: "danger",
+      confirmLabel: "Delete",
+      message: (
+        <p>
+          Delete target{" "}
+          <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">
+            {target.upstreamName} → {target.targetModel}
+          </code>{" "}
+          from route <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">{row.name}</code>? The
+          remaining targets keep serving it.
+        </p>
+      ),
+    });
+    if (!ok) return;
     try {
       const res = await apiFetch(`/api/admin/named-routes/${row.id}/targets/${target.id}`, {
         method: "DELETE",
@@ -975,6 +1005,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
           ))}
         </div>
       )}
+      {confirmDialog}
     </AdminTableCard>
   );
 }

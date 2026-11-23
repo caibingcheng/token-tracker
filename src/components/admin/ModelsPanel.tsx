@@ -12,6 +12,7 @@ import { CopyableCode } from "./CopyableCode";
 import PricePickerModal from "./PricePickerModal";
 import NamedRoutesPanel from "./NamedRoutesPanel";
 import { linkAction, pillAction } from "./buttons";
+import { useConfirm } from "./ConfirmDialog";
 import {
   AdminMobileCard,
   AdminMobileCards,
@@ -347,6 +348,7 @@ function RouteSimulationResult({ result, model }: { result: SimRouteResult; mode
 }
 
 export default function ModelsPanel() {
+  const [confirm, confirmDialog] = useConfirm();
   const [data, setData] = useState<ModelsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -502,7 +504,19 @@ export default function ModelsPanel() {
   };
 
   const refillAllPrices = async () => {
-    if (!window.confirm("Overwrite all auto-filled prices (skips manually edited rows), continue?")) return;
+    const ok = await confirm({
+      title: "Overwrite auto-filled prices",
+      tone: "warning",
+      confirmLabel: "Overwrite",
+      message: (
+        <p>
+          Overwrite every auto-filled price from the snapshot? Manually edited rows are skipped, but
+          all other rows lose their current auto values. Costs in Dashboard and Records are
+          recomputed from the new prices.
+        </p>
+      ),
+    });
+    if (!ok) return;
     setPricesBusy(true);
     setPricesError(null);
     try {
@@ -561,7 +575,19 @@ export default function ModelsPanel() {
 
   const adoptUpdate = async (row: PriceRow) => {
     if (!row.modelsDevId) return;
-    if (!window.confirm(`Adopt updated official price for "${row.model}"?`)) return;
+    const ok = await confirm({
+      title: "Adopt official price",
+      tone: "primary",
+      confirmLabel: "Adopt",
+      message: (
+        <p>
+          Replace the current price of{" "}
+          <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">{row.model}</code> with the
+          official models.dev value? Costs computed from the old price change accordingly.
+        </p>
+      ),
+    });
+    if (!ok) return;
     setPricesBusy(true);
     try {
       const res = await apiFetch("/api/admin/model-prices/select", {
@@ -583,7 +609,19 @@ export default function ModelsPanel() {
   };
 
   const deletePrice = async (row: PriceRow) => {
-    if (!window.confirm(`Delete price for "${row.model}"? Historical costs will drop to $0.`)) return;
+    const ok = await confirm({
+      title: "Delete price",
+      tone: "danger",
+      confirmLabel: "Delete",
+      message: (
+        <p>
+          Delete the price for{" "}
+          <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">{row.model}</code>? Historical
+          costs for this model drop to <strong>$0</strong> until a price is set again.
+        </p>
+      ),
+    });
+    if (!ok) return;
     try {
       const res = await apiFetch(`/api/admin/model-prices?model=${encodeURIComponent(row.model)}`, {
         method: "DELETE",
@@ -1377,6 +1415,7 @@ export default function ModelsPanel() {
         model={pricePickerModel ?? ""}
         onSaved={loadPrices}
       />
+      {confirmDialog}
     </div>
   );
 }

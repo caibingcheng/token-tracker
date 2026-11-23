@@ -6,6 +6,7 @@ import { filterModelsByQuery } from "@/lib/model-search";
 import { useBodyScrollLock } from "@/hooks/useBodyScrollLock";
 import { useModalDismiss } from "@/hooks/useModalDismiss";
 import ModalPortal from "@/components/ModalPortal";
+import { useConfirm } from "./ConfirmDialog";
 import { pillAction } from "./buttons";
 import type { UpstreamItem } from "./UpstreamsPanel";
 
@@ -24,6 +25,7 @@ export default function UpstreamModelsManager({
   onUpdated: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [confirm, confirmDialog] = useConfirm();
   useBodyScrollLock(open);
   const dismiss = useModalDismiss(open, () => setOpen(false));
   const [data, setData] = useState<ModelsData | null>(null);
@@ -134,12 +136,41 @@ export default function UpstreamModelsManager({
   };
 
   const save = async () => {
+    // 通配模式（如 gpt-*）不参与「已下架」判定也无具体可勾选项，无条件原样保留
+    // （对齐表单 Fetch Models 弹窗的 patterns 保留逻辑，防误删配置）
+    const patterns = manual.filter((m) => m.endsWith("*"));
+    const enabled = Array.from(new Set([...patterns, ...Array.from(selected)]));
+    // 存成空列表 = 该上游静默失能（请求会因无匹配模型而失败），先确认。
+    // 本来就是 0 模型的上游保存空列表没有「清空现有配置」的后果，不弹。
+    if (enabled.length === 0 && upstream.enabledModels.length > 0) {
+      const ok = await confirm({
+        title: "Save with no models",
+        tone: "warning",
+        confirmLabel: "Save anyway",
+        message: (
+          <div className="space-y-2">
+            <p>
+              No model is selected for{" "}
+              <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">{upstream.name}</code>.
+            </p>
+            <ul className="list-disc space-y-1 pl-5 text-xs text-gray-600">
+              <li>
+                Its <strong>{upstream.enabledModels.length}</strong> current model config
+                {upstream.enabledModels.length === 1 ? "" : "s"} will be cleared — requests routed
+                to this upstream will fail until models are added back.
+              </li>
+              <li>
+                Keys and other settings are kept; wildcard patterns (e.g. <code>gpt-*</code>) are
+                preserved automatically.
+              </li>
+            </ul>
+          </div>
+        ),
+      });
+      if (!ok) return;
+    }
     setSaving(true);
     try {
-      // 通配模式（如 gpt-*）不参与「已下架」判定也无具体可勾选项，无条件原样保留
-      // （对齐表单 Fetch Models 弹窗的 patterns 保留逻辑，防误删配置）
-      const patterns = manual.filter((m) => m.endsWith("*"));
-      const enabled = Array.from(new Set([...patterns, ...Array.from(selected)]));
       const res = await apiFetch(`/api/admin/upstreams/${upstream.id}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
@@ -399,6 +430,7 @@ export default function UpstreamModelsManager({
         </div>
       </div>
     </div>
+    {confirmDialog}
     </ModalPortal>
   );
 }

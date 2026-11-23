@@ -8,6 +8,7 @@ import { maskVirtualKey } from "@/lib/mask-utils";
 import { useBodyScrollLock } from "@/hooks/useBodyScrollLock";
 import { useModalDismiss } from "@/hooks/useModalDismiss";
 import ModalPortal from "@/components/ModalPortal";
+import { useConfirm } from "./ConfirmDialog";
 import {
   AdminMobileCard,
   AdminMobileCards,
@@ -125,6 +126,7 @@ function ErrorBadge({ type }: { type: string }) {
 }
 
 export default function SyncPanel() {
+  const [confirm, confirmDialog] = useConfirm();
   // ---- ingest tokens（A 角色）----
   const [tokens, setTokens] = useState<IngestTokenItem[]>([]);
   const [tokenName, setTokenName] = useState("");
@@ -307,7 +309,20 @@ export default function SyncPanel() {
   };
 
   const unbindToken = async (token: IngestTokenItem) => {
-    if (!window.confirm(`Unbind ingest token "${token.name}"? The next push will bind to the new instance uid.`)) return;
+    const ok = await confirm({
+      title: "Unbind ingest token",
+      tone: "warning",
+      confirmLabel: "Unbind",
+      message: (
+        <p>
+          Unbind ingest token{" "}
+          <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">{token.name}</code>? The next push
+          from B binds to a new instance uid, and its existing local history is pushed as new
+          records.
+        </p>
+      ),
+    });
+    if (!ok) return;
     setTokensError(null);
     try {
       const res = await apiFetch(`/api/admin/ingest-tokens/${token.id}/unbind`, { method: "POST" });
@@ -322,7 +337,19 @@ export default function SyncPanel() {
   };
 
   const deleteToken = async (token: IngestTokenItem) => {
-    if (!window.confirm(`Delete ingest token "${token.name}"? B side will start failing pushes.`)) return;
+    const ok = await confirm({
+      title: "Delete ingest token",
+      tone: "danger",
+      confirmLabel: "Delete",
+      message: (
+        <p>
+          Delete ingest token{" "}
+          <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">{token.name}</code>? B side
+          starts failing pushes immediately — B must be re-configured with a new token.
+        </p>
+      ),
+    });
+    if (!ok) return;
     setTokensError(null);
     try {
       const res = await apiFetch(`/api/admin/ingest-tokens/${token.id}`, { method: "DELETE" });
@@ -375,38 +402,45 @@ export default function SyncPanel() {
 
   // ---- B 端配置 ----
   const saveConfig = async () => {
-    setConfigBusy(true);
     setConfigError(null);
     setConfigSuccess(null);
+    const body: Record<string, unknown> = {};
+    if (targetUrl.trim() !== "") body.targetUrl = targetUrl.trim();
+    if (tokenInput.trim() !== "") body.token = tokenInput.trim();
+    if (instanceName.trim() !== configuredInstance) body.instance = instanceName.trim();
+    if (Object.keys(body).length === 0) {
+      setConfigError("Nothing to save");
+      return;
+    }
+    // 新建同步配置（尚无已存 token）时 token 必填：空 token 保存无意义（无法推送），就地报错
+    const hasStoredToken = !!status?.hasToken;
+    if (!hasStoredToken && tokenInput.trim() === "") {
+      setConfigError("Ingest token is required (it-…) before saving a new sync config");
+      return;
+    }
+    // 已存在同步配置（URL 或 token 已保存）时，任何一次 Save 都是对现有配置的替换，
+    // 保存前必须 double check，避免误覆盖。确认在 setConfigBusy 之前：
+    // 确认框弹出期间按钮不应显示 Saving…
+    const alreadyConfigured = targetUrl.trim() !== "" || !!status?.hasToken;
+    if (alreadyConfigured) {
+      const ok = await confirm({
+        title: "Replace sync config",
+        tone: "warning",
+        confirmLabel: "Replace and save",
+        message: (
+          <p>
+            An existing sync configuration is set. Saving will <strong>replace</strong> it (URL /
+            token / instance). Pushes and the A-side TOFU binding are affected.
+          </p>
+        ),
+      });
+      if (!ok) {
+        setConfigError("Not saved — existing sync config preserved");
+        return;
+      }
+    }
+    setConfigBusy(true);
     try {
-      const body: Record<string, unknown> = {};
-      if (targetUrl.trim() !== "") body.targetUrl = targetUrl.trim();
-      if (tokenInput.trim() !== "") body.token = tokenInput.trim();
-      if (instanceName.trim() !== configuredInstance) body.instance = instanceName.trim();
-      if (Object.keys(body).length === 0) {
-        setConfigError("Nothing to save");
-        return;
-      }
-      // 新建同步配置（尚无已存 token）时 token 必填：空 token 保存无意义（无法推送），就地报错
-      const hasStoredToken = !!status?.hasToken;
-      if (!hasStoredToken && tokenInput.trim() === "") {
-        setConfigError("Ingest token is required (it-…) before saving a new sync config");
-        return;
-      }
-      // 已存在同步配置（URL 或 token 已保存）时，任何一次 Save 都是对现有配置的替换，
-      // 保存前必须 double check，避免误覆盖
-      const alreadyConfigured = targetUrl.trim() !== "" || !!status?.hasToken;
-      if (alreadyConfigured) {
-        const ok = window.confirm(
-          "An existing sync configuration is set. Saving will REPLACE it " +
-            "(URL / token / instance). Pushes and the A-side TOFU binding are affected. Continue?"
-        );
-        if (!ok) {
-          setConfigBusy(false);
-          setConfigError("Not saved — existing sync config preserved");
-          return;
-        }
-      }
       const res = await apiFetch("/api/admin/sync/config", {
         method: "PUT",
         headers: { "content-type": "application/json" },
@@ -460,13 +494,29 @@ export default function SyncPanel() {
   // 删除推送配置：清凭证 + 推送状态（cursor/uid/epoch 保留），pushes 立即停止
   const deleteConfig = async () => {
     const pending = status?.pendingCount ?? 0;
-    const ok = window.confirm(
-      "Delete push config? Pushes will stop and the ingest token is removed. " +
-        (pending > 0 ? `${pending} record(s) not yet pushed will remain local-only. ` : "") +
-        "Your instance identity (uid) and push cursor are kept. If you later point to a DIFFERENT " +
-        "central instance, records before the cursor will not be pushed unless you first Reset sync state. " +
-        "Continue?"
-    );
+    const ok = await confirm({
+      title: "Delete push config",
+      tone: "danger",
+      confirmLabel: "Delete config",
+      message: (
+        <div className="space-y-2">
+          <p>Pushes will stop and the ingest token is removed.</p>
+          <ul className="list-disc space-y-1 pl-5 text-xs text-gray-600">
+            {pending > 0 && (
+              <li>
+                <strong>{pending}</strong> record(s) not yet pushed will remain local-only.
+              </li>
+            )}
+            <li>
+              Your instance identity (uid) and push cursor are kept — pointing to a DIFFERENT central
+              instance later needs Reset sync state first, otherwise records before the cursor are
+              never pushed.
+            </li>
+
+          </ul>
+        </div>
+      ),
+    });
     if (!ok) return;
     setConfigBusy(true);
     setConfigError(null);
@@ -514,7 +564,19 @@ export default function SyncPanel() {
       setStatusError("Enter a positive record id to skip up to");
       return;
     }
-    if (!window.confirm(`Skip and drop all pending records up to id ${upToRecordId}? This cannot be undone.`)) return;
+    const ok = await confirm({
+      title: "Skip pending records",
+      tone: "danger",
+      confirmLabel: "Skip and drop",
+      message: (
+        <p>
+          Drop all pending records up to id{" "}
+          <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">{upToRecordId}</code>? They are
+          marked as pushed and never reach A — this cannot be undone.
+        </p>
+      ),
+    });
+    if (!ok) return;
     setSkipping(true);
     setStatusError(null);
     try {
@@ -537,15 +599,25 @@ export default function SyncPanel() {
   };
 
   const resetSync = async () => {
-    if (
-      !window.confirm(
-        "Reset sync state (cursor → 0, new epoch, unlock uid)? " +
-          "The next push will replay ALL local history. Use only when A already deleted this " +
-          "instance's records (Sync Instances → Delete with the delete-records checkbox) or A was " +
-          "rebuilt — otherwise A-side data will be duplicated. This cannot be undone."
-      )
-    )
-      return;
+    const ok = await confirm({
+      title: "Reset sync state",
+      tone: "danger",
+      confirmLabel: "Reset state",
+      message: (
+        <div className="space-y-2">
+          <p>
+            Reset sync state (cursor → 0, new epoch, unlock uid)? The next push replays{" "}
+            <strong>all</strong> local history.
+          </p>
+          <p className="rounded bg-amber-50 p-2 text-xs text-amber-700">
+            Only do this when A already deleted this instance&apos;s records (Sync Instances → Delete
+            with the delete-records checkbox) or A was rebuilt — otherwise A-side data will be
+            duplicated. This cannot be undone.
+          </p>
+        </div>
+      ),
+    });
+    if (!ok) return;
     setResetting(true);
     setStatusError(null);
     try {
@@ -1157,6 +1229,7 @@ export default function SyncPanel() {
         </div>
         </ModalPortal>
       )}
+      {confirmDialog}
     </div>
   );
 }
