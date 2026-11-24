@@ -1761,6 +1761,70 @@ describe("handleProxyRequest - quota", () => {
     expect(fourth.status).toBe(200);
     await fourth.text();
   });
+
+  // 预留之后、onComplete 之前的任何未捕获 throw（DB 读、session 写……）都必须释放预留，
+  // 否则反复触发可把该 vk 的在途计数刷高，把它的合法请求挤成 429。
+  it("预留后 resolveUpstreamKeys 抛错 → 异常传播且 in-flight 归零（主链）", async () => {
+    const VK_ID = 4545;
+    const deps = mkDeps({
+      resolveVirtualKey: vi.fn(async () => ({
+        id: VK_ID,
+        name: "limited-throw",
+        enabled: true,
+        enabledModels: ["*"],
+        maxRpm: 10,
+      })),
+      resolveUpstreamKeys: vi.fn(async () => {
+        throw new Error("db read failed");
+      }),
+      quota: {
+        loadUsage: vi.fn(async () => ({ rpm: 0, tpm: 0, dailyTokens: 0, monthlyTokens: 0 })),
+      },
+    });
+
+    await expect(
+      handleProxyRequest(
+        makeRequest("/v1/chat/completions", {
+          headers: { authorization: "Bearer vk-good" },
+          body: { model: "gpt-4o" },
+        }),
+        deps
+      )
+    ).rejects.toThrow("db read failed");
+    expect(getInflight(VK_ID)).toEqual({ rpm: 0, tokens: 0 });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("预留后 resolveUpstreamKeys 抛错 → in-flight 归零（responses 子路径）", async () => {
+    const VK_ID = 4646;
+    const deps = mkDeps({
+      resolveVirtualKey: vi.fn(async () => ({
+        id: VK_ID,
+        name: "limited-throw-sub",
+        enabled: true,
+        enabledModels: ["*"],
+        maxRpm: 10,
+      })),
+      resolveUpstreamKeys: vi.fn(async () => {
+        throw new Error("db read failed");
+      }),
+      quota: {
+        loadUsage: vi.fn(async () => ({ rpm: 0, tpm: 0, dailyTokens: 0, monthlyTokens: 0 })),
+      },
+    });
+
+    await expect(
+      handleProxyRequest(
+        makeRequest("/v1/responses/resp_123", {
+          method: "GET",
+          headers: { authorization: "Bearer vk-good" },
+        }),
+        deps
+      )
+    ).rejects.toThrow("db read failed");
+    expect(getInflight(VK_ID)).toEqual({ rpm: 0, tokens: 0 });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
 
 describe("handleProxyRequest - cross-upstream failover & session stickiness", () => {

@@ -36,14 +36,17 @@ export const PATCH = withAuth(async (request: NextRequest) => {
   if (await isTotpEnabled()) {
     const code = typeof body.totpCode === "string" ? body.totpCode.trim() : "";
     const secret = await getTotpSecret();
-    if (!secret || !(await verifyTotpCodeNoReplay(secret, code))) {
+    // 三态：只有 invalid（码错）计失败次数，replay（合法码重复提交）不计；
+    // 两者响应一致，不产生 oracle
+    const verifyResult = secret ? await verifyTotpCodeNoReplay(secret, code) : "invalid";
+    if (verifyResult !== "ok") {
       if (await isTotpLocked()) {
         return NextResponse.json(
           { success: false, error: "Account temporarily locked, try again later" },
           { status: 429 }
         );
       }
-      await recordTotpFailure();
+      if (verifyResult === "invalid") await recordTotpFailure();
       return NextResponse.json(
         { success: false, error: "Invalid TOTP code" },
         { status: 401 }

@@ -188,7 +188,7 @@ describe("TOTP 换绑与 recovery codes 路由集成", () => {
     expect(await getRecoveryCodeReminder()).toBe(false);
   });
 
-  it("同一动态码重复使用（重放）→ 第二次 400 Invalid TOTP code", async () => {
+  it("同一动态码重复使用（重放）→ 第二次 400 Invalid TOTP code，且不计失败次数", async () => {
     const token = await makeToken();
     const gen = await json(await POST(req("POST", {}, token), { params: {} }));
     const secret = gen.data.secret as string;
@@ -201,6 +201,16 @@ describe("TOTP 换绑与 recovery codes 路由集成", () => {
     expect(replay.success).toBe(false);
     expect(replay.error).toBe("Invalid TOTP code");
     expect(await isTotpEnabled()).toBe(true);
+    // 重放不是爆破：不能计入失败次数（否则双击 / 客户端重试 5 次就把自己锁 15 分钟）
+    const { getTotpFailCount } = await import("@/lib/auth/totp-lock");
+    expect(await getTotpFailCount()).toBe(0);
+
+    // 错码仍然是 invalid：照常计失败次数（响应体与重放完全一致，不产生 oracle）
+    const wrong = code === "000000" ? "000001" : "000000";
+    const invalid = await json(await DELETE(req("DELETE", { code: wrong }, token), { params: {} }));
+    expect(invalid.success).toBe(false);
+    expect(invalid.error).toBe("Invalid TOTP code");
+    expect(await getTotpFailCount()).toBe(1);
   });
 
   it("GET 返回启用状态与 pending 标记", async () => {

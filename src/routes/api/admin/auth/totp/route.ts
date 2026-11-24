@@ -53,14 +53,17 @@ export const POST = withAuth(async (request: NextRequest) => {
         { status: 400 }
       );
     }
-    if (!(await verifyTotpCodeNoReplay(pending, body.code.trim()))) {
+    const pendingResult = await verifyTotpCodeNoReplay(pending, body.code.trim());
+    if (pendingResult !== "ok") {
       if (await isTotpLocked()) {
         return NextResponse.json(
           { success: false, error: "Account temporarily locked, try again later" },
           { status: 429 }
         );
       }
-      await recordTotpFailure();
+      // 只有 invalid（码错）计失败次数：replay 是合法码重复提交，计进去会把自己锁掉；
+      // 两者响应完全一致，不产生 oracle
+      if (pendingResult === "invalid") await recordTotpFailure();
       return NextResponse.json(
         { success: false, error: "Invalid TOTP code" },
         { status: 400 }
@@ -116,8 +119,10 @@ export const POST = withAuth(async (request: NextRequest) => {
       );
     }
     const secret = await getTotpSecret();
-    if (!secret || !(await verifyTotpCodeNoReplay(secret, currentCode))) {
-      await recordTotpFailure();
+    // 三态：只有 invalid（码错）计失败次数，replay（合法码重复提交）不计；两者响应一致
+    const verifyResult = secret ? await verifyTotpCodeNoReplay(secret, currentCode) : "invalid";
+    if (verifyResult !== "ok") {
+      if (verifyResult === "invalid") await recordTotpFailure();
       return NextResponse.json(
         { success: false, error: "Invalid TOTP code" },
         { status: 400 }
@@ -151,14 +156,16 @@ export const DELETE = withAuth(async (request: NextRequest) => {
   }
 
   const secret = await getTotpSecret();
-  if (!secret || !(await verifyTotpCodeNoReplay(secret, code))) {
+  // 三态：只有 invalid（码错）计失败次数，replay（合法码重复提交）不计；两者响应一致
+  const deleteResult = secret ? await verifyTotpCodeNoReplay(secret, code) : "invalid";
+  if (deleteResult !== "ok") {
     if (await isTotpLocked()) {
       return NextResponse.json(
         { success: false, error: "Account temporarily locked, try again later" },
         { status: 429 }
       );
     }
-    await recordTotpFailure();
+    if (deleteResult === "invalid") await recordTotpFailure();
     return NextResponse.json({ success: false, error: "Invalid TOTP code" }, { status: 400 });
   }
   await clearTotpFailures();

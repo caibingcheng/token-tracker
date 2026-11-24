@@ -269,3 +269,56 @@ describe("StreamUsageExtractor contentTokens (usage 兜底估算)", () => {
     expect(feed(sse, "anthropic").contentTokens).toBe(2);
   });
 });
+
+// response id 归属（防跨 vk retrieve）依赖这里取对 id：中转常给每个 SSE 事件注入
+// 事件级 id（evt_...），不能把事件 id 当成 response id，否则真 id 失去归属保护。
+describe("StreamUsageExtractor responseId", () => {
+  function collect(sse: string, protocol: Protocol = "openai"): StreamUsageExtractor {
+    const extractor = new StreamUsageExtractor(protocol);
+    extractor.feed(new TextEncoder().encode(sse));
+    extractor.finish();
+    return extractor;
+  }
+
+  it("先到带 evt_ 顶层 id 的事件、后到 response.created → 取 nested resp_ id", () => {
+    const sse = [
+      'data: {"id":"evt_1","type":"response.in_progress","response":{"usage":null}}',
+      "",
+      'data: {"id":"evt_2","type":"response.created","response":{"id":"resp_x"}}',
+      "",
+      'data: {"id":"evt_3","type":"response.completed","response":{"usage":{"input_tokens":3,"output_tokens":1}}}',
+      "",
+    ].join("\n");
+    expect(collect(sse).responseId).toBe("resp_x");
+  });
+
+  it("纯 evt_ 事件级 id 的流 → null（不写错的归属）", () => {
+    const sse = [
+      'data: {"id":"evt_1","type":"response.output_text.delta","delta":"hi"}',
+      "",
+      'data: {"id":"evt_2","type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}',
+      "",
+    ].join("\n");
+    expect(collect(sse).responseId).toBeNull();
+  });
+
+  it("顶层 resp_ 前缀 id 直接接受（部分中转把 responses id 放在顶层）", () => {
+    const sse = [
+      'data: {"id":"resp_top","choices":[{"delta":{"content":"hi"}}]}',
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n");
+    expect(collect(sse).responseId).toBe("resp_top");
+  });
+
+  it("chat 风格 chatcmpl_ 顶层 id 不当作 response id", () => {
+    const sse = [
+      'data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"hi"}}]}',
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n");
+    expect(collect(sse).responseId).toBeNull();
+  });
+});

@@ -36,7 +36,7 @@
   - `src/lib/gateway/url-utils`：`joinUrlPath` 前缀去重 + `sanitizePathSegments` `..` 段净化（逃逸返回 null）
   - `src/lib/net/client-ip`：限流 IP 可信源（TRUSTED_PROXY 开关、XFF 伪造防护）+ **socket 对端地址**（内部 header `x-internal-remote-addr`、`isLoopbackAddress` 认 127.x/::1/IPv4-mapped（供 `local-bypass` 判定）、未开可信反代时以对端地址做桶）；`src/server/dispatch.test` 钉住对端地址写入与客户端同名 header 被覆盖
   - `src/lib/auth/totp-lock`：TOTP 失败计数 + 指数锁定（settings 表持久化，防重启清零）
-  - `src/lib/auth/totp-replay`：TOTP 重放防护（`totp_last_counter` 存 `{secretHash, counter}`，同一 secret 只接受 counter 严格递增的码；路由用例：`totp/route.test` 的「同一动态码重复使用 → 400」）
+  - `src/lib/auth/totp-replay`：TOTP 重放防护（`totp_last_counter` 存 `{secretHash, counter}`，同一 secret 只接受 counter 严格递增的码；**三态 `ok|replay|invalid`**：路由侧只对 invalid 计 `recordTotpFailure()`，replay 与 invalid 响应完全一致（不产生 oracle）；**全局 promise 链串行化**读-判-写，并发同码恰一个 ok；用例：`totp-replay.test.ts`（三态/时钟回拨/换绑重新起算/并发串行）+ `totp/route.test` 的「重放 400 且不计失败次数、错码照常计数」）
   - `src/lib/stats-query`：静态断言聚合口径（Total Input = `SUM(input_tokens) + SUM(cache_read)`；防止 totalInput 回退为纯 `SUM(input_tokens)` 或 totalInputUncached 再次减去 `cache_read`）+ 日期过滤必须直比较（sargable，防 strftime 套列导致索引失效）+ **agent 维度静态断言**（不再按 `agent` 列过滤、`user_agent IN (uas)` / `IS NULL` 条件）
   - `src/lib/latency-query`：percentile 线性插值、归一化 model × provider 分组、active 过滤（已删除 model 不显示）、tok/s 守卫（latency ≤ ttft 排除）、非流式行口径（不进 TTFT 统计但计入 avgLatency/count）、时区分组（getTimezoneOffset 语义：UTC+8 = -480）、排序（p50 升序 nulls 最后）
   - `src/lib/timezone-utils`：`localDateKeyToUtcStartISO` 时区换算（含互逆 round-trip）

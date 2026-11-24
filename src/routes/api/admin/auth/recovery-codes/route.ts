@@ -51,8 +51,10 @@ export const POST = withAuth(async (request: NextRequest) => {
     );
   }
   const secret = await getTotpSecret();
-  if (!secret || !(await verifyTotpCodeNoReplay(secret, currentCode))) {
-    await recordTotpFailure();
+  // 三态：只有 invalid（码错）计失败次数，replay（合法码重复提交）不计；两者响应一致
+  const verifyResult = secret ? await verifyTotpCodeNoReplay(secret, currentCode) : "invalid";
+  if (verifyResult !== "ok") {
+    if (verifyResult === "invalid") await recordTotpFailure();
     return NextResponse.json(
       { success: false, error: "Invalid TOTP code" },
       { status: 400 }

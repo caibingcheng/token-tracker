@@ -385,10 +385,39 @@ export function stripRawPassthroughPrefix(path: string): string | null {
   return inner;
 }
 
+// 配额 in-flight 预留的异常安全网。
+// 预留（reserveInflight）到请求结束（onComplete）之间还有不少 await：
+// resolveUpstreamKeys 的 DB 读、session.setBinding、上游请求构造……任一处未捕获的
+// throw 都会跳过 onComplete，让 reservation 永久驻留 → 反复触发可把该 vk 的在途
+// 计数刷高，把它自己的合法请求挤成 429。包装层只做「throw 时兜底释放」：
+// 正常返回时什么也不做（成功/失败/流结束仍由 onComplete 释放，release 幂等）。
+type InflightScope = { release?: () => void };
+
+async function withInflightRelease<T>(
+  scope: InflightScope,
+  fn: () => Promise<T>
+): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    scope.release?.();
+    throw err;
+  }
+}
+
 // 核心代理流程
 export async function handleProxyRequest(
   request: Request,
   deps: ProxyDeps
+): Promise<Response> {
+  const scope: InflightScope = {};
+  return withInflightRelease(scope, () => handleProxyRequestInner(request, deps, scope));
+}
+
+async function handleProxyRequestInner(
+  request: Request,
+  deps: ProxyDeps,
+  scope: InflightScope
 ): Promise<Response> {
   const url = new URL(request.url);
   const rawPath = url.pathname;
@@ -958,6 +987,8 @@ export async function handleProxyRequest(
         ? estimateInput()
         : 0;
     const release = reserveInflight(virtualKey.id, reservableTokens);
+    // 抛错兜底（见 withInflightRelease）：本次请求后续任何未捕获 throw 都会释放预留
+    scope.release = release;
     let quotaUsage: QuotaUsage;
     try {
       quotaUsage = await deps.quota.loadUsage(virtualKey.id, now);
@@ -1337,6 +1368,23 @@ async function handleSubresourcePassthrough(
     userAgent: string | null;
   }
 ): Promise<Response> {
+  const scope: InflightScope = {};
+  return withInflightRelease(scope, () =>
+    handleSubresourcePassthroughInner(request, opts, scope)
+  );
+}
+
+async function handleSubresourcePassthroughInner(
+  request: Request,
+  opts: {
+    path: string;
+    url: URL;
+    deps: ProxyDeps;
+    virtualKey: VirtualKeyInfo;
+    userAgent: string | null;
+  },
+  scope: InflightScope
+): Promise<Response> {
   const { path, url, virtualKey, userAgent } = opts;
   // let：配额 in-flight 预留要包一层 onComplete（释放钩子），见下方配额检查
   let deps = opts.deps;
@@ -1402,6 +1450,8 @@ async function handleSubresourcePassthrough(
   if (deps.quota && hasQuotaLimits(virtualKey)) {
     const now = new Date();
     const release = reserveInflight(virtualKey.id, 0);
+    // 抛错兜底（见 withInflightRelease）：后续 resolveUpstreamKeys 等 await 抛错也释放
+    scope.release = release;
     let quotaUsage: QuotaUsage;
     try {
       quotaUsage = await deps.quota.loadUsage(virtualKey.id, now);

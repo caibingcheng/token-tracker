@@ -1,11 +1,14 @@
 // 本地免密码 admin 直通（仅本机访问生效）。
 // 生效条件（同时满足）：
 //   1. env LOCAL_ADMIN_BYPASS=1 —— 只由 docker-compose.local.yml 设置（端口绑定 127.0.0.1），
-//      VPS / 生产部署不得设置；
-//   2. 请求来自 loopback：**优先用 socket 对端地址**（内部 header x-internal-remote-addr，
-//      由 src/server/client-addr.ts 从 IncomingMessage.socket.remoteAddress 无条件写入，
-//      客户端不可伪造）；取不到对端（next dev 单进程 / 单测直调 handler）才回退 Host 判定。
-//      Host 头可伪造，回退分支只是过渡兼容，真正的边界是 compose 文件只绑定 127.0.0.1。
+//      VPS / 生产部署不得设置，**也不得置于反代之后开启**；
+//   2. **Host ∧ socket 对端双条件（AND）**：Host 必须 loopback，且取得到对端时对端也必须 loopback。
+//      为什么是 AND 而不是二选一：
+//      - 只看对端：同机反代（nginx/caddy 回连 127.0.0.1）会把**公网流量**免密放行；
+//      - 只看 Host：Host 头可任意伪造；
+//      两个都看才能同时挡住「LAN 直连伪造 Host」与「反代转发公网请求」（反代转发时 Host
+//      是公网域名）。对端取不到（next dev 单进程 / 单测直调 handler）时只算 Host —— 原行为。
+//      docker 桥网络下对端是网关 IP（非 loopback）→ 拒绝（已在部署文档注明）。
 // 该文件保持运行时无关（proxy 引用）：只用 process.env + 字符串操作 + 纯函数判定。
 import { INTERNAL_REMOTE_ADDR_HEADER, isLoopbackAddress } from "@/lib/net/client-ip";
 
@@ -33,12 +36,12 @@ let warned = false;
 
 export function canBypassAuth(request: { headers: Headers }): boolean {
   if (!isLocalAdminBypassEnabled()) return false;
-  // 对端地址优先（不可伪造）；取不到对端才回退 Host 判定（过渡兼容）
+  // Host 必须 loopback：挡住反代转发（Host = 公网域名）与伪造 Host 的远程请求
+  if (!isLoopbackHost(request.headers.get("host"))) return false;
+  // 对端存在时必须也是 loopback（内核地址，不可伪造）：挡住 Host 伪造 + 反代回连；
+  // 对端缺失（next dev 单进程 / 单测直调 handler）退化为纯 Host 判定（原行为）
   const peer = request.headers.get(INTERNAL_REMOTE_ADDR_HEADER);
-  const fromLoopback = peer
-    ? isLoopbackAddress(peer)
-    : isLoopbackHost(request.headers.get("host"));
-  if (!fromLoopback) return false;
+  if (peer && !isLoopbackAddress(peer)) return false;
   if (!warned) {
     warned = true;
     console.warn(

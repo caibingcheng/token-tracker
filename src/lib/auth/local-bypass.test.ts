@@ -67,13 +67,24 @@ describe("canBypassAuth", () => {
     expect(canBypassAuth(req("127.0.0.1:39001"))).toBe(false);
   });
 
-  it("有 socket 对端时对端优先：伪造 loopback Host 不生效", () => {
+  it("有 socket 对端时双条件（Host ∧ 对端）：任一非 loopback 都拒绝", () => {
     process.env.LOCAL_ADMIN_BYPASS = "1";
-    // Host 写 loopback 但真实对端是公网 IP → 拒绝
+    // Host 写 loopback 但真实对端是公网 IP → 拒绝（伪造 Host）
     expect(canBypassAuth(req("127.0.0.1:39001", "203.0.113.9"))).toBe(false);
-    // 真实对端 loopback（IPv4 / IPv4-mapped）→ 放行，与 Host 无关
-    expect(canBypassAuth(req("example.com", "127.0.0.1"))).toBe(true);
-    expect(canBypassAuth(req(null, "::ffff:127.0.0.1"))).toBe(true);
-    expect(canBypassAuth(req(null, "::1"))).toBe(true);
+    // 对端 loopback 但 Host 是公网域名 → 拒绝（同机反代回连场景：公网流量不得免密）
+    expect(canBypassAuth(req("example.com", "127.0.0.1"))).toBe(false);
+    // 双真 → 放行（本机直连）
+    expect(canBypassAuth(req("127.0.0.1:39001", "127.0.0.1"))).toBe(true);
+    expect(canBypassAuth(req("localhost:39001", "127.0.0.1"))).toBe(true);
+    // IPv4-mapped / IPv6 loopback 对端同样认
+    expect(canBypassAuth(req("localhost:39001", "::ffff:127.0.0.1"))).toBe(true);
+    expect(canBypassAuth(req("[::1]:3000", "::1"))).toBe(true);
+  });
+
+  it("取不到对端时退化为纯 Host 判定（next dev / 单测直调）", () => {
+    process.env.LOCAL_ADMIN_BYPASS = "1";
+    expect(canBypassAuth(req("127.0.0.1:39001"))).toBe(true);
+    expect(canBypassAuth(req("localhost"))).toBe(true);
+    expect(canBypassAuth(req("example.com"))).toBe(false);
   });
 });

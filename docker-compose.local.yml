@@ -7,10 +7,12 @@
 # 首启向导是 fail-open：端口绑定 0.0.0.0，首启窗口内能访问到该端口的设备都可抢先注册
 # admin key（被抢注会立刻发现：向导消失、你刚设的 key 登录失败）。尽快完成首启，
 # 或在 environment 预设 ADMIN_API_KEY 直接关闭向导（生产 docker-compose.yml 即此路径）。
-# 仅确定是本机部署时可改 LOCAL_ADMIN_BYPASS=1 开启免密码直通：判定用 socket 对端地址
-#（内核给出、Host 头不可伪造）—— 裸跑 / host 网络下本机生效；docker 桥网络下本机请求
-# 的对端是网桥网关（非 loopback），不会生效。非本机部署严禁置 1，置 1 前先读懂
-# src/lib/auth/local-bypass.ts
+# 仅确定是本机部署时可改 LOCAL_ADMIN_BYPASS=1 开启免密码直通。判定是 **Host ∧ socket 对端
+# 双条件**：Host 必须 loopback（localhost/127.x/::1）且真实对端也是 loopback —— 裸跑 /
+# host 网络下本机直连生效；docker 桥网络下本机请求的对端是网桥网关（非 loopback）、
+# 反代之后 Host 是公网域名 —— 两者都不会生效。**不要在反代之后开启**（反代回连 127.0.0.1，
+# 仅靠对端判定就会把公网流量免密放行；AND 只防得住院内网/伪造 Host，不是反代场景的逃生门）。
+# 非本机部署严禁置 1，置 1 前先读懂 src/lib/auth/local-bypass.ts
 services:
   token-tracker-local:
     image: ghcr.io/caibingcheng/token-tracker:latest

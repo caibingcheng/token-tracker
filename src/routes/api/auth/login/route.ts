@@ -211,8 +211,12 @@ export async function POST(request: NextRequest) {
       );
     }
     const secret = await getTotpSecret();
-    if (!secret || !(await verifyTotpCodeNoReplay(secret, totpCode))) {
-      await recordTotpFailure();
+    // 三态：只有「码错误」（invalid）计失败次数；replay = 合法码被重复提交
+    //（双击 / 客户端重试 / 时钟回拨），计进去会让正常用户 5 次自锁 15 分钟。
+    // 两者响应完全一致，不产生「码是否合法」的 oracle。
+    const verifyResult = secret ? await verifyTotpCodeNoReplay(secret, totpCode) : "invalid";
+    if (verifyResult !== "ok") {
+      if (verifyResult === "invalid") await recordTotpFailure();
       const { ip, userAgent } = extractClientInfo(request);
       await recordAuditLog({
         action: "login_failure",
