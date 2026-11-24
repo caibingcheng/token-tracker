@@ -27,6 +27,10 @@ services:
     environment:
       - SQLITE_DATABASE_PATH=/app/data/token-tracker.db
       - LOCAL_ADMIN_BYPASS=0
+      # 容器内服务进程 uid:gid，也决定 ~/.token-tracker 的属主。默认 1000（镜像内 node）。
+      # 宿主 uid 不同时改这里或 export PUID/PGID（例如 uid 1001 → PUID=1001 PGID=1001）。
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
     volumes:
       - ${HOME}/.token-tracker:/app/data
       - ./scripts/local-entrypoint.sh:/usr/local/bin/local-entrypoint.sh:ro
