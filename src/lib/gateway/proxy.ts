@@ -1657,7 +1657,17 @@ async function passthroughResponse(
             streamStatus = clientAborted ? "client_aborted" : "stream_interrupted";
           }
           await reader.cancel().catch(() => {});
-          controller.error(err);
+          // 不能把原始 err 交给 ReadableStream：@hono/node-server 的 handleResponseError 会把
+          // `Error: ${err.message}` 直接写进响应体（headers 未发则 500 明文，已发则追加在末尾），
+          // 超时阈值、尺寸上限这类内部文案会漏给客户端。现场留日志，客户端只看到断流。
+          // 客户端主动断连（clientAborted）是常态，不刷日志。
+          if (!clientAborted) {
+            console.warn(
+              "[gateway] upstream stream interrupted:",
+              err instanceof Error ? err.message : err
+            );
+          }
+          controller.error(new Error("stream interrupted"));
         }
       };
       pump().finally(() => onDone());

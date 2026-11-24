@@ -30,6 +30,30 @@ describe("NextRequest shim", () => {
     expect(new NextRequest("http://localhost/").cookies.get("x")).toBeUndefined();
   });
 
+  // 下面三条对齐 Next 的 RequestCookies（@edge-runtime/cookies parseCookie）：
+  // 同名后写胜出、值 decodeURIComponent、解码失败整对丢弃
+  it("cookies 同名时后写胜出（浏览器按 Path 排序发送，Next 取最后一个）", () => {
+    const req = new NextRequest("http://localhost/api/x", {
+      headers: { cookie: "tt_session=first; tt_session=last" },
+    });
+    expect(req.cookies.get("tt_session")?.value).toBe("last");
+  });
+
+  it("cookies 值做 decodeURIComponent", () => {
+    const req = new NextRequest("http://localhost/api/x", {
+      headers: { cookie: "v=a%2Eb%20c" },
+    });
+    expect(req.cookies.get("v")?.value).toBe("a.b c");
+  });
+
+  it("cookies 解码失败的对整对丢弃（其它对仍可用）", () => {
+    const req = new NextRequest("http://localhost/api/x", {
+      headers: { cookie: "bad=%E0%A4%A; tt_session=abc.def" },
+    });
+    expect(req.cookies.get("bad")).toBeUndefined();
+    expect(req.cookies.get("tt_session")?.value).toBe("abc.def");
+  });
+
   it("nextUrl.searchParams 可用", () => {
     const req = new NextRequest("http://localhost/api/x?search=gpt&provider=openai");
     expect(req.nextUrl.searchParams.get("search")).toBe("gpt");

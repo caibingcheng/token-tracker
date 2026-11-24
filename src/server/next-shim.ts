@@ -20,21 +20,33 @@ export class NextRequest extends Request {
   }
 
   // 只读 cookie 视图：readSessionCookie(cookies) 只用 get(name)?.value。
-  // 值按 cookie 原文返回（不 decodeURIComponent）——与 Next RequestCookies 一致，
-  // 本应用的会话 token 是 base64url，字符集天然在 cookie-octet 内
+  // 语义对齐 Next 的 RequestCookies（@edge-runtime/cookies parseCookie）：
+  //   - 同名**后写胜出**（浏览器按 Path 长度排序发送，Next 取最后一个；取首个会让
+  //     同域子路径下发的副本抢先命中——cookie tossing 方向反过来）
+  //   - 值做 decodeURIComponent，解码失败整对丢弃（Next 的 catch 分支）
+  // 本应用会话 token 是 base64url，解码后与原值相同，不影响既有行为
   get cookies(): { get(name: string): { name: string; value: string } | undefined } {
+    const jar = new Map<string, string>();
     const header = this.headers.get("cookie");
+    if (header) {
+      for (const pair of header.split(";")) {
+        const eq = pair.indexOf("=");
+        if (eq < 0) continue;
+        const name = pair.slice(0, eq).trim();
+        if (name === "") continue;
+        let value: string;
+        try {
+          value = decodeURIComponent(pair.slice(eq + 1).trim());
+        } catch {
+          continue;
+        }
+        jar.set(name, value);
+      }
+    }
     return {
       get: (name: string) => {
-        if (!header) return undefined;
-        for (const pair of header.split(";")) {
-          const eq = pair.indexOf("=");
-          if (eq < 0) continue;
-          if (pair.slice(0, eq).trim() === name) {
-            return { name, value: pair.slice(eq + 1).trim() };
-          }
-        }
-        return undefined;
+        const value = jar.get(name);
+        return value === undefined ? undefined : { name, value };
       },
     };
   }

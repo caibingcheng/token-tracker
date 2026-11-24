@@ -1298,6 +1298,41 @@ describe("handleProxyRequest - request health status", () => {
     );
   });
 
+  it("流中断不把内部错误文案交给客户端（只给泛化流断，现场留日志）", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(new ReadableStream({ start() {} }), {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      })
+    );
+    // 关键回归点：@hono/node-server 的 handleResponseError 会把 `Error: ${err.message}`
+    // 写进/追加到响应体，所以交给 controller.error 的必须是泛化错误，不能是原始 err
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const deps = mkDeps({ resolveStreamIdleTimeoutMs: vi.fn(async () => 10) });
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", stream: true },
+      }),
+      deps
+    );
+
+    const err = await res.text().then(
+      () => null,
+      (e: unknown) => e as Error
+    );
+    expect(err).toBeInstanceOf(Error);
+    expect(err?.message).toBe("stream interrupted");
+    expect(err?.message).not.toMatch(/idle timeout|size limit|upstream/i);
+    // 真实原因只在服务端日志里
+    expect(warn.mock.calls.flat().join(" ")).toMatch(/idle timeout/i);
+    expect(deps.onUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "stream_interrupted" })
+    );
+    warn.mockRestore();
+  });
+
   it("does not mark client_aborted when [DONE] was already received before cancel", async () => {
     const encoder = new TextEncoder();
     const sse =

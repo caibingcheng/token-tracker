@@ -19,7 +19,10 @@ export const securityHeaders: MiddlewareHandler = async (c, next) => {
   // 静态托管后 Next 不再自动下发缓存头：
   //   - /_next/static/* chunk 内容含 hash → immutable（原 Next 同口径）
   //   - 动态前缀（/api、/v1*、/raw、/ingest）不碰：透传响应可能带上游自己的缓存头
-  //   - 其余（HTML 壳 + public 文件）no-cache，升级/换 key 后不拿旧壳打接口，命中 304 走 Last-Modified
+  //   - 其余（HTML 壳 + public 文件）no-cache，升级/换 key 后不拿旧壳打接口。
+  //     no-cache 是「必须回源校验」，不是「不缓存」——校验器由 static-cache.ts 提供
+  //   （弱 ETag + If-None-Match/If-Modified-Since → 304）；serveStatic 本身只发
+  //   Last-Modified、从不返 304，不补那层就是每次整包重下。
   const path = c.req.path;
   if (path.startsWith("/_next/static/")) {
     c.header("Cache-Control", "public, max-age=31536000, immutable");

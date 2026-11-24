@@ -3,15 +3,21 @@
 // matcher 原文：/api/((?!auth/login|auth/setup|auth/logout|cli(?:$|/)).*)
 //   - login 携带原始 API key；setup 是首次启动的 fail-open 入口；logout 无状态删 cookie；
 //     cli 是公开用量快照 —— 四者均无会话 token 可验，直接放行（见 docs/agents/api-routes.md）
+// 排除集用**精确匹配**而非前缀：与 guard-scan.test.ts 的 exempt 文件清单一一对应。
+// `/api/auth/loginX`、`/api/cli/xxx` 这类同前缀路径必须继续过验签，否则将来加一个
+// `login/callback` 之类的兼容路由就会默默变成免验签入口。尾斜杠不必特判：
+// strict:false 下 c.req.path 已归一（`/api/cli/` → `/api/cli`）
 import type { MiddlewareHandler } from "hono";
 import { forwardedRequestUrl } from "./forwarded";
 import { NextRequest } from "./next-shim";
 import { proxy } from "./proxy";
 
-const VERIFY_EXCLUDED = /^\/api\/(auth\/login|auth\/setup|auth\/logout|cli(?:\/|$))/;
+const VERIFY_EXCLUDED = /^\/api\/(?:auth\/(?:login|setup|logout)|cli)$/;
 
 export const verifySession: MiddlewareHandler = async (c, next) => {
-  if (!c.req.path.startsWith("/api/")) return next();
+  // 裸 `/api` 也归验签层（不在排除集里 → 401），与 `^\/api(\/|$)` 同口径；
+  // 只用 startsWith("/api/") 会让 `/api` 绕过去，将来假设出现裸 `/api` 路由就是漏网
+  if (!/^\/api(?:\/|$)/.test(c.req.path)) return next();
   if (VERIFY_EXCLUDED.test(c.req.path)) return next();
 
   // proxy 只读 headers/cookies/url，不读 body —— 不重建带 body 的请求，

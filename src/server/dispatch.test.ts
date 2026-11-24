@@ -85,4 +85,31 @@ describe("dispatch (Hono → route handler)", () => {
     expect(res.status).toBe(200);
     expect(((await res.json()) as { id: string }).id).toBe("7");
   });
+
+  it("通配段零段（裸 /v1）→ 404，不进 handler（Next [...path] 需要至少一段）", async () => {
+    const strict = new Hono({ strict: false }); // 与 src/server/index.ts 同配置
+    let invoked = 0;
+    strict.post("/v1/*", (c) =>
+      dispatch(
+        async () => {
+          invoked++;
+          return Response.json({ ok: true });
+        },
+        c,
+        ["path"]
+      )
+    );
+    strict.notFound((c) => c.text("not found", 404));
+
+    for (const path of ["/v1", "/v1/"]) {
+      const res = await strict.request("http://localhost" + path, { method: "POST" });
+      expect(res.status, path).toBe(404);
+    }
+    expect(invoked).toBe(0);
+
+    // 有段时照常进 handler（不能把整条链路拦死）
+    const ok = await strict.request("http://localhost/v1/chat/completions", { method: "POST" });
+    expect(ok.status).toBe(200);
+    expect(invoked).toBe(1);
+  });
 });

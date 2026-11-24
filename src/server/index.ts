@@ -1,5 +1,6 @@
 // Hono 服务端入口：替代原 Next standalone server.js（换运行时的收益见 bench/RESULTS.md §10）。
-// 中间件顺序即语义：全局安全头 → /api 会话验签 → route handler → 静态导出 → 404。
+// 中间件顺序即语义：压缩 → 全局安全头 → /api 会话验签 → route handler → 静态协商缓存 → 静态导出 → 404。
+// 压缩在最外层：它的「包 body」动作必须看到内层写好的 Content-Type/ETag（compress 会把强 ETag 降为弱）。
 // strict:false —— 尾斜杠与无斜杠等价命中（Next trailingSlash:false 会 308 归一到同一页；
 // 不关的话 `/api/cli/` 会从「308→200」退化成硬 404）
 // 内存：NODE_OPTIONS（heap/semi-space 上限）、--optimize-for-size、jemalloc 与之前完全一致
@@ -8,17 +9,21 @@ import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { registerNode } from "@/instrumentation.node";
+import { compressResponse } from "./compress";
 import { registerRoutes } from "./routes.generated";
 import { securityHeaders } from "./security-headers";
 import { STATIC_ROOT, notFound, resolveExportPath } from "./static";
+import { staticCache } from "./static-cache";
 import { verifySession } from "./verify-session";
 
 const app = new Hono({ strict: false });
 
+app.use("*", compressResponse);
 app.use("*", securityHeaders);
 app.use("/api/*", verifySession);
 registerRoutes(app);
-app.use("*", serveStatic({ root: STATIC_ROOT, rewriteRequestPath: resolveExportPath }));
+app.use("*", staticCache);
+app.use("*", serveStatic({ root: STATIC_ROOT, rewriteRequestPath: (path) => resolveExportPath(path) }));
 app.notFound(notFound);
 
 const port = Number(process.env.PORT || 3000);

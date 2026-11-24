@@ -14,13 +14,14 @@ const require = createRequire(import.meta.url);
 const { ensureDevGatewaySecret } = require("./dev-secret.cjs");
 
 // 与 next dev 同口径先加载 env（纯 node 不读 .env 文件）：
-// 按 Next dev 的优先级升序加载 + dotenv 不覆盖已设值 ⇒
-// 最终 process.env > .env.development.local > .env.local > .env.development > .env（与 next dev 一致，两侧不分裂）。
+// dotenv 默认**不覆盖**已设值 ⇒ 最高优先级必须最先加载。Next dev 的优先级：
+// process.env > .env.development.local > .env.local > .env.development > .env
+// （之前按升序加载，结果 .env 里的同名变量反而胜出，与注释/next dev 相反）。
 // 不加载这一步，GATEWAY_SECRET 只存在于 .env.local 时 ensure 会误判「db 在、密钥丢」而拒绝启动
-dotenv.config({ path: ".env" });
-dotenv.config({ path: ".env.development" });
-dotenv.config({ path: ".env.local" });
 dotenv.config({ path: ".env.development.local" });
+dotenv.config({ path: ".env.local" });
+dotenv.config({ path: ".env.development" });
+dotenv.config({ path: ".env" });
 
 const WEB_PORT = process.env.DEV_WEB_PORT || "3000";
 const API_PORT = process.env.DEV_API_PORT || "3001";

@@ -176,7 +176,27 @@ else
   bad "dynamic [id] route (no upstream id from list)"
 fi
 
-echo "== 9. latency 聚合非空（Dashboard Speed 面板数据源）=="
+echo "== 9. 传输层语义（压缩 / 协商缓存 / 405 / 裸路径）=="
+# 这几条是 Hono 迁入后才有的风险点：Next standalone 默认压缩、发 ETag、未实现方法返 405，
+# 而 Hono 的 serveStatic 既无压缩也无 304、app.on 只注册存在的方法。状态码全对的 e2e 曾经漏掉它们。
+resp_headers=$(curl -s -o /dev/null -D - -H 'Accept-Encoding: gzip' "$BASE/admin")
+grep -qi '^content-encoding: gzip' <<<"$resp_headers" && ok "static HTML gzip" || bad "static HTML not compressed"
+etag=$(grep -i '^etag:' <<<"$resp_headers" | tr -d '\r' | sed 's/^[Ee][Tt]ag: //')
+[[ -n "$etag" ]] && ok "static HTML ETag ($etag)" || bad "static HTML without ETag"
+code=$(curl -s -o /dev/null -w '%{http_code}' -H "If-None-Match: $etag" "$BASE/admin")
+check "If-None-Match -> 304" "$code" "304"
+# 网关前缀不能压：SSE 被压缩中间件包住会攒批；这里用无 key 的 401 代表该前缀
+gw=$(curl -s -o /dev/null -D - -H 'Accept-Encoding: gzip' "$BASE/v1/models")
+grep -qi '^content-encoding:' <<<"$gw" && bad "gateway path was compressed" || ok "gateway path skips compression"
+del=$(curl -s -o /dev/null -D "$TMP/del.hdr" -w '%{http_code}' -X DELETE "$BASE/v1/chat/completions")
+check "unsupported method -> 405" "$del" "405"
+grep -qi '^allow: ' "$TMP/del.hdr" && ok "405 carries Allow" || bad "405 missing Allow"
+for p in /v1 /v1beta /raw /404 /_not-found; do
+  code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE$p")
+  check "bare/special path $p -> 404" "$code" "404"
+done
+
+echo "== 10. latency 聚合非空（Dashboard Speed 面板数据源）=="
 curl -s -H "X-API-Key: $TOKEN" "$BASE/api/dashboard?range=3d" >"$TMP/dash.json"
 node -e '
 const j = require(process.argv[1]);
@@ -191,7 +211,7 @@ if (bad) { console.log("  \033[31mFAIL\033[0m latency row invalid:", JSON.string
 console.log("  PASS latency.byModel=" + byModel.length + " latency.daily=" + daily.length);
 ' "$TMP/dash.json" && PASS=$((PASS + 1)) || FAIL=$((FAIL + 1))
 
-echo "== 10. 上游失败路径（停掉 mock 后应 502 且不泄漏）=="
+echo "== 11. 上游失败路径（停掉 mock 后应 502 且不泄漏）=="
 kill "$MPID" 2>/dev/null
 sleep 1
 code=$(curl -s -o "$TMP/err.txt" -w '%{http_code}' -X POST "$BASE/v1/chat/completions" \

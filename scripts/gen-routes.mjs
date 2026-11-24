@@ -41,7 +41,8 @@ function toRoute(relDir) {
   return { pattern: "/" + segments.join("/"), wildcardKeys };
 }
 
-// METHODS 之外的辅助：Allow 头的完整方法列表（含 HEAD 回退与 OPTIONS 自身）
+// METHODS 之外的辅助：Allow 头的完整方法列表（含 HEAD 回退与 OPTIONS 自身）。
+// OPTIONS 204 与 405 兜底共用同一份，避免两边漂移
 function methodsWithHeadForAllow(exported) {
   const list = [...exported];
   if (exported.includes("GET") && !exported.includes("HEAD")) list.push("HEAD");
@@ -78,19 +79,32 @@ routeFiles.forEach((file, i) => {
 
   imports.push(`import * as m${i} from "@/routes/${relDir}/route";`);
 
+  // 通配段的**零段**形态（`/v1`、`/raw` 裸前缀）在 Next 下是 404（`[...path]` 需至少一段），
+  // 但 Hono 的 `*` 会零段命中。这里显式注册裸前缀并排在通配路由之前：任何方法
+  //（含未实现方法与 OPTIONS）都统一 404，不会出现「GET /v1 → 404、DELETE /v1 → 405」的分裂。
+  if (wildcardKeys.length > 0) {
+    registrations.push(`  app.all("${pattern.slice(0, -2)}", (c) => c.notFound());`);
+  }
+
   // 每个方法各自指向自己的 export；HEAD 无显式导出时回退到 GET（Next 同语义）
   const reg = (method, handler) =>
     `  app.on("${method}", "${pattern}", (c) => dispatch(m${i}.${handler}, c, ${wildcards}));`;
   for (const m of exported) registrations.push(reg(m, m));
   if (exported.includes("GET") && !exported.includes("HEAD")) registrations.push(reg("HEAD", "GET"));
+  const allow = [...methodsWithHeadForAllow(exported)].join(", ");
   // OPTIONS 回补（Next 对未实现 OPTIONS 的路由自动 204 + Allow；同源前端不用，
   // 但第三方 SDK 的预检/探测会直接挂）；显式导出了 OPTIONS 就走上面的常规注册
   if (!exported.includes("OPTIONS")) {
-    const allow = [...methodsWithHeadForAllow(exported)].join(", ");
     registrations.push(
       `  app.on("OPTIONS", "${pattern}", (c) => c.body(null, 204, { Allow: "${allow}" }));`
     );
   }
+  // 405 兜底：Next 对「路径存在但方法未导出」返回 405 + Allow，Hono 的 app.on 只注册
+  // 存在的方法，缺方法会一路落到静态 → notFound，变成 404 壳（语义退化，SDK 探测拿不到
+  // Allow）。app.all 注册在本 route 的所有具体方法之后即兜底：具体方法先匹配即胜出。
+  registrations.push(
+    `  app.all("${pattern}", (c) => c.body(null, 405, { Allow: "${allow}" }));`
+  );
 });
 
 const output = `// AUTO-GENERATED FILE — 由 scripts/gen-routes.mjs 生成，手改无效。

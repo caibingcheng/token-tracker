@@ -45,6 +45,10 @@ export function dispatch(
     // 从实际 path 里切出余量，还原 Next [...name] 的 params 值
     const rest = c.req.path.slice(Math.max(0, c.req.routePath.length - 1));
     const segments = rest.split("/").filter((seg) => seg !== "");
+    // Next 的 catch-all `[...name]` 要求至少一段：`/v1`、`/raw` 这类裸前缀在迁移前是 404。
+    // Hono 的 `*` 零段也命中（segments 为空 ⇔ path 恰等于前缀），不拦就会把空路径送进网关
+    //（`GET /v1` → 上游 `/`），并让基线里「裸前缀 404」变成探测网关存在性的入口
+    if (segments.length === 0) return c.notFound();
     for (const key of wildcardKeys) params[key] = segments;
   }
 
