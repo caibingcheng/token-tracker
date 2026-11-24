@@ -2,6 +2,8 @@
 // 按请求 messages 与响应文本估算 token，记库 status='estimated'。
 // 估算口径：非 ASCII 字符（CJK 等）1 字 ≈ 1 token，ASCII 字符 4 字 ≈ 1 token。
 import type { Protocol } from "./model-router";
+import type { ValueSpan } from "./json-scan";
+import { firstNonWs } from "./json-scan";
 
 export function estimateTokens(text: string): number {
   if (text.length === 0) return 0;
@@ -41,6 +43,57 @@ function estimateContainer(value: unknown): number {
   if (typeof value === "string") return estimateTokens(value);
   if (!Array.isArray(value) || value.length === 0) return 0;
   return estimateTokens(JSON.stringify(value));
+}
+
+// 按 UTF-8 字节区间估算 token（与 estimateTokens 同口径：>127 码点 1 字 1 token，
+// ASCII 4 字 1 token；转义/结构开销与 stringify 口径同量级，均计入 ASCII）。
+// 零解码零分配——>1MB 请求体不整包 parse 时的 input 估算路径。
+function estimateUtf8(bytes: Uint8Array, start: number, end: number): number {
+  let ascii = 0;
+  let nonAscii = 0;
+  for (let i = start; i < end; i++) {
+    const b = bytes[i];
+    if (b < 0x80) {
+      ascii++;
+    } else {
+      nonAscii++;
+      while (i + 1 < end && (bytes[i + 1] & 0xc0) === 0x80) i++; // 跳过 UTF-8 续字节
+    }
+  }
+  return nonAscii + Math.ceil(ascii / 4);
+}
+
+// 字节区间版 input 估算（镜像 estimateInputTokens 的容器选择与求和，
+// 不物化消息树；容器 span 直接按原始 JSON 字节计数——与 stringify 口径同量级）。
+export function estimateInputTokensFromSpans(
+  bytes: Uint8Array,
+  fields: ReadonlyMap<string, ValueSpan>,
+  protocol: Protocol
+): number {
+  const keys =
+    protocol === "gemini"
+      ? ["contents"]
+      : protocol === "anthropic"
+        ? ["messages"]
+        : ["messages", "input"];
+  let total = 0;
+  for (const key of keys) {
+    const span = fields.get(key);
+    if (!span) continue;
+    total += estimateContainerSpan(bytes, span);
+  }
+  return total;
+}
+
+// 镜像 estimateContainer：字符串只计内层（不去引号会多算），数组计整个区间
+//（结构字符与 stringify 口径同量级），其余类型（数字/布尔/对象）计 0。
+function estimateContainerSpan(bytes: Uint8Array, span: ValueSpan): number {
+  const i = firstNonWs(bytes, span);
+  if (i < 0) return 0;
+  const b = bytes[i];
+  if (b === 34 /* " */ && span.end - 1 > i) return estimateUtf8(bytes, i + 1, span.end - 1);
+  if (b === 91 /* [ */) return estimateUtf8(bytes, span.start, span.end);
+  return 0;
 }
 
 // 从非流式响应 body 估算 output tokens：提取各协议 assistant 输出文本。

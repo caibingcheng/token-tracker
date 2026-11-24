@@ -2,6 +2,7 @@
 // 客户端请求的是虚拟名，上游返回的是真实模型名，透传时把 model 字段改回虚拟名。
 // Gemini 不改写（modelVersion 是版本信息，不回显请求名）。
 import type { Protocol } from "./model-router";
+import { CH_QUOTE, firstNonWs, scanTopLevelObject, spliceBytes } from "./json-scan";
 
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
@@ -19,24 +20,21 @@ function rewriteModelField(
   return false;
 }
 
-// 非流式响应：JSON parse → 顶层 model 改写 → 重序列化；parse 失败原样返回
-export function rewriteModelNonStreaming(
-  text: string,
+// 非流式响应：顶层 model 区间切片改写（不整包 parse/重序列化——大响应体零树化）；
+// 扫描不合法 / 无顶层字符串 model → 原字节（同引用）返回，镜像原 parse 失败语义
+export function rewriteModelNonStreamingBytes(
+  bytes: Uint8Array,
   protocol: Protocol,
   virtualName: string
-): string {
-  if (protocol === "gemini") return text;
-  let json: unknown;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    return text;
-  }
-  if (typeof json !== "object" || json === null) return text;
-  if (!rewriteModelField(json as Record<string, unknown>, protocol, virtualName)) {
-    return text;
-  }
-  return JSON.stringify(json);
+): Uint8Array {
+  if (protocol === "gemini") return bytes;
+  const scan = scanTopLevelObject(bytes, ["model"]);
+  if (!scan.valid || !scan.isObject) return bytes;
+  const span = scan.fields.get("model");
+  if (!span) return bytes;
+  const i = firstNonWs(bytes, span);
+  if (i < 0 || bytes[i] !== CH_QUOTE) return bytes; // 非字符串 model 不改写（镜像 rewriteModelField）
+  return spliceBytes(bytes, span.start, span.end, encoder.encode(JSON.stringify(virtualName)));
 }
 
 // 解析一个完整 SSE 事件块（不含结尾分隔符），返回改写后的块（保持 event:/data: 行结构）

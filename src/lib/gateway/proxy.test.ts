@@ -4,6 +4,7 @@ import { handleProxyRequest, extractVirtualKeyToken, extractSessionId, stripRawP
 import type { ProxyDeps } from "./proxy";
 import type { UpstreamRoute, NamedRoute } from "./model-router";
 import { buildSessionId } from "./session";
+import { estimateInputTokens } from "./estimate";
 import { setOutboundFetchImpl } from "./outbound-fetch";
 
 function mkNamedRoute(overrides: Partial<NamedRoute> = {}): NamedRoute {
@@ -557,6 +558,27 @@ describe("handleProxyRequest - failover chain", () => {
     expect(headers.get("authorization")).toBe("Bearer secret-key-1");
     expect(headers.get("x-api-key")).toBeNull();
     expect(headers.get("accept-encoding")).toBe("identity");
+  });
+
+  it("drops client Expect header (curl >1KB sends Expect: 100-continue; undici rejects it)", async () => {
+    fetchMock.mockResolvedValue(new Response("{}", { status: 200, headers: { "content-type": "application/json" } }));
+
+    const req = new Request("https://gw.example/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer vk-good",
+        expect: "100-continue",
+      },
+      body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "x".repeat(2048) }] }),
+    });
+    const res = await handleProxyRequest(req, mkDeps());
+    expect(res.status).toBe(200);
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const headers = new Headers(init.headers);
+    expect(headers.get("expect")).toBeNull(); // 转发即 UND_ERR_NOT_SUPPORTED 502
+    expect(headers.get("content-type")).toBe("application/json"); // 其余头不受影响
   });
 
   it("forwards request body unchanged", async () => {
@@ -4293,5 +4315,205 @@ describe("handleProxyRequest - auto targets (provider-less)", () => {
     // 第二次：binding 命中 auto 目标展开链内的一跳 → 预选，不再决策
     expect(session.setBinding).toHaveBeenCalledTimes(1);
     expect((fetchMock.mock.calls[1] as [string, RequestInit])[0]).toContain("precise.example");
+  });
+});
+
+describe("handleProxyRequest - large body scan path (>1MB 不整包 parse)", () => {
+  const fetchMock = vi.fn();
+  const bigText = "x".repeat(1_100_000); // stringify 后 >1MB，命中扫描路径
+
+  const bigBody = (extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+    model: "gpt-4o",
+    messages: [{ role: "user", content: bigText }],
+    ...extra,
+  });
+
+  const usageResponse = () =>
+    new Response(JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    setOutboundFetchImpl(null);
+    fetchMock.mockReset();
+  });
+
+  it("extracts model and forwards body byte-identical", async () => {
+    setOutboundFetchImpl(fetchMock);
+    fetchMock.mockResolvedValueOnce(usageResponse());
+
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: bigBody(),
+      }),
+      mkDeps()
+    );
+    expect(res.status).toBe(200);
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const sent = new TextDecoder().decode(init.body as Uint8Array);
+    expect(sent.length).toBeGreaterThan(1_048_576);
+    const parsed = JSON.parse(sent) as { model: string; messages: { content: string }[] };
+    expect(parsed.model).toBe("gpt-4o");
+    expect(parsed.messages[0].content).toBe(bigText); // 未注入前透传字节不变
+  });
+
+  it("rejects truncated JSON >1MB with 400 Invalid JSON body", async () => {
+    setOutboundFetchImpl(fetchMock);
+    const full = JSON.stringify(bigBody());
+    const truncated = full.slice(0, 1_100_000); // < full 且 >1MB → 扫描不闭合
+    const req = new Request("https://gw.example/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer vk-good",
+      },
+      body: truncated,
+    });
+    const res = await handleProxyRequest(req, mkDeps());
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error?: { message?: string } };
+    expect(body.error?.message).toBe("Invalid JSON body");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("root non-object >1MB → 400 unable to determine model", async () => {
+    setOutboundFetchImpl(fetchMock);
+    const req = new Request("https://gw.example/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer vk-good",
+      },
+      body: JSON.stringify([bigText]), // 根是数组：合法但非对象
+    });
+    const res = await handleProxyRequest(req, mkDeps());
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error?: { message?: string } };
+    expect(body.error?.message).toBe("Unable to determine model from request");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("injects stream_options at root end for >1MB streaming chat, content intact", async () => {
+    setOutboundFetchImpl(fetchMock);
+    fetchMock.mockResolvedValueOnce(
+      new Response('data: [DONE]\n\n', {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      })
+    );
+
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: bigBody({ stream: true }),
+      }),
+      mkDeps()
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const sent = new TextDecoder().decode(init.body as Uint8Array);
+    const parsed = JSON.parse(sent) as {
+      model: string;
+      stream: boolean;
+      stream_options?: { include_usage?: boolean };
+      messages: { content: string }[];
+    };
+    expect(parsed.stream_options).toEqual({ include_usage: true });
+    expect(parsed.model).toBe("gpt-4o"); // 末尾插入不影响既有键
+    expect(parsed.messages[0].content).toBe(bigText);
+  });
+
+  it("keeps client-provided stream_options.include_usage for >1MB", async () => {
+    setOutboundFetchImpl(fetchMock);
+    fetchMock.mockResolvedValueOnce(
+      new Response('data: [DONE]\n\n', {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      })
+    );
+
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: bigBody({ stream: true, stream_options: { include_usage: false } }),
+      }),
+      mkDeps()
+    );
+    await res.text();
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const parsed = JSON.parse(
+      new TextDecoder().decode(init.body as Uint8Array)
+    ) as { stream_options?: { include_usage?: boolean } };
+    expect(parsed.stream_options).toEqual({ include_usage: false }); // 不覆盖显式设置
+  });
+
+  it("estimates input from byte spans when upstream omits usage (>1MB)", async () => {
+    setOutboundFetchImpl(fetchMock);
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ choices: [{ text: "hi" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+
+    const deps = mkDeps();
+    const bodyObj = bigBody();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: bodyObj,
+      }),
+      deps
+    );
+    await res.text();
+
+    expect(deps.onUsage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "estimated",
+        // 紧凑 JSON 下字节跨度估算与解析路径逐字节平价（estimate.test 同口径）
+        inputTokens: estimateInputTokens(bodyObj, "openai"),
+        outputTokens: 1,
+      })
+    );
+  });
+
+  it("records session fingerprint for >1MB multimodal body", async () => {
+    setOutboundFetchImpl(fetchMock);
+    fetchMock.mockResolvedValueOnce(usageResponse());
+
+    const bodyObj = {
+      model: "gpt-4o",
+      messages: [
+        { role: "system", content: "sys" },
+        {
+          role: "user",
+          content: [
+            { type: "image_url", image_url: { url: `data:image/png;base64,${"A".repeat(1_100_000)}` } },
+            { type: "text", text: "看图" },
+          ],
+        },
+      ],
+    };
+    const deps = mkDeps();
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions", {
+        headers: { authorization: "Bearer vk-good" },
+        body: bodyObj,
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+
+    // 字节级指纹与解析级完全一致
+    const expected = buildSessionId(bodyObj, "gpt-4o", 1, "openai");
+    expect(deps.onUsage).toHaveBeenCalledWith(expect.objectContaining({ sessionId: expected }));
   });
 });

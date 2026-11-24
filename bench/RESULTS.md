@@ -404,3 +404,36 @@ git archive HEAD | tar -x -C /tmp/tt-next-base && docker build -t tt:next-base /
 IMAGE=tt:next-base LABEL=next-base PORT=30110 bash bench/docker-bench.sh
 node bench/recalc-stats-usage.mjs next-base hono
 ```
+
+## 12. 大 body（20MB 图片）并发验证——请求体分治落地（2026-11-24）
+
+背景：旧路径每个 JSON 请求整包 `JSON.parse`（隔离实测同 body：+20MB 堆 / 19ms），
+128MB old-space cap 下 2 路并发 20MB 图即贴顶。P0/P1 改为 ≤1MB 保持 `JSON.parse`
+（400 契约不变）、>1MB 顶层扫描只物化键区间（`src/lib/gateway/json-scan.ts`），
+外加 content-length 单趟读体、响应 usage/model 区间切片、session 指纹与 input 估算
+字节级镜像（与解析路径逐字节平价，`session.test` / `estimate.test` 平价用例锁定）。
+附带修复存量 bug：`buildUpstreamHeaders` 未剥离 `expect`——curl 对 >1KB body 默认发
+`Expect: 100-continue`，undici 拒绝该头（`UND_ERR_NOT_SUPPORTED`）→ 从未到达上游的 502
+（HEAD 全历史存在，agent 客户端不发 Expect 所以长期未暴露）。
+
+环境：本机 31GiB；e2e 自包含库每轮重置（seed 3 upstreams）+ `mock-upstream:18080`；
+`build/server.js` + 生产全量 flags（`--max-old-space-size=128 --expose-gc
+--max-semi-space-size=4 --optimize-for-size`）；采样 `/proc/<pid>/status` RssAnon
+每 100ms；请求体 20,971,678B（base64 图）；并发 = 8 大 + 5 小同发。
+
+| 指标 | 值 |
+|---|---|
+| 单发 20MB | 200，169ms，RssAnon 峰 147MB |
+| 8×20MB + 5 小同发 | **8/8 全 200**，总耗时 743ms，RssAnon 峰 **646MB**（≈75-80MB/请求：入站 chunks+arrayBuffer+出站发送，failover 重放须持有请求体） |
+| 混合小请求延迟 | 冷 65ms → 并发打压下 85ms（+20ms，无劣化） |
+| 落定 | T+25s **57MB**、T+65s 57MB（idle 27）；`[mem] reclaim` tick 正常（打印 VmRSS 111MB = anon 57 + file ~55，§1.1 口径差） |
+| 旧路径对照（隔离） | 同 body 整包 parse +20MB 堆/请求 ×8并发 ≈ 160MB——新路径堆增量 ≈ 0 |
+
+判定：**峰值平台化 + 自动回收，非泄漏**。前两轮落定 725MB 不回落是 bench 漏带
+`--expose-gc`（30s/RSS>80MB 回收调度未装上）所致，非代码问题；另有一轮 LD_PRELOAD
+双前缀 bug 致 jemalloc 未生效，落定仍达标（20MB 级块在 glibc 走 mmap，free 即归还），
+预载已修。
+**P1-5（大 body 磁盘 spool）判定不做**：峰值由 `GATEWAY_MAX_BODY_MB=32` × 并发硬封顶
+且 25s 内自动回落，磁盘 I/O 与新增失败面不值；复核判据 = 本节数字。
+复现：一次性脚本未入库（需密钥环境），核心参数 = e2e.sh 的重置四步（守卫→rm→init-db→seed）
++ 上述 flags + RssAnon 采样，可按此重建。
