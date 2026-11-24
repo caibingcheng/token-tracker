@@ -314,3 +314,14 @@ export async function setAgentAliasesSetting(rules: AgentAliasRule[]): Promise<v
   const { invalidateQueryCache } = await import("@/lib/db/cache");
   invalidateQueryCache();
 }
+
+// ---- 首次使用 star 提示：settings 表 star_prompt_dismissed ----
+
+// 未保存 → 未提示过（需要弹）
+export async function isStarPromptDismissed(): Promise<boolean> {
+  return (await getSetting("star_prompt_dismissed")) === "1";
+}
+
+export async function dismissStarPrompt(): Promise<void> {
+  await setSetting("star_prompt_dismissed", "1");
+}

@@ -14,6 +14,7 @@ import MobileTabBar from "./MobileTabBar";
 import { LogoutProvider } from "./LogoutContext";
 import OtpInput from "./OtpInput";
 import { NumberFormatProvider } from "./NumberFormatContext";
+import StarPromptModal from "./StarPromptModal";
 import {
   getLoginKeyStrength,
   LOGIN_KEY_STRENGTH_META,
@@ -319,6 +320,8 @@ export default function ApiKeyGate({ children }: { children: React.ReactNode }) 
             onToggleCollapse={toggleSidebarCollapsed}
           />
           <MobileTabBar />
+          {/* 首次使用 star 提示（状态落库，弹过一次就不再弹） */}
+          <StarPromptModal />
         </LogoutProvider>
       </SidebarActionsContext.Provider>
     </NumberFormatProvider>
