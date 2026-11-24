@@ -1,6 +1,12 @@
 // 全局安全响应头：逐字复刻原 next.config.js headers()（source: '/:path*'，全响应生效）。
 // CSP 的 script-src 用生产口径；dev 页面仍由 next dev + next.config.js dev 分支的 headers()
 // 下发（dev 构建是 eval-source-map，需要 'unsafe-eval'，两处口径不同是刻意的）。
+//
+// script-src 保留 'unsafe-inline' 的原因（实测过，不是保守默认）：Next 静态导出的每个 HTML
+// 都带两段无 src 的内联 <script>——Turbopack 引导（<script id="_R_">）与 Flight 数据
+// （self.__next_f.push([...])）。去掉 'unsafe-inline' 后这些脚本全部被拦，页面白屏。
+// 验证方式：npm run build 后扫描 out/*.html 的无 src <script>（12/12 页面各 3 段）。
+// 注：'unsafe-inline' 在支持 CSP3 的浏览器里会被 hash/nonce 覆盖，但静态导出无法注入 nonce。
 import type { MiddlewareHandler } from "hono";
 
 const CSP =

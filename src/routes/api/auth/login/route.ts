@@ -13,7 +13,7 @@ import {
   signSessionToken,
   keyFingerprint,
 } from "@/lib/auth/session";
-import { verifyTotpCode } from "@/lib/auth/totp";
+import { verifyTotpCodeNoReplay } from "@/lib/auth/totp-replay";
 import {
   isTotpLocked,
   recordTotpFailure,
@@ -211,7 +211,7 @@ export async function POST(request: NextRequest) {
       );
     }
     const secret = await getTotpSecret();
-    if (!secret || !verifyTotpCode(secret, totpCode)) {
+    if (!secret || !(await verifyTotpCodeNoReplay(secret, totpCode))) {
       await recordTotpFailure();
       const { ip, userAgent } = extractClientInfo(request);
       await recordAuditLog({

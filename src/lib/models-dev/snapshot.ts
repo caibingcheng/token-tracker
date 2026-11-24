@@ -1,5 +1,7 @@
 import fs from "fs";
 import path from "path";
+import { outboundFetch } from "@/lib/gateway/outbound-fetch";
+import { getOutboundDispatcher } from "@/lib/gateway/proxy-dispatcher";
 
 // 快照管理：本地缓存 data/models-dev-cache.json，
 // 懒刷新（7 天 TTL + 手动强制），拉取失败静默回退旧快照。
@@ -45,9 +47,9 @@ export interface ModelsDevSnapshot {
   data: ModelsDevData;
 }
 
-// 快照拉取失败分类（供 Refresh 端点区分网络 / 上游 HTTP / 结构非法）
+// 快照拉取失败分类（供 Refresh 端点区分网络 / 上游 HTTP / 结构非法 / 响应超限）
 export interface ModelsDevFetchError {
-  kind: "network" | "http" | "invalid";
+  kind: "network" | "http" | "invalid" | "too_large";
   status?: number;
 }
 
@@ -294,25 +296,79 @@ export function uploadSnapshot(
   return slim;
 }
 
+// 响应体上限：api.json 现约 3.6MB，litellm 同量级；20MB 足够，同时挡住
+// 异常/被劫持上游的超大 body（原实现 res.json() 无上限，整包进内存）
+const MAX_FETCH_BYTES = 20 * 1024 * 1024;
+
+class ResponseTooLargeError extends Error {}
+
+// 出站 init：手动重定向（3xx 视为失败，防请求跳转到其他源）+ 受连接时地址校验
+// 保护的直连 dispatcher（出站红线，见 docs/agents/gateway.md）。
+// 只读拉公共数据，无凭据头，但仍走 outboundFetch（唯一出站入口 + 运行时 URL 校验）。
+function buildFetchInit(): RequestInit & { dispatcher?: unknown } {
+  return {
+    headers: { "accept-encoding": "identity" },
+    redirect: "manual",
+    signal: AbortSignal.timeout(30_000),
+    dispatcher: getOutboundDispatcher(),
+  };
+}
+
+// 3xx：手动模式下不跟随，一律当失败（防跳转到非预期源）
+function isRedirectStatus(status: number): boolean {
+  return status >= 300 && status < 400;
+}
+
+// 流式读取 JSON 并封顶：超限立即中断并抛 ResponseTooLargeError（不整包进内存）
+async function readJsonCapped(res: Response): Promise<unknown> {
+  // 无 body 流（204/空响应，或测试替身）：交给 res.json()（无内容时同样抛错），
+  // 生产路径（undici 的 2xx JSON 响应）不会走到这里
+  if (!res.body) return res.json();
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > MAX_FETCH_BYTES) throw new ResponseTooLargeError();
+      chunks.push(value);
+    }
+  } finally {
+    reader.cancel().catch(() => {});
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return JSON.parse(new TextDecoder().decode(merged));
+}
+
 async function fetchModelsDevApi(
   fetchImpl: typeof fetch
 ): Promise<ModelsDevFetchResult> {
   try {
-    const res = await fetchImpl(MODELS_DEV_API_URL, {
-      headers: { "accept-encoding": "identity" },
-      signal: AbortSignal.timeout(30_000),
-    });
-    if (!res.ok) {
+    const res = await fetchImpl(MODELS_DEV_API_URL, buildFetchInit() as RequestInit);
+    if (isRedirectStatus(res.status) || !res.ok) {
       console.warn(`[models.dev] Fetch failed with status ${res.status}`);
+      await res.body?.cancel().catch(() => {});
       return { ok: false, error: { kind: "http", status: res.status } };
     }
-    const data: unknown = await res.json();
+    const data: unknown = await readJsonCapped(res);
     if (!isValidModelsDevData(data)) {
       console.warn("[models.dev] Fetch returned invalid data shape");
       return { ok: false, error: { kind: "invalid" } };
     }
     return { ok: true, data };
   } catch (err) {
+    if (err instanceof ResponseTooLargeError) {
+      console.warn(`[models.dev] Fetch response exceeded ${MAX_FETCH_BYTES} bytes`);
+      return { ok: false, error: { kind: "too_large" } };
+    }
     console.warn("[models.dev] Fetch error:", err);
     return { ok: false, error: { kind: "network" } };
   }
@@ -328,18 +384,16 @@ async function fetchLitellmPrices(
   let lastError: ModelsDevFetchError = { kind: "network" };
   for (const url of urls) {
     try {
-      const res = await fetchImpl(url, {
-        headers: { "accept-encoding": "identity" },
-        signal: AbortSignal.timeout(30_000),
-      });
-      if (!res.ok) {
+      const res = await fetchImpl(url, buildFetchInit() as RequestInit);
+      if (isRedirectStatus(res.status) || !res.ok) {
         console.warn(
           `[models.dev] Litellm fetch failed with status ${res.status} (${url})`
         );
+        await res.body?.cancel().catch(() => {});
         lastError = { kind: "http", status: res.status };
         continue;
       }
-      const parsed: unknown = await res.json();
+      const parsed: unknown = await readJsonCapped(res);
       const data = convertLitellmToModelsDev(parsed);
       if (isValidModelsDevData(data)) {
         return { ok: true, data };
@@ -347,6 +401,13 @@ async function fetchLitellmPrices(
       console.warn(`[models.dev] Litellm fetch returned invalid data shape (${url})`);
       lastError = { kind: "invalid" };
     } catch (err) {
+      if (err instanceof ResponseTooLargeError) {
+        console.warn(
+          `[models.dev] Litellm fetch response exceeded ${MAX_FETCH_BYTES} bytes (${url})`
+        );
+        lastError = { kind: "too_large" };
+        continue;
+      }
       console.warn(`[models.dev] Litellm fetch error (${url}):`, err);
       lastError = { kind: "network" };
     }
@@ -355,7 +416,9 @@ async function fetchLitellmPrices(
 }
 
 export async function fetchModelsDevData(
-  fetchImpl: typeof fetch = fetch,
+  // 默认走 outboundFetch（唯一出站入口：运行时 URL 校验 + 受保护 dispatcher + 不跟随重定向），
+  // 测试可注入 mock（保持原签名）
+  fetchImpl: typeof fetch = outboundFetch as unknown as typeof fetch,
   source: ModelsDevSource = MODELS_DEV_SOURCE_DEFAULT
 ): Promise<ModelsDevFetchResult> {
   if (source === "github") return fetchLitellmPrices(fetchImpl);

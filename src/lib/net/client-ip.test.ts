@@ -4,6 +4,8 @@ import {
   resolveClientIp,
   getRateLimitKey,
   getXForwardedForRaw,
+  isLoopbackAddress,
+  getPeerAddress,
 } from "@/lib/net/client-ip";
 
 const ORIG = process.env.TRUSTED_PROXY;
@@ -83,6 +85,53 @@ describe("getRateLimitKey", () => {
     expect(getRateLimitKey(makeRequest({ "x-real-ip": "198.51.100.7" }))).toBe(
       "198.51.100.7"
     );
+  });
+});
+
+describe("socket 对端地址（内部 header，客户端不可伪造）", () => {
+  it("isLoopbackAddress 认 127.x / ::1 / IPv4-mapped 形式", () => {
+    expect(isLoopbackAddress("127.0.0.1")).toBe(true);
+    expect(isLoopbackAddress("127.1.2.3")).toBe(true);
+    expect(isLoopbackAddress("::1")).toBe(true);
+    expect(isLoopbackAddress("[::1]")).toBe(true);
+    expect(isLoopbackAddress("::ffff:127.0.0.1")).toBe(true);
+    expect(isLoopbackAddress("::ffff:7f00:1")).toBe(true);
+    expect(isLoopbackAddress("203.0.113.9")).toBe(false);
+    expect(isLoopbackAddress("::ffff:203.0.113.9")).toBe(false);
+    expect(isLoopbackAddress("192.168.1.10")).toBe(false);
+    expect(isLoopbackAddress(null)).toBe(false);
+    expect(isLoopbackAddress("")).toBe(false);
+  });
+
+  it("getPeerAddress 只认内部 header", () => {
+    expect(getPeerAddress(makeRequest({ "x-internal-remote-addr": "127.0.0.1" }))).toBe("127.0.0.1");
+    expect(getPeerAddress(makeRequest({}))).toBeNull();
+    // 客户端伪造同名 header 无效（server 层会覆盖/删除；单测无 server 层时至少验证读取口径）
+    expect(getPeerAddress(makeRequest({ host: "localhost" }))).toBeNull();
+  });
+
+  it("TRUSTED_PROXY=false 时用对端地址做桶（伪造 XFF 不影响）", () => {
+    delete process.env.TRUSTED_PROXY;
+    const a = getRateLimitKey(
+      makeRequest({ "x-internal-remote-addr": "198.51.100.7", "x-forwarded-for": "1.2.3.4" })
+    );
+    const b = getRateLimitKey(
+      makeRequest({ "x-internal-remote-addr": "198.51.100.8", "x-forwarded-for": "1.2.3.4" })
+    );
+    expect(a).toBe("198.51.100.7");
+    expect(b).toBe("198.51.100.8");
+    expect(resolveClientIp(makeRequest({ "x-internal-remote-addr": "198.51.100.7" }))).toBe(
+      "198.51.100.7"
+    );
+  });
+
+  it("TRUSTED_PROXY=true 时仍然以反代 header 为准（口径不变）", () => {
+    process.env.TRUSTED_PROXY = "true";
+    expect(
+      getRateLimitKey(
+        makeRequest({ "x-internal-remote-addr": "127.0.0.1", "x-real-ip": "198.51.100.7" })
+      )
+    ).toBe("198.51.100.7");
   });
 });
 

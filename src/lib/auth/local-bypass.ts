@@ -2,10 +2,12 @@
 // 生效条件（同时满足）：
 //   1. env LOCAL_ADMIN_BYPASS=1 —— 只由 docker-compose.local.yml 设置（端口绑定 127.0.0.1），
 //      VPS / 生产部署不得设置；
-//   2. 请求 Host 为 loopback（localhost / 127.x / ::1）—— 纵深防御：即使有人把端口改绑到
-//      0.0.0.0，非本机 Host 的请求也不会被放行。注意 Host 头可被伪造，真正的边界是
-//      compose 文件只绑定 127.0.0.1。
-// 该文件保持运行时无关（proxy 引用）：只用 process.env + 字符串操作。
+//   2. 请求来自 loopback：**优先用 socket 对端地址**（内部 header x-internal-remote-addr，
+//      由 src/server/client-addr.ts 从 IncomingMessage.socket.remoteAddress 无条件写入，
+//      客户端不可伪造）；取不到对端（next dev 单进程 / 单测直调 handler）才回退 Host 判定。
+//      Host 头可伪造，回退分支只是过渡兼容，真正的边界是 compose 文件只绑定 127.0.0.1。
+// 该文件保持运行时无关（proxy 引用）：只用 process.env + 字符串操作 + 纯函数判定。
+import { INTERNAL_REMOTE_ADDR_HEADER, isLoopbackAddress } from "@/lib/net/client-ip";
 
 export function isLocalAdminBypassEnabled(): boolean {
   const v = process.env.LOCAL_ADMIN_BYPASS;
@@ -31,7 +33,12 @@ let warned = false;
 
 export function canBypassAuth(request: { headers: Headers }): boolean {
   if (!isLocalAdminBypassEnabled()) return false;
-  if (!isLoopbackHost(request.headers.get("host"))) return false;
+  // 对端地址优先（不可伪造）；取不到对端才回退 Host 判定（过渡兼容）
+  const peer = request.headers.get(INTERNAL_REMOTE_ADDR_HEADER);
+  const fromLoopback = peer
+    ? isLoopbackAddress(peer)
+    : isLoopbackHost(request.headers.get("host"));
+  if (!fromLoopback) return false;
   if (!warned) {
     warned = true;
     console.warn(

@@ -28,7 +28,19 @@ export function deriveSessionKey(): Buffer {
 }
 
 export function keyFingerprint(key: string): string {
+  // HMAC 而非裸 sha256：token payload 是明文 base64，裸哈希会让持有 token 的人
+  // 离线跑字典反推出弱登录 key。密钥参与后无 GATEWAY_SECRET 就无法验证候选值。
   // 完整 256 bit 指纹（不截断）：避免 64 bit 截断被离线字典枚举验证
+  return createHmac("sha256", deriveSessionKey())
+    .update(`login-key:${key}`)
+    .digest("hex");
+}
+
+// 过渡期兼容：HMAC 化之前签发的存量 token 里装的是裸 sha256 指纹。
+// 只用于验签存量 token（resolveActiveKeyId 命中后由 withAuth 立即换发新格式）：
+// 携带裸哈希的窗口 = 存量 token 的剩余寿命（用一次即升级，最迟 exp 消失）。
+// 窗口过后可连同 guard.ts 的 legacy 分支一起删除。
+export function legacyKeyFingerprint(key: string): string {
   return createHash("sha256").update(`login-key:${key}`).digest("hex");
 }
 

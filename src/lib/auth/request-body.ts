@@ -35,6 +35,24 @@ export async function readJsonBodyLimited(
   request: Request,
   maxBytes: number = MAX_AUTH_BODY_BYTES
 ): Promise<Record<string, unknown>> {
+  const text = await readBodyLimited(request, maxBytes);
+  if (text === "") throw new InvalidJsonBodyError();
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new InvalidJsonBodyError();
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {};
+  }
+  return parsed as Record<string, unknown>;
+}
+
+// 通用带上限的 body 读取（非 JSON 端点复用：ingest / 快照上传）。
+// 超限 → BodyTooLargeError，调用方按各自错误契约映射状态码（413）。
+export async function readBodyLimited(request: Request, maxBytes: number): Promise<string> {
   const declared = parseContentLength(request.headers.get("content-length"));
   if (declared !== null && declared > maxBytes) {
     // 声明超限：不读 body 直接拒绝（chunked 无 length 时走下面的流式累计）
@@ -63,23 +81,11 @@ export async function readJsonBodyLimited(
     }
   }
 
-  if (total === 0) throw new InvalidJsonBodyError();
-
   const merged = new Uint8Array(total);
   let offset = 0;
   for (const chunk of chunks) {
     merged.set(chunk, offset);
     offset += chunk.byteLength;
   }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(new TextDecoder().decode(merged));
-  } catch {
-    throw new InvalidJsonBodyError();
-  }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return {};
-  }
-  return parsed as Record<string, unknown>;
+  return new TextDecoder().decode(merged);
 }

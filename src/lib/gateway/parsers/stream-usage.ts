@@ -74,6 +74,10 @@ export class StreamUsageExtractor {
   // 与「真中断」，前者不标 client_aborted。
   sawTerminal = false;
 
+  // responses create 的 response id（首个带 id 的事件即可）：chat 风格在事件顶层 id，
+  // responses 风格在 response.created 的 response.id。proxy 用它记 vk 归属（防跨 vk retrieve）。
+  responseId: string | null = null;
+
   // OpenAI / Gemini：最后一个 usage 事件胜出
   private lastOpenAiUsage: OpenAIUsage | null = null;
   private lastGeminiMetadata: GeminiUsageMetadata | null = null;
@@ -178,10 +182,12 @@ export class StreamUsageExtractor {
         return data.includes('"usageMetadata"') || data.includes('"candidates"');
       default:
         // choices 覆盖全部 chat chunk（含 content delta 与 usage chunk）；
-        // response.output_text.delta 为 responses API 流式文本增量事件
+        // response.output_text.delta 为 responses API 流式文本增量事件；
+        // response.created 是 responses 流的首个事件（带 response.id，供归属记录）
         return (
           data.includes('"usage"') ||
           data.includes('"response.completed"') ||
+          data.includes('"response.created"') ||
           data.includes('"choices"') ||
           data.includes('"response.output_text.delta"')
         );
@@ -219,6 +225,16 @@ export class StreamUsageExtractor {
     }
     if (event?.type === "response.completed") {
       this.sawTerminal = true;
+    }
+    // response id：首个带 id 的事件胜出（只取一次，后续事件不再判断）
+    if (this.responseId === null) {
+      const topLevelId = event?.id;
+      const nestedId = (event?.response as Record<string, unknown> | undefined)?.id;
+      if (typeof topLevelId === "string" && topLevelId !== "") {
+        this.responseId = topLevelId;
+      } else if (typeof nestedId === "string" && nestedId !== "") {
+        this.responseId = nestedId;
+      }
     }
     const usage = openAiUsageOf(event);
     if (usage && typeof usage === "object") {

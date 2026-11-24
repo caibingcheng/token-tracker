@@ -11,11 +11,8 @@ import {
   setSetting,
   deleteSetting,
 } from "@/lib/auth/settings";
-import {
-  generateTotpSecret,
-  verifyTotpCode,
-  buildOtpAuthUri,
-} from "@/lib/auth/totp";
+import { generateTotpSecret, buildOtpAuthUri } from "@/lib/auth/totp";
+import { verifyTotpCodeNoReplay } from "@/lib/auth/totp-replay";
 import {
   isTotpLocked,
   recordTotpFailure,
@@ -56,7 +53,7 @@ export const POST = withAuth(async (request: NextRequest) => {
         { status: 400 }
       );
     }
-    if (!verifyTotpCode(pending, body.code.trim())) {
+    if (!(await verifyTotpCodeNoReplay(pending, body.code.trim()))) {
       if (await isTotpLocked()) {
         return NextResponse.json(
           { success: false, error: "Account temporarily locked, try again later" },
@@ -119,7 +116,7 @@ export const POST = withAuth(async (request: NextRequest) => {
       );
     }
     const secret = await getTotpSecret();
-    if (!secret || !verifyTotpCode(secret, currentCode)) {
+    if (!secret || !(await verifyTotpCodeNoReplay(secret, currentCode))) {
       await recordTotpFailure();
       return NextResponse.json(
         { success: false, error: "Invalid TOTP code" },
@@ -154,7 +151,7 @@ export const DELETE = withAuth(async (request: NextRequest) => {
   }
 
   const secret = await getTotpSecret();
-  if (!secret || !verifyTotpCode(secret, code)) {
+  if (!secret || !(await verifyTotpCodeNoReplay(secret, code))) {
     if (await isTotpLocked()) {
       return NextResponse.json(
         { success: false, error: "Account temporarily locked, try again later" },

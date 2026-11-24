@@ -17,6 +17,7 @@ let namedRouteTargetsTable: any;
 let modelPricesTable: any;
 let ingestTokensTable: any;
 let syncInstancesTable: any;
+let responseBindingsTable: any;
 let initialized = false;
 // in-flight 初始化：并发调用 initDatabase()（多路由同时冷启动）只开一个连接、只跑一遍
 // DDL/迁移。失败置空，允许下次重试；成功则靠 initialized 短路。
@@ -256,6 +257,11 @@ async function ensureClient() {
       last_record_id INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT
     );
+    CREATE TABLE IF NOT EXISTS response_bindings (
+      response_id TEXT PRIMARY KEY,
+      virtual_key_id INTEGER,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
   `);
 
   // 存量补列必须在所有 CREATE TABLE 之后执行：全新库先建表再补列，旧库表已存在、幂等补列
@@ -357,6 +363,7 @@ async function ensureClient() {
   modelPricesTable = sqliteModule.modelPrices;
   ingestTokensTable = sqliteModule.ingestTokens;
   syncInstancesTable = sqliteModule.syncInstances;
+  responseBindingsTable = sqliteModule.responseBindings;
   console.log("[DB] SQLite initialized at:", dbPath);
 }
 
@@ -412,5 +419,5 @@ export function getDateGroupExpr(
   return sql<string>`strftime('%Y-%m-%d', ${tokenRecords.createdAt}, ${modifiers[0]}, ${modifiers[1]})`;
 }
 
-export { db, tokenRecords, upstreamsTable, upstreamKeysTable, virtualKeysTable, settingsTable, adminAuditLogsTable, upstreamModelHealthTable, namedRoutesTable, namedRouteTargetsTable, modelPricesTable, ingestTokensTable, syncInstancesTable };
+export { db, tokenRecords, upstreamsTable, upstreamKeysTable, virtualKeysTable, settingsTable, adminAuditLogsTable, upstreamModelHealthTable, namedRoutesTable, namedRouteTargetsTable, modelPricesTable, ingestTokensTable, syncInstancesTable, responseBindingsTable };
 export type { TokenRecord, NewTokenRecord, NamedRoute, NewNamedRoute, NamedRouteTarget, NewNamedRouteTarget } from "./schema-sqlite";

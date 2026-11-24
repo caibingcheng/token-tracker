@@ -23,6 +23,7 @@ import {
   type ModelsDevModel,
 } from "./snapshot";
 import { matchModelsDevModel, searchModelsDevModel, listProviderModels } from "./match";
+import { getDirectDispatcher } from "@/lib/gateway/proxy-dispatcher";
 
 const GOOD: ModelsDevData = {
   openai: {
@@ -538,6 +539,38 @@ describe("fetchModelsDevData (github source)", () => {
     const res = await fetchModelsDevData(fetchImpl);
     expect(fetchImpl.mock.calls[0][0]).toBe("https://models.dev/api.json");
     expect(res.ok).toBe(true);
+  });
+
+  it("3xx 不跟随（redirect: manual）且注入受保护的直连 dispatcher", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(null, {
+        status: 302,
+        headers: { location: "https://evil.example/api.json" },
+      })
+    );
+    const res = await fetchModelsDevData(fetchImpl);
+    expect(res).toEqual({ ok: false, error: { kind: "http", status: 302 } });
+    const init = fetchImpl.mock.calls[0][1] as { redirect?: string; dispatcher?: unknown };
+    expect(init.redirect).toBe("manual");
+    // 出站红线：无 proxy_url 时也必须是受连接时地址校验保护的直连 Agent
+    expect(init.dispatcher).toBe(getDirectDispatcher());
+  });
+
+  it("响应体超过上限 → too_large（流式封顶，不整包进内存）", async () => {
+    let sent = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent >= 21) {
+          controller.close();
+          return;
+        }
+        sent++;
+        controller.enqueue(new Uint8Array(1024 * 1024).fill(0x20));
+      },
+    });
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(body, { status: 200 }));
+    const res = await fetchModelsDevData(fetchImpl);
+    expect(res).toEqual({ ok: false, error: { kind: "too_large" } });
   });
 });
 

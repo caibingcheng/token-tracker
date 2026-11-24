@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { withAuth } from "@/lib/auth/guard";
+import { readBodyLimited, BodyTooLargeError } from "@/lib/auth/request-body";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 import {
   uploadSnapshot,
@@ -32,19 +33,20 @@ function countModelsDevModels(data: ModelsDevData): number {
 }
 
 export const POST = withAuth(async (request: NextRequest) => {
-  const contentLength = Number(request.headers.get("content-length") ?? "0");
-  if (Number.isFinite(contentLength) && contentLength > MAX_UPLOAD_BYTES) {
+  let text: string;
+  try {
+    // 边读边计数：chunked（无 content-length）时也必须流式封顶，读完再比大小无效
+    text = await readBodyLimited(request, MAX_UPLOAD_BYTES);
+  } catch (err) {
+    if (err instanceof BodyTooLargeError) {
+      return NextResponse.json(
+        { success: false, error: "Upload too large (max 10MB)" },
+        { status: 413 }
+      );
+    }
     return NextResponse.json(
-      { success: false, error: "Upload too large (max 10MB)" },
-      { status: 413 }
-    );
-  }
-
-  const text = await request.text();
-  if (text.length > MAX_UPLOAD_BYTES) {
-    return NextResponse.json(
-      { success: false, error: "Upload too large (max 10MB)" },
-      { status: 413 }
+      { success: false, error: "Invalid request body" },
+      { status: 400 }
     );
   }
 

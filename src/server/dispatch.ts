@@ -5,6 +5,7 @@
 //   3. body 透传：网关链路依赖 request.body 流式读取（见 lib/gateway/proxy.ts），必须走 stream + duplex
 import type { Context } from "hono";
 import { forwardedRequestUrl } from "./forwarded";
+import { applyPeerAddressHeader } from "./client-addr";
 import { NextRequest } from "./next-shim";
 
 type RouteHandler = (
@@ -29,7 +30,9 @@ export function dispatch(
   const raw = c.req.raw;
   const init: RequestInit = {
     method: raw.method,
-    headers: raw.headers,
+    // 对端地址写进内部 header（无条件覆盖，客户端同名 header 不可信）：
+    // route handler 靠它判 loopback（setup 闸门 / LOCAL_ADMIN_BYPASS / 限流桶）
+    headers: applyPeerAddressHeader(raw.headers, c),
     signal: raw.signal,
   };
   if (raw.method !== "GET" && raw.method !== "HEAD" && raw.body) {

@@ -1,4 +1,5 @@
 import { resetSnapshotCache } from "@/lib/models-dev/snapshot";
+import { setOutboundFetchImpl } from "@/lib/gateway/outbound-fetch";
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
@@ -488,7 +489,8 @@ describe("model prices badge semantics (inactive / removed)", () => {
     const backup = readFileSync(snapshotPath, "utf-8");
     rmSync(snapshotPath, { force: true });
     resetSnapshotCache();
-    vi.stubGlobal("fetch", async () => {
+    // 快照拉取走 outboundFetch（出站红线），必须经注入点造网络失败（stub 全局 fetch 已无效）
+    setOutboundFetchImpl(async () => {
       throw new Error("network down");
     });
     try {
@@ -502,6 +504,7 @@ describe("model prices badge semantics (inactive / removed)", () => {
       expect(row.status.active).toBe(true); // 已定价且在用，徽标不受快照缺失影响
     } finally {
       vi.unstubAllGlobals();
+      setOutboundFetchImpl(null);
       writeFileSync(snapshotPath, backup);
       resetSnapshotCache();
     }

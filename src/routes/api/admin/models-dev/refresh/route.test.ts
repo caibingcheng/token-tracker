@@ -15,6 +15,7 @@ import { signSessionToken, keyFingerprint } from "@/lib/auth/session";
 import { resetSnapshotCache } from "@/lib/models-dev/snapshot";
 import { MODELS_DEV_SOURCE_SETTING_KEY, setModelsDevSource } from "@/lib/auth/settings-models-dev-source";
 import { LITELLM_MODEL_PRICES_URL } from "@/lib/models-dev/snapshot";
+import { setOutboundFetchImpl } from "@/lib/gateway/outbound-fetch";
 
 const ORIG_DB = process.env.SQLITE_DATABASE_PATH;
 const ORIG_SECRET = process.env.GATEWAY_SECRET;
@@ -80,6 +81,8 @@ beforeEach(async () => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  // 出站红线：snapshot 走 outboundFetch，mock 必须经注入点（stub 全局 fetch 已失效）
+  setOutboundFetchImpl(null);
 });
 
 async function makeToken(): Promise<string> {
@@ -107,7 +110,7 @@ describe("POST /api/admin/models-dev/refresh", () => {
   });
 
   it("reports network failure with categorized message (502)", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
+    setOutboundFetchImpl(vi.fn().mockRejectedValue(new Error("network down")));
     const token = await makeToken();
     const res = await POST(req("/api/admin/models-dev/refresh", "POST", token));
     expect(res.status).toBe(502);
@@ -115,8 +118,7 @@ describe("POST /api/admin/models-dev/refresh", () => {
   });
 
   it("reports upstream HTTP failure with status (502)", async () => {
-    vi.stubGlobal(
-      "fetch",
+    setOutboundFetchImpl(
       vi.fn().mockResolvedValue({ ok: false, status: 500, json: async () => ({}) })
     );
     const token = await makeToken();
@@ -126,8 +128,7 @@ describe("POST /api/admin/models-dev/refresh", () => {
   });
 
   it("reports invalid response shape (502)", async () => {
-    vi.stubGlobal(
-      "fetch",
+    setOutboundFetchImpl(
       vi.fn().mockResolvedValue({
         ok: true,
         status: 200,
@@ -141,8 +142,7 @@ describe("POST /api/admin/models-dev/refresh", () => {
   });
 
   it("refreshes snapshot on success and writes audit log (200)", async () => {
-    vi.stubGlobal(
-      "fetch",
+    setOutboundFetchImpl(
       vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => API_JSON })
     );
     const token = await makeToken();
@@ -176,7 +176,7 @@ describe("POST /api/admin/models-dev/refresh", () => {
         },
       }),
     });
-    vi.stubGlobal("fetch", fetchImpl);
+    setOutboundFetchImpl(fetchImpl);
     const token = await makeToken();
     const res = await POST(req("/api/admin/models-dev/refresh", "POST", token));
     expect(res.status).toBe(200);
@@ -201,7 +201,7 @@ describe("POST /api/admin/models-dev/refresh", () => {
       status: 200,
       json: async () => API_JSON,
     });
-    vi.stubGlobal("fetch", fetchImpl);
+    setOutboundFetchImpl(fetchImpl);
     const token = await makeToken();
     const res = await POST(req("/api/admin/models-dev/refresh", "POST", token));
     expect(res.status).toBe(200);

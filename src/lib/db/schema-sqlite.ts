@@ -228,3 +228,15 @@ export const syncInstances = sqliteTable("sync_instances", {
 
 export type SyncInstance = typeof syncInstances.$inferSelect;
 export type NewSyncInstance = typeof syncInstances.$inferInsert;
+
+// responses create 的 response id 归属：/v1/responses/{id} 子路径透传前用它
+// 阻止跨虚拟 key retrieve（创建它的 upstream 有状态，网关只能自己记归属）。
+// 无映射（升级前的存量 id / 上游侧创建）一律放行：刻意的过渡期 fail-open。
+export const responseBindings = sqliteTable("response_bindings", {
+  responseId: text("response_id").primaryKey(),
+  virtualKeyId: integer("virtual_key_id"),
+  createdAt: text("created_at").$defaultFn(() => new Date().toISOString()),
+});
+
+export type ResponseBinding = typeof responseBindings.$inferSelect;
+export type NewResponseBinding = typeof responseBindings.$inferInsert;

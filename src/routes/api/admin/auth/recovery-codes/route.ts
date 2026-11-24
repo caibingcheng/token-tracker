@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { withAuth } from "@/lib/auth/guard";
 import { getTotpSecret } from "@/lib/auth/settings";
-import { verifyTotpCode } from "@/lib/auth/totp";
+import { verifyTotpCodeNoReplay } from "@/lib/auth/totp-replay";
 import {
   isTotpLocked,
   recordTotpFailure,
@@ -51,7 +51,7 @@ export const POST = withAuth(async (request: NextRequest) => {
     );
   }
   const secret = await getTotpSecret();
-  if (!secret || !verifyTotpCode(secret, currentCode)) {
+  if (!secret || !(await verifyTotpCodeNoReplay(secret, currentCode))) {
     await recordTotpFailure();
     return NextResponse.json(
       { success: false, error: "Invalid TOTP code" },

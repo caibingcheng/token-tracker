@@ -4,8 +4,13 @@
 #   本地源码构建：docker compose -f docker-compose.local.yml up -d --build
 # 数据与自动生成的 GATEWAY_SECRET 均位于 ~/.token-tracker/（权限 600），本文件不含任何机密
 # 登录：LOCAL_ADMIN_BYPASS=0（默认关闭，走正常登录；DB 无 key 时首启出现设置向导）。
-# 仅确定是本机部署时可改为 1 开启免密码直通：即便开启也要求端口绑定 127.0.0.1 且 Host 为
-# loopback 才生效；非本机部署严禁置 1（Host 可伪造），置 1 前先读懂 src/lib/auth/local-bypass.ts
+# 首启向导是 fail-open：端口绑定 0.0.0.0，首启窗口内能访问到该端口的设备都可抢先注册
+# admin key（被抢注会立刻发现：向导消失、你刚设的 key 登录失败）。尽快完成首启，
+# 或在 environment 预设 ADMIN_API_KEY 直接关闭向导（生产 docker-compose.yml 即此路径）。
+# 仅确定是本机部署时可改 LOCAL_ADMIN_BYPASS=1 开启免密码直通：判定用 socket 对端地址
+#（内核给出、Host 头不可伪造）—— 裸跑 / host 网络下本机生效；docker 桥网络下本机请求
+# 的对端是网桥网关（非 loopback），不会生效。非本机部署严禁置 1，置 1 前先读懂
+# src/lib/auth/local-bypass.ts
 services:
   token-tracker-local:
     image: ghcr.io/caibingcheng/token-tracker:latest

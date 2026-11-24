@@ -6,7 +6,7 @@ import {
   isTotpEnabled,
   getTotpSecret,
 } from "@/lib/auth/settings";
-import { verifyTotpCode } from "@/lib/auth/totp";
+import { verifyTotpCodeNoReplay } from "@/lib/auth/totp-replay";
 import {
   isTotpLocked,
   recordTotpFailure,
@@ -36,7 +36,7 @@ export const PATCH = withAuth(async (request: NextRequest) => {
   if (await isTotpEnabled()) {
     const code = typeof body.totpCode === "string" ? body.totpCode.trim() : "";
     const secret = await getTotpSecret();
-    if (!secret || !verifyTotpCode(secret, code)) {
+    if (!secret || !(await verifyTotpCodeNoReplay(secret, code))) {
       if (await isTotpLocked()) {
         return NextResponse.json(
           { success: false, error: "Account temporarily locked, try again later" },

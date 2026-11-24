@@ -7,6 +7,7 @@ import {
   MAX_BODY_BYTES,
 } from "@/lib/ingest/validate";
 import { ingestRecords } from "@/lib/ingest/watermark";
+import { readBodyLimited, BodyTooLargeError } from "@/lib/auth/request-body";
 import { getRateLimitKey } from "@/lib/net/client-ip";
 
 // /ingest/records：多实例同步接收端点（位于 /api 之外，proxy matcher 天然不拦）。
@@ -91,15 +92,16 @@ export async function POST(request: NextRequest) {
 
   let raw: string;
   try {
-    raw = await request.text();
-  } catch {
+    // 边读边计数（content-length 预检 + chunked 流式累计），读完再比大小会被超大 body 打穿内存
+    raw = await readBodyLimited(request, MAX_BODY_BYTES);
+  } catch (err) {
+    if (err instanceof BodyTooLargeError) {
+      return NextResponse.json(
+        { success: false, error: `Body too large (max ${MAX_BODY_BYTES} bytes)` },
+        { status: 413 }
+      );
+    }
     return NextResponse.json({ success: false, error: "Invalid request body" }, { status: 400 });
-  }
-  if (Buffer.byteLength(raw, "utf8") > MAX_BODY_BYTES) {
-    return NextResponse.json(
-      { success: false, error: `Body too large (max ${MAX_BODY_BYTES} bytes)` },
-      { status: 413 }
-    );
   }
 
   let parsed: unknown;

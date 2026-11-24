@@ -6,6 +6,7 @@ import type { UpstreamRoute, NamedRoute } from "./model-router";
 import { buildSessionId } from "./session";
 import { estimateInputTokens } from "./estimate";
 import { setOutboundFetchImpl } from "./outbound-fetch";
+import { getInflight } from "./quota-inflight";
 
 function mkNamedRoute(overrides: Partial<NamedRoute> = {}): NamedRoute {
   return {
@@ -356,6 +357,59 @@ describe("stripRawPassthroughPrefix", () => {
   it("returns null when the inner path escapes the upstream base", () => {
     expect(stripRawPassthroughPrefix("/raw/../x")).toBeNull();
     expect(stripRawPassthroughPrefix("/raw/../..")).toBeNull();
+  });
+});
+
+describe("handleProxyRequest - encoded slash in path", () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    setOutboundFetchImpl(fetchMock);
+  });
+
+  afterEach(() => {
+    setOutboundFetchImpl(null);
+    fetchMock.mockReset();
+  });
+
+  it("rejects %2f / %5c path escapes with 400 (case-insensitive, incl. /raw)", async () => {
+    const deps = mkDeps();
+    const paths = [
+      "/v1/chat/completions%2f..%2f..",
+      "/v1/chat/completions%2F..%2F..",
+      "/v1/chat/completions%5c..%5c..",
+      "/raw/alpha%2F..%2F..",
+    ];
+    for (const path of paths) {
+      const res = await handleProxyRequest(
+        makeRequest(path, {
+          headers: { authorization: "Bearer vk-good" },
+          body: { model: "gpt-4o" },
+        }),
+        deps
+      );
+      expect(res.status).toBe(400);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("leaves normal paths unaffected (incl. query strings carrying %2f)", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    const res = await handleProxyRequest(
+      makeRequest("/v1/chat/completions?filter=a%2Fb", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o" },
+      }),
+      mkDeps()
+    );
+    expect(res.status).toBe(200);
+    await res.text();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -1640,6 +1694,72 @@ describe("handleProxyRequest - quota", () => {
     );
     expect(res.status).toBe(429);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // token_records 在响应结束后才写库 → 只读 DB 用量时并发突发全部放行。
+  // in-flight 预留必须让第 N+1 个在途请求 429，结束后额度恢复。
+  it("in-flight 预留：maxRpm=2 时第 3 个并发在途请求 429，释放后额度恢复", async () => {
+    const VK_ID = 4242;
+    let openGate: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      openGate = resolve;
+    });
+    const okResponse = () =>
+      new Response(JSON.stringify({ usage: { prompt_tokens: 10, completion_tokens: 5 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    fetchMock.mockImplementation(async () => {
+      await gate;
+      return okResponse();
+    });
+    const deps = mkDeps({
+      resolveVirtualKey: vi.fn(async () => ({
+        id: VK_ID,
+        name: "limited",
+        enabled: true,
+        enabledModels: ["*"],
+        maxRpm: 2,
+        maxTpm: null,
+        maxDailyTokens: null,
+        maxMonthlyTokens: null,
+      })),
+      // DB 里一条记录都没有（全部在途）→ 旧实现会放行全部并发
+      quota: {
+        loadUsage: vi.fn(async () => ({ rpm: 0, tpm: 0, dailyTokens: 0, monthlyTokens: 0 })),
+      },
+    });
+    const call = () =>
+      handleProxyRequest(
+        makeRequest("/v1/chat/completions", {
+          headers: { authorization: "Bearer vk-good" },
+          body: { model: "gpt-4o" },
+        }),
+        deps
+      );
+
+    const first = call();
+    const second = call();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+    // 第 3 个并发：在途已满 → 429，且不转发上游
+    const third = await call();
+    expect(third.status).toBe(429);
+    expect((await third.json()).error.type).toBe("quota_exceeded");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    // 放行在途请求：body 消费完（onDone → onComplete）才算真正结束
+    openGate();
+    const [r1, r2] = await Promise.all([first, second]);
+    expect(r1.status).toBe(200);
+    expect(r2.status).toBe(200);
+    await r1.text();
+    await r2.text();
+
+    // 额度恢复：新请求又能过
+    const fourth = await call();
+    expect(fourth.status).toBe(200);
+    await fourth.text();
   });
 });
 
@@ -3334,6 +3454,65 @@ describe("handleProxyRequest - responses subresource endpoints", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  // 回归：413 路径不能留下 in-flight 预留（否则反复发超大 body 会把该 vk 的
+  // 在途计数刷高，让它的合法请求被自己的 413 残留挤成 429）
+  it("超限 body（413）不泄漏 in-flight 预留", async () => {
+    const VK_ID = 4343;
+    const ORIG_MAX_MB = process.env.GATEWAY_MAX_BODY_MB;
+    process.env.GATEWAY_MAX_BODY_MB = "0.00001"; // ~10 bytes
+    try {
+      const { deps } = mkSubDeps({
+        resolveVirtualKey: vi.fn(async () => ({
+          id: VK_ID,
+          name: "limited-sub",
+          enabled: true,
+          enabledModels: ["*"],
+          maxRpm: 1,
+        })),
+        quota: {
+          loadUsage: vi.fn(async () => ({ rpm: 0, tpm: 0, dailyTokens: 0, monthlyTokens: 0 })),
+        },
+      });
+
+      // 反复超限：每次都是 413，且在途计数必须归零
+      for (let i = 0; i < 3; i++) {
+        const res = await handleProxyRequest(
+          makeRequest("/v1/responses/resp_123", {
+            headers: { authorization: "Bearer vk-good" },
+            body: { input: "x".repeat(200) },
+          }),
+          deps
+        );
+        expect(res.status).toBe(413);
+        expect(getInflight(VK_ID)).toEqual({ rpm: 0, tokens: 0 });
+      }
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      // 等价断言：随后一个应通过配额的请求不被残留额度挤成 429
+      process.env.GATEWAY_MAX_BODY_MB = ORIG_MAX_MB ?? "32";
+      fetchMock.mockImplementation(() =>
+        Promise.resolve(
+          new Response(JSON.stringify({ id: "resp_123", object: "response" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          })
+        )
+      );
+      const ok = await handleProxyRequest(
+        makeRequest("/v1/responses/resp_123", {
+          method: "GET",
+          headers: { authorization: "Bearer vk-good" },
+        }),
+        deps
+      );
+      expect(ok.status).toBe(200);
+      await ok.text();
+    } finally {
+      if (ORIG_MAX_MB === undefined) delete process.env.GATEWAY_MAX_BODY_MB;
+      else process.env.GATEWAY_MAX_BODY_MB = ORIG_MAX_MB;
+    }
+  });
+
   it("requires virtual key auth for subresource endpoints", async () => {
     const { deps } = mkSubDeps();
     const missing = await handleProxyRequest(
@@ -3547,6 +3726,128 @@ describe("handleProxyRequest - responses create (POST /v1/responses)", () => {
     await res.text();
     expect(res.status).toBe(404);
     expect(markModelUnhealthy).toHaveBeenCalledWith(1, "gpt-4o");
+  });
+});
+
+describe("handleProxyRequest - responses id ownership (跨 vk retrieve)", () => {
+  const fetchMock = vi.fn();
+
+  function mkOwnerDeps(lookup: (id: string) => Promise<number | null>, overrides: Partial<ProxyDeps> = {}) {
+    const onResponseCreated = vi.fn(async () => {});
+    const deps = mkDeps({
+      loadUpstreams: vi.fn(async () => [
+        mkUpstream({ id: 1, name: "openai", baseUrl: "https://upstream.example", priority: 0 }),
+      ]),
+      resolveUpstreamKeys: vi.fn(async () => ["key-1"]),
+      onResponseCreated,
+      lookupResponseOwner: vi.fn(lookup),
+      ...overrides,
+    });
+    return { deps, onResponseCreated };
+  }
+
+  const okRetrieve = () =>
+    new Response(JSON.stringify({ id: "resp_1", object: "response" }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+
+  beforeEach(() => {
+    setOutboundFetchImpl(fetchMock);
+    fetchMock.mockImplementation(() => Promise.resolve(okRetrieve()));
+  });
+
+  afterEach(() => {
+    setOutboundFetchImpl(null);
+    fetchMock.mockReset();
+  });
+
+  // vk-good 解析出的 virtual key id = 1（见 mkDeps）
+  it("同一 vk 读取自己的 response → 放行", async () => {
+    const { deps } = mkOwnerDeps(async () => 1);
+    const res = await handleProxyRequest(
+      makeRequest("/v1/responses/resp_1", {
+        method: "GET",
+        headers: { authorization: "Bearer vk-good" },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("其他 vk 读取 → 403，且不发上游请求", async () => {
+    const { deps } = mkOwnerDeps(async () => 2);
+    const res = await handleProxyRequest(
+      makeRequest("/v1/responses/resp_1/input_items", {
+        method: "GET",
+        headers: { authorization: "Bearer vk-good" },
+      }),
+      deps
+    );
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error.type).toBe("forbidden");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("无映射（存量 id）→ 放行", async () => {
+    const { deps } = mkOwnerDeps(async () => null);
+    const res = await handleProxyRequest(
+      makeRequest("/v1/responses/resp_legacy", {
+        method: "GET",
+        headers: { authorization: "Bearer vk-good" },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+  });
+
+  it("responses create 非流式成功 → 记录 response id 归属", async () => {
+    const { deps, onResponseCreated } = mkOwnerDeps(async () => null);
+    const res = await handleProxyRequest(
+      makeRequest("/v1/responses", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", input: "hi" },
+      }),
+      deps
+    );
+    await res.text();
+    expect(res.status).toBe(200);
+    expect(onResponseCreated).toHaveBeenCalledWith("resp_1", 1);
+  });
+
+  it("responses create 流式成功 → 从首个事件提取 response id", async () => {
+    const sse = [
+      'event: response.created',
+      'data: {"type":"response.created","response":{"id":"resp_stream","usage":null}}',
+      "",
+      'data: {"type":"response.output_text.delta","delta":"hi"}',
+      "",
+      'data: {"type":"response.completed","response":{"usage":{"input_tokens":3,"output_tokens":1}}}',
+      "",
+    ].join("\n");
+    fetchMock.mockImplementation(
+      () =>
+        Promise.resolve(
+          new Response(sse, {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          })
+        )
+    );
+    const { deps, onResponseCreated } = mkOwnerDeps(async () => null);
+    const res = await handleProxyRequest(
+      makeRequest("/v1/responses", {
+        headers: { authorization: "Bearer vk-good" },
+        body: { model: "gpt-4o", input: "hi", stream: true },
+      }),
+      deps
+    );
+    await res.text();
+    expect(onResponseCreated).toHaveBeenCalledWith("resp_stream", 1);
   });
 });
 

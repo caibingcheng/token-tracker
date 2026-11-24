@@ -26,6 +26,7 @@ import type { ParsedUsage } from "./parsers/types";
 import { estimateInputTokens, estimateInputTokensFromSpans, estimateOutputTokens } from "./estimate";
 import { checkQuota, hasQuotaLimits } from "./quota";
 import type { QuotaUsage } from "./quota";
+import { reserveInflight, getInflight } from "./quota-inflight";
 import { rewriteModelNonStreamingBytes, createSseModelRewriter } from "./response-rewriter";
 import {
   isNonEmptyArraySpan,
@@ -199,6 +200,10 @@ export interface ProxyDeps {
   onUsage?: (meta: RecordUsageMeta) => Promise<void>;
   // 请求完成回调（更新 last_used_at 等）
   onComplete?: (meta: { virtualKeyId: number }) => Promise<void>;
+  // responses create 成功后的 response id 归属记录（可选；缺省则不记录，子路径不校验）
+  onResponseCreated?: (responseId: string, virtualKeyId: number) => Promise<void>;
+  // response id 归属查询（可选；返回 null = 无映射 → 放行）
+  lookupResponseOwner?: (responseId: string) => Promise<number | null>;
   // 流式空闲超时（毫秒，可选；缺省 DEFAULT_STREAM_IDLE_TIMEOUT_MS）
   resolveStreamIdleTimeoutMs?: () => Promise<number>;
   // 配额用量加载（必填依赖；实现见 proxy-deps）
@@ -305,6 +310,8 @@ export function buildUpstreamHeaders(
     "cf-connecting-ip",
     "true-client-ip",
     "x-client-ip",
+    // 服务端写入的 socket 对端地址（内部用途，不得透给上游，也不得让客户端值冒充）
+    "x-internal-remote-addr",
   ]);
   clientHeaders.forEach((value, key) => {
     const lower = key.toLowerCase();
@@ -385,6 +392,13 @@ export async function handleProxyRequest(
 ): Promise<Response> {
   const url = new URL(request.url);
   const rawPath = url.pathname;
+  // 编码斜杠/反斜杠：URL 解析不会解开 %2f，但上游（或中间反代）若解码就能跳出
+  // base 前缀（/v1/chat/completions%2f..%2f.. → /v1/chat/../../）。LLM 端点
+  // 不需要编码斜杠，一律 fail-closed 400。只查 pathname（query 里的 %2f 不影响路由）。
+  // /raw 裸透传的内层路径也在同一 pathname 里，天然覆盖。
+  if (/%2f|%5c/i.test(rawPath)) {
+    return proxyError(400, "Invalid request path", "invalid_request_error");
+  }
   // `..` 段净化：拒绝逃逸出上游 base 前缀的路径（/v1/../internal 等）
   const sanitizedPath = sanitizePathSegments(rawPath);
   if (sanitizedPath === null) {
@@ -931,10 +945,29 @@ export async function handleProxyRequest(
   }
 
   // 配额检查：选上游之后、转发之前；超限直接 429 不转发上游。
-  // 无限额 vk 直接跳过（避免每次请求 3 条聚合 SQL）
+  // 无限额 vk 直接跳过（避免每次请求 3 条聚合 SQL）。
+  // in-flight 预留：token_records 在响应结束后才写入，只靠 DB 用量会被并发突发绕过
+  // （见 quota-inflight.ts），所以先预留再检查，请求结束（onComplete）时释放。
   if (hasQuotaLimits(virtualKey)) {
     const now = new Date();
-    const quotaUsage = await deps.quota.loadUsage(virtualKey.id, now);
+    // token 类限额才付估算 CPU：只有 maxRpm 的 vk 不估算（普通请求零额外开销）
+    const reservableTokens =
+      virtualKey.maxTpm != null ||
+      virtualKey.maxDailyTokens != null ||
+      virtualKey.maxMonthlyTokens != null
+        ? estimateInput()
+        : 0;
+    const release = reserveInflight(virtualKey.id, reservableTokens);
+    let quotaUsage: QuotaUsage;
+    try {
+      quotaUsage = await deps.quota.loadUsage(virtualKey.id, now);
+    } catch (err) {
+      // 读失败也要释放，否则该 vk 的额度会被一个异常请求永久占住
+      release();
+      throw err;
+    }
+    // 检查口径：DB 用量 + 进程内在途（含本次），边界沿用 checkQuota 的「> limit 才超限」
+    const pending = getInflight(virtualKey.id);
     const violation = checkQuota(
       {
         virtualKeyId: virtualKey.id,
@@ -944,15 +977,30 @@ export async function handleProxyRequest(
         maxMonthlyTokens: virtualKey.maxMonthlyTokens ?? null,
         now,
       },
-      quotaUsage
+      {
+        rpm: quotaUsage.rpm + pending.rpm,
+        tpm: quotaUsage.tpm + pending.tokens,
+        dailyTokens: quotaUsage.dailyTokens + pending.tokens,
+        monthlyTokens: quotaUsage.monthlyTokens + pending.tokens,
+      }
     );
     if (violation) {
+      release();
       return proxyError(
         429,
         `Quota exceeded (${violation.dimension}: ${violation.current} / ${violation.limit})`,
         "quota_exceeded"
       );
     }
+    // 释放挂在既有唯一完成钩子上：成功（含流结束）、各失败路径都调 onComplete
+    const prevOnComplete = deps.onComplete;
+    deps = {
+      ...deps,
+      onComplete: async (info) => {
+        release();
+        await prevOnComplete?.(info);
+      },
+    };
   }
 
   const startTime = Date.now();
@@ -1266,6 +1314,11 @@ export async function handleProxyRequest(
         virtualModelName: namedRoute?.name,
         startTime,
         clientSignal: request.signal,
+        // responses create 成功：记下 response id 的 vk 归属（子路径透传时拦跨 vk retrieve）
+        onResponseCreated:
+          isResponsesCreate && deps.onResponseCreated
+            ? (id) => deps.onResponseCreated!(id, virtualKey.id)
+            : undefined,
       });
 }
 
@@ -1284,7 +1337,25 @@ async function handleSubresourcePassthrough(
     userAgent: string | null;
   }
 ): Promise<Response> {
-  const { path, url, deps, virtualKey, userAgent } = opts;
+  const { path, url, virtualKey, userAgent } = opts;
+  // let：配额 in-flight 预留要包一层 onComplete（释放钩子），见下方配额检查
+  let deps = opts.deps;
+
+  // 归属校验：response id → 创建它的 vk。映射存在且不一致 → 403（防跨 vk
+  // retrieve/取消别人的 response）。映射不存在（升级前的存量 id / 上游侧创建 /
+  // 流式未捕获到 id）→ 放行：刻意的过渡期 fail-open，否则升级后旧 id 全部不可用。
+  // id 取 /v1/responses/ 之后的第一段（子路径 input_items/output_items 同口径）
+  const responseId = path.slice("/v1/responses/".length).split("/")[0] ?? "";
+  if (responseId && deps.lookupResponseOwner) {
+    const owner = await deps.lookupResponseOwner(responseId);
+    if (owner !== null && owner !== virtualKey.id) {
+      return proxyError(
+        403,
+        "Response belongs to another virtual key",
+        "forbidden"
+      );
+    }
+  }
 
   const upstreams = await deps.loadUpstreams();
   const chain = upstreams
@@ -1316,11 +1387,29 @@ async function handleSubresourcePassthrough(
     }
   }
 
+  // 请求体读取必须在配额 in-flight 预留**之前**（与主链同顺序）：
+  // 预留跨越读 body 的窗口时，413 / readRequestBody 抛错会直接 return/抛出，
+  // 包装后的 onComplete 永不触发 → reservation 永久留在 inflight Map，
+  // 反复发超大 body 可把该 vk 的在途计数刷高，把它自己的合法请求挤成 429。
+  const bodyBuffer = await readRequestBody(request);
+  if (bodyBuffer === null) {
+    return proxyError(413, "Request body exceeds size limit", "invalid_request_error");
+  }
+
   // 配额检查：subresource 无 model 维度，按 vk 聚合限额（RPM/TPM/Daily/Monthly）检查；
-  // 无限额 vk 直接跳过
+  // 无限额 vk 直接跳过。同样接 in-flight 预留（并发突发不能绕过 RPM）；
+  // 辅助端点不记 usage、无请求体估算口径 → 预留 token 计 0，只计请求数。
   if (deps.quota && hasQuotaLimits(virtualKey)) {
     const now = new Date();
-    const quotaUsage = await deps.quota.loadUsage(virtualKey.id, now);
+    const release = reserveInflight(virtualKey.id, 0);
+    let quotaUsage: QuotaUsage;
+    try {
+      quotaUsage = await deps.quota.loadUsage(virtualKey.id, now);
+    } catch (err) {
+      release();
+      throw err;
+    }
+    const pending = getInflight(virtualKey.id);
     const violation = checkQuota(
       {
         virtualKeyId: virtualKey.id,
@@ -1330,21 +1419,32 @@ async function handleSubresourcePassthrough(
         maxMonthlyTokens: virtualKey.maxMonthlyTokens ?? null,
         now,
       },
-      quotaUsage
+      {
+        rpm: quotaUsage.rpm + pending.rpm,
+        tpm: quotaUsage.tpm + pending.tokens,
+        dailyTokens: quotaUsage.dailyTokens + pending.tokens,
+        monthlyTokens: quotaUsage.monthlyTokens + pending.tokens,
+      }
     );
     if (violation) {
+      release();
       return proxyError(
         429,
         `Quota exceeded (${violation.dimension}: ${violation.current} / ${violation.limit})`,
         "quota_exceeded"
       );
     }
+    // 释放挂在既有唯一完成钩子 onComplete 上（成功 / 失败 / 流结束都调）
+    const prevOnComplete = deps.onComplete;
+    deps = {
+      ...deps,
+      onComplete: async (info) => {
+        release();
+        await prevOnComplete?.(info);
+      },
+    };
   }
 
-  const bodyBuffer = await readRequestBody(request);
-  if (bodyBuffer === null) {
-    return proxyError(413, "Request body exceeds size limit", "invalid_request_error");
-  }
   let lastError: { status: number; text?: string } | null = null;
   let fallbackBusinessResponse: Response | null = null;
 
@@ -1524,9 +1624,11 @@ async function passthroughResponse(
     recordUsage?: boolean; // 辅助端点等场景跳过 usage 解析与写库（默认 true）
     startTime?: number; // 请求开始时刻（与 latencyMs 同源），用于流式 TTFT 计算
     clientSignal?: AbortSignal; // 客户端请求 signal（断开检测）
+    // responses create 的 response id 归属回调（best-effort，失败不影响透传）
+    onResponseCreated?: (responseId: string) => Promise<void>;
   }
 ): Promise<Response> {
-  const { meta, deps, estimateInput, protocol, virtualKeyId, virtualModelName, recordUsage = true, startTime, clientSignal } = opts;
+  const { meta, deps, estimateInput, protocol, virtualKeyId, virtualModelName, recordUsage = true, startTime, clientSignal, onResponseCreated } = opts;
   const headers = new Headers(PROXY_RESPONSE_HEADERS);
   copyHeader(upstreamResponse.headers, headers, "content-type");
   copyHeader(upstreamResponse.headers, headers, "x-ratelimit-remaining-requests");
@@ -1683,6 +1785,17 @@ async function passthroughResponse(
 
   onDone = async () => {
     try {
+      // responses create：记 response id 归属（best-effort，失败不影响透传）
+      if (isSuccess && onResponseCreated) {
+        try {
+          const id = isStreaming
+            ? (extractor?.responseId ?? null)
+            : parseResponseIdFromBytes(getFullBytes());
+          if (id) await onResponseCreated(id);
+        } catch (err) {
+          deps.log?.(`[gateway] response id capture failed: ${(err as Error).message}`);
+        }
+      }
       if (isSuccess && recordUsage) {
         const parsed =
           isStreaming && extractor
@@ -1764,6 +1877,21 @@ function parseUsageFromBytes(bytes: Uint8Array, protocol: Protocol): ParsedUsage
       return parseGeminiNonStreaming({ usageMetadata: usageJson });
     default:
       return parseOpenAiNonStreaming({ usage: usageJson });
+  }
+}
+
+// responses create 的 response id：顶层 id 区间切片后局部 parse（同 usage，不整包树化）。
+// 非流式响应形状 {"id":"resp_...",...}；取不到或非字符串一律 null。
+function parseResponseIdFromBytes(bytes: Uint8Array): string | null {
+  const scan = scanTopLevelObject(bytes, ["id"]);
+  if (!scan.valid || !scan.isObject) return null;
+  const span = scan.fields.get("id");
+  if (!span) return null;
+  try {
+    const id: unknown = JSON.parse(new TextDecoder().decode(bytes.subarray(span.start, span.end)));
+    return typeof id === "string" && id !== "" ? id : null;
+  } catch {
+    return null;
   }
 }
 

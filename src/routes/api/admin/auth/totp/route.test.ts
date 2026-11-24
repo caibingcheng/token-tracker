@@ -15,7 +15,7 @@ import {
   clearTotp,
 } from "@/lib/auth/settings";
 import { signSessionToken, keyFingerprint } from "@/lib/auth/session";
-import { generateTotpCode } from "@/lib/auth/totp";
+import { generateTotpCode, TOTP_TIME_STEP_SECONDS } from "@/lib/auth/totp";
 import { clearTotpFailures } from "@/lib/auth/totp-lock";
 import {
   clearRecoveryCodes,
@@ -88,7 +88,9 @@ async function enableTotp(): Promise<() => string> {
   expect(confirm.success).toBe(true);
   expect(confirm.data.totpEnabled).toBe(true);
   expect(confirm.data.recoveryCodes).toHaveLength(4);
-  return () => generateTotpCode(secret);
+  // 重放防护：启用时已消费当前时间步的码，后续用例复用同一 secret 时必须给出下一步的码
+  //（±1 窗口内依然有效，counter 严格递增才通过）
+  return () => generateTotpCode(secret, Date.now() + TOTP_TIME_STEP_SECONDS * 1000);
 }
 
 describe("TOTP 换绑与 recovery codes 路由集成", () => {
@@ -184,6 +186,21 @@ describe("TOTP 换绑与 recovery codes 路由集成", () => {
     expect(await getTotpSecret()).toBeNull();
     expect(await getSetting("recovery_codes")).toBeNull();
     expect(await getRecoveryCodeReminder()).toBe(false);
+  });
+
+  it("同一动态码重复使用（重放）→ 第二次 400 Invalid TOTP code", async () => {
+    const token = await makeToken();
+    const gen = await json(await POST(req("POST", {}, token), { params: {} }));
+    const secret = gen.data.secret as string;
+    const code = generateTotpCode(secret);
+    const confirm = await json(await POST(req("POST", { code }, token), { params: {} }));
+    expect(confirm.success).toBe(true);
+    expect(await isTotpEnabled()).toBe(true);
+    // 同一时间步的码再用一次：重放防护应拒绝（TOTP 仍启用，不走幂等分支）
+    const replay = await json(await DELETE(req("DELETE", { code }, token), { params: {} }));
+    expect(replay.success).toBe(false);
+    expect(replay.error).toBe("Invalid TOTP code");
+    expect(await isTotpEnabled()).toBe(true);
   });
 
   it("GET 返回启用状态与 pending 标记", async () => {

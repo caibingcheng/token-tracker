@@ -15,7 +15,7 @@
   - `src/lib/auth/totp`：RFC 6238 测试向量 + 时间窗容差
   - `src/lib/auth/recovery-codes`：生成格式/互斥/字符集、SHA-256 哈希、验证+标记已用（重复失败）、归一化、剩余数量递减、提醒标记往返、classifySecondFactorInput 分流
   - `src/routes/api/admin/auth/totp/route.test`：TOTP 路由集成测试（临时 SQLite + 真实 handler + 签名 token）：换绑无 currentCode → 400、错误计入 totp_fail_count、换绑成功替换 secret + token_epoch+1、首次启用 epoch 不变、解绑清理 recovery_codes/reminder
-  - `src/lib/auth/session`：会话 token 签发/验签/过期/滑动续期判定 + **篡改稳定性**（改 payload / 改签名首字符（全有效位）/ 截断 / 追加，不再改 base64url 末位非有效位）
+  - `src/lib/auth/session`：会话 token 签发/验签/过期/滑动续期判定 + **篡改稳定性**（改 payload / 改签名首字符（全有效位）/ 截断 / 追加，不再改 base64url 末位非有效位） + **keyFingerprint 是 HMAC 非裸 sha256**、**legacyKeyFingerprint 钉住旧版算法**（静默轮换兼容窗口）
   - `src/lib/auth/edge-verify`：WebCrypto 验签（与 node 侧签名互认）
   - `src/lib/auth/guard-scan`：静态扫描 `src/routes/api` 下所有路由必须用 withAuth（`exempt` 白名单：login / setup / logout / cli）
   - `src/server/next-shim.test` / `src/server/dispatch.test`：next/server shim API 面（带 body 构造的 duplex、cookies.get（同名后写胜出 / decodeURIComponent / 坏编码丢弃，对齐 Next RequestCookies）、nextUrl.searchParams、NextResponse.json instanceof）+ Hono→handler 适配（`:id` 映射、`[...path]` 通配切分与**零段 404**、body 流式透传；e2e 仅覆盖单例动态段正向断言（bench/e2e.sh §8），全量 `:id` 映射靠这里钉住）
@@ -34,8 +34,9 @@
   - `src/lib/gateway/url-guard`：上游 baseUrl SSRF 防护（环回/私有/链路本地/元数据 IP 拒绝、DNS 解析后分类、ALLOW_PRIVATE_UPSTREAMS 逃生开关）+ **十六进制 IPv4-mapped IPv6**（`::ffff:7f00:1` / `::ffff:a00:1` / 全展开 / IPv4-compatible / NAT64）+ **URL 方括号 hostname**（`[::1]` 不当域名走 DNS）+ **公网 HTTP/HTTPS 兼容 / 环回私网例外** + `expandIpv6`/`extractEmbeddedIpv4`/`isLoopbackHost`/`isBlockedOutboundIp` 基础正确性
   - `src/lib/gateway/outbound-guard`（**连接时 SSRF**）：`createGuardedLookup` 对公网地址放行、对 rebinding 回环地址抛 `ERR_BLOCKED_OUTBOUND_ADDRESS`、`all:true` 多地址任一私网即拒、解析错误/空结果传播 `ENOTFOUND`、`ALLOW_PRIVATE_UPSTREAMS=true` 放行；`getOutboundDispatcher` 无 proxyUrl 返回共享受保护 Agent（`getDirectDispatcher`）、有 proxyUrl 返回 `ProxyAgent`
   - `src/lib/gateway/url-utils`：`joinUrlPath` 前缀去重 + `sanitizePathSegments` `..` 段净化（逃逸返回 null）
-  - `src/lib/net/client-ip`：限流 IP 可信源（TRUSTED_PROXY 开关、XFF 伪造防护）
+  - `src/lib/net/client-ip`：限流 IP 可信源（TRUSTED_PROXY 开关、XFF 伪造防护）+ **socket 对端地址**（内部 header `x-internal-remote-addr`、`isLoopbackAddress` 认 127.x/::1/IPv4-mapped（供 `local-bypass` 判定）、未开可信反代时以对端地址做桶）；`src/server/dispatch.test` 钉住对端地址写入与客户端同名 header 被覆盖
   - `src/lib/auth/totp-lock`：TOTP 失败计数 + 指数锁定（settings 表持久化，防重启清零）
+  - `src/lib/auth/totp-replay`：TOTP 重放防护（`totp_last_counter` 存 `{secretHash, counter}`，同一 secret 只接受 counter 严格递增的码；路由用例：`totp/route.test` 的「同一动态码重复使用 → 400」）
   - `src/lib/stats-query`：静态断言聚合口径（Total Input = `SUM(input_tokens) + SUM(cache_read)`；防止 totalInput 回退为纯 `SUM(input_tokens)` 或 totalInputUncached 再次减去 `cache_read`）+ 日期过滤必须直比较（sargable，防 strftime 套列导致索引失效）+ **agent 维度静态断言**（不再按 `agent` 列过滤、`user_agent IN (uas)` / `IS NULL` 条件）
   - `src/lib/latency-query`：percentile 线性插值、归一化 model × provider 分组、active 过滤（已删除 model 不显示）、tok/s 守卫（latency ≤ ttft 排除）、非流式行口径（不进 TTFT 统计但计入 avgLatency/count）、时区分组（getTimezoneOffset 语义：UTC+8 = -480）、排序（p50 升序 nulls 最后）
   - `src/lib/timezone-utils`：`localDateKeyToUtcStartISO` 时区换算（含互逆 round-trip）
@@ -46,9 +47,11 @@
   - `src/lib/audit-columns`：审计日志表可见列 id 列表（默认全列、已知 id 校验、按定义序归一、坏 JSON/空值回退全列）
   - `src/lib/gateway/probe`：探活请求构造（三协议 + responses 双风格）+ 出站头（基线常量 + 注入 key + transforms 应用，override/fill/disabled、变量展开含单次探测内恒定的临时 sessionId）+ 双风格回退判定 + 3xx 不跟随（redirect manual）
   - `src/lib/gateway/quota`：配额窗口计算与超限判定（rpm/tpm/daily/monthly）
+  - `src/lib/gateway/quota-inflight`：进程内 in-flight 预留（按 vk 隔离、幂等释放、非法 token 估算归零）；`proxy.test` 的 quota 段另有「maxRpm=2 时第 3 个并发在途请求 429、请求结束（body 读完触发 onComplete）后额度恢复」用例
   - `src/lib/gateway/upstream-client`：模型列表拉取 + 3xx 不跟随（redirect manual，防 key 跨源泄露）
   - `src/lib/gateway/response-rewriter`：响应体模型名改写
-  - `src/lib/models-dev/snapshot`：快照拉取/缓存/消毒
+  - `src/lib/models-dev/snapshot`：快照拉取/缓存/消毒、**3xx 不跟随（`redirect: manual`）+ 受保护直连 dispatcher 注入 + 响应体 20MB 流式封顶**（`fetchModelsDevData` 默认实现是 `outboundFetch`，测试用 `setOutboundFetchImpl()` 注入）
+  - `src/lib/auth/guard.test`：`resolveActiveKeyId`（新格式放行 / legacy 升级换发 / 未知 401）+ `withAuth` 静默轮换（legacy token 经 `X-Session-Token` 换新 keyId、换发后不再续期、不越过 epoch 吊销）
   - `src/lib/auth/setup`：首次设置向导闸门（canRunSetup 双条件 + runSetup 事务 re-check）+ **弱 key 仅提示**（runSetup 接受弱 key 并签发会话）+ **弱 env 可登录但 setup 仍关闭**（`getEnvAdminKeysConfigured()` 与 `getEnvAdminKeys()` 都保留弱 key）
   - `src/lib/auth/request-body`：认证端点 body 上限（content-length 声明超限直接拒、chunked 边读边累计超限、合法 JSON/坏 JSON/空 body、非对象归一 `{}`、自定义 limit）
   - `src/routes/api/auth/login/route.test`：401/400 语义 + **限流先于读 body**（缺 key/坏 JSON/超大 body 均计数，第 11 次 429，成功登录清零）+ 弱/强 env key 均可登录 / DB key 优先

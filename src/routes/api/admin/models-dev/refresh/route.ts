@@ -37,6 +37,8 @@ function describeRefreshError(
       return `Failed to fetch ${label} data: upstream responded with HTTP ${error.status ?? "unknown status"} — use Upload… to apply a snapshot file as a workaround`;
     case "invalid":
       return `Failed to fetch ${label} data: invalid response shape — use Upload… to apply a snapshot file as a workaround`;
+    case "too_large":
+      return `Failed to fetch ${label} data: response exceeded the size limit — use Upload… to apply a snapshot file as a workaround`;
   }
 }
 

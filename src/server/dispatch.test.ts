@@ -113,3 +113,37 @@ describe("dispatch (Hono → route handler)", () => {
     expect(invoked).toBe(1);
   });
 });
+
+// socket 对端地址是「是否来自本机」判定的唯一可信来源（setup 闸门 / LOCAL_ADMIN_BYPASS /
+// 限流桶）。dispatch 负责把它写进内部 header，且必须覆盖客户端自带的同名 header。
+describe("dispatch - 内部对端地址 header", () => {
+  function appWithPeerEcho() {
+    const app = new Hono();
+    app.get("/api/whoami", (c) =>
+      dispatch(
+        async (req) => Response.json({ peer: req.headers.get("x-internal-remote-addr") }),
+        c,
+        []
+      )
+    );
+    return app;
+  }
+
+  it("c.env.incoming.socket.remoteAddress 写入内部 header（覆盖客户端值）", async () => {
+    const app = appWithPeerEcho();
+    const res = await app.request(
+      "http://localhost/api/whoami",
+      { headers: { "x-internal-remote-addr": "203.0.113.9" } },
+      { incoming: { socket: { remoteAddress: "::ffff:127.0.0.1" } } } as never
+    );
+    expect(await res.json()).toEqual({ peer: "::ffff:127.0.0.1" });
+  });
+
+  it("取不到对端（无 Hono env）→ 内部 header 被删除，客户端值不生效", async () => {
+    const app = appWithPeerEcho();
+    const res = await app.request("http://localhost/api/whoami", {
+      headers: { "x-internal-remote-addr": "127.0.0.1" },
+    });
+    expect(await res.json()).toEqual({ peer: null });
+  });
+});

@@ -5,9 +5,11 @@ import {
   canBypassAuth,
 } from "./local-bypass";
 
-function req(host: string | null): { headers: Headers } {
+function req(host: string | null, peer?: string | null): { headers: Headers } {
   const headers = new Headers();
   if (host !== null) headers.set("host", host);
+  // socket 对端地址（server 层写入的内部 header）
+  if (peer) headers.set("x-internal-remote-addr", peer);
   return { headers };
 }
 
@@ -63,5 +65,15 @@ describe("canBypassAuth", () => {
 
   it("env 未开启时一律不放行", () => {
     expect(canBypassAuth(req("127.0.0.1:39001"))).toBe(false);
+  });
+
+  it("有 socket 对端时对端优先：伪造 loopback Host 不生效", () => {
+    process.env.LOCAL_ADMIN_BYPASS = "1";
+    // Host 写 loopback 但真实对端是公网 IP → 拒绝
+    expect(canBypassAuth(req("127.0.0.1:39001", "203.0.113.9"))).toBe(false);
+    // 真实对端 loopback（IPv4 / IPv4-mapped）→ 放行，与 Host 无关
+    expect(canBypassAuth(req("example.com", "127.0.0.1"))).toBe(true);
+    expect(canBypassAuth(req(null, "::ffff:127.0.0.1"))).toBe(true);
+    expect(canBypassAuth(req(null, "::1"))).toBe(true);
   });
 });

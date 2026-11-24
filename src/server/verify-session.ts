@@ -9,6 +9,7 @@
 // strict:false 下 c.req.path 已归一（`/api/cli/` → `/api/cli`）
 import type { MiddlewareHandler } from "hono";
 import { forwardedRequestUrl } from "./forwarded";
+import { applyPeerAddressHeader } from "./client-addr";
 import { NextRequest } from "./next-shim";
 import { proxy } from "./proxy";
 
@@ -22,10 +23,11 @@ export const verifySession: MiddlewareHandler = async (c, next) => {
 
   // proxy 只读 headers/cookies/url，不读 body —— 不重建带 body 的请求，
   // 原始 c.req.raw 的 body 留给后续 route handler 流式消费；
-  // url 经 XFP 校正（401 清 cookie 分支的 shouldSecureCookie 依赖它）
+  // url 经 XFP 校正（401 清 cookie 分支的 shouldSecureCookie 依赖它）；
+  // 对端地址同样写入内部 header（与 dispatch 同口径，免密码直通判定靠它）
   const probe = new NextRequest(forwardedRequestUrl(c.req.raw), {
     method: c.req.method,
-    headers: c.req.raw.headers,
+    headers: applyPeerAddressHeader(c.req.raw.headers, c),
   });
   const res = await proxy(probe);
   // NextResponse.next()（放行）→ 交还给路由；401/503 直接终止

@@ -1,10 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { createHash } from "crypto";
 import {
   signSessionToken,
   verifySessionToken,
   isTokenExpired,
   shouldRenewToken,
   keyFingerprint,
+  legacyKeyFingerprint,
   getSessionTtlMs,
 } from "./session";
 
@@ -114,6 +116,23 @@ describe("session token", () => {
   it("keyFingerprint differs between keys and is stable per key", () => {
     expect(keyFingerprint("key-a")).not.toBe(keyFingerprint("key-b"));
     expect(keyFingerprint("key-a")).toBe(keyFingerprint("key-a"));
+  });
+
+  it("keyFingerprint 是 HMAC，不是裸 sha256（离线字典攻击无法用 token 的 keyId 验证候选 key）", () => {
+    const key = "weak";
+    const nakedSha256 = createHash("sha256").update(`login-key:${key}`).digest("hex");
+    expect(keyFingerprint(key)).not.toBe(nakedSha256);
+    // 同一 key 换 GATEWAY_SECRET → 指纹变化（密钥参与派生）
+    const before = keyFingerprint(key);
+    process.env.GATEWAY_SECRET = "ffffffffffffffffffffffffffffffff";
+    expect(keyFingerprint(key)).not.toBe(before);
+  });
+
+  it("legacyKeyFingerprint 钉住旧版裸 sha256 算法（静默轮换兼容窗口验存量 token 用）", () => {
+    const key = "weak";
+    const nakedSha256 = createHash("sha256").update(`login-key:${key}`).digest("hex");
+    expect(legacyKeyFingerprint(key)).toBe(nakedSha256);
+    expect(legacyKeyFingerprint(key)).not.toBe(keyFingerprint(key));
   });
 
   it("epoch mismatch invalidates previously issued tokens", () => {
