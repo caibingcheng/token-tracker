@@ -203,8 +203,6 @@ export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
             baseUrl: row.baseUrl,
             authStyle: resolveUpstreamAuthConfig(row).authStyle,
             models: parseEnabledModels(row.enabledModels),
-            // 本次正在禁用的自身不影响；其他禁用行也不参与冲突判定
-            enabled: row.enabled === 1,
           })),
         nextBaseUrl
       );

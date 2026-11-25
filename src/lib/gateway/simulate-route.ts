@@ -219,54 +219,17 @@ export function simulateRoute(
     });
 
     if (candidates.length === 0) {
-      // 与主链同口径：本面无 hop 但池子在其它面上有可用 hop → 该路由对本面不生效，
-      // 回落自动路由；池子完全解析不出 hop 才是 502 named_route_unavailable。
-      const hasHopForOtherFace =
-        expandNamedRouteTargets({
-          protocol,
-          upstreams: enabledUpstreams.map(toUpstreamRoute),
-          routes: namedRoutes.map((r) => ({
-            id: r.id,
-            name: r.name,
-            instruction: "",
-            classifierUpstreamId: 0,
-            classifierModel: "",
-            classifierKind: r.classifierKind,
-            enabled: r.enabled,
-          })),
-          targets: pool.map((t) => ({
-            id: t.id,
-            namedRouteId: simRoute.id,
-            upstreamId: t.upstreamId,
-            upstreamModel: t.targetModel,
-            description: null,
-            priority: t.priority,
-          })),
-          resolveTargets: (routeId) =>
-            (namedRoutes.find((r) => r.id === routeId)?.targets ?? []).map((t) => ({
-              id: t.id,
-              namedRouteId: routeId,
-              upstreamId: t.upstreamId,
-              upstreamModel: t.targetModel,
-              description: null,
-              priority: t.priority,
-            })),
-          rootRouteId: simRoute.id,
-          ignoreFaceFilter: true,
-        }).length > 0;
-      if (!hasHopForOtherFace) {
-        return {
-          source: "named",
-          winner: null,
-          candidates: [],
-          effective: { winner: null, failover: false, allUnhealthy: false },
-          skipped,
-          namedRouteUnavailable: true,
-          classifier: null,
-        };
-      }
-      // 否则落到下方自动路由分支
-    } else {
+      return {
+        source: "named",
+        winner: null,
+        candidates: [],
+        effective: { winner: null, failover: false, allUnhealthy: false },
+        skipped,
+        namedRouteUnavailable: true,
+        classifier: null,
+      };
+    }
+
     // 单目标跳过分类器（无决策必要，与 proxy 一致）：链首即该目标
     const ruleBased = simRoute.classifierKind !== "model" || candidates.length <= 1;
     return {
@@ -284,7 +247,6 @@ export function simulateRoute(
         kind: simRoute.classifierKind,
       },
     };
-    }
   }
 
   // 无命名路由 → 自动路由：只考虑 enabled upstream（与其他查询口径一致）

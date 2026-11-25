@@ -27,12 +27,10 @@ app.onError((err, c) => {
     err instanceof Error ? err.stack ?? err.message : err
   );
   if (isDbUnavailable) {
-    // 不回显 err.message：SQLite 原生错误可能带文件路径/库名等内部细节（红线）
     return c.json(
       {
         success: false,
-        error:
-          "Database unavailable: schema initialization failed. See server logs or the *.migration-error file next to the database; a *.pre-migrate snapshot can be restored to roll back.",
+        error: err instanceof Error ? err.message : "Database unavailable",
         code: "database_unavailable",
       },
       503

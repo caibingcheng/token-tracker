@@ -91,16 +91,14 @@ export function modelPatternsIntersect(a: string, b: string): boolean {
   return aPrefix !== null ? b.startsWith(aPrefix) : a.startsWith(bPrefix!);
 }
 
-// 在「同 baseUrl 且 authStyle 不同」的既有启用记录里找模型冲突。
-// 只比对 enabled 行：已禁用记录不参与路由，用它卡住新建/编辑会让用户无法先禁用来避开冲突。
+// 在「同 baseUrl 且 authStyle 不同」的既有记录里找模型冲突。
 // 返回冲突描述（含对方记录名），无冲突返回 null。
 export function findAuthModelConflict(
   self: { authStyle: AuthStyle; models: string[] },
-  others: { name: string; baseUrl: string; authStyle: AuthStyle; models: string[]; enabled?: boolean }[],
+  others: { name: string; baseUrl: string; authStyle: AuthStyle; models: string[] }[],
   selfBaseUrl: string
 ): string | null {
   for (const other of others) {
-    if (other.enabled === false) continue;
     if (other.baseUrl !== selfBaseUrl) continue;
     if (other.authStyle === self.authStyle) continue;
     for (const mine of self.models) {

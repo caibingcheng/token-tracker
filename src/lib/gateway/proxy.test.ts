@@ -4377,53 +4377,6 @@ describe("handleProxyRequest - named route routing (LLM classifier)", () => {
     expect(deps.runClassifier).not.toHaveBeenCalled();
   });
 
-  it("同名路由只服务另一面时回落自动路由（不因 name 命中而 502）", async () => {
-    fetchMock.mockResolvedValue(okJson("relay-alias"));
-    const deps = mkDeps({
-      // 路由池里的 upstream 只接受 gemini 面
-      loadUpstreams: vi.fn(async () => [
-        mkUpstream({ id: 1, name: "gemini-up", protocol: "gemini", enabledModels: ["gemini-only"] }),
-        mkUpstream({ id: 2, name: "auto-up", baseUrl: "https://auto.example", enabledModels: ["relay-alias"] }),
-      ]),
-      resolveUpstreamKeys: vi.fn(async () => ["key-1"]),
-      loadNamedRoutes: vi.fn(async () => [mkNamedRoute({ id: 1, name: "relay-alias" })]),
-      loadNamedRouteTargets: vi.fn(async () => [
-        { id: 11, upstreamId: 1, targetModel: "gemini-only", description: null, priority: 0 },
-      ]),
-    });
-    const res = await handleProxyRequest(
-      makeRequest("/v1/chat/completions", {
-        headers: { authorization: "Bearer vk-good" },
-        body: { model: "relay-alias", messages: [{ role: "user", content: "hi" }] },
-      }),
-      deps
-    );
-    await res.text();
-
-    // openai 请求下这条路由无 hop → 回落自动路由，命中 id=2 的 openai 面记录
-    expect(res.status).toBe(200);
-    expect((fetchMock.mock.calls[0] as [string, RequestInit])[0]).toContain("auto.example");
-  });
-
-  it("同名路由池子完全解析不出 hop → 仍然 502（不回落）", async () => {
-    const deps = mkDeps({
-      loadNamedRoutes: vi.fn(async () => [mkNamedRoute({ id: 1, name: "alias-gone" })]),
-      // 目标指向不存在的 upstream（已删除）
-      loadNamedRouteTargets: vi.fn(async () => [
-        { id: 11, upstreamId: 99, targetModel: "gone", description: null, priority: 0 },
-      ]),
-    });
-    const res = await handleProxyRequest(
-      makeRequest("/v1/chat/completions", {
-        headers: { authorization: "Bearer vk-good" },
-        body: { model: "alias-gone", messages: [{ role: "user", content: "hi" }] },
-      }),
-      deps
-    );
-    expect(res.status).toBe(502);
-    expect((await res.json()).error.type).toBe("named_route_unavailable");
-  });
-
   it("single-target named route skips classifier (degenerates to direct route)", async () => {
     fetchMock.mockResolvedValue(okJson("gpt-4o-mini"));
     const session = mkMemorySession();

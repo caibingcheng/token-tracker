@@ -108,8 +108,6 @@ export interface NamedRouteHopPlan {
 //   分类器是请求上下文决策，嵌套展开是静态解析）；未命中走自动路由候选池
 //   （routeModelByProtocol：exact > wildcard，priority 升序，按 upstream 去重）
 // - 防环：visited 为当前展开路径上的路由 id 集合，循环引用（A→B→A）时跳过该目标
-// - ignoreFaceFilter：不按 upstream.protocols 过滤面，只用于「这条路由到底有没有任何可用 hop」的诊断
-//   （区分「池子配得不对 → 502」与「池子有效但这面没开 → 回落自动路由」）
 export function expandNamedRouteTargets(opts: {
   protocol: Protocol;
   upstreams: UpstreamRoute[];
@@ -118,9 +116,8 @@ export function expandNamedRouteTargets(opts: {
   resolveTargets: (routeId: number) => NamedRouteTarget[];
   rootRouteId: number;
   log?: (message: string) => void;
-  ignoreFaceFilter?: boolean;
 }): NamedRouteHopPlan[] {
-  const { protocol, upstreams, routes, resolveTargets, rootRouteId, log, ignoreFaceFilter } = opts;
+  const { protocol, upstreams, routes, resolveTargets, rootRouteId, log } = opts;
   const upstreamById = new Map<number, UpstreamRoute>(upstreams.map((u) => [u.id, u]));
 
   const expandPool = (
@@ -135,7 +132,7 @@ export function expandNamedRouteTargets(opts: {
         if (!upstream) continue; // 禁用/删除的 upstream：跳过（与既有语义一致）
         // 目标 upstream 不接受该面的请求：当作不可用 hop 跳过（认证头来自该 upstream，
         // 跨面发错认证头只会换来 401 + 健康状态污染）
-        if (!ignoreFaceFilter && !upstreamAcceptsProtocol(upstream, protocol)) {
+        if (!upstreamAcceptsProtocol(upstream, protocol)) {
           log?.(
             `[gateway] named route target upstream "${upstream.name}" does not accept ${protocol}; skipping target id=${t.id}`
           );
@@ -166,9 +163,7 @@ export function expandNamedRouteTargets(opts: {
         hops.push(...nestedHops);
         continue;
       }
-      const { candidates } = ignoreFaceFilter
-        ? { candidates: candidatesIgnoringFace(t.upstreamModel, upstreams) }
-        : routeModelByProtocol(t.upstreamModel, protocol, upstreams);
+      const { candidates } = routeModelByProtocol(t.upstreamModel, protocol, upstreams);
       const seen = new Set<number>();
       for (const c of candidates) {
         if (seen.has(c.upstream.id)) continue;
@@ -248,7 +243,8 @@ export interface ModelCandidate {
   matchType: MatchType;
 }
 
-function upstreamMatchesModel(upstream: UpstreamRoute, model: string): ModelCandidate[] {  const patterns = parseEnabledModels(upstream.enabledModels);
+function upstreamMatchesModel(upstream: UpstreamRoute, model: string): ModelCandidate[] {
+  const patterns = parseEnabledModels(upstream.enabledModels);
   const candidates: ModelCandidate[] = [];
   for (const pattern of patterns) {
     if (pattern === model) {
@@ -298,17 +294,6 @@ export function routeModel(model: string, upstreams: UpstreamRoute[]): RouteMatc
     }
   }
   return best;
-}
-
-// 忽略面过滤的候选（与 findCandidatesByProtocol 同口径，只去掉 protocols 检查）：
-// 仅用于「这条命名路由在任何面上到底有没有 hop」的诊断，不参与真实路由。
-function candidatesIgnoringFace(model: string, upstreams: UpstreamRoute[]): ModelCandidate[] {
-  const enabled = upstreams.filter((u) => u.enabled !== false);
-  const candidates: ModelCandidate[] = [];
-  for (const upstream of enabled) {
-    candidates.push(...upstreamMatchesModel(upstream, model));
-  }
-  return candidates;
 }
 
 // 在指定 protocol 的启用 upstream 中查找所有匹配候选。
