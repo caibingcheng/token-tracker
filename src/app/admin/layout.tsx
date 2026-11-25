@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { findAdminSection } from "./sections";
-import MigrationBanner from "@/components/admin/MigrationBanner";
 
 function ChevronLeftIcon() {
   return (
@@ -24,8 +23,6 @@ export default function AdminLayout({
   return (
     <main className="min-h-screen bg-gray-50 p-4 pb-20 md:p-8 md:pb-8">
       <div className="max-w-7xl mx-auto">
-        {/* 迁移降级启动时的常驻警告（正常启动无渲染） */}
-        <MigrationBanner />
         {/* 移动端二级导航：子页只显示「← Admin + 当前分区」，分区切换走 /admin 列表页；
             桌面端导航在左侧 AppSidebar（/admin 下展开子导航）。不吸顶，避免与面板自身的 sticky 筛选栏打架 */}
         {section && (

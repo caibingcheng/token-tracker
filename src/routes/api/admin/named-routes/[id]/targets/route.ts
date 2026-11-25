@@ -70,8 +70,8 @@ export const POST = withAuth(async (request: NextRequest, ctx: any) => {
       if (!upstream) {
         return NextResponse.json({ success: false, error: "Upstream not found" }, { status: 400 });
       }
-      // 不校验 upstream 的接受面与用法是否匹配：可接受面由该 upstream 的 protocols 声明，
-      // 运行时按 protocols.includes(请求 protocol) 过滤 hop（认证头取自该 upstream 的 auth_style）
+      // 有意不校验 upstream family 与 route protocol 是否一致：named route 是管理员显式
+      // 配置，允许跨 family 选 target（如 relay 同时接受多种风格）；配错由运行时暴露
     } else {
       // auto 目标查重：UNIQUE 索引对 NULL upstream_id 不去重（NULL ≠ NULL），走应用层 409
       const dup = await db

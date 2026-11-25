@@ -6,14 +6,11 @@ import {
   type UpstreamRoute,
   type ModelCandidate,
 } from "./model-router";
-import type { AuthStyle } from "./auth-style";
 
 export interface SimUpstream {
   id: number;
   name: string;
-  protocol: Protocol; // 默认面（探活端点），不参与路由过滤
-  protocols: Protocol[]; // 接受面集合（路由过滤依据）
-  authStyle: AuthStyle;
+  protocol: Protocol;
   priority: number;
   enabled: boolean;
   enabledModels: string[] | string;
@@ -34,6 +31,7 @@ export interface SimNamedTarget {
 export interface SimNamedRoute {
   id: number;
   name: string;
+  protocol: Protocol;
   enabled: boolean;
   classifierUpstreamName: string;
   classifierModel: string;
@@ -107,8 +105,6 @@ function toUpstreamRoute(u: SimUpstream): UpstreamRoute {
     id: u.id,
     name: u.name,
     protocol: u.protocol,
-    protocols: u.protocols,
-    authStyle: u.authStyle,
     baseUrl: "",
     priority: u.priority,
     enabled: u.enabled,
@@ -139,10 +135,10 @@ export function simulateRoute(
 ): SimRouteResult {
   const upstreamById = new Map<number, SimUpstream>(upstreams.map((u) => [u.id, u]));
 
-  // 命名路由解析（对齐 proxy.ts）：enabled + 同名即可命中（无协议身份），
-  // 面可用性由 target upstream 的 protocols 决定；至少一条有效目标才算可用
+  // 命名路由解析（对齐 proxy.ts）：enabled + 同名同协议 + 至少一条有效目标
   //（upstream 必须存在且启用；无效目标进 skipped 可见）
-  const simRoute = namedRoutes.find((r) => r.enabled && r.name === model) ?? null;
+  const simRoute =
+    namedRoutes.find((r) => r.enabled && r.name === model && r.protocol === protocol) ?? null;
 
   if (simRoute) {
     const skipped: SkippedTarget[] = [];
@@ -170,6 +166,7 @@ export function simulateRoute(
       routes: namedRoutes.map((r) => ({
         id: r.id,
         name: r.name,
+        protocol: r.protocol,
         instruction: "",
         classifierUpstreamId: 0,
         classifierModel: "",

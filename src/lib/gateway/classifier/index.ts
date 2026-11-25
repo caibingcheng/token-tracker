@@ -1,7 +1,7 @@
 // 分类器调用入口：直连 classifier upstream（不经 handleProxyRequest，避免递归/vk 认证），
 // 复用 upstream 的 key 链 / 协议认证 / proxyUrl / redirect:"manual"（与 probe 同口径的出站约束）。
 import type { Protocol, UpstreamRoute } from "../model-router";
-import { buildAuthHeaders } from "../auth-style";
+import { buildAuthHeaders } from "../upstream-client";
 import { joinUrlPath } from "../url-utils";
 import { getOutboundDispatcher } from "../proxy-dispatcher";
 import { outboundFetch } from "../outbound-fetch";
@@ -61,10 +61,10 @@ export async function runClassifier(opts: {
   const { upstream, entry, instruction, routes, bodyJson, protocol, deps } = opts;
   const adapter = getClassifierAdapter(entry.type);
 
-  // chat adapter 的 wire format 是 openai chat completions；classifier upstream 必须接受 openai 面
-  if (entry.type === "chat" && !upstream.protocols.includes("openai")) {
+  // chat adapter 的 wire format 是 openai chat completions；classifier upstream 必须同为 openai 协议
+  if (entry.type === "chat" && upstream.protocol !== "openai") {
     deps.log?.(
-      `[gateway] classifier "${entry.model}" type=chat requires openai-face upstream "${upstream.name}" (protocols: ${upstream.protocols.join(",") || "none"})`
+      `[gateway] classifier "${entry.model}" type=chat requires openai-protocol upstream "${upstream.name}" (got ${upstream.protocol})`
     );
     return { routeId: null, usage: null };
   }
@@ -108,7 +108,7 @@ export async function runClassifier(opts: {
           headers: {
             "content-type": "application/json",
             "accept-encoding": "identity",
-            ...buildAuthHeaders(upstream.authStyle, apiKey),
+            ...buildAuthHeaders(upstream.protocol, apiKey),
           },
           body,
           redirect: "manual", // 3xx 视为失败（防 key 跨源泄露），与主链路口径一致

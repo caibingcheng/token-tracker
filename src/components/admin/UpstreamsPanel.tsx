@@ -30,9 +30,7 @@ export interface UpstreamProbeStatus {
 export interface UpstreamItem {
   id: number;
   name: string;
-  protocol: string; // 默认面（探活/模型列表端点）
-  protocols: string[]; // 接受面集合（决定哪个协议的请求能路由到这里）
-  authStyle: string; // 出站认证头（与协议解耦）
+  protocol: string;
   baseUrl: string;
   enabledModels: string[];
   priority: number;
@@ -66,20 +64,14 @@ export interface UpstreamKeyItem {
   createdAt: string;
 }
 
-// Auth Header 选项：值直接是 upstreams.auth_style（出站认证头，与协议解耦）
+// upstream.protocol 的 UI 展示：选项值仍是 openai/anthropic/gemini（存储/API 不变），
+// 标签直接写认证头——这是三个选项之间唯一可观察的差异，避免 "protocol" 的歧义
 const PROTOCOL_OPTIONS = [
-  { value: "bearer", label: "Authorization: Bearer" },
-  { value: "x-api-key", label: "x-api-key" },
-  { value: "x-goog-api-key", label: "x-goog-api-key" },
+  { value: "openai", label: "Authorization: Bearer" },
+  { value: "anthropic", label: "x-api-key" },
+  { value: "gemini", label: "x-goog-api-key" },
 ];
 const PROTOCOL_LABELS = new Map(PROTOCOL_OPTIONS.map((p) => [p.value, p.label]));
-
-// 接受面多选（upstreams.protocols）：顺序即优先级，第一个 = 默认面（探活 / 模型列表端点）
-const FORM_PROTOCOLS = [
-  { value: "openai", short: "openai" },
-  { value: "anthropic", short: "anthropic" },
-  { value: "gemini", short: "gemini" },
-];
 
 // 确认文案里的复数后缀（1 model / 2 models）
 const plural = (n: number) => (n === 1 ? "" : "s");
@@ -104,8 +96,7 @@ const BALANCE_AUTO_REFRESH_MS = 5 * 60 * 1000;
 
 interface FormState {
   name: string;
-  protocols: string[]; // 接受面集合，第一个 = 默认面（探活端点）
-  authStyle: string;
+  protocol: string;
   baseUrl: string;
   enabledModels: string;
   priority: string;
@@ -118,8 +109,7 @@ interface FormState {
 
 const EMPTY_FORM: FormState = {
   name: "",
-  protocols: ["openai"],
-  authStyle: "bearer",
+  protocol: "openai",
   baseUrl: "",
   enabledModels: "",
   priority: "0",
@@ -342,8 +332,7 @@ export default function UpstreamsPanel() {
     const proxyUrl = form.proxyUrl.trim();
     const payload: Record<string, unknown> = {
       name: form.name.trim(),
-      protocols: form.protocols,
-      authStyle: form.authStyle,
+      protocol: form.protocol,
       baseUrl: form.baseUrl.trim(),
       enabledModels: form.enabledModels
         .split(",")
@@ -467,8 +456,7 @@ export default function UpstreamsPanel() {
     setFormOpen(true);
     setForm({
       name: u.name,
-      protocols: u.protocols.length > 0 ? u.protocols : [u.protocol],
-      authStyle: u.authStyle,
+      protocol: u.protocol,
       baseUrl: u.baseUrl,
       enabledModels: u.enabledModels.join(", "),
       priority: String(u.priority),
@@ -835,8 +823,7 @@ export default function UpstreamsPanel() {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          protocol: form.protocols[0] ?? "openai",
-          authStyle: form.authStyle,
+          protocol: form.protocol,
           baseUrl: form.baseUrl.trim(),
           apiKey,
           proxyUrl: form.proxyUrl.trim() || undefined,
@@ -874,8 +861,7 @@ export default function UpstreamsPanel() {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          protocol: form.protocols[0] ?? "openai",
-          authStyle: form.authStyle,
+          protocol: form.protocol,
           baseUrl: form.baseUrl.trim(),
           apiKey,
           upstreamId: apiKey ? undefined : editingId,
@@ -1073,14 +1059,7 @@ export default function UpstreamsPanel() {
                       setForm({
                         ...form,
                         name: p.name,
-                        protocols: [p.protocol],
-                        // 预置面 → 默认认证头（多面异构的 provider 需手动改 authStyle 并拆记录）
-                        authStyle:
-                          p.protocol === "anthropic"
-                            ? "x-api-key"
-                            : p.protocol === "gemini"
-                              ? "x-goog-api-key"
-                              : "bearer",
+                        protocol: p.protocol,
                         baseUrl: p.baseUrl,
                         balanceFetchMode: followBalanceMode(p.baseUrl, p.name),
                       });
@@ -1100,54 +1079,20 @@ export default function UpstreamsPanel() {
               Auth Header{" "}
               <span
                 className="cursor-help text-gray-400"
-                title={"Which header carries the upstream API key. This is independent of the LLM protocol: OpenRouter/Kimi accept Authorization: Bearer on both the OpenAI and Anthropic surfaces, while OpenCode Zen requires x-api-key on /v1/messages but Bearer on /v1/chat/completions. Pick whatever this upstream actually accepts."}
+                title={"Which header carries the upstream API key — the real difference between the options. It also sets default probe endpoints and accepted request styles: anthropic adds the anthropic-version header; gemini speaks /v1beta paths (model in the URL). Relays serving anthropic/gemini models via OpenAI-compatible endpoints use 'Authorization: Bearer' (default); per-model probe overrides below cover their endpoint styles."}
               >
                 (?)
               </span>
             </label>
             <select
-              value={form.authStyle}
-              onChange={(e) => setForm({ ...form, authStyle: e.target.value })}
+              value={form.protocol}
+              onChange={(e) => setForm({ ...form, protocol: e.target.value })}
               className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             >
               {PROTOCOL_OPTIONS.map((p) => (
                 <option key={p.value} value={p.value}>{p.label}</option>
               ))}
             </select>
-          </div>
-          <div>
-            <label className="mb-1 block text-xs text-gray-600">
-              Accepts protocols{" "}
-              <span
-                className="cursor-help text-gray-400"
-                title={"Which client API styles may route here. A multi-face relay (e.g. OpenRouter) can accept both openai and anthropic with one key. The first checked protocol is the default face used for probing and for fetching the model list."}
-              >
-                (?)
-              </span>
-            </label>
-            <div className="flex flex-wrap gap-3 pt-1">
-              {FORM_PROTOCOLS.map((p) => {
-                const checked = form.protocols.includes(p.value);
-                return (
-                  <label key={p.value} className="flex items-center gap-1.5 text-sm text-gray-700">
-                    <input
-                      type="checkbox"
-                      className="h-4 w-4"
-                      checked={checked}
-                      onChange={() => {
-                        // 至少保留一个面；取消时从集合移除，勾选时追加到末尾
-                        const next = checked
-                          ? form.protocols.filter((x) => x !== p.value)
-                          : [...form.protocols, p.value];
-                        if (next.length === 0) return;
-                        setForm({ ...form, protocols: next });
-                      }}
-                    />
-                    {p.short}
-                  </label>
-                );
-              })}
-            </div>
           </div>
           <div>
             <label className="mb-1 block text-xs text-gray-600">Priority (model routing)</label>
@@ -1852,12 +1797,7 @@ export default function UpstreamsPanel() {
                     no active keys
                   </span>
                 )}
-                <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-600">
-                  {(u.protocols.length > 0 ? u.protocols : [u.protocol]).join("+")}
-                </span>
-                <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-600">
-                  {PROTOCOL_LABELS.get(u.authStyle) ?? u.authStyle}
-                </span>
+                <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-600">{PROTOCOL_LABELS.get(u.protocol) ?? u.protocol}</span>
                 <span className="text-xs text-gray-400 truncate max-w-[200px]">{u.baseUrl}</span>
                 <span className="text-xs text-gray-400" title="Active / total API keys (disabled keys are excluded from routing)">
                   {u.enabledModels.length} models · {u.activeKeyCount}/{u.keyCount} keys · p{u.priority}

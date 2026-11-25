@@ -93,6 +93,7 @@ describe("/api/admin/named-routes", () => {
     const res = await POST(
       req("/api/admin/named-routes", "POST", token, {
         name: "cheap",
+        protocol: "openai",
         target: { upstreamId, targetModel: "gpt-4o-mini", description: "cheap tier", priority: 1 },
       })
     );
@@ -104,6 +105,7 @@ describe("/api/admin/named-routes", () => {
     expect(json.data).toHaveLength(1);
     expect(json.data[0]).toMatchObject({
       name: "cheap",
+      protocol: "openai",
       classifierKind: "priority",
       classifierUpstreamId: 0,
       classifierModel: "",
@@ -120,40 +122,40 @@ describe("/api/admin/named-routes", () => {
     ]);
   });
 
-  it("rejects a duplicate name with 409 (name 是全局唯一键)", async () => {
+  it("rejects duplicate name + protocol with 409", async () => {
     const token = await makeToken();
-    const body = { name: "cheap" };
+    const body = { name: "cheap", protocol: "openai" };
     expect((await POST(req("/api/admin/named-routes", "POST", token, body))).status).toBe(201);
     expect((await POST(req("/api/admin/named-routes", "POST", token, body))).status).toBe(409);
   });
 
-  it("accepts a target on an upstream that serves another face (hop 过滤由 protocols 决定)", async () => {
+  it("accepts a target whose upstream family differs from the route protocol (decoupled)", async () => {
     const token = await makeToken();
     const upstreamId = await upstreamIdByName("up-anthropic");
     const res = await POST(
       req("/api/admin/named-routes", "POST", token, {
         name: "cheap",
+        protocol: "openai",
         target: { upstreamId, targetModel: "claude-sonnet" },
       })
     );
     expect(res.status).toBe(201);
     const json = await res.json();
-    // target 的接受面透出给 UI（供展示/诊断）
-    const list = await GET(req("/api/admin/named-routes", "GET", token));
-    const row = (await list.json()).data[0];
-    expect(row.name).toBe(json.data.name);
-    expect(row.targets[0].upstreamProtocols).toContain("anthropic");
-    expect(row.targets[0].upstreamAuthStyle).toBe("x-api-key");
+    expect(json.data).toEqual(expect.objectContaining({ name: "cheap", protocol: "openai" }));
   });
 
-  it("accepts any model as classifier; rejects a declared chat classifier on non-openai upstream", async () => {
+  it("rejects an invalid protocol; accepts any model as classifier; rejects a declared chat classifier on non-openai upstream", async () => {
     const token = await makeToken();
     const classifierUpstreamId = await upstreamIdByName("up-classifier");
     const chatClsUpstreamId = await upstreamIdByName("up-chat-cls");
+    expect(
+      (await POST(req("/api/admin/named-routes", "POST", token, { name: "x", protocol: "grpc" }))).status
+    ).toBe(400);
     // 未声明的模型也可作分类器（运行时默认 jev-systemone）
     const accepted = await POST(
       req("/api/admin/named-routes", "POST", token, {
         name: "x",
+        protocol: "openai",
         classifierKind: "model",
         classifierUpstreamId,
         classifierModel: "not-declared",
@@ -164,6 +166,7 @@ describe("/api/admin/named-routes", () => {
     const res = await POST(
       req("/api/admin/named-routes", "POST", token, {
         name: "y",
+        protocol: "openai",
         classifierKind: "model",
         classifierUpstreamId: chatClsUpstreamId,
         classifierModel: "claude-decider",
@@ -179,6 +182,7 @@ describe("/api/admin/named-routes", () => {
     const created = await POST(
       req("/api/admin/named-routes", "POST", token, {
         name: "smart",
+        protocol: "openai",
         instruction: "pick by complexity",
         classifierKind: "model",
         classifierUpstreamId,
@@ -202,14 +206,14 @@ describe("/api/admin/named-routes", () => {
     expect(row.instruction).toBe("pick by complexity");
   });
 
-  it("renames a named route and rejects a name collision", async () => {
+  it("renames a named route and rejects a name that collides on the same protocol", async () => {
     const token = await makeToken();
     const created = await POST(
-      req("/api/admin/named-routes", "POST", token, { name: "cheap" })
+      req("/api/admin/named-routes", "POST", token, { name: "cheap", protocol: "openai" })
     );
     const id = (await created.json()).data.id;
     expect(
-      (await POST(req("/api/admin/named-routes", "POST", token, { name: "taken" }))).status
+      (await POST(req("/api/admin/named-routes", "POST", token, { name: "taken", protocol: "openai" }))).status
     ).toBe(201);
 
     const renamed = await PATCH(
@@ -222,7 +226,7 @@ describe("/api/admin/named-routes", () => {
     const names = (await list.json()).data.map((r: any) => r.name).sort();
     expect(names).toEqual(["fast", "taken"]);
 
-    // 重名 → 409，原值不变
+    // 同协议重名 → 409，原值不变
     const conflict = await PATCH(
       req(`/api/admin/named-routes/${id}`, "PATCH", token, { name: "taken" }),
       await ctx(id)
@@ -245,10 +249,10 @@ describe("/api/admin/named-routes", () => {
     ).toBe(400);
   });
 
-  it("treats a same-name patch as a no-op and keeps name globally unique", async () => {
+  it("keeps protocol immutable and treats a same-name patch as a no-op", async () => {
     const token = await makeToken();
     const created = await POST(
-      req("/api/admin/named-routes", "POST", token, { name: "immutable" })
+      req("/api/admin/named-routes", "POST", token, { name: "immutable", protocol: "openai" })
     );
     const id = (await created.json()).data.id;
 
@@ -258,24 +262,31 @@ describe("/api/admin/named-routes", () => {
         .status
     ).toBe(200);
 
-    // 只提交无字段 → 400
+    // 只提交 protocol：无有效字段 → 400
     expect(
-      (await PATCH(req(`/api/admin/named-routes/${id}`, "PATCH", token, {}), await ctx(id))).status
+      (await PATCH(req(`/api/admin/named-routes/${id}`, "PATCH", token, { protocol: "anthropic" }), await ctx(id)))
+        .status
     ).toBe(400);
 
-    // 改名为已存在的 name → 409
-    await POST(req("/api/admin/named-routes", "POST", token, { name: "taken-name" }));
+    // 与有效字段同提交：protocol 被忽略，name 正常落库
     expect(
       (
         await PATCH(
-          req(`/api/admin/named-routes/${id}`, "PATCH", token, { name: "taken-name" }),
+          req(`/api/admin/named-routes/${id}`, "PATCH", token, { name: "still-openai", protocol: "anthropic" }),
           await ctx(id)
         )
       ).status
-    ).toBe(409);
+    ).toBe(200);
     const list = await GET(req("/api/admin/named-routes", "GET", token));
     const row = (await list.json()).data.find((r: any) => r.id === id);
-    expect(row.name).toBe("immutable");
+    expect(row.name).toBe("still-openai");
+    expect(row.protocol).toBe("openai");
+
+    // 同名不同协议互不冲突（UNIQUE 是 name+protocol 组合）
+    expect(
+      (await POST(req("/api/admin/named-routes", "POST", token, { name: "still-openai", protocol: "anthropic" })))
+        .status
+    ).toBe(201);
   });
 
   it("deletes a named route together with its targets", async () => {
@@ -284,6 +295,7 @@ describe("/api/admin/named-routes", () => {
     const created = await POST(
       req("/api/admin/named-routes", "POST", token, {
         name: "gone",
+        protocol: "openai",
         target: { upstreamId, targetModel: "gpt-4o-mini" },
       })
     );
@@ -298,7 +310,7 @@ describe("/api/admin/named-routes", () => {
 
 describe("/api/admin/named-routes/[id]/targets", () => {
   async function createRoute(token: string): Promise<number> {
-    const res = await POST(req("/api/admin/named-routes", "POST", token, { name: "cheap" }));
+    const res = await POST(req("/api/admin/named-routes", "POST", token, { name: "cheap", protocol: "openai" }));
     return (await res.json()).data.id;
   }
 

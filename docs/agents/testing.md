@@ -64,9 +64,7 @@
   - `src/lib/clipboard` / `src/lib/mask-utils`：剪贴板 fallback / 密钥掩码
   - `src/lib/provider-utils-async`：匿名化分组解析 + 归一化索引
   - `src/routes/api/admin/virtual-keys/route.test`：vk CRUD + 配额用量窗口查询集成测试
-  - `src/routes/api/admin/named-routes/route.test`：命名路由 CRUD（POST 带首目标、重复 name → 409（全局唯一）、target 接受面由 upstream protocols 决定且在 GET 回显、未声明分类器模型 → 400、切回规则分类器、改名（含 trim + 撞名 409 + 空名/超长 400）、DELETE 级联目标）+ 目标子资源（增/改/删、重复目标 → 409、未知路由 → 404）
-  - `src/lib/admin/upstream-face.test`：面/认证写入校验（protocols 缺省回落、protocols[0] = 默认面、显式 authStyle 覆盖推导、空/非法 400、默认面必须属于集合、通配相交判定与运行时同口径、同 baseUrl 不同 authStyle 重叠报冲突）
-  - `src/lib/db/migrate-auth.test` / `legacy-migrate.test`：存量迁移——auth_style/protocols 按 protocol 回填与脏值修复、named_routes 去 protocol 后同名合并（无冲突保留最小 id、冲突自动禁用、目标重指不丢行、外键 CASCADE 下不误删）；老 v1 库（routing_rules / virtual_models）端到端升级
+  - `src/routes/api/admin/named-routes/route.test`：命名路由 CRUD（POST 带首目标、重复 name+protocol → 409、目标协议不匹配 → 400、未声明分类器模型 → 400、切回规则分类器、改名（含 trim + 撞名 409 + 空名/超长 400）、DELETE 级联目标）+ 目标子资源（增/改/删、重复目标 → 409、未知路由 → 404）
   - `src/routes/api/admin/models-dev/upload/route.test`：快照上传校验（大小/结构/全非法 400）+ litellm 格式自动识别转换上传成功 + 审计 source
   - `src/routes/api/admin/models-dev/refresh/route.test`：双源 refresh（github 分支走 Litellm URL、非法 setting 值回退默认）+ 审计含 source
   - `src/routes/api/admin/upstreams/test-connection|fetch-models/route.test`：SSRF 校验（私网 400 不发请求）+ 存储 key 模式 + 3xx 不跟随

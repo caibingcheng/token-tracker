@@ -1,54 +1,7 @@
 import { sql } from "drizzle-orm";
-import { writeFileSync } from "node:fs";
 import { wrapDatabaseClient, invalidateQueryCache } from "./cache";
 import { offsetMinutesToSqlModifiers } from "@/lib/timezone-utils";
-import { migrateColumns, migrateTokenRecordsModelColumns, migrateNamedRoutesTables, migrateNamedRouteTargetsNullableUpstream, migrateSyncInstancesTable, migrateIngestTokensTable, migrateUpstreamAuthStyleAndProtocols, migrateNamedRoutesDropProtocol } from "./migrate";
-import type { NamedRouteMergeReport } from "./migrate";
-import { MIGRATION_ISSUES_KEY, pendingMigrations, snapshotBeforeMigrate } from "./migrate-preflight";
-
-// 降级启动时的迁移问题清单：写进 settings（供 Admin banner 读）+ 容器日志。
-// 只有「数据整理类」迁移会进这里；schema 加列类失败仍是致命错误。
-const migrationIssues: MigrationIssue[] = [];
-
-export interface MigrationIssue {
-  name: string;
-  error: string;
-}
-
-function runMigration(name: string, issues: MigrationIssue[], fn: () => void): void {
-  try {
-    fn();
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    issues.push({ name, error: message });
-    console.error(
-      `[migrate] ${name} FAILED; continuing with a degraded state (retried on next start): ${message}`
-    );
-  }
-}
-
-// 迁移问题写 settings（raw client，此时 drizzle/cache 尚未启用）。
-// 空清单 = 本次启动全部跑通 → 删 key，banner 自动消失。
-function persistMigrationIssues(client: any, issues: MigrationIssue[]): void {
-  try {
-    const hasSettings = client
-      .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='settings'`)
-      .get();
-    if (!hasSettings) return;
-    if (issues.length === 0) {
-      client.prepare(`DELETE FROM settings WHERE key = ?`).run(MIGRATION_ISSUES_KEY);
-      return;
-    }
-    client
-      .prepare(
-        `INSERT INTO settings (key, value) VALUES (?, ?)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value`
-      )
-      .run(MIGRATION_ISSUES_KEY, JSON.stringify({ at: new Date().toISOString(), issues }));
-  } catch (err) {
-    console.error("[migrate] failed to persist migration issues:", err);
-  }
-}
+import { migrateColumns, migrateTokenRecordsModelColumns, migrateNamedRoutesTables, migrateNamedRouteTargetsNullableUpstream, migrateSyncInstancesTable, migrateIngestTokensTable } from "./migrate";
 
 let db: any;
 let rawClient: any;
@@ -82,17 +35,6 @@ const DEFAULT_DB_PATH = "./data/token-tracker.db";
 // closeDb 必须能关掉历史连接，否则 Windows 上临时库文件删不掉。
 const CLIENT_REGISTRY = Symbol.for("token-tracker.sqlite-clients");
 
-// 启动阶段无法完成的 schema 初始化（加列/建表失败）：环境级故障（磁盘满、只读、库损、锁），
-// 不是迁移逻辑本身。带上可执行指令，让上层返回 503 + 人话，而不是一句 Internal Server Error。
-export class DatabaseUnavailableError extends Error {
-  readonly cause?: unknown;
-  constructor(message: string, cause?: unknown) {
-    super(message);
-    this.name = "DatabaseUnavailableError";
-    this.cause = cause;
-  }
-}
-
 export async function initDatabase() {
   if (initialized) return;
   if (!initPromise) {
@@ -104,32 +46,11 @@ export async function initDatabase() {
       })
       .catch((err) => {
         if (initPromise === p) initPromise = undefined;
-        // 环境级失败：写一份错误文件（不进 DB，因为 DB 就是坏的）供运维排查，
-        // 然后带上可执行提示往上抛。数据整理类迁移已在内部降级，不会走到这里。
-        const detail = err instanceof Error ? err.message : String(err);
-        writeInitErrorFile(detail);
-        throw new DatabaseUnavailableError(
-          `Database schema initialization failed: ${detail}. ` +
-            "The service cannot serve requests until this is fixed. Check server logs; " +
-            "a pre-migration snapshot (*.pre-migrate) is next to the database file if you need to roll back.",
-          err
-        );
+        throw err;
       });
     initPromise = p;
   }
   await initPromise;
-}
-
-function writeInitErrorFile(detail: string): void {
-  try {
-    const dbPath = process.env.SQLITE_DATABASE_PATH || DEFAULT_DB_PATH;
-    writeFileSync(
-      `${dbPath}.migration-error`,
-      JSON.stringify({ at: new Date().toISOString(), error: detail }, null, 2)
-    );
-  } catch {
-    // 写不了错误文件也不影响抛错
-  }
 }
 
 // 关闭所有已打开的 SQLite 句柄并重置本实例状态。仅供测试 afterAll 使用：
@@ -205,14 +126,6 @@ async function ensureClient() {
   // 本就不吃缓存复用，热页由 OS page cache 兜底，不在进程占用里）。
   // 代价：库页超出 2MB 时会更多走 read()，宿主内存紧张时那批页被回收后需重新读盘。
   client.pragma("cache_size = -2000");
-
-  // 升级前体检：有待跑迁移就先存一份一致性快照（人工回退的最后一根稻草）。
-  // 快照失败只警告——它是保险，不是启动前提。
-  const pending = pendingMigrations(client);
-  if (pending.length > 0) {
-    console.log(`[migrate] pending migrations: ${pending.join(", ")}`);
-    snapshotBeforeMigrate(client, dbPath);
-  }
 
   const { drizzle } = await import("drizzle-orm/better-sqlite3");
 
@@ -296,6 +209,7 @@ async function ensureClient() {
     CREATE TABLE IF NOT EXISTS named_routes (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
+      protocol TEXT NOT NULL,
       instruction TEXT NOT NULL DEFAULT '',
       classifier_upstream_id INTEGER NOT NULL DEFAULT 0,
       classifier_model TEXT NOT NULL DEFAULT '',
@@ -303,8 +217,8 @@ async function ensureClient() {
       enabled INTEGER NOT NULL DEFAULT 1,
       created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     );
-    -- uq_named_routes_name 不在这里建：存量库同名多协议行尚未合并，先建会直接撞唯一约束。
-    -- 统一在迁移之后建索引（见下方 tail exec）。
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_named_routes_name_protocol ON named_routes(name, protocol);
+    CREATE INDEX IF NOT EXISTS idx_named_routes_protocol_name ON named_routes(protocol, name);
     CREATE TABLE IF NOT EXISTS named_route_targets (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       named_route_id INTEGER NOT NULL REFERENCES named_routes(id) ON DELETE CASCADE,
@@ -393,63 +307,27 @@ async function ensureClient() {
     },
   ]);
 
-  // upstream 认证方式与接受协议集合（幂等：缺列才加 + 按 protocol 回填，存量行为不变）
-  migrateUpstreamAuthStyleAndProtocols(client);
-
   // token_records 专用迁移：model 列改为真实名 + request_model 回填 + target_model 删除
   migrateTokenRecordsModelColumns(client);
 
-  // 命名路由等「数据整理类」迁移：失败时降级启动（跳过 + 记录 + 下次启动重试），
-  // 不让一次迁移失败变成全站不可用（schema 加列类才是致命的，走上面的抛错路径）。
-  runMigration("named_routes.legacy_fold", migrationIssues, () =>
-    migrateNamedRoutesTables(client)
-  );
+  // 命名路由迁移：把存量 routing_rules / virtual_models + virtual_model_routes
+  // 折叠进 named_routes + named_route_targets，然后删旧表（幂等，全新库无旧表自动跳过）
+  migrateNamedRoutesTables(client);
 
   // named_route_targets.upstream_id 放宽可空（无 provider 目标）：NOT NULL 存量表重建（幂等）
-  runMigration("named_route_targets.nullable_upstream", migrationIssues, () =>
-    migrateNamedRouteTargetsNullableUpstream(client)
-  );
-
-  // 命名路由去协议（UNIQUE(name)）：同名多协议行合并成一个目标池，冲突（分类器配置/
-  // enabled/目标描述优先）无法自动判定时整条路由自动禁用（enabled=0），由人工复核后启用
-  const namedRouteMerges: NamedRouteMergeReport[] = [];
-  runMigration("named_routes.drop_protocol", migrationIssues, () => {
-    namedRouteMerges.push(...migrateNamedRoutesDropProtocol(client));
-  });
-  for (const m of namedRouteMerges) {
-    if (m.disabled) {
-      console.warn(
-        `[migrate] named route "${m.name}" (routes ${m.mergedRouteIds.join(",")}) auto-disabled by the protocol-merge migration: ${m.reasons.join("; ")}`
-      );
-    } else {
-      console.log(
-        `[migrate] merged same-name named routes ${m.mergedRouteIds.join(",")} into one pool ("${m.name}")`
-      );
-    }
-  }
+  migrateNamedRouteTargetsNullableUpstream(client);
 
   // 多实例同步表专用迁移（幂等，全新库无旧结构自动跳过）：
   // - sync_instances：instance 主键 → uid 主键 + instance_name（旧行丢弃）
   // - ingest_tokens：bound_instance → bound_uid（行回迁 + bound_uid 置 NULL）
-  runMigration("sync_instances.uid", migrationIssues, () => migrateSyncInstancesTable(client));
-  runMigration("ingest_tokens.bound_uid", migrationIssues, () =>
-    migrateIngestTokensTable(client)
-  );
+  migrateSyncInstancesTable(client);
+  migrateIngestTokensTable(client);
 
   client.exec(`
     CREATE INDEX IF NOT EXISTS idx_token_records_virtual_key_id ON token_records(virtual_key_id);
     CREATE INDEX IF NOT EXISTS idx_token_records_vk_created_at ON token_records(virtual_key_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_token_records_remote_instance_uid_created_at ON token_records(remote_instance_uid, created_at);
   `);
-
-  // 命名路由 name 全局唯一索引必须在同名多协议行合并之后建（全新库直接建）。
-  // drop_protocol 降级跳过时库里可能还有同名行 → 索引建不出来，不能让它把启动搞挂。
-  runMigration("named_routes.unique_name_index", migrationIssues, () =>
-    client.exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_named_routes_name ON named_routes(name)`)
-  );
-
-  // 降级留下的迁移问题落到 settings（供 Admin banner）+ 恢复正常后清掉
-  persistMigrationIssues(client, migrationIssues);
 
   // 模块状态最后一次性提交：DDL/迁移任一步抛错时 db 保持 undefined，下次 initDatabase
   // 才能重试；否则 `if (db) return` 会短路，带着残缺 schema 报初始化成功。

@@ -3,9 +3,7 @@ import { eq } from "drizzle-orm";
 import { db, initDatabase, upstreamsTable, upstreamKeysTable, upstreamModelHealthTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";
-import { parseEnabledModels } from "@/lib/gateway/model-router";
-import { resolveUpstreamAuthConfig } from "@/lib/gateway/auth-style";
-import { findAuthModelConflict, parseUpstreamFaceConfig } from "@/lib/admin/upstream-face";
+import { isProtocol, parseEnabledModels } from "@/lib/gateway/model-router";
 import { isBalanceFetchMode, balanceAutoFetchOf, normalizeBalanceFetchMode } from "@/lib/gateway/balance";
 import {
   validateUpstreamBaseUrl,
@@ -61,8 +59,6 @@ async function withKeys(upstream: any) {
   return {
     ...rest,
     enabled: upstream.enabled === 1,
-    // 认证/面配置：归一化后返回（protocols / authStyle 缺省值时也能直接用于 UI）
-    ...resolveUpstreamAuthConfig(upstream as any),
     enabledModels: parseEnabledModels(upstream.enabledModels),
     balance: upstream.balance ?? null,
     balanceUpdatedAt: upstream.balanceUpdatedAt ?? null,
@@ -133,31 +129,11 @@ export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
       }
       values.name = name;
     }
-    // 接受面集合 / 默认面 / 认证方式：任一显式提供时整体重算（省略 = 保留存量）
-    if (
-      body.protocol !== undefined ||
-      body.protocols !== undefined ||
-      body.authStyle !== undefined
-    ) {
-      const current = resolveUpstreamAuthConfig(upstream as any);
-      const parsed = parseUpstreamFaceConfig({
-        protocols: body.protocols !== undefined ? body.protocols : current.protocols,
-        // 只在显式给 protocol 时才要求它在集合内；否则跟随 protocols[0]
-        // （UI 只提交 protocols，重排即可换默认面/探活面）
-        protocol:
-          body.protocol !== undefined
-            ? body.protocol
-            : body.protocols !== undefined
-              ? undefined
-              : current.protocol,
-        authStyle: body.authStyle !== undefined ? body.authStyle : current.authStyle,
-      });
-      if (!parsed.ok) {
-        return NextResponse.json({ success: false, error: parsed.error }, { status: 400 });
+    if (typeof body.protocol === "string") {
+      if (!isProtocol(body.protocol)) {
+        return NextResponse.json({ success: false, error: "Invalid protocol" }, { status: 400 });
       }
-      values.protocols = JSON.stringify(parsed.value.protocols);
-      values.authStyle = parsed.value.authStyle;
-      values.protocol = parsed.value.protocol;
+      values.protocol = body.protocol;
     }
     if (typeof body.baseUrl === "string") {
       const baseUrl = body.baseUrl.trim().replace(/\/+$/, "");
@@ -175,40 +151,6 @@ export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
       values.enabledModels = JSON.stringify(
         body.enabledModels.filter((m) => typeof m === "string")
       );
-    }
-
-    // 同 baseUrl 下 authStyle 不同的记录不允许模型名重叠（校验取值后的最终状态）。
-    // 只在本次改动可能影响该不变量时校验：存量库可能本就违例（旧版允许跨协议同模型），
-    // 无差别校验会让“只改 priority/name”的编辑被 400 卡死。
-    const touchesFaces =
-      body.protocol !== undefined ||
-      body.protocols !== undefined ||
-      body.authStyle !== undefined ||
-      Array.isArray(body.enabledModels) ||
-      typeof body.baseUrl === "string";
-    if (touchesFaces) {
-      const current = resolveUpstreamAuthConfig(upstream as any);
-      const nextAuthStyle = (values.authStyle as any) ?? current.authStyle;
-      const nextBaseUrl = (values.baseUrl as string) ?? upstream.baseUrl;
-      const nextModels = values.enabledModels
-        ? (JSON.parse(values.enabledModels as string) as string[])
-        : parseEnabledModels(upstream.enabledModels);
-      const rows = await db.select().from(upstreamsTable);
-      const conflict = findAuthModelConflict(
-        { authStyle: nextAuthStyle, models: nextModels },
-        rows
-          .filter((row: any) => row.id !== id && row.baseUrl === nextBaseUrl)
-          .map((row: any) => ({
-            name: row.name,
-            baseUrl: row.baseUrl,
-            authStyle: resolveUpstreamAuthConfig(row).authStyle,
-            models: parseEnabledModels(row.enabledModels),
-          })),
-        nextBaseUrl
-      );
-      if (conflict) {
-        return NextResponse.json({ success: false, error: conflict }, { status: 400 });
-      }
     }
     if (body.priority !== undefined && Number.isFinite(Number(body.priority))) {
       values.priority = Number(body.priority);

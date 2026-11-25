@@ -7,7 +7,6 @@ import { loadPlainUpstreamKeys, healthTracker, decryptProxyUrl } from "@/lib/gat
 import { probeModelWithKeys } from "@/lib/gateway/probe";
 import { parseHeaderTransforms } from "@/lib/gateway/header-transforms";
 import { parseModelProbeConfigs, parseProbeConfig } from "@/lib/gateway/probe-config";
-import { resolveUpstreamAuthConfig } from "@/lib/gateway/auth-style";
 
 interface Params {
   params: Promise<{ id: string }>;
@@ -49,7 +48,7 @@ export const POST = withAuth(async (request: NextRequest, ctx: any) => {
 
     const result = await probeModelWithKeys(
       {
-        ...resolveUpstreamAuthConfig(upstream as any),
+        protocol: upstream.protocol as any,
         baseUrl: upstream.baseUrl,
         proxyUrl: decryptProxyUrl(upstream.proxyUrlEncrypted),
         headerTransforms: parseHeaderTransforms(upstream.headerTransforms),

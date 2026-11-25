@@ -36,12 +36,7 @@ export type NewTokenRecord = typeof tokenRecords.$inferInsert;
 export const upstreams = sqliteTable("upstreams", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   name: text("name").notNull().unique(),
-  protocol: text("protocol").notNull(), // 默认面（探活端点 / 模型列表端点 / 分类器资格），= protocols[0]
-  // JSON: Protocol[]，这条 upstream 接受哪些面的请求（路由过滤依据）；NULL/[] 视为 [protocol]
-  protocols: text("protocols"),
-  // 出站认证头：'bearer' | 'x-api-key' | 'x-goog-api-key'，与协议解耦（见 gateway/auth-style.ts）。
-  // NULL = 未指定，运行时按默认面映射（= 历史「按协议推导」行为，与迁移回填一致）
-  authStyle: text("auth_style"),
+  protocol: text("protocol").notNull(), // 'openai' | 'anthropic' | 'gemini'
   baseUrl: text("base_url").notNull(),
   enabledModels: text("enabled_models").notNull().default("[]"), // JSON array, supports 'gpt-*' prefix wildcard
   priority: integer("priority").notNull().default(0),
@@ -64,9 +59,7 @@ export const upstreams = sqliteTable("upstreams", {
 export type Upstream = typeof upstreams.$inferSelect;
 export type NewUpstream = typeof upstreams.$inferInsert;
 
-// 命名路由：客户端请求的虚拟名 name → 目标 upstream 的真实模型（优先级高于自动路由）。
-// name 全局唯一，不再绑定协议：同一虚拟名可挂多面 target，由 target upstream 的 protocols 决定
-// 哪条 hop 接受哪个面的请求（认证头由 target upstream 的 auth_style 决定）。
+// 命名路由：客户端请求的虚拟名 name + protocol → 目标 upstream 的真实模型（优先级高于自动路由）。
 // 自带路由目标池 named_route_targets，可选分类器决定链首：
 //   classifier_kind = 'priority'：无 LLM 分类器，链首 = 首个健康目标（按 priority），零 LLM 开销
 //   classifier_kind = 'model'：由 classifier_upstream_id + classifier_model 指向的 LLM 分类器选链首
@@ -77,7 +70,8 @@ export const namedRoutes = sqliteTable(
   "named_routes",
   {
     id: integer("id").primaryKey({ autoIncrement: true }),
-    name: text("name").notNull(), // 客户端请求的虚拟模型名（全局唯一）
+    name: text("name").notNull(), // 客户端请求的虚拟模型名
+    protocol: text("protocol").notNull(), // 'openai' | 'anthropic' | 'gemini'
     instruction: text("instruction").notNull().default(""), // 给 LLM 分类器的决策指令
     classifierUpstreamId: integer("classifier_upstream_id").notNull().default(0), // 分类器所在 upstream（kind=priority 时占位 0）
     classifierModel: text("classifier_model").notNull().default(""), // 分类器模型名（须在 upstream.classifier_models 中声明；kind=priority 时占位 ''）
@@ -85,7 +79,7 @@ export const namedRoutes = sqliteTable(
     enabled: integer("enabled").notNull().default(1),
     createdAt: text("created_at").$defaultFn(() => new Date().toISOString()),
   },
-  (table) => [uniqueIndex("uq_named_routes_name").on(table.name)]
+  (table) => [uniqueIndex("uq_named_routes_name_protocol").on(table.name, table.protocol)]
 );
 
 export type NamedRoute = typeof namedRoutes.$inferSelect;

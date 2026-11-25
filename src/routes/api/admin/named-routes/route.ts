@@ -9,9 +9,8 @@ import {
 } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";
-import { isProtocol } from "@/lib/gateway/model-router";
+import { isProtocol, VALID_PROTOCOLS } from "@/lib/gateway/model-router";
 import type { Protocol } from "@/lib/gateway/model-router";
-import { resolveUpstreamAuthConfig } from "@/lib/gateway/auth-style";
 import type { ClassifierKind } from "@/lib/gateway/classifier/types";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 import {
@@ -26,9 +25,7 @@ export interface NamedRouteTargetRow {
   id: number;
   upstreamId: number | null; // null = 无 provider 目标（按路由解析）
   upstreamName: string; // auto 目标 = "(auto)"；upstream 被删 = "(deleted)"
-  upstreamProtocol: Protocol | null; // 默认面（展示用）；auto 目标 = null
-  upstreamProtocols: Protocol[]; // 接受面集合（决定哪个请求面能用这个 target）
-  upstreamAuthStyle: string | null; // 该 target 的出站认证方式（展示用）
+  upstreamProtocol: Protocol | null; // auto 目标 = null
   targetModel: string;
   description: string | null;
   priority: number;
@@ -37,6 +34,7 @@ export interface NamedRouteTargetRow {
 export interface NamedRouteRow {
   id: number;
   name: string;
+  protocol: Protocol;
   instruction: string;
   classifierUpstreamId: number;
   classifierUpstreamName: string;
@@ -55,7 +53,7 @@ export const GET = withAuth(async () => {
       .select({ route: namedRoutesTable, upstream: upstreamsTable })
       .from(namedRoutesTable)
       .leftJoin(upstreamsTable, eq(namedRoutesTable.classifierUpstreamId, upstreamsTable.id))
-      .orderBy(namedRoutesTable.name);
+      .orderBy(namedRoutesTable.name, namedRoutesTable.protocol);
     const targetRows = await db
       .select({ target: namedRouteTargetsTable, upstream: upstreamsTable })
       .from(namedRouteTargetsTable)
@@ -69,15 +67,8 @@ export const GET = withAuth(async () => {
         id: row.target.id,
         upstreamId: row.target.upstreamId,
         upstreamName: isAuto ? "(auto)" : (row.upstream?.name ?? "(deleted)"),
-        upstreamProtocol: !isAuto && row.upstream && isProtocol(row.upstream.protocol)
-          ? row.upstream.protocol
-          : null,
-        upstreamProtocols: row.upstream
-          ? resolveUpstreamAuthConfig(row.upstream).protocols
-          : [],
-        upstreamAuthStyle: row.upstream
-          ? resolveUpstreamAuthConfig(row.upstream).authStyle
-          : null,
+        upstreamProtocol:
+          !isAuto && row.upstream && isProtocol(row.upstream.protocol) ? row.upstream.protocol : null,
         targetModel: row.target.upstreamModel,
         description: row.target.description ?? null,
         priority: row.target.priority ?? 0,
@@ -91,6 +82,7 @@ export const GET = withAuth(async () => {
     const data: NamedRouteRow[] = rows.map((row: any) => ({
       id: row.route.id,
       name: row.route.name,
+      protocol: isProtocol(row.route.protocol) ? row.route.protocol : "openai",
       instruction: row.route.instruction ?? "",
       classifierUpstreamId: row.route.classifierUpstreamId ?? 0,
       classifierUpstreamName: row.upstream?.name ?? "",
@@ -116,11 +108,18 @@ export const POST = withAuth(async (request: NextRequest) => {
     }
 
     const name = typeof body.name === "string" ? body.name.trim() : "";
+    const protocol = typeof body.protocol === "string" ? body.protocol : "";
     const instruction = typeof body.instruction === "string" ? body.instruction.trim() : "";
 
     if (!name || name.length > MAX_NAME_LENGTH) {
       return NextResponse.json(
         { success: false, error: `name is required (max ${MAX_NAME_LENGTH} chars)` },
+        { status: 400 }
+      );
+    }
+    if (!isProtocol(protocol)) {
+      return NextResponse.json(
+        { success: false, error: `Invalid protocol, must be one of: ${VALID_PROTOCOLS.join(", ")}` },
         { status: 400 }
       );
     }
@@ -140,7 +139,7 @@ export const POST = withAuth(async (request: NextRequest) => {
       return NextResponse.json({ success: false, error: classifier.error }, { status: 400 });
     }
 
-    // 可选首目标：与目标池写入同口径校验（upstreamId 省略 = auto 目标）
+    // 可选首目标：与目标池写入同口径校验（协议必须与路由一致；upstreamId 省略 = auto 目标）
     let target: {
       upstreamId: number | null;
       isAuto: boolean;
@@ -179,8 +178,9 @@ export const POST = withAuth(async (request: NextRequest) => {
         if (!upstream) {
           return NextResponse.json({ success: false, error: "Upstream not found" }, { status: 400 });
         }
-        // target 与请求面的匹配不再静态校验：可接受面由该 upstream 的 protocols 声明，
-        // 运行时按 protocols.includes(请求 protocol) 过滤 hop（认证头取自该 upstream 的 auth_style）
+        // 有意不解耦校验：target upstream 的 family 与 route protocol 不要求相等——
+        // 管理员可为 openai 路由选 anthropic family 的上游（如同时接受多种风格的 relay），
+        // 配错由运行时 404/failover 暴露（与 upstream 级「认证 header」字段解耦，管理员自觉）
       }
       target = {
         upstreamId,
@@ -202,6 +202,7 @@ export const POST = withAuth(async (request: NextRequest) => {
           .insert(namedRoutesTable)
           .values({
             name,
+            protocol,
             instruction,
             classifierUpstreamId: classifier.upstreamId,
             classifierModel: classifier.model,
@@ -248,6 +249,7 @@ export const POST = withAuth(async (request: NextRequest) => {
         userAgent,
         details: {
           name,
+          protocol,
           classifierKind: classifier.kind,
           classifierUpstreamId: classifier.upstreamId,
           classifierModel: classifier.model,
@@ -266,7 +268,7 @@ export const POST = withAuth(async (request: NextRequest) => {
       }
       if (message.includes("UNIQUE")) {
         return NextResponse.json(
-          { success: false, error: `Named route already exists for "${name}"` },
+          { success: false, error: `Named route already exists for "${name}" (${protocol})` },
           { status: 409 }
         );
       }

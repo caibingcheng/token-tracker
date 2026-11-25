@@ -1,6 +1,5 @@
 import type { HeaderTransform } from "./header-transforms";
 import type { ClassifierKind } from "./classifier/types";
-import type { AuthStyle } from "./auth-style";
 
 export type Protocol = "openai" | "anthropic" | "gemini";
 
@@ -10,40 +9,10 @@ export function isProtocol(value: string): value is Protocol {
   return (VALID_PROTOCOLS as string[]).includes(value);
 }
 
-// upstreams.protocols 解析（容忍存量/脏数据）：非法项丢弃、去重；空或全非法 → 回落 [protocol]。
-// 历史语义是「一条记录只服务一个面」，所以回落值就是它原来那一个面。
-export function normalizeUpstreamProtocols(raw: unknown, protocol: string): Protocol[] {
-  const fallback: Protocol[] = isProtocol(protocol) ? [protocol] : ["openai"];
-  if (typeof raw !== "string" || raw.trim() === "") return fallback;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return fallback;
-  }
-  if (!Array.isArray(parsed)) return fallback;
-  const out: Protocol[] = [];
-  for (const item of parsed) {
-    if (typeof item !== "string" || !isProtocol(item)) continue;
-    if (!out.includes(item)) out.push(item);
-  }
-  return out.length > 0 ? out : fallback;
-}
-
-// 这条 upstream 是否接受该面（协议）的请求。protocols 是路由过滤的唯一依据。
-export function upstreamAcceptsProtocol(
-  upstream: { protocols?: Protocol[] | null },
-  protocol: Protocol
-): boolean {
-  return (upstream.protocols ?? []).includes(protocol);
-}
-
 export interface UpstreamRoute {
   id: number;
   name: string;
-  protocol: Protocol; // 默认面（探活端点 / 模型列表端点 / 分类器资格），不再参与路由过滤
-  protocols: Protocol[]; // 接受哪些面的请求（路由过滤依据）
-  authStyle: AuthStyle; // 出站认证头（与协议解耦）
+  protocol: Protocol;
   baseUrl: string;
   priority: number;
   enabled?: boolean;
@@ -53,15 +22,14 @@ export interface UpstreamRoute {
   classifierModels?: string | null; // upstreams.classifier_models 原始 JSON（命名路由分类器声明）
 }
 
-// 命名路由：客户端请求的虚拟名 name → 目标 upstream 的真实模型。
-// name 全局唯一，不再绑定协议：同一虚拟名可挂多面 target，由 target upstream 的 protocols
-// 决定哪条 hop 接受哪个面的请求。
+// 命名路由：客户端请求的虚拟名 name + protocol → 目标 upstream 的真实模型。
 // 自带目标池（多目标 failover 链）与可选分类器：
 //   classifierKind='priority' = 无 LLM 分类器，链首取首个健康目标（按 priority）
 //   classifierKind='model' = 由 classifierUpstreamId + classifierModel 指向的 LLM 分类器选链首
 export interface NamedRoute {
   id: number;
   name: string;
+  protocol: Protocol;
   instruction: string;
   classifierUpstreamId: number; // kind='priority' 时为占位 0
   classifierModel: string; // kind='priority' 时为占位 ''
@@ -81,10 +49,15 @@ export interface NamedRouteTarget {
   priority: number;
 }
 
-// 命名路由精确匹配（name 全局唯一），未命中或已禁用返回 null。
-// 不再按协议匹配：同一虚拟名在三个协议下都命中同一条路由，由 hop 的 protocols 决定可用性。
-export function findNamedRoute(model: string, routes: NamedRoute[]): NamedRoute | null {
-  return routes.find((r) => r.name === model && r.enabled) ?? null;
+// 命名路由精确匹配（name+protocol 唯一），未命中或已禁用返回 null
+export function findNamedRoute(
+  model: string,
+  protocol: Protocol,
+  routes: NamedRoute[]
+): NamedRoute | null {
+  return (
+    routes.find((r) => r.protocol === protocol && r.name === model && r.enabled) ?? null
+  );
 }
 
 // 目标按 priority 升序、同 priority 按 id 升序（failover 链顺序）
@@ -130,20 +103,12 @@ export function expandNamedRouteTargets(opts: {
       if (t.upstreamId !== null) {
         const upstream = upstreamById.get(t.upstreamId);
         if (!upstream) continue; // 禁用/删除的 upstream：跳过（与既有语义一致）
-        // 目标 upstream 不接受该面的请求：当作不可用 hop 跳过（认证头来自该 upstream，
-        // 跨面发错认证头只会换来 401 + 健康状态污染）
-        if (!upstreamAcceptsProtocol(upstream, protocol)) {
-          log?.(
-            `[gateway] named route target upstream "${upstream.name}" does not accept ${protocol}; skipping target id=${t.id}`
-          );
-          continue;
-        }
         hops.push({ targetId: ownerTargetId ?? t.id, upstream, targetModel: t.upstreamModel });
         continue;
       }
       // 无 provider 目标：命名路由嵌套 > 自动路由
       const nested = routes.find(
-        (r) => r.enabled && r.id !== rootRouteId && r.name === t.upstreamModel
+        (r) => r.enabled && r.id !== rootRouteId && r.protocol === protocol && r.name === t.upstreamModel
       );
       if (nested) {
         if (visited.has(nested.id)) {
@@ -296,17 +261,13 @@ export function routeModel(model: string, upstreams: UpstreamRoute[]): RouteMatc
   return best;
 }
 
-// 在指定 protocol 的启用 upstream 中查找所有匹配候选。
-// 过滤依据是 upstreams.protocols（接受面集合），不是单一 protocol 字段：
-// 一条记录声明多个面即可同时服务 openai / anthropic（如 OpenRouter）。
+// 在指定 protocol 的启用 upstream 中查找所有匹配候选
 export function findCandidatesByProtocol(
   model: string,
   protocol: Protocol,
   upstreams: UpstreamRoute[]
 ): ModelCandidate[] {
-  const enabled = upstreams.filter(
-    (u) => u.enabled !== false && upstreamAcceptsProtocol(u, protocol)
-  );
+  const enabled = upstreams.filter((u) => u.enabled !== false && u.protocol === protocol);
   const candidates: ModelCandidate[] = [];
   for (const upstream of enabled) {
     candidates.push(...upstreamMatchesModel(upstream, model));

@@ -18,27 +18,6 @@ import { verifySession } from "./verify-session";
 
 const app = new Hono({ strict: false });
 
-// 未捕获错误的统一出口：数据库初始化失败（环境级：磁盘满/只读/库损）返回 503 + 可执行提示，
-// 而不是裸 500；其余错误只回固定文案（不泄露内部细节），现场记日志。
-app.onError((err, c) => {
-  const isDbUnavailable = err?.name === "DatabaseUnavailableError";
-  console.error(
-    `[server] unhandled error on ${c.req.method} ${c.req.path}:`,
-    err instanceof Error ? err.stack ?? err.message : err
-  );
-  if (isDbUnavailable) {
-    return c.json(
-      {
-        success: false,
-        error: err instanceof Error ? err.message : "Database unavailable",
-        code: "database_unavailable",
-      },
-      503
-    );
-  }
-  return c.json({ success: false, error: "Internal server error" }, 500);
-});
-
 app.use("*", compressResponse);
 app.use("*", securityHeaders);
 app.use("/api/*", verifySession);

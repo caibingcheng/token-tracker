@@ -2,9 +2,7 @@
 // 用于 unhealthy upstream 的自动恢复探活与 Admin 面板的模型可用性测试。
 import { randomBytes } from "crypto";
 import type { Protocol } from "./model-router";
-import { isEdgeBlockStatus } from "./upstream-client";
-import { buildAuthHeaders, defaultAuthStyleForProtocol } from "./auth-style";
-import type { AuthStyle } from "./auth-style";
+import { buildAuthHeaders, isEdgeBlockStatus } from "./upstream-client";
 import { joinUrlPath } from "./url-utils";
 import { getOutboundDispatcher } from "./proxy-dispatcher";
 import { outboundFetch } from "./outbound-fetch";
@@ -18,9 +16,7 @@ import {
 import type { ModelProbeConfig, ProbeConfig } from "./probe-config";
 
 export interface ProbeTarget {
-  protocol: Protocol; // 默认面：决定默认探活端点与 body 风格
-  protocols?: Protocol[]; // 接受面集合（探活不直接用，仅供诊断/未来选面）
-  authStyle?: AuthStyle; // 探活出站认证头（与真实链路同一份配置）；缺省按默认面推导
+  protocol: Protocol;
   baseUrl: string;
   proxyUrl?: string | null; // HTTP CONNECT 代理明文 URL（解密后），null/undefined = 直连
   headerTransforms?: HeaderTransform[]; // upstream 出站 header 变换（与真实链路同一份配置）
@@ -92,8 +88,7 @@ export function buildProbeHeaders(
     "content-type": "application/json", // 显式声明：undici 对字符串 body 默认发 text/plain，多数上游会拒绝
     "accept-encoding": "identity",
   });
-  const authStyle = target.authStyle ?? defaultAuthStyleForProtocol(target.protocol);
-  for (const [key, value] of Object.entries(buildAuthHeaders(authStyle, apiKey))) {
+  for (const [key, value] of Object.entries(buildAuthHeaders(target.protocol, apiKey))) {
     headers.set(key, value);
   }
   // 懒求值 + 同次调用内 memoize：多个 transform 引用 ${var.sessionId} 时取值必须一致

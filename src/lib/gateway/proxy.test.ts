@@ -12,6 +12,7 @@ function mkNamedRoute(overrides: Partial<NamedRoute> = {}): NamedRoute {
   return {
     id: 1,
     name: "my-alias",
+    protocol: "openai",
     instruction: "",
     classifierUpstreamId: 0,
     classifierModel: "",
@@ -22,19 +23,16 @@ function mkNamedRoute(overrides: Partial<NamedRoute> = {}): NamedRoute {
 }
 
 function mkUpstream(overrides: Partial<UpstreamRoute>): UpstreamRoute {
-  const base = {
+  return {
     id: 1,
     name: "openai",
-    protocol: "openai" as const,
+    protocol: "openai",
     baseUrl: "https://upstream.example",
     priority: 0,
     enabled: true,
-    enabledModels: ["gpt-4o", "gpt-*"] as string[],
-    authStyle: "bearer" as const,
+    enabledModels: ["gpt-4o", "gpt-*"],
+    ...overrides,
   };
-  const merged = { ...base, ...overrides };
-  // 默认一条记录只服务它自己那个面（与历史语义一致）
-  return { ...merged, protocols: overrides.protocols ?? [merged.protocol] };
 }
 
 function mkDeps(overrides: Partial<ProxyDeps> = {}): ProxyDeps {
@@ -614,67 +612,6 @@ describe("handleProxyRequest - failover chain", () => {
     expect(headers.get("authorization")).toBe("Bearer secret-key-1");
     expect(headers.get("x-api-key")).toBeNull();
     expect(headers.get("accept-encoding")).toBe("identity");
-  });
-
-  it("uses the upstream's authStyle, not the request protocol (Kimi: anthropic face with Bearer)", async () => {
-    fetchMock.mockResolvedValue(
-      new Response("{}", { status: 200, headers: { "content-type": "application/json" } })
-    );
-    const deps = mkDeps({
-      resolveUpstreamKeys: vi.fn(async () => ["secret-key-1"]),
-      // anthropic 面但认证是 Bearer 的 relay（与 Kimi / OpenRouter 一致）
-      loadUpstreams: vi.fn(async () => [
-        mkUpstream({
-          protocol: "anthropic",
-          protocols: ["anthropic"],
-          authStyle: "bearer",
-          enabledModels: ["kimi-k3"],
-        }),
-      ]),
-    });
-    await handleProxyRequest(
-      makeRequest("/v1/messages", {
-        headers: { "x-api-key": "vk-good" },
-        body: { model: "kimi-k3", max_tokens: 8, messages: [{ role: "user", content: "hi" }] },
-      }),
-      deps
-    );
-
-    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    const headers = new Headers(init.headers);
-    expect(headers.get("authorization")).toBe("Bearer secret-key-1");
-    expect(headers.get("x-api-key")).toBeNull();
-    expect(headers.get("anthropic-version")).toBeNull();
-  });
-
-  it("uses x-api-key when the upstream authStyle says so (Zen: anthropic face)", async () => {
-    fetchMock.mockResolvedValue(
-      new Response("{}", { status: 200, headers: { "content-type": "application/json" } })
-    );
-    const deps = mkDeps({
-      resolveUpstreamKeys: vi.fn(async () => ["secret-key-1"]),
-      loadUpstreams: vi.fn(async () => [
-        mkUpstream({
-          protocol: "anthropic",
-          protocols: ["anthropic"],
-          authStyle: "x-api-key",
-          enabledModels: ["claude-sonnet"],
-        }),
-      ]),
-    });
-    await handleProxyRequest(
-      makeRequest("/v1/messages", {
-        headers: { "x-api-key": "vk-good" },
-        body: { model: "claude-sonnet", max_tokens: 8, messages: [{ role: "user", content: "hi" }] },
-      }),
-      deps
-    );
-
-    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    const headers = new Headers(init.headers);
-    expect(headers.get("x-api-key")).toBe("secret-key-1");
-    expect(headers.get("authorization")).toBeNull();
-    expect(headers.get("anthropic-version")).toBe("2023-06-01");
   });
 
   it("drops client Expect header (curl >1KB sends Expect: 100-continue; undici rejects it)", async () => {
@@ -2687,7 +2624,7 @@ describe("handleProxyRequest - GET /v1/models", () => {
     expect(ids).toEqual(["gpt-4o"]);
   });
 
-  it("includes named route names whose targets serve the request face, filtered by vk allowlist", async () => {
+  it("includes named route names filtered by request protocol and vk allowlist", async () => {
     const deps = mkDeps({
       resolveVirtualKey: vi.fn(async () => ({
         id: 1,
@@ -2700,15 +2637,9 @@ describe("handleProxyRequest - GET /v1/models", () => {
         mkUpstream({ id: 2, name: "anthropic-up", protocol: "anthropic", enabledModels: ["claude-3-5-sonnet"] }),
       ]),
       loadNamedRoutes: vi.fn(async () => [
-        mkNamedRoute({ id: 1, name: "my-alias" }),
-        mkNamedRoute({ id: 2, name: "my-claude" }),
+        mkNamedRoute({ id: 1, name: "my-alias", protocol: "openai" }),
+        mkNamedRoute({ id: 2, name: "my-claude", protocol: "anthropic" }),
       ]),
-      // 命名路由本身不再带协议：可用面由 target upstream 的 protocols 决定
-      loadNamedRouteTargets: vi.fn(async (routeId: number) =>
-        routeId === 1
-          ? [{ id: 11, upstreamId: 1, targetModel: "gpt-4o", description: null, priority: 0 }]
-          : [{ id: 12, upstreamId: 2, targetModel: "claude-3-5-sonnet", description: null, priority: 0 }]
-      ),
     });
     const res = await handleProxyRequest(
       makeRequest("/v1/models", { method: "GET", headers: { authorization: "Bearer vk-good" } }),
@@ -2717,8 +2648,8 @@ describe("handleProxyRequest - GET /v1/models", () => {
     expect(res.status).toBe(200);
     const json = await res.json();
     const ids = json.data.map((m: any) => m.id);
-    expect(ids).toContain("my-alias"); // openai 面有 hop → 并入列表
-    expect(ids).not.toContain("my-claude"); // anthropic 面在此请求下无 hop → 不入 openai 列表
+    expect(ids).toContain("my-alias"); // openai 协议并入
+    expect(ids).not.toContain("my-claude"); // anthropic 协议不入 openai 列表
     expect(ids).not.toContain("gpt-4o"); // vk allowlist my-* 过滤
   });
 });
@@ -3247,7 +3178,7 @@ describe("handleProxyRequest - named routing", () => {
       loadUpstreams: vi.fn(async () => [
         mkUpstream({ id: 1, name: "target-up", protocol: "gemini", baseUrl: "https://target.example", enabledModels: ["gemini-2.0-flash"] }),
       ]),
-      loadNamedRoutes: vi.fn(async () => [mkNamedRoute({ name: "my-gemini" })]),
+      loadNamedRoutes: vi.fn(async () => [mkNamedRoute({ name: "my-gemini", protocol: "gemini" })]),
       loadNamedRouteTargets: vi.fn(async () => [
         { id: 1, upstreamId: 1, targetModel: "gemini-2.0-flash", description: null, priority: 0 },
       ]),

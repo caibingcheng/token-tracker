@@ -5,7 +5,6 @@ import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";
 import { testUpstreamConnection } from "@/lib/gateway/upstream-client";
 import { isProtocol } from "@/lib/gateway/model-router";
-import { defaultAuthStyleForProtocol, isAuthStyle } from "@/lib/gateway/auth-style";
 import {
   validateUpstreamBaseUrl,
   validateProxyUrl,
@@ -31,10 +30,6 @@ export const POST = withAuth(async (request: NextRequest) => {
     const protocol = typeof body.protocol === "string" ? body.protocol : "";
     const baseUrl = typeof body.baseUrl === "string" ? body.baseUrl.trim().replace(/\/+$/, "") : "";
     const apiKey = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
-    // 出站认证头：表单显式值优先，否则按默认面推导（与入库默认值一致）
-    const authStyle = isAuthStyle(body.authStyle)
-      ? body.authStyle
-      : defaultAuthStyleForProtocol(protocol);
 
     if (!isProtocol(protocol)) {
       return NextResponse.json({ success: false, error: "Invalid protocol" }, { status: 400 });
@@ -73,7 +68,7 @@ export const POST = withAuth(async (request: NextRequest) => {
       }
     }
 
-    const result = await testUpstreamConnection({ protocol, authStyle, baseUrl: validatedBaseUrl, proxyUrl }, apiKey);
+    const result = await testUpstreamConnection({ protocol, baseUrl: validatedBaseUrl, proxyUrl }, apiKey);
     return NextResponse.json({
       success: result.ok,
       data: { ok: result.ok, status: result.status, error: result.error },

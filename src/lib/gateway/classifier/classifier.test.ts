@@ -243,8 +243,6 @@ describe("runClassifier", () => {
     id: 7,
     name: "typesafe",
     protocol: "openai",
-    protocols: ["openai"],
-    authStyle: "bearer",
     baseUrl: "https://api.typesafe.ai",
     priority: 0,
   };
@@ -303,7 +301,7 @@ describe("runClassifier", () => {
 
   it("rejects chat type on non-openai upstream", async () => {
     const result = await runClassifier({
-      upstream: { ...upstream, protocol: "anthropic", protocols: ["anthropic"] },
+      upstream: { ...upstream, protocol: "anthropic" },
       entry: { model: "claude", type: "chat" },
       instruction: "",
       routes,
