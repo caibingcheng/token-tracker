@@ -1,19 +1,33 @@
 import { NextRequest, NextResponse } from "next/server";
-import { desc, sql } from "drizzle-orm";
+import { desc, inArray, sql } from "drizzle-orm";
 import { db, initDatabase, adminAuditLogsTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";
+import { parseFilterValues, FilterParamError } from "@/lib/filter-params";
 
-// 只读审计日志分页查询：created_at 倒序，支持按 action 过滤；同时返回库里出现过的 action 列表（供筛选下拉）
+// 只读审计日志分页查询：created_at 倒序，支持按 action 多选过滤（?action=a&action=b）；同时返回库里出现过的 action 列表（供筛选下拉）
 export const GET = withAuth(async (request: NextRequest) => {
+  const url = new URL(request.url);
+  let actionFilters: string[];
+  try {
+    actionFilters = parseFilterValues(url.searchParams, "action");
+  } catch (error) {
+    if (error instanceof FilterParamError) {
+      return NextResponse.json(
+        { success: false, error: error.message },
+        { status: 400 }
+      );
+    }
+    throw error;
+  }
+
   return withSkipCache(async () => {
     await initDatabase();
-    const url = new URL(request.url);
     const page = Math.max(1, Number(url.searchParams.get("page")) || 1);
     const pageSize = Math.min(200, Math.max(1, Number(url.searchParams.get("pageSize")) || 50));
-    const action = url.searchParams.get("action")?.trim() || null;
 
-    const where = action ? sql`${adminAuditLogsTable.action} = ${action}` : undefined;
+    const where =
+      actionFilters.length > 0 ? inArray(adminAuditLogsTable.action, actionFilters) : undefined;
 
     const total = Number(
       (

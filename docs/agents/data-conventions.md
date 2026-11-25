@@ -44,7 +44,7 @@
 - **Records Tokens 列**（id `tokens`，口径同 LiteLLM/Langfuse 单列）：单元格 `in / out · xx% cached`，`in = input_tokens + cache_read`（Total Input 口径）、`xx% = cache_read / in`（in 为 0 不显示括号段），数值跟随 123 / K/M/B 全局格式；hover title 展开明细（Prompt 合计 + uncached + cached + Cache rate 一位小数 + Output，均千分位）；移动端卡片点开明细后展示同一套数值（无 hover）。原 `Input (Uncached)` / `Input (Cached)` / `Output` 三列已合并，存量 `records_columns` 里的 `input`/`cacheRead`/`output` id 读取时归一到 `tokens`
 - **Records Model 列**：只显示原始名（`model` 列 = 发往 upstream 的真实名），hover title 才显示 `Manual: <归一化展示名>`（仅与原始名不同时）+ `Raw: <原始名>` + `Requested: <客户端原始请求名>`（仅与原始名不同时）；移动端卡片同规则：卡片上只显示原始名，`Manual` / `Requested` 进展开明细（移动端无 hover）
 - **Records 列可见性**：`src/lib/records-columns.ts` 定义 10 列（id/label）与默认全显示，用户选择的可见列 id 存 settings `records_columns`（Records 页 Columns 下拉切换，即时 PUT，失败回退上一次值）；**只存集合不存顺序**（展示顺序恒按定义序，无拖拽），至少保留一列（前端禁用最后一个勾选框 + 服务端拒绝空数组）；桌面 table 与 `md:hidden` 卡片同源过滤，未显示列仍由 API 返回（不做响应裁剪）
-- **Audit 列可见性**：同一套机制（`src/lib/audit-columns.ts` 7 列 + settings `audit_columns` + `ColumnPicker` 共享组件），Audit 页筛选/分页/列选交互与 Records 一致：Action 下拉（选项来自 `/api/admin/audit-logs` 返回的 `actions` 去重列表）、Rows 20/50/100/200、分页器卡内（first/prev/页码输入/next/last）；无自动刷新（审计日志低频）
+- **Audit 列可见性**：同一套机制（`src/lib/audit-columns.ts` 7 列 + settings `audit_columns` + `ColumnPicker` 共享组件），Audit 页筛选/分页/列选交互与 Records 一致：Action 多选筛选（共享 `MultiSelect`，与 Dashboard/Records 同一组件与样式，空选 = All；选项来自 `/api/admin/audit-logs` 返回的 `actions` 去重列表；多值以重复 query 参数提交，后端 `inArray`）、Rows 20/50/100/200、分页器卡内（first/prev/页码输入/next/last）；无自动刷新（审计日志低频）
 - **注意**：TTFT = 首个 SSE chunk 到达时间，个别上游先推空 chunk 会略微低估真实首 token 时间，对比用途足够
 
 ## Provider 匿名化
