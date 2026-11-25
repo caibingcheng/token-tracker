@@ -76,6 +76,14 @@ COPY --from=builder --chown=node:node /app/build ./build
 COPY --from=builder --chown=node:node /app/out ./out
 COPY --from=builder --chown=node:node /app/node_modules/better-sqlite3 ./node_modules/better-sqlite3
 
+# 不是入口，是报错翻译器：v1.6.0 起入口改为 build/server.js，而换镜像时若容器按旧配置重建
+# （面板/编排的「升级镜像」、写死 command 的 compose / docker run / systemd / K8s），CMD 不会跟
+# 新镜像更新，仍是 `node server.js`。没这个文件时用户只看到 Node 的 MODULE_NOT_FOUND 栈，看不出
+# 是启动命令过时。文件内容只打印中文修法后 exit 1，行为与之前一致（失败 → 编排层回滚）。
+# 它必须永远不会被 CMD 执行（下方 CMD 指向 build/server.js，legacy-server.test 钉住这对关系）：
+# 若将来入口真改回 /app/server.js，删掉这条 COPY 和那个测试，不要让它变成入口。
+COPY --chown=node:node legacy-server.js /app/server.js
+
 COPY docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 

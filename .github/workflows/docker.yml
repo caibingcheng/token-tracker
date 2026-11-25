@@ -72,10 +72,13 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # 必须用 type=semver 而非 type=ref,event=tag：后者在 flavor.latest=auto 下
+          # 无条件置 latest=true（不判 prerelease），且 version.latest 只由首个 tag 决定，
+          # 后面 raw latest 的 enable=false 无法覆盖 → pre-release tag 会被打上 :latest。
+          # semver 分支是唯一按 semver.prerelease() 判断的：prerelease → 不加 latest。
           tags: |
-            type=ref,event=tag
+            type=semver,pattern={{version}},prefix=v
             type=raw,value=dev,enable=${{ github.ref_type == 'tag' && contains(github.ref_name, '-') }}
-            type=raw,value=latest,enable=${{ github.ref_type == 'tag' && !contains(github.ref_name, '-') }}
             type=sha,format=short
 
       # 先只构建并 load 到本地 runner，smoke test 通过后才推送
