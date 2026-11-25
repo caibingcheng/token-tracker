@@ -113,7 +113,7 @@ docker compose up -d
 4. `Push image`：先推不可变标签（版本号、short-sha），最后推浮动标签。
 
 构建时 CI 传 `--build-arg APP_VERSION=${{ github.ref_name }}`（tag 构建即 `v1.3.0`），Dockerfile builder 阶段
-转为 `NEXT_PUBLIC_APP_VERSION`，`next.config.js` 的 `env` 将其内联进客户端 bundle，桌面端侧栏标题旁与移动端 Dashboard 标题旁展示。
+转为 `NEXT_PUBLIC_APP_VERSION`，`next.config.js` 的 `env` 将其内联进客户端 bundle，桌面端展示在侧栏底部（与 GitHub 仓库链接同一行），移动端展示在 Dashboard 标题旁。
 不传参（本地 `npm run build`、`docker compose --build`）回退 `dev`；`workflow_dispatch` 在分支上触发时显示分支名。
 
 ### 发布流程

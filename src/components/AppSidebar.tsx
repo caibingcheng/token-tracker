@@ -17,6 +17,9 @@ import { useNumberFormat } from "./NumberFormatContext";
 import { ADMIN_SECTIONS } from "@/app/admin/sections";
 import { useConfirmLogout } from "./LogoutContext";
 
+const REPO_URL = "https://github.com/caibingcheng/token-tracker";
+const appVersion = process.env.NEXT_PUBLIC_APP_VERSION || "dev";
+
 // Dashboard 专属操作节点注册到侧栏底部：
 // Dashboard 挂载时 setSidebarActions(操作组 JSX)，卸载时置 null → Admin 页操作组自动消失。
 // 注意：注册的 JSX 渲染在侧栏（Dashboard 组件树之外），必须由 ApiKeyGate 层级的
@@ -482,18 +485,13 @@ export default function AppSidebar({
     >
       <div
         className={`flex gap-2 pt-5 pb-3 ${
-          collapsed ? "flex-col items-center px-2" : "items-baseline px-4"
+          collapsed ? "flex-col items-center px-2" : "items-center px-4"
         }`}
       >
         {!collapsed && (
-          <>
-            <Link href="/" className="text-lg font-bold text-gray-900">
-              Token Tracker
-            </Link>
-            <span className="text-[11px] leading-none text-gray-400 select-all">
-              {process.env.NEXT_PUBLIC_APP_VERSION || "dev"}
-            </span>
-          </>
+          <Link href="/" className="text-lg font-bold text-gray-900">
+            Token Tracker
+          </Link>
         )}
         <button
           type="button"
@@ -653,6 +651,35 @@ export default function AppSidebar({
 
       <div className="border-t border-gray-200 p-3 flex flex-col gap-2">
         {!collapsed && actions}
+        {/* 操作组（数字格式切换 / Price Simulation）与版本行之间分隔 */}
+        {!collapsed && actions && <div className="border-t border-gray-200" />}
+        {/* 版本号放底部：长版本（v1.6.0-alpha.2）留在头部会挤压标题 */}
+        <div
+          className={`flex items-center gap-2 text-[11px] leading-none text-gray-400 ${
+            collapsed ? "justify-center" : ""
+          }`}
+        >
+          {!collapsed && (
+            <span
+              className="min-w-0 flex-1 truncate select-all"
+              title={appVersion}
+            >
+              {appVersion}
+            </span>
+          )}
+          <a
+            href={REPO_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="GitHub repository"
+            title="GitHub"
+            className="inline-flex items-center justify-center rounded p-0.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d="M12 .5C5.73.5.5 5.73.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.55v-2.1c-3.2.7-3.88-1.36-3.88-1.36-.53-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.71.08-.71 1.16.08 1.77 1.19 1.77 1.19 1.04 1.78 2.72 1.27 3.38.97.11-.76.41-1.27.74-1.56-2.55-.29-5.24-1.28-5.24-5.7 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .96-.31 3.15 1.18a10.9 10.9 0 0 1 5.74 0c2.18-1.49 3.14-1.18 3.14-1.18.63 1.59.23 2.76.12 3.05.74.81 1.19 1.84 1.19 3.1 0 4.43-2.69 5.41-5.25 5.69.42.36.79 1.08.79 2.18v3.24c0 .3.21.67.8.55A11.5 11.5 0 0 0 23.5 12C23.5 5.73 18.27.5 12 .5Z" />
+            </svg>
+          </a>
+        </div>
       </div>
     </aside>
   );
