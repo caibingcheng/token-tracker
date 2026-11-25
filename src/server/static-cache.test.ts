@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, afterAll } from "vitest";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,7 +7,11 @@ import { createStaticCache } from "./static-cache";
 
 // 协商缓存层：serveStatic 本身只发 Last-Modified、从不返 304（@hono/node-server 无该逻辑），
 // 页面壳带 no-cache 时缺校验器就等于每次整包重下。这里钉住 304 的判定与「不误伤」边界。
-let root: string;
+// 必须在模块顶层建好：describe 体内的 buildApp() 在收集阶段就执行，此时 beforeAll 还没跑，
+// 传进去的就是 undefined → createStaticCache 退回默认 STATIC_ROOT（"out"），
+// 本地有构建产物才碰巧过，CI 无 out/ 时全部命中失败。
+const root = mkdtempSync(join(tmpdir(), "tt-cache-"));
+for (const name of ["index.html", "admin.html", "admin.txt"]) writeFileSync(join(root, name), "hello");
 
 function buildApp() {
   const app = new Hono();
@@ -16,11 +20,6 @@ function buildApp() {
   app.use("*", (c) => c.body("BODY", 200, { "Content-Type": "text/html", "Last-Modified": "x" }));
   return app;
 }
-
-beforeAll(() => {
-  root = mkdtempSync(join(tmpdir(), "tt-cache-"));
-  for (const name of ["index.html", "admin.html", "admin.txt"]) writeFileSync(join(root, name), "hello");
-});
 
 afterAll(() => {
   rmSync(root, { recursive: true, force: true });
