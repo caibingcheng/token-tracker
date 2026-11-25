@@ -102,12 +102,12 @@ docker compose up -d
 | 触发条件 | 镜像标签 | 用途 |
 |---------|---------|------|
 | tag `vX.Y.Z`（如 `v1.3.0`） | `ghcr.io/caibingcheng/token-tracker:vX.Y.Z` + `:<short-sha>` + `:latest` | 生产发布 |
-| tag `vX.Y.Z-devN`（如 `v1.3.0-dev.1`） | 同上（不含 `:latest`）+ `:dev` | 开发版发布 |
+| tag `vX.Y.Z-<prerelease>`（如 `v1.3.0-dev.1`、`v1.6.0-alpha.1`、`v1.6.0-rc.1`） | 同上（不含 `:latest`）+ `:dev` | 预发布（`:dev` 是所有预发布共用的浮动标签） |
 | `workflow_dispatch` | 仅 `:<short-sha>` | 手动重建，不动任何版本/浮动标签 |
 
 `.github/workflows/docker.yml` 的顺序是 **校验 → 构建 → smoke test → 推送**，浮动标签（`:latest` / `:dev`）最后推送：
 
-1. `Verify tag ancestry`：只接受 `^vX.Y.Z$`（commit 必须落在 `origin/main` 历史内）与 `^vX.Y.Z-dev...$`（必须落在 `origin/dev` 历史内）；其它命名（如 `-rc.1`）直接失败，因此不会进 `latest`。
+1. `Verify tag ancestry`：只接受 `^vX.Y.Z$`（commit 必须落在 `origin/main` 历史内）与 `^vX.Y.Z-<prerelease>$`（pre-release 字符集 `[0-9A-Za-z.-]+`，commit 必须落在 `origin/main` 或 `origin/dev` 历史内）；其它命名直接失败，因此不会进 `latest`——`latest` 只由不含 `-` 的纯 `vX.Y.Z` 打。
 2. `Build image`：`load: true` + `push: false`，镜像只进 runner 本地。
 3. `Smoke test image`：用每次随机生成的临时测试密钥起容器（`openssl rand`，临时容器 + 空库、用完即弃，仓库里不留任何形似凭证的字面量），轮询 `http://127.0.0.1:3000/api/cli`（会真实建库并跑一次聚合查询），失败则 job 红且不推送任何标签。
 4. `Push image`：先推不可变标签（版本号、short-sha），最后推浮动标签。
