@@ -472,16 +472,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
   };
 
   return (
-    <AdminTableCard
-      title={<h2 className="text-base font-semibold">Named Routes</h2>}
-      actions={
-        <p className="text-xs text-gray-400">
-          A named route maps a client-requested model name to a pool of upstream targets. Without an LLM
-          classifier the chain head is the first healthy target by priority; with one, the classifier picks
-          the chain head once per session. A same-name automatic route is fully overridden.
-        </p>
-      }
-    >
+    <AdminTableCard title={<h2 className="text-base font-semibold">Named Routes</h2>}>
       {error && <p className="mb-3 text-sm text-red-600">{error}</p>}
 
       {/* 新建命名路由 */}

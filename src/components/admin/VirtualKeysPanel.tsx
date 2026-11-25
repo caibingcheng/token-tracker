@@ -178,6 +178,8 @@ export default function VirtualKeysPanel() {
   const dismissDelete = useModalDismiss(pendingDelete !== null, () => setPendingDelete(null));
 
   const [editingId, setEditingId] = useState<number | null>(null);
+  // 新建/编辑表单折叠：有存量 key 时默认收起（列表优先），新建/编辑时自动展开
+  const [formOpen, setFormOpen] = useState(false);
   const [modelsData, setModelsData] = useState<ModelsData | null>(null);
 
   const load = useCallback(async () => {
@@ -275,6 +277,7 @@ export default function VirtualKeysPanel() {
       setModelsInput("*");
       setQuotaInputs({ rpm: "", tpm: "", daily: "", monthly: "" });
       setEditingId(null);
+      setFormOpen(false);
       load();
     } catch {
       setError("Network error");
@@ -285,6 +288,7 @@ export default function VirtualKeysPanel() {
 
   const startEdit = (key: VirtualKeyItem) => {
     setEditingId(key.id);
+    setFormOpen(true);
     setNameInput(key.name);
     setCommentInput(key.comment ?? "");
     setModelsInput(parseEnabledModelsValue(key.enabledModels).join(", "));
@@ -374,18 +378,50 @@ export default function VirtualKeysPanel() {
     return <div className="h-40 flex items-center justify-center text-gray-400">Loading...</div>;
   }
 
+  // 无存量 key / 有待复制的明文时保持展开；编辑态不折叠，避免看不见正在编辑的内容
+  const formExpanded =
+    formOpen || editingId !== null || keys.length === 0 || createdKey !== null;
+  const canToggleForm = editingId === null && keys.length > 0 && createdKey === null;
+
   return (
     <div className="space-y-4">
       {error && (
         <div className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-600">{error}</div>
       )}
 
-      {/* 创建表单 */}
-      <div className="rounded-lg bg-white p-4 shadow">
-        <h2 className="mb-3 text-base font-semibold">
-          {editingId ? `Edit Virtual Key #${editingId}` : "New Virtual Key"}
-        </h2>
-        <form onSubmit={handleSubmit} className="space-y-3">
+      {/* 创建表单：有存量 key 时默认折叠，标题行单击切换 */}
+      <div className={`rounded-lg bg-white shadow ${formExpanded ? "p-4" : "p-3"}`}>
+        <button
+          type="button"
+          onClick={() => setFormOpen(!formExpanded)}
+          disabled={!canToggleForm}
+          aria-expanded={formExpanded}
+          className={`flex w-full items-center justify-between gap-2 text-left min-h-[40px] md:min-h-0 ${
+            canToggleForm ? "cursor-pointer" : "cursor-default"
+          } ${formExpanded ? "mb-3" : ""}`}
+        >
+          <h2 className="text-base font-semibold">
+            {editingId ? `Edit Virtual Key #${editingId}` : "New Virtual Key"}
+          </h2>
+          {canToggleForm && (
+            <svg
+              className={`h-4 w-4 shrink-0 text-gray-400 transition-transform ${formExpanded ? "rotate-180" : ""}`}
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              <path
+                fillRule="evenodd"
+                d="M5.23 7.21a.75.75 0 011.06.02L10 11.06l3.71-3.83a.75.75 0 111.08 1.04l-4.25 4.39a.75.75 0 01-1.08 0L5.21 8.27a.75.75 0 01.02-1.06z"
+                clipRule="evenodd"
+              />
+            </svg>
+          )}
+        </button>
+        <form
+          onSubmit={handleSubmit}
+          className={`space-y-3 ${formExpanded ? "" : "hidden"}`}
+        >
           <div>
             <label className="mb-1 block text-xs font-medium text-gray-700">Name</label>
             <input
@@ -482,6 +518,7 @@ export default function VirtualKeysPanel() {
                 type="button"
                 onClick={() => {
                   setEditingId(null);
+                  setFormOpen(false);
                   setNameInput("");
                   setCommentInput("");
                   setModelsInput("*");

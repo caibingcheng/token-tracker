@@ -176,6 +176,8 @@ export default function UpstreamsPanel() {
   const [pickerQuery, setPickerQuery] = useState("");
   const [fetchingModels, setFetchingModels] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
+  // 新建/编辑表单折叠：有存量 upstream 时默认收起（列表优先），新建/编辑时自动展开
+  const [formOpen, setFormOpen] = useState(false);
   const [clearProxy, setClearProxy] = useState(false);
   const [probeCustom, setProbeCustom] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -437,6 +439,7 @@ export default function UpstreamsPanel() {
       setFormKeyTests({});
       setFormKeyShown({});
       setEditingId(null);
+      setFormOpen(false);
       setClearProxy(false);
       setProbeCustom(false);
       setPendingKeyEnabled({});
@@ -450,6 +453,7 @@ export default function UpstreamsPanel() {
 
   const handleEdit = (u: UpstreamItem) => {
     setEditingId(u.id);
+    setFormOpen(true);
     setForm({
       name: u.name,
       protocol: u.protocol,
@@ -982,18 +986,49 @@ export default function UpstreamsPanel() {
     return <div className="h-40 flex items-center justify-center text-gray-400">Loading...</div>;
   }
 
+  // 无存量 upstream 时保持展开：首次配置不该还要多点一次；编辑态不折叠，避免看不见正在编辑的内容
+  const formExpanded = formOpen || editingId !== null || upstreams.length === 0;
+  const canToggleForm = editingId === null && upstreams.length > 0;
+
   return (
     <div className="space-y-4">
       {error && (
         <div className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-600">{error}</div>
       )}
 
-      {/* 新建/编辑表单 */}
-      <div className="rounded-lg bg-white p-4 shadow">
-        <h2 className="mb-3 text-base font-semibold">
-          {editingId ? `Edit Upstream #${editingId}` : "New Upstream"}
-        </h2>
-        <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-[1fr_200px_200px] gap-3">
+      {/* 新建/编辑表单：有存量 upstream 时默认折叠，标题行单击切换 */}
+      <div className={`rounded-lg bg-white shadow ${formExpanded ? "p-4" : "p-3"}`}>
+        <button
+          type="button"
+          onClick={() => setFormOpen(!formExpanded)}
+          disabled={!canToggleForm}
+          aria-expanded={formExpanded}
+          className={`flex w-full items-center justify-between gap-2 text-left min-h-[40px] md:min-h-0 ${
+            canToggleForm ? "cursor-pointer" : "cursor-default"
+          } ${formExpanded ? "mb-3" : ""}`}
+        >
+          <h2 className="text-base font-semibold">
+            {editingId ? `Edit Upstream #${editingId}` : "New Upstream"}
+          </h2>
+          {canToggleForm && (
+            <svg
+              className={`h-4 w-4 shrink-0 text-gray-400 transition-transform ${formExpanded ? "rotate-180" : ""}`}
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              <path
+                fillRule="evenodd"
+                d="M5.23 7.21a.75.75 0 011.06.02L10 11.06l3.71-3.83a.75.75 0 111.08 1.04l-4.25 4.39a.75.75 0 01-1.08 0L5.21 8.27a.75.75 0 01.02-1.06z"
+                clipRule="evenodd"
+              />
+            </svg>
+          )}
+        </button>
+        <form
+          onSubmit={handleSubmit}
+          className={`${formExpanded ? "" : "hidden "}grid grid-cols-1 md:grid-cols-[1fr_200px_200px] gap-3`}
+        >
           <div className="relative">
             <label className="mb-1 block text-xs text-gray-600">Name</label>
             <input
@@ -1524,6 +1559,7 @@ export default function UpstreamsPanel() {
                 type="button"
                 onClick={() => {
                   setEditingId(null);
+                  setFormOpen(false);
                   setForm(EMPTY_FORM);
                   setFormKeys([""]);
                   setFormTransforms([]);
