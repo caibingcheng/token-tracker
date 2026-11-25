@@ -809,3 +809,124 @@ describe("/api/admin/upstreams - key counts", () => {
     expect(row.activeKeyCount).toBe(2);
   });
 });
+
+describe("/api/admin/upstreams - faces & auth style", () => {
+  it("POST 接受多面 + 显式 authStyle，GET 回显归一化后的三元组", async () => {
+    const token = await makeToken();
+    const res = await LIST_POST(
+      req("/api/admin/upstreams", "POST", token, {
+        name: "relay",
+        protocols: ["openai", "anthropic"],
+        authStyle: "bearer",
+        baseUrl: "https://8.8.8.8",
+        enabledModels: ["claude-x"],
+      })
+    );
+    expect(res.status).toBe(201);
+    const { data: created } = (await res.json()) as { data: { id: number } };
+
+    const list = await LIST_GET(req("/api/admin/upstreams", "GET", token));
+    const row = (await list.json()).data.find((u: { id: number }) => u.id === created.id);
+    expect(row).toMatchObject({
+      protocol: "openai", // 默认面 = protocols[0]
+      protocols: ["openai", "anthropic"],
+      authStyle: "bearer",
+    });
+  });
+
+  it("PATCH 只提交 protocols 时默认面跟随 protocols[0]（重排即可换探活面）", async () => {
+    const token = await makeToken();
+    const created = await LIST_POST(
+      req("/api/admin/upstreams", "POST", token, {
+        name: "reorder",
+        protocols: ["openai", "anthropic"],
+        baseUrl: "https://8.8.8.8",
+      })
+    );
+    const { data } = (await created.json()) as { data: { id: number } };
+
+    const patched = await PATCH(
+      req(`/api/admin/upstreams/${data.id}`, "PATCH", token, {
+        protocols: ["anthropic", "openai"],
+      }),
+      { params: { id: String(data.id) } }
+    );
+    expect(patched.status).toBe(200);
+    const row = (await (await LIST_GET(req("/api/admin/upstreams", "GET", token))).json()).data.find(
+      (u: { id: number }) => u.id === data.id
+    );
+    expect(row).toMatchObject({ protocol: "anthropic", protocols: ["anthropic", "openai"] });
+  });
+
+  it("同 baseUrl 下 authStyle 不同且模型重叠 → 400；同 authStyle 允许重叠", async () => {
+    const token = await makeToken();
+    const body = { baseUrl: "https://8.8.8.8", enabledModels: ["claude-x"] };
+    expect(
+      (
+        await LIST_POST(
+          req("/api/admin/upstreams", "POST", token, {
+            ...body,
+            name: "zen-openai",
+            protocols: ["openai"],
+            authStyle: "bearer",
+          })
+        )
+      ).status
+    ).toBe(201);
+
+    const conflict = await LIST_POST(
+      req("/api/admin/upstreams", "POST", token, {
+        ...body,
+        name: "zen-anthropic",
+        protocols: ["anthropic"],
+        authStyle: "x-api-key",
+      })
+    );
+    expect(conflict.status).toBe(400);
+    expect((await conflict.json()).error).toContain("zen-openai");
+
+    // 同 authStyle 的另一条记录不算冲突
+    expect(
+      (
+        await LIST_POST(
+          req("/api/admin/upstreams", "POST", token, {
+            ...body,
+            name: "same-auth",
+            protocols: ["anthropic"],
+            authStyle: "bearer",
+          })
+        )
+      ).status
+    ).toBe(201);
+  });
+
+  it("默认面必须在 protocols 内；空 protocols / 非法 authStyle 400", async () => {
+    const token = await makeToken();
+    const base = { name: "bad", baseUrl: "https://8.8.8.8" };
+    expect(
+      (await LIST_POST(req("/api/admin/upstreams", "POST", token, { ...base, protocols: [] }))).status
+    ).toBe(400);
+    expect(
+      (
+        await LIST_POST(
+          req("/api/admin/upstreams", "POST", token, {
+            ...base,
+            protocol: "gemini",
+            protocols: ["openai"],
+          })
+        )
+      ).status
+    ).toBe(400);
+    expect(
+      (
+        await LIST_POST(
+          req("/api/admin/upstreams", "POST", token, {
+            ...base,
+            protocol: "openai",
+            authStyle: "basic",
+          })
+        )
+      ).status
+    ).toBe(400);
+  });
+});

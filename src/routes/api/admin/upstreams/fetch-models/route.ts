@@ -7,6 +7,7 @@ import { fetchUpstreamModels } from "@/lib/gateway/upstream-client";
 import { decryptSecret } from "@/lib/gateway/crypto";
 import { decryptProxyUrl } from "@/lib/gateway/proxy-deps";
 import { isProtocol } from "@/lib/gateway/model-router";
+import { defaultAuthStyleForProtocol, isAuthStyle } from "@/lib/gateway/auth-style";
 import {
   validateUpstreamBaseUrl,
   validateProxyUrl,
@@ -27,6 +28,10 @@ export const POST = withAuth(async (request: NextRequest) => {
     const protocol = typeof body.protocol === "string" ? body.protocol : "";
     const baseUrl = typeof body.baseUrl === "string" ? body.baseUrl.trim().replace(/\/+$/, "") : "";
     const apiKey = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
+    // 出站认证头：表单显式值优先，否则按默认面推导（与入库时的默认值一致）
+    const authStyle = isAuthStyle(body.authStyle)
+      ? body.authStyle
+      : defaultAuthStyleForProtocol(protocol);
     const upstreamId =
       typeof body.upstreamId === "number"
         ? body.upstreamId
@@ -70,7 +75,7 @@ export const POST = withAuth(async (request: NextRequest) => {
 
     // 表单有明文 key 时优先使用
     if (apiKey) {
-      const result = await fetchUpstreamModels({ protocol, baseUrl: validatedBaseUrl, proxyUrl }, apiKey);
+      const result = await fetchUpstreamModels({ protocol, authStyle, baseUrl: validatedBaseUrl, proxyUrl }, apiKey);
       return NextResponse.json({
         success: !result.error,
         data: { models: result.models, status: result.status, error: result.error },
@@ -98,7 +103,7 @@ export const POST = withAuth(async (request: NextRequest) => {
     for (const keyRow of keyRows) {
       try {
         const plain = decryptSecret(keyRow.apiKeyEncrypted);
-        result = await fetchUpstreamModels({ protocol, baseUrl: validatedBaseUrl, proxyUrl }, plain);
+        result = await fetchUpstreamModels({ protocol, authStyle, baseUrl: validatedBaseUrl, proxyUrl }, plain);
         if (result.error) continue;
         break;
       } catch {

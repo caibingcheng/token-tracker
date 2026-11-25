@@ -6,6 +6,7 @@ import { withAuth } from "@/lib/auth/guard";
 import { fetchUpstreamModels } from "@/lib/gateway/upstream-client";
 import { decryptSecret } from "@/lib/gateway/crypto";
 import { parseEnabledModels } from "@/lib/gateway/model-router";
+import { resolveUpstreamAuthConfig } from "@/lib/gateway/auth-style";
 
 interface Params {
   params: Promise<{ id: string }>;
@@ -52,7 +53,7 @@ export const GET = withAuth(async (request: NextRequest, ctx: any) => {
       try {
         const plain = decryptSecret(keyRow.apiKeyEncrypted);
         result = await fetchUpstreamModels(
-          { protocol: upstream.protocol as any, baseUrl: upstream.baseUrl },
+          { ...resolveUpstreamAuthConfig(upstream as any), baseUrl: upstream.baseUrl },
           plain
         );
         if (result.error) continue;

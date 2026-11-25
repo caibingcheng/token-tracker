@@ -10,16 +10,19 @@ import {
 import type { UpstreamRoute } from "./model-router";
 
 function mkUpstream(overrides: Partial<UpstreamRoute>): UpstreamRoute {
-  return {
+  const base = {
     id: 1,
     name: "u1",
-    protocol: "openai",
+    protocol: "openai" as const,
     baseUrl: "https://example.com",
     priority: 0,
     enabled: true,
-    enabledModels: [],
-    ...overrides,
+    enabledModels: [] as string[],
+    authStyle: "bearer" as const,
   };
+  const merged = { ...base, ...overrides };
+  // 默认一条记录只服务它自己那个面（与历史语义一致）；多面记录显式传 protocols
+  return { ...merged, protocols: overrides.protocols ?? [merged.protocol] };
 }
 
 describe("modelMatchesPattern", () => {
@@ -139,7 +142,6 @@ function mkRoute(overrides: Partial<NamedRoute> = {}): NamedRoute {
   return {
     id: 1,
     name: "my-alias",
-    protocol: "openai",
     instruction: "",
     classifierUpstreamId: 0,
     classifierModel: "",
@@ -162,28 +164,26 @@ function mkTarget(overrides: Partial<NamedRouteTarget> = {}): NamedRouteTarget {
 }
 
 describe("findNamedRoute", () => {
-  it("matches name + protocol exactly", () => {
+  it("matches by name only (protocol 不再是身份键)", () => {
     const routes = [
-      mkRoute({ id: 1, name: "alias-x", protocol: "openai" }),
-      mkRoute({ id: 2, name: "alias-x", protocol: "anthropic" }),
-      mkRoute({ id: 3, name: "other", protocol: "openai" }),
+      mkRoute({ id: 1, name: "alias-x" }),
+      mkRoute({ id: 3, name: "other" }),
     ];
-    expect(findNamedRoute("alias-x", "openai", routes)?.id).toBe(1);
-    expect(findNamedRoute("alias-x", "anthropic", routes)?.id).toBe(2);
+    expect(findNamedRoute("alias-x", routes)?.id).toBe(1);
+    expect(findNamedRoute("other", routes)?.id).toBe(3);
   });
 
-  it("does not match when protocol or name differs", () => {
+  it("does not match when name differs", () => {
     const route = mkRoute({ name: "alias-x" });
-    expect(findNamedRoute("alias-x", "anthropic", [route])).toBeNull();
-    expect(findNamedRoute("alias-y", "openai", [route])).toBeNull();
+    expect(findNamedRoute("alias-y", [route])).toBeNull();
   });
 
   it("does not match disabled routes", () => {
-    expect(findNamedRoute("my-alias", "openai", [mkRoute({ enabled: false })])).toBeNull();
+    expect(findNamedRoute("my-alias", [mkRoute({ enabled: false })])).toBeNull();
   });
 
   it("returns null with no routes", () => {
-    expect(findNamedRoute("anything", "openai", [])).toBeNull();
+    expect(findNamedRoute("anything", [])).toBeNull();
   });
 });
 
@@ -275,27 +275,6 @@ describe("routeModelByProtocol", () => {
     expect(winner?.upstream.id).toBe(2);
   });
 
-  it("different protocols do not interfere", () => {
-    const openai = routeModelByProtocol(
-      "gpt-4o",
-      "openai",
-      [
-        mkUpstream({ id: 1, name: "openai", protocol: "openai", priority: 0, enabledModels: ["gpt-4o"] }),
-        mkUpstream({ id: 2, name: "other", protocol: "anthropic", priority: 0, enabledModels: ["gpt-4o"] }),
-      ]
-    );
-    const anthropic = routeModelByProtocol(
-      "gpt-4o",
-      "anthropic",
-      [
-        mkUpstream({ id: 1, name: "openai", protocol: "openai", priority: 0, enabledModels: ["gpt-4o"] }),
-        mkUpstream({ id: 2, name: "other", protocol: "anthropic", priority: 0, enabledModels: ["gpt-4o"] }),
-      ]
-    );
-    expect(openai.winner?.upstream.id).toBe(1);
-    expect(anthropic.winner?.upstream.id).toBe(2);
-  });
-
   it("orders candidates by exact-first then priority", () => {
     const { candidates } = routeModelByProtocol(
       "gpt-4o",
@@ -307,6 +286,41 @@ describe("routeModelByProtocol", () => {
       ]
     );
     expect(candidates.map((c) => c.upstream.id)).toEqual([2, 3, 1]);
+  });
+
+  it("candidates filter by accepted faces (protocols)", () => {
+    const withProtocols = (overrides: Partial<UpstreamRoute>) => mkUpstream(overrides);
+    const openai = routeModelByProtocol(
+      "gpt-4o",
+      "openai",
+      [
+        withProtocols({ id: 1, name: "openai", protocol: "openai", priority: 0, enabledModels: ["gpt-4o"] }),
+        withProtocols({ id: 2, name: "other", protocol: "anthropic", priority: 0, enabledModels: ["gpt-4o"] }),
+      ]
+    );
+    const anthropic = routeModelByProtocol(
+      "gpt-4o",
+      "anthropic",
+      [
+        withProtocols({ id: 1, name: "openai", protocol: "openai", priority: 0, enabledModels: ["gpt-4o"] }),
+        withProtocols({ id: 2, name: "other", protocol: "anthropic", priority: 0, enabledModels: ["gpt-4o"] }),
+      ]
+    );
+    expect(openai.winner?.upstream.id).toBe(1);
+    expect(anthropic.winner?.upstream.id).toBe(2);
+  });
+
+  it("a multi-face record serves every declared face", () => {
+    const relay = mkUpstream({
+      id: 7,
+      name: "relay",
+      protocol: "openai",
+      protocols: ["openai", "anthropic"],
+      enabledModels: ["claude-x"],
+    });
+    expect(routeModelByProtocol("claude-x", "openai", [relay]).winner?.upstream.id).toBe(7);
+    expect(routeModelByProtocol("claude-x", "anthropic", [relay]).winner?.upstream.id).toBe(7);
+    expect(routeModelByProtocol("claude-x", "gemini", [relay]).winner).toBeNull();
   });
 
   it("returns null winner when no match", () => {
@@ -362,7 +376,7 @@ describe("expandNamedRouteTargets", () => {
   it("expands an auto target via nested named route, inheriting the parent targetId", () => {
     const routes = [
       mkRoute({ id: 1, name: "cheap" }),
-      mkRoute({ id: 2, name: "precise", protocol: "openai" }),
+      mkRoute({ id: 2, name: "precise" }),
     ];
     const nestedTargets = [
       mkTarget({ id: 30, namedRouteId: 2, upstreamId: 3, upstreamModel: "o3", priority: 0 }),

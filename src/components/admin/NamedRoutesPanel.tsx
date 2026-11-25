@@ -24,7 +24,9 @@ interface TargetRow {
   id: number;
   upstreamId: number | null; // null = auto 目标（按路由解析）
   upstreamName: string; // auto 目标 = "(auto)"；upstream 被删 = "(deleted)"
-  upstreamProtocol: Protocol | null; // auto 目标 = null
+  upstreamProtocol: Protocol | null; // 默认面（展示用）；auto 目标 = null
+  upstreamProtocols: Protocol[]; // 接受面集合（决定哪个请求面能用这个 target）
+  upstreamAuthStyle: string | null; // 该 target 的出站认证方式（展示用）
   targetModel: string;
   description: string | null;
   priority: number;
@@ -33,7 +35,6 @@ interface TargetRow {
 interface NamedRouteRow {
   id: number;
   name: string;
-  protocol: Protocol;
   instruction: string;
   classifierUpstreamId: number;
   classifierUpstreamName: string;
@@ -51,6 +52,8 @@ interface UpstreamRow {
   id: number;
   name: string;
   protocol: Protocol;
+  protocols?: Protocol[];
+  authStyle?: string;
   enabled: boolean;
   enabledModels?: string[];
 }
@@ -59,6 +62,7 @@ interface RouteTargetOption {
   upstreamId: number;
   upstreamName: string;
   upstreamProtocol: Protocol;
+  upstreamProtocols: Protocol[];
   model: string;
 }
 
@@ -69,6 +73,10 @@ const protocolBadgeClass = (protocol: Protocol): string =>
       ? "border-orange-200 text-orange-600"
       : "border-blue-200 text-blue-600";
 
+// target 标注：接受面集合（多面记录显示 "openai+anthropic"）
+const facesLabel = (faces: Protocol[] | null | undefined): string =>
+  faces && faces.length > 0 ? faces.join("+") : "?";
+
 export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void }) {
   const [rows, setRows] = useState<NamedRouteRow[]>([]);
   const [routeTargets, setRouteTargets] = useState<RouteTargetOption[]>([]);
@@ -76,7 +84,6 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
   const [error, setError] = useState<string | null>(null);
 
   const [name, setName] = useState("");
-  const [protocol, setProtocol] = useState<Protocol>("openai");
   const [instruction, setInstruction] = useState("");
   // 分类器："rule" = 规则分类器（无 LLM）；否则 = 所选 upstream id（模型可自由输入）
   const [classifierUpstreamId, setClassifierUpstreamId] = useState<number | typeof RULE_CLASSIFIER>(
@@ -133,7 +140,13 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
           if (!u.enabled) continue;
           for (const m of u.enabledModels ?? []) {
             if (m.endsWith("*")) continue;
-            targets.push({ upstreamId: u.id, upstreamName: u.name, upstreamProtocol: u.protocol, model: m });
+            targets.push({
+              upstreamId: u.id,
+              upstreamName: u.name,
+              upstreamProtocol: u.protocol,
+              upstreamProtocols: u.protocols && u.protocols.length > 0 ? u.protocols : [u.protocol],
+              model: m,
+            });
           }
         }
         setRouteTargets(targets);
@@ -152,9 +165,8 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
 
   const isRuleClassifier = classifierUpstreamId === RULE_CLASSIFIER;
 
-  // 不按协议过滤：管理员可为 openai 路由选 anthropic family 的上游（如 relay 同时接受
-  // 多种风格），协议不一致由选项里的家族标注提示（软提示，不拦截）
-  const upstreamOptionsForProtocol = (_proto: Protocol) =>
+  // 不按面过滤：命名路由无协议身份，可接受哪些面由 target upstream 的 protocols 决定（硬过滤在运行时）
+  const upstreamOptions = () =>
     Array.from(new Map(routeTargets.map((t) => [t.upstreamId, t])).values());
 
   const modelCandidatesFor = (upstreamId: number | ""): string[] =>
@@ -176,7 +188,6 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
     try {
       const payload: Record<string, unknown> = {
         name: name.trim(),
-        protocol,
         instruction: isRuleClassifier ? "" : instruction.trim(),
         classifierKind: isRuleClassifier ? "priority" : "model",
         ...(isRuleClassifier
@@ -250,7 +261,7 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
   const toggleEnabled = (row: NamedRouteRow) => patchRoute(row.id, { enabled: !row.enabled });
 
   // 展开区统一保存：name / instruction / classifier 一个 PATCH 提交；
-  // name+protocol 为 UNIQUE 身份键，改名冲突后端 409，保留草稿并报错
+  // name 为全局唯一身份键，改名冲突后端 409，保留草稿并报错
   const saveRouteConfig = async (row: NamedRouteRow) => {
     const nextName = nameDraft.trim();
     if (!nextName) {
@@ -283,9 +294,9 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
       message: (
         <p>
           Delete named route{" "}
-          <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">{row.name}</code> (
-          {row.protocol}) and all of its targets? Requests using this route name will fall back to
-          the auto-routed upstreams (or fail if none match).
+          <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">{row.name}</code> and all of its
+          targets? Requests using this route name will fall back to the auto-routed upstreams (or
+          fail if none match).
         </p>
       ),
     });
@@ -487,22 +498,6 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
           />
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium text-gray-700">Protocol</label>
-          <select
-            value={protocol}
-            onChange={(e) => {
-              setProtocol(e.target.value as Protocol);
-              setFirstUpstreamId("");
-              setFirstModel("");
-            }}
-            className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-          >
-            <option value="openai">openai</option>
-            <option value="anthropic">anthropic</option>
-            <option value="gemini">gemini</option>
-          </select>
-        </div>
-        <div>
           <label className="mb-1 block text-xs font-medium text-gray-700">Classifier Provider</label>
           <select
             value={classifierUpstreamId}
@@ -514,10 +509,9 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
             className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
           >
             <option value={RULE_CLASSIFIER}>Rule — priority &amp; availability (no LLM)</option>
-            {upstreamOptionsForProtocol(protocol).map((t) => (
+            {upstreamOptions().map((t) => (
               <option key={t.upstreamId} value={t.upstreamId}>
-                {t.upstreamName}
-                {t.upstreamProtocol !== protocol && ` [${t.upstreamProtocol}]`}
+                {t.upstreamName} [{facesLabel(t.upstreamProtocols)}]
               </option>
             ))}
           </select>
@@ -577,10 +571,9 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
             className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none"
           >
             <option value="">Auto (route by model name)</option>
-            {upstreamOptionsForProtocol(protocol).map((t) => (
+            {upstreamOptions().map((t) => (
               <option key={t.upstreamId} value={t.upstreamId}>
-                {t.upstreamName}
-                {t.upstreamProtocol !== protocol && ` [${t.upstreamProtocol}]`}
+                {t.upstreamName} [{facesLabel(t.upstreamProtocols)}]
               </option>
             ))}
           </select>
@@ -647,9 +640,6 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
                 onClick={() => toggleExpanded(row.id)}
               >
                 <CopyableCode className="text-xs font-medium">{row.name}</CopyableCode>
-                <span className={`rounded border px-1.5 py-0.5 text-[10px] ${protocolBadgeClass(row.protocol)}`}>
-                  {row.protocol}
-                </span>
                 {row.classifierKind === "priority" ? (
                   <span
                     className="rounded bg-indigo-50 px-1.5 py-0.5 text-[11px] text-indigo-700"
@@ -714,16 +704,6 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
                       />
                     </div>
                     <div>
-                      <label className="mb-1 block text-xs font-medium text-gray-700">Protocol</label>
-                      <select
-                        value={row.protocol}
-                        disabled
-                        className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none disabled:bg-gray-50 disabled:text-gray-400"
-                      >
-                        <option value={row.protocol}>{row.protocol}</option>
-                      </select>
-                    </div>
-                    <div>
                       <label className="mb-1 block text-xs font-medium text-gray-700">Classifier Provider</label>
                       <select
                         value={classifierDraftUpstreamId}
@@ -735,10 +715,9 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
                         className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                       >
                         <option value={RULE_CLASSIFIER}>Rule — priority &amp; availability (no LLM)</option>
-                        {upstreamOptionsForProtocol(row.protocol).map((t) => (
+                        {upstreamOptions().map((t) => (
                           <option key={t.upstreamId} value={t.upstreamId}>
-                            {t.upstreamName}
-                            {t.upstreamProtocol !== row.protocol && ` [${t.upstreamProtocol}]`}
+                            {t.upstreamName} [{facesLabel(t.upstreamProtocols)}]
                           </option>
                         ))}
                       </select>
@@ -811,11 +790,14 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
                           <tr key={target.id}>
                             <AdminTd>
                               <span className="text-xs font-medium">{target.upstreamName}</span>
-                              {target.upstreamProtocol && (
+                              {target.upstreamId !== null && (
                                 <span
-                                  className={`ml-1.5 rounded border px-1.5 py-0.5 text-[10px] ${protocolBadgeClass(target.upstreamProtocol)}`}
+                                  className={`ml-1.5 rounded border px-1.5 py-0.5 text-[10px] ${protocolBadgeClass(
+                                    target.upstreamProtocols[0] ?? "openai"
+                                  )}`}
+                                  title={`Accepts: ${facesLabel(target.upstreamProtocols)} · auth: ${target.upstreamAuthStyle ?? "?"}`}
                                 >
-                                  {target.upstreamProtocol}
+                                  {facesLabel(target.upstreamProtocols)}
                                 </span>
                               )}
                             </AdminTd>
@@ -948,10 +930,9 @@ export default function NamedRoutesPanel({ onChanged }: { onChanged?: () => void
                       className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none"
                     >
                       <option value="">Auto (route by model name)</option>
-                      {upstreamOptionsForProtocol(row.protocol).map((t) => (
+                      {upstreamOptions().map((t) => (
                         <option key={t.upstreamId} value={t.upstreamId}>
-                          {t.upstreamName}
-                          {t.upstreamProtocol !== row.protocol && ` [${t.upstreamProtocol}]`}
+                          {t.upstreamName} [{facesLabel(t.upstreamProtocols)}]
                         </option>
                       ))}
                     </select>

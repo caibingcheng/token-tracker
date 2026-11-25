@@ -8,6 +8,7 @@ import { probeModelWithKeys } from "@/lib/gateway/probe";
 import { parseHeaderTransforms } from "@/lib/gateway/header-transforms";
 import { parseModelProbeConfigs, parseProbeConfig } from "@/lib/gateway/probe-config";
 import { parseEnabledModels } from "@/lib/gateway/model-router";
+import { resolveUpstreamAuthConfig } from "@/lib/gateway/auth-style";
 
 interface Params {
   params: Promise<{ id: string }>;
@@ -44,7 +45,7 @@ export const POST = withAuth(async (request: NextRequest, ctx: any) => {
     }
 
     const target = {
-      protocol: upstream.protocol as any,
+      ...resolveUpstreamAuthConfig(upstream as any),
       baseUrl: upstream.baseUrl,
       proxyUrl: decryptProxyUrl(upstream.proxyUrlEncrypted),
       headerTransforms: parseHeaderTransforms(upstream.headerTransforms),

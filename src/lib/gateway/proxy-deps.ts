@@ -5,7 +5,7 @@ import { decryptSecret, safeCompare, GatewaySecretMissingError } from "./crypto"
 import type { ProxyDeps, RecordUsageMeta } from "./proxy";
 import type { UpstreamRoute, NamedRoute, NamedRouteTarget } from "./model-router";
 import { parseEnabledModels } from "./model-router";
-import type { Protocol } from "./model-router";
+import { resolveUpstreamAuthConfig } from "./auth-style";
 import { SessionStore } from "./session";
 import { parseHeaderTransforms } from "./header-transforms";
 import { parseModelProbeConfigs, parseProbeConfig } from "./probe-config";
@@ -76,7 +76,8 @@ async function probeUpstream(
 
   const result = await probeModelWithKeys(
     {
-      protocol: upstream.protocol as Protocol,
+      // 探活只打默认面（protocols[0]）；多面记录的其余面没有健康信号
+      ...resolveUpstreamAuthConfig(upstream as any),
       baseUrl: upstream.baseUrl,
       proxyUrl: decryptProxyUrl(upstream.proxyUrlEncrypted),
       headerTransforms: parseHeaderTransforms(upstream.headerTransforms),
@@ -192,7 +193,6 @@ export async function loadNamedRoutes(): Promise<NamedRoute[]> {
   return rows.map((row: any): NamedRoute => ({
     id: row.id,
     name: row.name,
-    protocol: row.protocol,
     instruction: row.instruction ?? "",
     classifierUpstreamId: row.classifierUpstreamId ?? 0,
     classifierModel: row.classifierModel ?? "",
@@ -306,18 +306,24 @@ export function createProxyDeps(): ProxyDeps {
         return rows
           .filter((row: any) => row.enabled === 1)
           .map(
-          (row: any): UpstreamRoute => ({
-            id: row.id,
-            name: row.name,
-            protocol: row.protocol,
-            baseUrl: row.baseUrl,
-            priority: row.priority,
-            enabled: true,
-            enabledModels: row.enabledModels,
-            proxyUrl: decryptProxyUrl(row.proxyUrlEncrypted),
-            headerTransforms: parseHeaderTransforms(row.headerTransforms),
-            classifierModels: row.classifierModels ?? null,
-          })
+          (row: any): UpstreamRoute => {
+            // 统一走 resolveUpstreamAuthConfig（protocols 归一化 + authStyle 缺省推导单一入口）
+            const face = resolveUpstreamAuthConfig(row);
+            return {
+              id: row.id,
+              name: row.name,
+              protocol: row.protocol,
+              protocols: face.protocols,
+              authStyle: face.authStyle,
+              baseUrl: row.baseUrl,
+              priority: row.priority,
+              enabled: true,
+              enabledModels: row.enabledModels,
+              proxyUrl: decryptProxyUrl(row.proxyUrlEncrypted),
+              headerTransforms: parseHeaderTransforms(row.headerTransforms),
+              classifierModels: row.classifierModels ?? null,
+            };
+          }
         );
       });
     },

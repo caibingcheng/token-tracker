@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import { db, upstreamsTable } from "@/lib/db";
 import { parseClassifierModels, isClassifierKind, VALID_CLASSIFIER_KINDS } from "@/lib/gateway/classifier/types";
+import { resolveUpstreamAuthConfig } from "@/lib/gateway/auth-style";
 import type { ClassifierKind } from "@/lib/gateway/classifier/types";
 
 export const MAX_NAME_LENGTH = 256;
@@ -15,7 +16,7 @@ export function parsePriority(value: unknown): number | null {
 }
 
 // 校验分类器种类 + 指向：kind='model' 要求 upstream 存在即可（模型无需声明——
-// 未声明的一律按 jev-systemone 决策模型走 /v1/systemone；已声明 chat 的条目仍要求 openai 协议；
+// 未声明的一律按 jev-systemone 决策模型走 /v1/systemone；已声明 chat 的条目仍要求 upstream 接受 openai 面；
 // priority 走占位 0/''）
 export async function validateClassifier(input: {
   classifierKind: unknown;
@@ -44,9 +45,12 @@ export async function validateClassifier(input: {
     await db.select().from(upstreamsTable).where(eq(upstreamsTable.id, upstreamId))
   )[0];
   if (!upstream) return { ok: false, error: "Classifier upstream not found" };
-  // 存量声明为 chat 的分类器：wire format 是 openai chat completions，upstream 协议必须匹配
+  // 存量声明为 chat 的分类器：wire format 是 openai chat completions，upstream 必须接受 openai 面
   const entry = parseClassifierModels(upstream.classifierModels).find((e) => e.model === model);
-  if (entry?.type === "chat" && upstream.protocol !== "openai") {
+  if (
+    entry?.type === "chat" &&
+    !resolveUpstreamAuthConfig(upstream as any).protocols.includes("openai")
+  ) {
     return { ok: false, error: `Classifier type "chat" requires an openai-protocol upstream` };
   }
   return { ok: true, kind, upstreamId, model };

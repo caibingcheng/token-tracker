@@ -2,10 +2,13 @@ import { describe, expect, it } from "vitest";
 import { simulateRoute, type SimUpstream, type SimNamedRoute } from "./simulate-route";
 
 function upstream(partial: Partial<SimUpstream> & { id: number }): SimUpstream {
+  const protocol = partial.protocol ?? "openai";
   return {
     id: partial.id,
     name: partial.name ?? `upstream-${partial.id}`,
-    protocol: partial.protocol ?? "openai",
+    protocol,
+    protocols: partial.protocols ?? [protocol],
+    authStyle: partial.authStyle ?? "bearer",
     priority: partial.priority ?? 0,
     enabled: partial.enabled ?? true,
     enabledModels: partial.enabledModels ?? [],
@@ -19,7 +22,6 @@ function named(partial: Partial<SimNamedRoute> & { name?: string } = {}): SimNam
   return {
     id: partial.id ?? 1,
     name: partial.name ?? "auto",
-    protocol: partial.protocol ?? "openai",
     enabled: partial.enabled ?? true,
     classifierUpstreamName: partial.classifierUpstreamName ?? "typesafe",
     classifierModel: partial.classifierModel ?? "jev-latest",
@@ -195,11 +197,18 @@ describe("simulateRoute", () => {
     expect(result.winner?.upstreamId).toBe(2);
   });
 
-  it("respects protocol in named route matching", () => {
-    const upstreams = [upstream({ id: 1, protocol: "anthropic" })];
-    const routes = [named({ name: "my-alias", protocol: "anthropic" })];
-    const result = simulateRoute("my-alias", "openai", upstreams, routes);
-    expect(result.source).toBe("auto");
+  it("hop 按 target upstream 的 protocols 过滤；该面无 hop → namedRouteUnavailable（不回退自动路由）", () => {
+    // 目标 upstream 只接受 anthropic 面
+    const upstreams = [upstream({ id: 1, protocol: "anthropic", enabledModels: ["real-model"] })];
+    const routes = [named({ name: "my-alias" })];
+    const openai = simulateRoute("my-alias", "openai", upstreams, routes);
+    expect(openai.source).toBe("named");
+    expect(openai.namedRouteUnavailable).toBe(true);
+    expect(openai.candidates).toHaveLength(0);
+    const anthropic = simulateRoute("my-alias", "anthropic", upstreams, routes);
+    expect(anthropic.source).toBe("named");
+    expect(anthropic.namedRouteUnavailable).toBe(false);
+    expect(anthropic.candidates.length).toBeGreaterThan(0);
   });
 
   it("named route shadows automatic routing for the same name", () => {

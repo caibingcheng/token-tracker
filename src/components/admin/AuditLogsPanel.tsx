@@ -59,6 +59,8 @@ const ACTION_COLORS: Record<string, string> = {
   upstream_key_created: "bg-green-50 text-green-600",
   upstream_key_updated: "bg-amber-50 text-amber-600",
   upstream_key_deleted: "bg-red-50 text-red-600",
+  // 迁移冲突（自动禁用/需人工复核）：details.scope/kind 标明是哪个迁移
+  migration_conflict: "bg-red-50 text-red-600",
 };
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100, 200] as const;

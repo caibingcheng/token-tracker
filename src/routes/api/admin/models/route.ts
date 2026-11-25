@@ -4,11 +4,14 @@ import { db, initDatabase, namedRouteTargetsTable, namedRoutesTable, upstreamsTa
 import { withAuth } from "@/lib/auth/guard";
 import {
   isProtocol,
+  normalizeUpstreamProtocols,
   parseEnabledModels,
   routeModelByProtocol,
   type Protocol,
   VALID_PROTOCOLS,
 } from "@/lib/gateway/model-router";
+import { defaultAuthStyleForProtocol, isAuthStyle } from "@/lib/gateway/auth-style";
+import type { AuthStyle } from "@/lib/gateway/auth-style";
 import { simulateRoute } from "@/lib/gateway/simulate-route";
 import type { SimNamedRoute, SimClassifierInfo } from "@/lib/gateway/simulate-route";
 import type { UpstreamRoute } from "@/lib/gateway/model-router";
@@ -18,6 +21,8 @@ interface UpstreamSummary {
   id: number;
   name: string;
   protocol: Protocol;
+  protocols: Protocol[];
+  authStyle: AuthStyle;
   baseUrl: string;
   priority: number;
   enabled: boolean;
@@ -74,6 +79,10 @@ function toUpstreamRoute(row: any): UpstreamRoute {
     id: row.id,
     name: row.name,
     protocol: row.protocol,
+    protocols: normalizeUpstreamProtocols(row.protocols, row.protocol),
+    authStyle: isAuthStyle(row.authStyle)
+      ? row.authStyle
+      : defaultAuthStyleForProtocol(row.protocol),
     baseUrl: row.baseUrl,
     priority: row.priority,
     enabled: row.enabled === 1,
@@ -106,6 +115,10 @@ export const GET = withAuth(async () => {
     id: row.id,
     name: row.name,
     protocol: isProtocol(row.protocol) ? row.protocol : "openai",
+    protocols: normalizeUpstreamProtocols(row.protocols, row.protocol),
+    authStyle: isAuthStyle(row.authStyle)
+      ? row.authStyle
+      : defaultAuthStyleForProtocol(row.protocol),
     baseUrl: row.baseUrl,
     priority: row.priority,
     enabled: row.enabled === 1,
@@ -141,18 +154,18 @@ export const GET = withAuth(async () => {
   const namedRoutes: SimNamedRoute[] = routeRows.map((row: any) => ({
     id: row.route.id,
     name: row.route.name,
-    protocol: isProtocol(row.route.protocol) ? row.route.protocol : "openai",
     enabled: row.route.enabled === 1,
     classifierUpstreamName: row.upstream?.name ?? "(deleted)",
     classifierModel: row.route.classifierModel ?? "",
     classifierKind: row.route.classifierKind === "model" ? "model" : "priority",
     targets: targetsByRoute.get(row.route.id) ?? [],
   }));
-  // 解析/列表共用：enabled 且至少一条目标的命名路由，按 protocol:name 索引（运行时 upstream 过滤在消费侧）
-  const namedByKey = new Map<string, SimNamedRoute>();
+  // 解析/列表共用：enabled 且至少一条目标的命名路由，按 name 索引
+  //（面可用性在消费侧按请求协议展开时判定，命名路由本身不再带协议）
+  const namedByName = new Map<string, SimNamedRoute>();
   for (const r of namedRoutes) {
     if (r.enabled && r.targets.length > 0) {
-      namedByKey.set(`${r.protocol}:${r.name}`, r);
+      namedByName.set(r.name, r);
     }
   }
 
@@ -222,27 +235,31 @@ export const GET = withAuth(async () => {
     };
   };
 
-  // 按 protocol 收集具体模型（非通配）和通配模式
+  // 按 protocol 收集具体模型（非通配）和通配模式。
+  // 一条 upstream 可声明多个面（protocols）：每个面都要登记，否则多面记录只会出现在默认面下
   const concreteModelsByProtocol = new Map<Protocol, Set<string>>();
   const wildcardPatternsByProtocol = new Map<Protocol, WildcardInfo[]>();
 
   for (const u of upstreams) {
     if (!u.enabled) continue;
+    const faces = u.protocols.length > 0 ? u.protocols : [u.protocol];
     for (const pattern of u.enabledModels) {
       if (!pattern) continue;
-      if (pattern.endsWith("*")) {
-        const list = wildcardPatternsByProtocol.get(u.protocol) ?? [];
-        list.push({
-          pattern,
-          upstreamId: u.id,
-          name: u.name,
-          priority: u.priority,
-        });
-        wildcardPatternsByProtocol.set(u.protocol, list);
-      } else {
-        const set = concreteModelsByProtocol.get(u.protocol) ?? new Set<string>();
-        set.add(pattern);
-        concreteModelsByProtocol.set(u.protocol, set);
+      for (const face of faces) {
+        if (pattern.endsWith("*")) {
+          const list = wildcardPatternsByProtocol.get(face) ?? [];
+          list.push({
+            pattern,
+            upstreamId: u.id,
+            name: u.name,
+            priority: u.priority,
+          });
+          wildcardPatternsByProtocol.set(face, list);
+        } else {
+          const set = concreteModelsByProtocol.get(face) ?? new Set<string>();
+          set.add(pattern);
+          concreteModelsByProtocol.set(face, set);
+        }
       }
     }
   }
@@ -255,8 +272,8 @@ export const GET = withAuth(async () => {
     const models = concreteModelsByProtocol.get(protocol) ?? new Set<string>();
     const sortedModels = Array.from(models).sort((a, b) => a.localeCompare(b));
     for (const model of sortedModels) {
-      const route = namedByKey.get(`${protocol}:${model}`);
-      if (route) {
+      const route = namedByName.get(model);
+      if (route && !simulateRoute(route.name, protocol, upstreams, namedRoutes).namedRouteUnavailable) {
         // 同名命名路由复用自动行（不另起一行）：单行展示命名 failover 链（实际生效路由），
         // 被覆盖的自动候选保留在 shadowedCandidates 供展开详情溯源
         const { candidates: shadowed } = routeModelByProtocol(model, protocol, upstreamRoutes);
@@ -312,18 +329,26 @@ export const GET = withAuth(async () => {
       });
     }
 
-    // 未配置在任何 upstream 的命名路由名（虚拟名转发场景）；按 (protocol, name) 分组
-    const namedOnly = Array.from(namedByKey.values())
-      .filter((r) => r.protocol === protocol && !models.has(r.name))
+    // 未配置在任何 upstream 的命名路由名（虚拟名转发场景）
+    const namedOnly = Array.from(namedByName.values())
+      .filter(
+        (r) =>
+          !models.has(r.name) &&
+          !simulateRoute(r.name, protocol, upstreams, namedRoutes).namedRouteUnavailable
+      )
       .sort((a, b) => a.name.localeCompare(b.name));
     for (const route of namedOnly) {
       resolvedRoutes.push(buildNamedRoute(route, protocol));
     }
 
-    // 目标全部失效的命名路由（enabled 但无有效目标）也列出，UI 标 namedRouteUnavailable
-    const brokenNamed = namedRoutes
-      .filter((r) => r.protocol === protocol && r.enabled && r.targets.length === 0 && !models.has(r.name))
-      .sort((a, b) => a.name.localeCompare(b.name));
+    // 目标全部失效的命名路由（enabled 但无有效目标）：面归属已无法从配置推断，
+    // 只在第一个协议下展示一行（UI 标 namedRouteUnavailable），避免三份重复
+    const brokenNamed =
+      protocol === VALID_PROTOCOLS[0]
+        ? namedRoutes
+            .filter((r) => r.enabled && r.targets.length === 0 && !models.has(r.name))
+            .sort((a, b) => a.name.localeCompare(b.name))
+        : [];
     for (const route of brokenNamed) {
       resolvedRoutes.push(buildNamedRoute(route, protocol));
     }

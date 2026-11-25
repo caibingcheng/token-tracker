@@ -24,6 +24,8 @@ export type AuditAction =
   | "named_route_created"
   | "named_route_updated"
   | "named_route_deleted"
+  // 迁移发现无法无损自动处理的冲突（自动禁用/需人工复核）；具体迁移与冲突类型看 details.scope/kind
+  | "migration_conflict"
   | "model_price_updated"
   | "model_price_deleted"
   | "model_price_selected"

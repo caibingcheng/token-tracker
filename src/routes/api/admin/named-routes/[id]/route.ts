@@ -10,8 +10,7 @@ interface Params {
   params: Promise<{ id: string }>;
 }
 
-// PATCH：允许改 name / instruction / classifier / enabled（name+protocol 为 UNIQUE 身份键，改名按冲突返回 409；
-// protocol 不可改，改协议等价于删旧建新）
+// PATCH：允许改 name / instruction / classifier / enabled（name 为全局 UNIQUE 身份键，改名撞名按冲突返回 409）
 export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
   const { params } = ctx as Params; // params 为 Promise（Next 15+ 动态路由）
   const paramsResolved = await params;
@@ -110,7 +109,7 @@ export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
       const message = err instanceof Error ? err.message : String(err);
       if (message.includes("UNIQUE")) {
         return NextResponse.json(
-          { success: false, error: `Named route already exists for "${set.name}" (${route.protocol})` },
+          { success: false, error: `Named route already exists for "${set.name}"` },
           { status: 409 }
         );
       }
@@ -126,7 +125,6 @@ export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
       userAgent,
       details: {
         name: route.name,
-        protocol: route.protocol,
         changed: Object.keys(set),
         ...(set.name ? { newName: set.name } : {}),
       },
@@ -154,7 +152,7 @@ export const DELETE = withAuth(async (request: NextRequest, ctx: any) => {
       targetId: id,
       ip,
       userAgent,
-      details: { name: route.name, protocol: route.protocol },
+      details: { name: route.name },
     });
     return NextResponse.json({ success: true });
   });

@@ -3,7 +3,9 @@ import { desc, eq, count } from "drizzle-orm";
 import { db, initDatabase, upstreamsTable, upstreamKeysTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";
-import { isProtocol, parseEnabledModels } from "@/lib/gateway/model-router";
+import { parseEnabledModels } from "@/lib/gateway/model-router";
+import { resolveUpstreamAuthConfig } from "@/lib/gateway/auth-style";
+import { findAuthModelConflict, parseUpstreamFaceConfig } from "@/lib/admin/upstream-face";
 import {
   isBalanceFetchMode,
   balanceAutoFetchOf,
@@ -72,10 +74,13 @@ export const GET = withAuth(async () => {
     const data = [];
     for (const row of rows) {
       const proxyUrl = decryptProxyUrl(row.proxyUrlEncrypted);
+      const face = resolveUpstreamAuthConfig(row);
       data.push({
         id: row.id,
         name: row.name,
-        protocol: row.protocol,
+        protocol: face.protocol,
+        protocols: face.protocols,
+        authStyle: face.authStyle,
         baseUrl: row.baseUrl,
         enabledModels: parseEnabledModels(row.enabledModels),
         priority: row.priority,
@@ -120,23 +125,24 @@ export const POST = withAuth(async (request: NextRequest) => {
     }
 
     const name = typeof body.name === "string" ? body.name.trim() : "";
-    const protocol = typeof body.protocol === "string" ? body.protocol : "";
     const baseUrl = typeof body.baseUrl === "string" ? body.baseUrl.trim().replace(/\/+$/, "") : "";
 
-    if (!name || !protocol || !baseUrl) {
+    if (!name || !baseUrl) {
       return NextResponse.json(
-        { success: false, error: "Missing required fields: name, protocol, baseUrl" },
+        { success: false, error: "Missing required fields: name, baseUrl" },
         { status: 400 }
       );
     }
+    const faceConfig = parseUpstreamFaceConfig(body);
+    if (!faceConfig.ok) {
+      return NextResponse.json({ success: false, error: faceConfig.error }, { status: 400 });
+    }
+    const { protocol, protocols, authStyle } = faceConfig.value;
     if (isReservedRemoteName(name)) {
       return NextResponse.json(
         { success: false, error: `name cannot start with "${REMOTE_PREFIX_LABEL}"` },
         { status: 400 }
       );
-    }
-    if (!isProtocol(protocol)) {
-      return NextResponse.json({ success: false, error: "Invalid protocol" }, { status: 400 });
     }
     try {
       await validateUpstreamBaseUrl(baseUrl);
@@ -150,6 +156,23 @@ export const POST = withAuth(async (request: NextRequest) => {
     const enabledModels = Array.isArray(body.enabledModels)
       ? body.enabledModels.filter((m) => typeof m === "string")
       : [];
+    // 同 baseUrl 下 authStyle 不同的记录不允许模型名重叠（否则请求会落到错认证的记录上）
+    const existing = await db.select().from(upstreamsTable);
+    const conflict = findAuthModelConflict(
+      { authStyle, models: enabledModels },
+      existing
+        .filter((row: any) => row.baseUrl === baseUrl)
+        .map((row: any) => ({
+          name: row.name,
+          baseUrl: row.baseUrl,
+          authStyle: resolveUpstreamAuthConfig(row).authStyle,
+          models: parseEnabledModels(row.enabledModels),
+        })),
+      baseUrl
+    );
+    if (conflict) {
+      return NextResponse.json({ success: false, error: conflict }, { status: 400 });
+    }
     const priority = Number.isFinite(Number(body.priority)) ? Number(body.priority) : 0;
     const enabled = body.enabled === undefined ? true : Boolean(body.enabled);
     const healthCheckModel =
@@ -238,6 +261,8 @@ export const POST = withAuth(async (request: NextRequest) => {
         .values({
           name,
           protocol,
+          protocols: JSON.stringify(protocols),
+          authStyle,
           baseUrl,
           enabledModels: JSON.stringify(enabledModels),
           priority,
@@ -259,7 +284,7 @@ export const POST = withAuth(async (request: NextRequest) => {
         ip,
         userAgent,
         // 只记是否存在代理，不回显 proxyUrl（可含凭据）
-        details: { name, protocol, hasProxy: proxyUrlEncrypted !== null },
+        details: { name, protocol, protocols, authStyle, hasProxy: proxyUrlEncrypted !== null },
       });
       // best-effort：对新增 model 自动填充官方价（失败静默，不阻塞保存）
       const { autoFillForModels } = await import("@/lib/model-prices-service");

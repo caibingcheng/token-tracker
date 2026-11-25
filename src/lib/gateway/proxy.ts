@@ -12,7 +12,9 @@ import {
   expandNamedRouteTargets,
 } from "./model-router";
 import type { UpstreamRoute, ModelCandidate } from "./model-router";
-import { buildAuthHeaders, isEdgeBlockStatus } from "./upstream-client";
+import { isEdgeBlockStatus } from "./upstream-client";
+import { buildAuthHeaders } from "./auth-style";
+import type { AuthStyle } from "./auth-style";
 import { joinUrlPath, sanitizePathSegments } from "./url-utils";
 import { buildSessionId, computeSessionId, extractSessionInputFromBytes } from "./session";
 import type { SessionBinding } from "./session";
@@ -156,7 +158,6 @@ export interface RecordUsageMeta {
 export interface NamedRouteInfo {
   id: number;
   name: string;
-  protocol: Protocol;
   instruction: string;
   classifierUpstreamId: number; // kind='priority' 时为占位 0
   classifierModel: string; // kind='priority' 时为占位 ''
@@ -270,11 +271,13 @@ export function extractVirtualKeyToken(headers: Headers): string | null {
   return null;
 }
 
-// 构造发往上游的请求头：剔除客户端认证/传输头，按协议注入真实 key，
-// 最后一棒应用 upstream header transforms（fill/override 自定义出站 header）
+// 构造发往上游的请求头：剔除客户端认证/传输头，按 upstream 的 auth_style 注入真实 key，
+// 最后一棒应用 upstream header transforms（fill/override 自定义出站 header）。
+// authStyle 来自 target upstream 配置（不是请求协议）：同一条 failover 链里不同 hop
+// 可以用不同认证方式（如 Zen 的 anthropic 面 x-api-key + OpenRouter 的 bearer）。
 export function buildUpstreamHeaders(
   clientHeaders: Headers,
-  protocol: Protocol,
+  authStyle: AuthStyle,
   apiKey: string,
   transforms?: HeaderTransform[],
   transformContext?: HeaderTransformContext
@@ -319,7 +322,7 @@ export function buildUpstreamHeaders(
     headers.set(key, value);
   });
   headers.set("accept-encoding", "identity");
-  for (const [key, value] of Object.entries(buildAuthHeaders(protocol, apiKey))) {
+  for (const [key, value] of Object.entries(buildAuthHeaders(authStyle, apiKey))) {
     headers.set(key, value);
   }
   if (transforms && transforms.length > 0 && transformContext) {
@@ -466,9 +469,35 @@ async function handleProxyRequestInner(
     const upstreams = await deps.loadUpstreams();
     const protocol = detectRequestProtocol(path);
     const routes = deps.loadNamedRoutes ? await deps.loadNamedRoutes() : [];
-    // disabled 路由与请求时 findNamedRoute 口径一致：不进模型列表（命中即 404/自动路由）
+    // disabled 路由与请求时 findNamedRoute 口径一致：不进模型列表（命中即 404/自动路由）。
+    // 命名路由无协议身份 → 按“能否展开出该面的 hop”判断（与 hop 过滤同口径）
+    const targetsByRouteId = new Map<number, NamedRouteTargetInfo[]>();
+    if (deps.loadNamedRouteTargets) {
+      for (const r of routes) {
+        targetsByRouteId.set(r.id, await deps.loadNamedRouteTargets(r.id));
+      }
+    }
+    const poolEntry = (routeId: number) => (t: NamedRouteTargetInfo) => ({
+      id: t.id,
+      namedRouteId: routeId,
+      upstreamId: t.upstreamId,
+      upstreamModel: t.targetModel,
+      description: t.description,
+      priority: t.priority,
+    });
     const namedNames = routes
-      .filter((r) => r.protocol === protocol && r.enabled)
+      .filter((r) => r.enabled)
+      .filter(
+        (r) =>
+          expandNamedRouteTargets({
+            protocol,
+            upstreams,
+            routes,
+            targets: (targetsByRouteId.get(r.id) ?? []).map(poolEntry(r.id)),
+            resolveTargets: (id) => (targetsByRouteId.get(id) ?? []).map(poolEntry(id)),
+            rootRouteId: r.id,
+          }).length > 0
+      )
       .map((r) => r.name);
     const models = collectEnabledModels(upstreams, namedNames).filter((id) =>
       isModelAllowedByVirtualKey(virtualKey, id)
@@ -676,7 +705,7 @@ async function handleProxyRequestInner(
 
   {
     const allRoutes = deps.loadNamedRoutes ? await deps.loadNamedRoutes() : [];
-    const route = findNamedRoute(model, protocol, allRoutes);
+    const route = findNamedRoute(model, allRoutes);
     if (route) {
       namedRoute = { name: model };
 
@@ -690,7 +719,7 @@ async function handleProxyRequestInner(
         for (const t of targets) {
           if (t.upstreamId !== null) continue;
           const nested = allRoutes.find(
-            (r) => r.enabled && r.protocol === protocol && r.name === t.targetModel
+            (r) => r.enabled && r.name === t.targetModel
           );
           if (nested && !visited.has(nested.id)) await loadTargetsDeep(nested.id, visited);
         }
@@ -904,10 +933,10 @@ async function handleProxyRequestInner(
   }
 
   if (!namedRoute) {
-    // 自动路由：按协议路由获取所有匹配候选（exact 优先，priority 升序）
+    // 自动路由：按接受面获取所有匹配候选（protocols.includes(请求 protocol)；exact 优先，priority 升序）
     const { candidates } = routeModelByProtocol(model, protocol, upstreams);
     if (candidates.length === 0) {
-      // 保留原语义：model 仅配置在其他协议的 upstream 上 → 400 protocol_mismatch
+      // 保留原语义：model 仅配置在不接受该面的 upstream 上 → 400 protocol_mismatch
       const global = routeModel(model, upstreams);
       if (global) {
         // 不回显内部 upstream 名称与协议配置（防拓扑泄露）
@@ -1107,7 +1136,7 @@ async function handleProxyRequestInner(
             method: request.method,
             headers: buildUpstreamHeaders(
               request.headers,
-              protocol,
+              upstream.authStyle,
               apiKey,
               upstream.headerTransforms,
               {
@@ -1406,8 +1435,9 @@ async function handleSubresourcePassthroughInner(
   }
 
   const upstreams = await deps.loadUpstreams();
+  // responses 辅助端点需要 openai 面（/v1/responses）与对应认证头
   const chain = upstreams
-    .filter((u) => u.enabled !== false && u.protocol === "openai")
+    .filter((u) => u.enabled !== false && u.protocols.includes("openai"))
     .sort((a, b) => a.priority - b.priority);
 
   // 健康过滤（仅 upstream 级；不过 model 级——response 记忆与 model 健康无关）；
@@ -1521,7 +1551,7 @@ async function handleSubresourcePassthroughInner(
             method: request.method,
             headers: buildUpstreamHeaders(
               request.headers,
-              "openai",
+              upstream.authStyle,
               apiKey,
               upstream.headerTransforms,
               {

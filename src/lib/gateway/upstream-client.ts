@@ -1,11 +1,14 @@
 import type { Protocol } from "./model-router";
+import { buildAuthHeaders, defaultAuthStyleForProtocol } from "./auth-style";
+import type { AuthStyle } from "./auth-style";
 import { joinUrlPath } from "./url-utils";
 import { getOutboundDispatcher } from "./proxy-dispatcher";
 import { outboundFetch } from "./outbound-fetch";
 
 export interface UpstreamInfo {
   id?: number;
-  protocol: Protocol;
+  protocol: Protocol; // 默认面：拉模型列表的端点风格
+  authStyle?: AuthStyle; // 出站认证头（与主链/探活同一份配置）；缺省按默认面推导
   baseUrl: string;
   proxyUrl?: string | null; // HTTP CONNECT 代理明文 URL（解密后），null/undefined = 直连
 }
@@ -33,20 +36,6 @@ function buildListModelsUrl(protocol: Protocol, baseUrl: string): string {
   }
 }
 
-export function buildAuthHeaders(
-  protocol: Protocol,
-  apiKey: string
-): Record<string, string> {
-  switch (protocol) {
-    case "anthropic":
-      return { "x-api-key": apiKey, "anthropic-version": "2023-06-01" };
-    case "gemini":
-      return { "x-goog-api-key": apiKey };
-    default:
-      return { Authorization: `Bearer ${apiKey}` };
-  }
-}
-
 // 3xx 重定向状态（manual redirect 模式下 fetch 不会跟随，直接暴露状态码）
 export function isRedirectStatus(status: number): boolean {
   return status >= 300 && status < 400;
@@ -67,7 +56,10 @@ export async function fetchUpstreamModels(
   try {
     const dispatcher = getOutboundDispatcher(upstream.proxyUrl);
     const res = await outboundFetch(url, {
-      headers: buildAuthHeaders(upstream.protocol, apiKey),
+      headers: buildAuthHeaders(
+        upstream.authStyle ?? defaultAuthStyleForProtocol(upstream.protocol),
+        apiKey
+      ),
       signal,
       // 手动模式：3xx 视为失败，防认证头经跨源重定向泄露
       redirect: "manual",
