@@ -1,9 +1,10 @@
 import { sql } from "drizzle-orm";
-import { wrapDatabaseClient } from "./cache";
+import { wrapDatabaseClient, invalidateQueryCache } from "./cache";
 import { offsetMinutesToSqlModifiers } from "@/lib/timezone-utils";
 import { migrateColumns, migrateTokenRecordsModelColumns, migrateNamedRoutesTables, migrateNamedRouteTargetsNullableUpstream, migrateSyncInstancesTable, migrateIngestTokensTable } from "./migrate";
 
 let db: any;
+let rawClient: any;
 let tokenRecords: any;
 let upstreamsTable: any;
 let upstreamKeysTable: any;
@@ -16,7 +17,14 @@ let namedRouteTargetsTable: any;
 let modelPricesTable: any;
 let ingestTokensTable: any;
 let syncInstancesTable: any;
+let responseBindingsTable: any;
 let initialized = false;
+// in-flight 初始化：并发调用 initDatabase()（多路由同时冷启动）只开一个连接、只跑一遍
+// DDL/迁移。失败置空，允许下次重试；成功则靠 initialized 短路。
+let initPromise: Promise<void> | undefined;
+// closeDb 递增（仅测试路径）：正在飞的 ensureClient 在提交状态前校验它，
+// 避免 closeDb 之后又被一次迟到的初始化「复活」成 initialized=true + db 已关闭。
+let epoch = 0;
 
 // 未配置时的默认库路径（与 .env.example / docs / scripts/migrate-pg-to-sqlite.ts 一致）：
 // 本地开发零配置能起，Docker 由 compose / entrypoint 显式传入
@@ -29,8 +37,20 @@ const CLIENT_REGISTRY = Symbol.for("token-tracker.sqlite-clients");
 
 export async function initDatabase() {
   if (initialized) return;
-  await ensureClient();
-  initialized = true;
+  if (!initPromise) {
+    const p = ensureClient()
+      .then(() => {
+        // closeDb 已复位并可能已起了新一轮 init：旧 promise 不得改状态
+        if (initPromise !== p) return;
+        initialized = true;
+      })
+      .catch((err) => {
+        if (initPromise === p) initPromise = undefined;
+        throw err;
+      });
+    initPromise = p;
+  }
+  await initPromise;
 }
 
 // 关闭所有已打开的 SQLite 句柄并重置本实例状态。仅供测试 afterAll 使用：
@@ -47,11 +67,44 @@ export function closeDb() {
   }
   registry.length = 0;
   db = undefined;
+  rawClient = undefined;
+  initPromise = undefined;
+  epoch += 1;
   initialized = false;
+  // closeDb 后同一库文件可能已变（测试重建临时库）：不清空的话 10s TTL 内同 SQL
+  // 会命中上一轮的缓存条目
+  invalidateQueryCache();
+}
+
+// 底层 better-sqlite3 句柄：大结果集需要 stmt.iterate() 游标逐行消费，
+// 而 drizzle 的 select 只能一次性返回完整数组（30 万行 → 上百 MB 常驻堆）。
+// 仅供「必须遍历全部行」的聚合查询使用，业务读写仍走 drizzle。
+export function getRawClient(): any {
+  if (!rawClient) {
+    throw new Error("SQLite client not initialized; call initDatabase() first");
+  }
+  return rawClient;
 }
 
 async function ensureClient() {
   if (db) return;
+
+  // 上次初始化中途失败会留下「已登记、未提交状态」的句柄：摘牌并关掉，避免重试时
+  // 死条目在 globalThis registry 里无上界累积（生产不走 closeDb，没有其他回收路径）。
+  if (rawClient) {
+    const registry: any[] = (globalThis as any)[CLIENT_REGISTRY] ?? [];
+    const idx = registry.lastIndexOf(rawClient);
+    if (idx >= 0) registry.splice(idx, 1);
+    try {
+      rawClient.close();
+    } catch {
+      // 已关闭或连接失效，忽略
+    }
+    rawClient = undefined;
+  }
+
+  // closeDb 递增 epoch：若初始化期间被打断，结尾不提交状态（见下方提交处）
+  const myEpoch = epoch;
 
   const { default: Database } = await import("better-sqlite3");
   const { mkdirSync } = await import("fs");
@@ -62,23 +115,19 @@ async function ensureClient() {
 
   mkdirSync(dirname(dbPath), { recursive: true });
   const client = new Database(dbPath);
+  // 先登记再配置：pragma 若抛错，句柄已在 CLIENT_REGISTRY 里，closeDb() 才能关掉；
+  // 否则 fd 悬挂到进程退出，下次 ensureClient 会再开一个。
+  rawClient = client;
   ((globalThis as any)[CLIENT_REGISTRY] ??= []).push(client);
-  wrapDatabaseClient(client);
+  // 页缓存上限：better-sqlite3 编译期默认 SQLITE_DEFAULT_CACHE_SIZE=-16000（≈15.6MB），
+  // 这块是 SQLite 自己 malloc 的 native 内存（anon，V8 的 GC 定时器收不回来）。
+  // 实测（32MB / 30 万行库，dashboard 全表聚合 + 总量 + distinct 扫描）：cache_size
+  // -16000 → cgroup anon +29.8MB，-2000 → +9.1MB；耗时 216ms → 214ms（顺序全表扫描
+  // 本就不吃缓存复用，热页由 OS page cache 兜底，不在进程占用里）。
+  // 代价：库页超出 2MB 时会更多走 read()，宿主内存紧张时那批页被回收后需重新读盘。
+  client.pragma("cache_size = -2000");
 
   const { drizzle } = await import("drizzle-orm/better-sqlite3");
-  db = drizzle(client, { schema: sqliteModule });
-  tokenRecords = sqliteModule.tokenRecords;
-  upstreamsTable = sqliteModule.upstreams;
-  upstreamKeysTable = sqliteModule.upstreamKeys;
-  virtualKeysTable = sqliteModule.virtualKeys;
-  settingsTable = sqliteModule.settings;
-  adminAuditLogsTable = sqliteModule.adminAuditLogs;
-  upstreamModelHealthTable = sqliteModule.upstreamModelHealth;
-  namedRoutesTable = sqliteModule.namedRoutes;
-  namedRouteTargetsTable = sqliteModule.namedRouteTargets;
-  modelPricesTable = sqliteModule.modelPrices;
-  ingestTokensTable = sqliteModule.ingestTokens;
-  syncInstancesTable = sqliteModule.syncInstances;
 
   client.exec(`
     CREATE TABLE IF NOT EXISTS token_records (
@@ -208,6 +257,11 @@ async function ensureClient() {
       last_record_id INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT
     );
+    CREATE TABLE IF NOT EXISTS response_bindings (
+      response_id TEXT PRIMARY KEY,
+      virtual_key_id INTEGER,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
   `);
 
   // 存量补列必须在所有 CREATE TABLE 之后执行：全新库先建表再补列，旧库表已存在、幂等补列
@@ -275,6 +329,41 @@ async function ensureClient() {
     CREATE INDEX IF NOT EXISTS idx_token_records_remote_instance_uid_created_at ON token_records(remote_instance_uid, created_at);
   `);
 
+  // 模块状态最后一次性提交：DDL/迁移任一步抛错时 db 保持 undefined，下次 initDatabase
+  // 才能重试；否则 `if (db) return` 会短路，带着残缺 schema 报初始化成功。
+  //
+  // 查询缓存也在这一步才启用：migrate* 用 `PRAGMA table_info` / `sqlite_master` 探测存量
+  // 结构，若这些读被缓存，迁移中途失败后 10s 内重试会读到「迁移前」快照并重复
+  // ALTER TABLE（duplicate column name），重试路径在最需要它时反而必定失败。
+  if (epoch !== myEpoch) {
+    // closeDb 在初始化期间被调用：不提交状态。若 closeDb 早于 new Database，句柄此时
+    // 仍打开且已登记，需要自己摘牌关掉；rawClient 也可能已被迟到的本轮覆盖，一并复位。
+    const registry: any[] = (globalThis as any)[CLIENT_REGISTRY] ?? [];
+    const idx = registry.lastIndexOf(client);
+    if (idx >= 0) registry.splice(idx, 1);
+    try {
+      client.close();
+    } catch {
+      // 已由 closeDb 关闭
+    }
+    if (rawClient === client) rawClient = undefined;
+    throw new Error("database closed during initialization");
+  }
+  wrapDatabaseClient(client);
+  db = drizzle(client, { schema: sqliteModule });
+  tokenRecords = sqliteModule.tokenRecords;
+  upstreamsTable = sqliteModule.upstreams;
+  upstreamKeysTable = sqliteModule.upstreamKeys;
+  virtualKeysTable = sqliteModule.virtualKeys;
+  settingsTable = sqliteModule.settings;
+  adminAuditLogsTable = sqliteModule.adminAuditLogs;
+  upstreamModelHealthTable = sqliteModule.upstreamModelHealth;
+  namedRoutesTable = sqliteModule.namedRoutes;
+  namedRouteTargetsTable = sqliteModule.namedRouteTargets;
+  modelPricesTable = sqliteModule.modelPrices;
+  ingestTokensTable = sqliteModule.ingestTokens;
+  syncInstancesTable = sqliteModule.syncInstances;
+  responseBindingsTable = sqliteModule.responseBindings;
   console.log("[DB] SQLite initialized at:", dbPath);
 }
 
@@ -330,5 +419,5 @@ export function getDateGroupExpr(
   return sql<string>`strftime('%Y-%m-%d', ${tokenRecords.createdAt}, ${modifiers[0]}, ${modifiers[1]})`;
 }
 
-export { db, tokenRecords, upstreamsTable, upstreamKeysTable, virtualKeysTable, settingsTable, adminAuditLogsTable, upstreamModelHealthTable, namedRoutesTable, namedRouteTargetsTable, modelPricesTable, ingestTokensTable, syncInstancesTable };
+export { db, tokenRecords, upstreamsTable, upstreamKeysTable, virtualKeysTable, settingsTable, adminAuditLogsTable, upstreamModelHealthTable, namedRoutesTable, namedRouteTargetsTable, modelPricesTable, ingestTokensTable, syncInstancesTable, responseBindingsTable };
 export type { TokenRecord, NewTokenRecord, NamedRoute, NewNamedRoute, NamedRouteTarget, NewNamedRouteTarget } from "./schema-sqlite";

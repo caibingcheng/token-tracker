@@ -1,8 +1,53 @@
 node_modules
+**/node_modules
 .next
 .git
+.github
+.opencode
+.vscode
+.idea
+.DS_Store
+next-env.d.ts
+drizzle
+# 凭据：.gitignore 已忽略 .npmrc（可能含 registry token），镜像里绝不需要
+.npmrc
+**/.npmrc
+.npm/
+.netrc
+.yarnrc.yml
+# 机密文件名类（与 .gitignore 的 Secrets/credentials 段对齐）：绝不进构建上下文——
+# `COPY . .` 会进 builder 层，且 docker.yml 的 `cache-to: type=gha` 会把 builder 层推到远端缓存，
+# 漏一个模式就是一条外泄路径（standalone trace 已废弃，但排除项因层缓存依旧必要）
+*.pem
+*.key
+*.keystore
+id_rsa
+id_rsa.*
+credentials
+credentials.*
+*credentials.json
+*credential.json
+secrets
+secrets.*
+secret.*
+*.secret
+# 自定义 SQLITE_DATABASE_PATH 时库可能落在仓库根
+*.db
+*.db-wal
+*.db-shm
 .env*
+**/.env*
+# SQLite 库、主密钥、models.dev 缓存都在这里，绝不进镜像
 data/
 **/.gateway-secret
+# 构建不需要的内部文档与脚本以外的素材（bench 仅本机压测）
+bench/
+# 内部文档；不进构建上下文（scripts/ 必须在上下文里：npm run build 依赖 gen-routes/build-server）
+docs/
+specs/
+# 构建产物，防旧产物混进上下文（out/ build/ 由 builder 现场生成）
+out/
+build/
+# 仅 GitHub README 展示用，src/ 内零引用
+public/screenshots/
 *.md
-!.github

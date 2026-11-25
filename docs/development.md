@@ -9,10 +9,11 @@
 ```bash
 npm install
 cp .env.example .env.local      # 可选：不建也能起，默认 ./data/token-tracker.db；dev 自动生成 GATEWAY_SECRET
-npm run dev                     # http://localhost:3000
+npm run dev                     # 双进程 dev：页面 :3000（next dev HMR）+ API :3001（Hono，同源 rewrite）；3000 被占用时 DEV_WEB_PORT=3xxx
 npm test                        # vitest 单测（覆盖代理链路/解析器/路由/加密/认证等核心模块，并发上限 = CPU 一半）
 npm run lint                    # ESLint 9 flat config（Next 16 起 `next lint` 已移除）
-npm run build                   # 生产构建（standalone 输出）
+npm run build                   # 生产构建：gen-routes + next build（静态导出 out/）+ esbuild 打包 build/server.js
+npm start                       # 跑 build/server.js（宿主机验证用；自动加载 .env.production.local → .env.local → .env.production → .env，真实 env 优先）
 npm run seed:demo -- --reset    # 灌 90 天演示数据（只写 token_records + model_prices，调试 UI 用）
 npx drizzle-kit studio          # Drizzle Studio 查看 SQLite
 ```
@@ -51,7 +52,7 @@ curl -s http://host:3000/api/dashboard -H "X-API-Key: $TOKEN"
 |---|---|---|
 | `SQLITE_DATABASE_PATH` | 否 | SQLite 数据库文件路径，默认 `./data/token-tracker.db`（Docker 由 compose 显式指定） |
 | `ADMIN_API_KEY` | 建议 | 管理面用 API key，逗号分隔多个；个人/家庭部署允许弱 key，前端提供强度提示，生产建议 ≥16 字符且 ≥2 类字符；已配置弱 key 也不会重新打开首次设置向导；未设置且 DB 无 key 时出现首次设置向导（旧名 `API_KEYS` 已废弃） |
-| `GATEWAY_SECRET` | 生产是 | 网关主密钥（AES-256-GCM），`openssl rand -hex 32` 生成；缺失时代理与管理 API 返回 503。`npm run dev` 缺失时自动生成并复用 `<db 目录>/.gateway-secret`（仅 dev，`next build/start` 不生成） |
+| `GATEWAY_SECRET` | 生产是 | 网关主密钥（AES-256-GCM），`openssl rand -hex 32` 生成；缺失时代理与管理 API 返回 503。`npm run dev` 缺失时自动生成并复用 `<db 目录>/.gateway-secret`（仅 dev，`npm run build` / `npm start` 不生成） |
 | `SESSION_TOKEN_TTL_HOURS` | 否 | 会话 token 有效期（小时，默认 24，滑动续期） |
 | `TRUSTED_PROXY` | 否 | 前置反代已设置 `X-Real-IP` 时设为 true，恢复精确 IP 限流 |
 | `API_CACHE_TTL_MS` | 否 | SELECT 缓存 TTL（毫秒，默认 10000，0 关闭） |

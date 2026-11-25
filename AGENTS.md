@@ -5,7 +5,7 @@
 
 ## 项目概览
 
-- **Token Tracker**：基于 Next.js 14 App Router + Drizzle ORM + SQLite 的**个人 AI Gateway**（LLM Token 用量仪表盘 + 多协议上游代理）
+- **Token Tracker**：基于 Next.js 16 App Router + Drizzle ORM + SQLite 的**个人 AI Gateway**（LLM Token 用量仪表盘 + 多协议上游代理；服务端为 Hono，前端静态导出）
 - **网关定位**：`/v1/*` + `/v1beta/*` catch-all 纯透传（OpenAI/Anthropic/Gemini 三协议），透传中自动解析 token 用量写库；agent 客户端零插件，只改 base_url + key
 - **部署目标**：Docker VPS（SQLite）
 - **使用规模**：个人使用，日均约 1000 条记录
@@ -13,8 +13,8 @@
 ## 开发者命令
 
 ```bash
-npm run dev                 # 启动开发服务器，访问 http://localhost:3000
-npm run build               # 生产构建
+npm run dev                 # 双进程 dev：页面 :3000（next dev HMR）+ API :3001（Hono）同源 rewrite；3000 被占用时 DEV_WEB_PORT=3xxx
+npm run build               # 生产构建（gen-routes + next build 静态导出 + esbuild bundle）
 npm run lint                # ESLint 9 flat config（Next 16 起 next lint 已移除）
 npm test                    # vitest 单元测试（src/**/*.test.ts）
 npx drizzle-kit studio      # Drizzle Studio（SQLite）
@@ -40,7 +40,9 @@ docker compose up -d                                 # 本地运行
 
 ## 硬约束（红线，任何改动都适用）
 
-- **认证**：新增 `/api/*` 路由**默认**必须用 `withAuth` 包裹（`src/lib/auth/guard.ts`），否则 `src/lib/auth/guard-scan.test.ts` 静态扫描测试失败。公开例外必须先 review 泄露面，并**三处同步登记**：`guard-scan.test.ts` 的 `exempt`、`src/proxy.ts` matcher 排除项、`docs/agents/api-routes.md` 接口表（写明公开理由与返回字段）—— 只改 `exempt` 会被 proxy 拦成 401。当前登记的唯一公开只读例外是 `/api/cli`（只返回全时段聚合 summary + today，无 provider/model/agent 维度，进程内快照限流）。除 login/setup/logout 与已登记例外，`/api/*` 只接受**会话 token**，原始 API key 不能直接调；脚本/curl 必须先 `POST /api/auth/login` 换 token，再带 `X-API-Key: <token>`
+- **路由注册**：route handler 在 `src/routes/**/route.ts`（与 URL 路径镜像，`src/app` 只放静态导出页面）；新增/移动后 `npm run dev` / `npm run build` 自动跑 `scripts/gen-routes.mjs` 重建 `src/server/routes.generated.ts`（手改无效）。服务端是 Hono（`src/server/index.ts`），route 文件里的 `from "next/server"` 由别名指到 `src/server/next-shim.ts`（tsconfig paths / vitest alias；esbuild 读 tsconfig），扩 next/server API 面必须先补 shim，否则 tsc 不报、运行时才炸
+
+- **认证**：新增 `/api/*` 路由**默认**必须用 `withAuth` 包裹（`src/lib/auth/guard.ts`），否则 `src/lib/auth/guard-scan.test.ts` 静态扫描测试失败。公开例外必须先 review 泄露面，并**三处同步登记**：`guard-scan.test.ts` 的 `exempt`、`src/server/verify-session.ts` 的 `VERIFY_EXCLUDED`、`docs/agents/api-routes.md` 接口表（写明公开理由与返回字段）—— 只改 `exempt` 会被验签层拦成 401。当前登记的唯一公开只读例外是 `/api/cli`（只返回全时段聚合 summary + today，无 provider/model/agent 维度，进程内快照限流）。除 login/setup/logout 与已登记例外，`/api/*` 只接受**会话 token**，原始 API key 不能直接调；脚本/curl 必须先 `POST /api/auth/login` 换 token，再带 `X-API-Key: <token>`
 - **虚拟 key 认证**：只接受 header（`Authorization: Bearer` / `x-api-key` / `x-goog-api-key`），**不得恢复 `?key=` query 认证**（query 会进访问日志/反代日志/Referer）
 - **缓存失效**：新增写入接口必须在写入成功后调用 `invalidateQueryCache()`，或将 handler 包进 `withSkipCache()`（`src/lib/db/cache.ts`）；settings 读写**必须**包 `withSkipCache()`（`src/lib/auth/settings.ts`），否则改 key/epoch+1/解绑 TOTP 后旧凭证最长残留 10s
 - **模型命名与 token 口径**：`token_records.model` 一律写**发往 upstream 的真实 model 名**，客户端原始请求名写 `request_model`；`input_tokens` 不含 cache_read，`cache_read` 单独列，展示层 Total Input 含 cache

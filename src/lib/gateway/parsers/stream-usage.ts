@@ -74,6 +74,11 @@ export class StreamUsageExtractor {
   // 与「真中断」，前者不标 client_aborted。
   sawTerminal = false;
 
+  // responses create 的 response id：responses 风格在 response.created 的 response.id，
+  // chat 风格在事件顶层 id（仅 resp_ 前缀事件接受，见 applyEvent）。
+  // proxy 用它记 vk 归属（防跨 vk retrieve）。
+  responseId: string | null = null;
+
   // OpenAI / Gemini：最后一个 usage 事件胜出
   private lastOpenAiUsage: OpenAIUsage | null = null;
   private lastGeminiMetadata: GeminiUsageMetadata | null = null;
@@ -178,10 +183,12 @@ export class StreamUsageExtractor {
         return data.includes('"usageMetadata"') || data.includes('"candidates"');
       default:
         // choices 覆盖全部 chat chunk（含 content delta 与 usage chunk）；
-        // response.output_text.delta 为 responses API 流式文本增量事件
+        // response.output_text.delta 为 responses API 流式文本增量事件；
+        // response.created 是 responses 流的首个事件（带 response.id，供归属记录）
         return (
           data.includes('"usage"') ||
           data.includes('"response.completed"') ||
+          data.includes('"response.created"') ||
           data.includes('"choices"') ||
           data.includes('"response.output_text.delta"')
         );
@@ -219,6 +226,19 @@ export class StreamUsageExtractor {
     }
     if (event?.type === "response.completed") {
       this.sawTerminal = true;
+    }
+    // response id：nested `event.response.id` 优先（response.created 的真实 id）；
+    // 顶层 id 只在带 `resp_` 前缀时接受。为什么不能「首个顶层 id 胜出」：中转/网关常给
+    // 每个 SSE 事件注入事件级 id（`evt_...`），首事件不是 response.created 时就会把事件 id
+    // 当成 response id 写进归属表 → 真 id 反而无映射、跨 vk 校验退回 fail-open（保护降级）。
+    if (this.responseId === null) {
+      const nestedId = (event?.response as Record<string, unknown> | undefined)?.id;
+      const topLevelId = event?.id;
+      if (typeof nestedId === "string" && nestedId !== "") {
+        this.responseId = nestedId;
+      } else if (typeof topLevelId === "string" && topLevelId.startsWith("resp_")) {
+        this.responseId = topLevelId;
+      }
     }
     const usage = openAiUsageOf(event);
     if (usage && typeof usage === "object") {

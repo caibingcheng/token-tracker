@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiFetch } from "@/lib/client/api-client";
 import ColumnPicker from "../ColumnPicker";
+import MultiSelect from "../MultiSelect";
 import {
   AUDIT_COLUMNS,
   DEFAULT_AUDIT_COLUMNS,
@@ -62,7 +63,6 @@ const ACTION_COLORS: Record<string, string> = {
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100, 200] as const;
 const DEFAULT_PAGE_SIZE = 50;
-const ALL_ACTIONS = "all";
 
 function ActionBadge({ action }: { action: string }) {
   return (
@@ -141,7 +141,7 @@ export default function AuditLogsPanel() {
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
-  const [action, setAction] = useState<string>(ALL_ACTIONS);
+  const [actionFilters, setActionFilters] = useState<string[]>([]);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [pageInput, setPageInput] = useState("1");
   // 列可见性：DB 配置（audit_columns），加载前先按默认全显示
@@ -160,7 +160,7 @@ export default function AuditLogsPanel() {
         page: String(page),
         pageSize: String(pageSize),
       });
-      if (action !== ALL_ACTIONS) params.set("action", action);
+      for (const value of actionFilters) params.append("action", value);
       const res = await apiFetch(`/api/admin/audit-logs?${params.toString()}`);
       const json = await res.json();
       if (seq !== requestSeqRef.current) return;
@@ -177,7 +177,7 @@ export default function AuditLogsPanel() {
       // 旧请求不得提前清掉新请求的 loading
       if (seq === requestSeqRef.current) setLoading(false);
     }
-  }, [page, pageSize, action]);
+  }, [page, pageSize, actionFilters]);
 
   useEffect(() => {
     load();
@@ -239,11 +239,16 @@ export default function AuditLogsPanel() {
     setPage(1);
   };
 
-  const changeAction = (value: string) => {
-    setAction(value);
+  const changeActions = (values: string[]) => {
+    setActionFilters(values);
     setPage(1);
     setExpandedId(null);
   };
+
+  const actionOptions = useMemo(
+    () => (data?.actions ?? []).map((value) => ({ id: value, name: value })),
+    [data?.actions]
+  );
 
   const toggleDetails = (id: number) => {
     setExpandedId(expandedId === id ? null : id);
@@ -325,35 +330,16 @@ export default function AuditLogsPanel() {
 
   return (
     <div>
-      <p className="mb-3 text-sm text-gray-500">
-        Admin actions recorded here: login, key &amp; TOTP changes, upstream / virtual key management.
-      </p>
-
       <div className="sticky top-0 z-20 -mx-4 mb-6 bg-gray-50 px-4 py-3 md:-mx-8 md:px-8">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex flex-wrap items-center gap-2">
-            <select
-              value={action}
-              onChange={(e) => changeAction(e.target.value)}
-              aria-label="Filter by action"
-              className="min-h-[40px] min-w-0 max-w-full rounded border border-gray-300 bg-white px-3 py-1.5 text-base md:text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 md:min-h-0"
-            >
-              <option value={ALL_ACTIONS}>All Actions</option>
-              {(data?.actions ?? []).map((value) => (
-                <option key={value} value={value}>
-                  {value}
-                </option>
-              ))}
-            </select>
-            {action !== ALL_ACTIONS && (
-              <button
-                type="button"
-                onClick={() => changeAction(ALL_ACTIONS)}
-                className="inline-flex min-h-[40px] items-center rounded border border-gray-300 bg-white px-3 text-sm font-medium text-gray-600 shadow-sm hover:bg-gray-50 md:min-h-0 md:py-1.5"
-              >
-                Reset
-              </button>
-            )}
+            <MultiSelect
+              label="Actions"
+              allLabel="All Actions"
+              options={actionOptions}
+              value={actionFilters}
+              onChange={changeActions}
+            />
           </div>
 
           <div className="flex flex-wrap items-center gap-2">

@@ -45,16 +45,22 @@ export function AdminTable({ children }: { children: ReactNode }) {
 }
 
 // 表头：thead.bg-gray-50 > tr.text-left.text-xs.font-medium.text-gray-500.uppercase，列支持 align: "left" | "right"
+// dense：弹窗内窄容器用 px-3（弹窗最大宽度装不下 7 列 × px-6 时会导致横向滚动）
 export function AdminTableHead({
   columns,
+  dense,
 }: {
   columns: Array<{ label: ReactNode; align?: "left" | "right" }>;
+  dense?: boolean;
 }) {
   return (
     <thead className="bg-gray-50">
       <tr className="text-left text-xs font-medium text-gray-500 uppercase">
         {columns.map((c, i) => (
-          <th key={i} className={`px-6 py-3${c.align === "right" ? " text-right" : ""}`}>
+          <th
+            key={i}
+            className={`${dense ? "px-3" : "px-6"} py-3${c.align === "right" ? " text-right" : ""}`}
+          >
             {c.label}
           </th>
         ))}
@@ -75,6 +81,7 @@ export function AdminTd({
   colSpan,
   className,
   title,
+  dense,
   children,
 }: {
   align?: "left" | "right";
@@ -82,15 +89,16 @@ export function AdminTd({
   colSpan?: number;
   className?: string;
   title?: string;
+  dense?: boolean;
   children: ReactNode;
 }) {
   return (
     <td
       colSpan={colSpan}
       title={title}
-      className={`px-6 py-4${align === "right" ? " text-right" : ""}${mono ? " font-mono text-xs" : ""}${
-        className ? ` ${className}` : ""
-      }`}
+      className={`${dense ? "px-3" : "px-6"} py-4${align === "right" ? " text-right" : ""}${
+        mono ? " font-mono text-xs" : ""
+      }${className ? ` ${className}` : ""}`}
     >
       {children}
     </td>

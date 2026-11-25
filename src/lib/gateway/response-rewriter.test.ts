@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { rewriteModelNonStreaming, createSseModelRewriter } from "./response-rewriter";
+import {
+  rewriteModelNonStreamingBytes,
+  createSseModelRewriter,
+} from "./response-rewriter";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -16,33 +19,49 @@ function through(
   return out;
 }
 
-describe("rewriteModelNonStreaming", () => {
+describe("rewriteModelNonStreamingBytes", () => {
   it("rewrites top-level model for openai", () => {
-    const input = JSON.stringify({ id: "x", model: "gpt-4o-real", choices: [] });
-    const out = rewriteModelNonStreaming(input, "openai", "my-alias");
-    expect(JSON.parse(out).model).toBe("my-alias");
-    expect(JSON.parse(out).id).toBe("x");
+    const input = encoder.encode(JSON.stringify({ id: "x", model: "gpt-4o-real", choices: [] }));
+    const out = rewriteModelNonStreamingBytes(input, "openai", "my-alias");
+    const json = JSON.parse(decoder.decode(out)) as { model: string; id: string };
+    expect(json.model).toBe("my-alias");
+    expect(json.id).toBe("x");
   });
 
   it("rewrites top-level model for anthropic", () => {
-    const input = JSON.stringify({ type: "message", model: "claude-real", content: [] });
-    const out = rewriteModelNonStreaming(input, "anthropic", "my-claude");
-    expect(JSON.parse(out).model).toBe("my-claude");
+    const input = encoder.encode(JSON.stringify({ type: "message", model: "claude-real", content: [] }));
+    const out = rewriteModelNonStreamingBytes(input, "anthropic", "my-claude");
+    const json = JSON.parse(decoder.decode(out)) as { model: string };
+    expect(json.model).toBe("my-claude");
   });
 
-  it("returns original text when JSON parse fails", () => {
-    const input = "not-json{{";
-    expect(rewriteModelNonStreaming(input, "openai", "alias")).toBe(input);
+  it("returns original bytes when JSON is not a scannable object", () => {
+    const input = encoder.encode("not-json{{");
+    expect(rewriteModelNonStreamingBytes(input, "openai", "alias")).toBe(input);
+    const trailing = encoder.encode('{"model":"a"} tail');
+    expect(rewriteModelNonStreamingBytes(trailing, "openai", "alias")).toBe(trailing);
   });
 
-  it("returns original text when no top-level model field", () => {
-    const input = JSON.stringify({ foo: "bar" });
-    expect(rewriteModelNonStreaming(input, "openai", "alias")).toBe(input);
+  it("returns original bytes when no top-level model field", () => {
+    const input = encoder.encode(JSON.stringify({ foo: "bar" }));
+    expect(rewriteModelNonStreamingBytes(input, "openai", "alias")).toBe(input);
+  });
+
+  it("does not rewrite non-string model", () => {
+    const input = encoder.encode(JSON.stringify({ model: 42 }));
+    expect(rewriteModelNonStreamingBytes(input, "openai", "alias")).toBe(input);
+  });
+
+  it("does not rewrite nested model fields", () => {
+    const input = encoder.encode(JSON.stringify({ choices: [{ model: "deep" }] }));
+    const out = rewriteModelNonStreamingBytes(input, "openai", "alias");
+    const json = JSON.parse(decoder.decode(out)) as { choices: { model: string }[] };
+    expect(json.choices[0].model).toBe("deep");
   });
 
   it("does not rewrite gemini (modelVersion preserved)", () => {
-    const input = JSON.stringify({ modelVersion: "gemini-1.5-flash-001", candidates: [] });
-    expect(rewriteModelNonStreaming(input, "gemini", "alias")).toBe(input);
+    const input = encoder.encode(JSON.stringify({ modelVersion: "gemini-1.5-flash-001", candidates: [] }));
+    expect(rewriteModelNonStreamingBytes(input, "gemini", "alias")).toBe(input);
   });
 });
 

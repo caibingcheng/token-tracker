@@ -61,17 +61,30 @@ export function generateTotpCode(
   return String(code % 1000000).padStart(6, "0");
 }
 
+// 匹配 ±TOTP_WINDOW 窗口内的动态码，命中返回命中的时间步计数（未命中 null）。
+// 计数就是重放防护的比较基准：同一时间步只能成功一次。
+export function matchTotpCounter(
+  secret: string,
+  code: string,
+  timestampMs: number = Date.now()
+): number | null {
+  if (!/^\d{6}$/.test(code)) return null;
+  const baseCounter = Math.floor(timestampMs / 1000 / TOTP_TIME_STEP_SECONDS);
+  for (let w = -TOTP_WINDOW; w <= TOTP_WINDOW; w++) {
+    const counter = baseCounter + w;
+    if (generateTotpCode(secret, counter * TOTP_TIME_STEP_SECONDS * 1000) === code) {
+      return counter;
+    }
+  }
+  return null;
+}
+
 export function verifyTotpCode(
   secret: string,
   code: string,
   timestampMs: number = Date.now()
 ): boolean {
-  if (!/^\d{6}$/.test(code)) return false;
-  for (let w = -TOTP_WINDOW; w <= TOTP_WINDOW; w++) {
-    const t = timestampMs + w * TOTP_TIME_STEP_SECONDS * 1000;
-    if (generateTotpCode(secret, t) === code) return true;
-  }
-  return false;
+  return matchTotpCounter(secret, code, timestampMs) !== null;
 }
 
 export function buildOtpAuthUri(

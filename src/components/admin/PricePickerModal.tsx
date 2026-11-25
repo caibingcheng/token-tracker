@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/client/api-client";
 import { useBodyScrollLock } from "@/hooks/useBodyScrollLock";
+import { useModalDismiss } from "@/hooks/useModalDismiss";
 import { CopyableCode } from "./CopyableCode";
 import ModalPortal from "@/components/ModalPortal";
 import {
@@ -118,6 +119,7 @@ export default function PricePickerModal({
   }, [isOpen, model, search]);
 
   useBodyScrollLock(isOpen);
+  const dismiss = useModalDismiss(isOpen, onClose);
 
   if (!isOpen) return null;
 
@@ -192,16 +194,19 @@ export default function PricePickerModal({
 
   return (
     <ModalPortal>
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-0 md:p-4">
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-0 md:p-4"
+        {...dismiss}
+      >
       <div className="w-full h-full md:h-auto md:w-full md:max-w-3xl md:max-h-[90vh] md:rounded-lg bg-white shadow-xl flex flex-col">
         <div className="flex items-start justify-between gap-2 border-b border-gray-200 p-4">
           <div className="min-w-0">
             <h3 className="text-base font-semibold">Select Price</h3>
             <div className="mt-1 flex items-center gap-2">
-              <CopyableCode className="rounded bg-gray-100 px-1.5 py-0.5 text-xs">
+              <CopyableCode className="min-w-0 break-all rounded bg-gray-100 px-1.5 py-0.5 text-xs">
                 {model}
               </CopyableCode>
-              <span className="text-[11px] text-gray-400">
+              <span className="shrink-0 text-[11px] text-gray-400">
                 Official price reference (USD / 1M tokens)
               </span>
             </div>
@@ -250,6 +255,7 @@ export default function PricePickerModal({
           ) : (
             <AdminTable>
               <AdminTableHead
+                dense
                 columns={[
                   { label: "Provider" },
                   { label: "Model" },
@@ -263,8 +269,8 @@ export default function PricePickerModal({
               <AdminTableBody>
                 {candidates.map((c) => (
                   <tr key={c.modelsDevId} className={c.preferred ? "bg-green-50/40" : ""}>
-                    <AdminTd>
-                      <div className="flex items-center gap-1.5">
+                    <AdminTd dense>
+                      <div className="flex flex-wrap items-center gap-1.5">
                         <span className={`font-medium ${c.hasCost ? "" : "text-gray-400"}`}>
                           {c.providerName}
                         </span>
@@ -280,14 +286,14 @@ export default function PricePickerModal({
                         )}
                       </div>
                     </AdminTd>
-                    <AdminTd>
-                      <CopyableCode className="text-xs">{c.modelId}</CopyableCode>
+                    <AdminTd dense>
+                      <CopyableCode className="block break-all text-xs">{c.modelId}</CopyableCode>
                     </AdminTd>
-                    <AdminTd align="right" mono>{fmtPrice(c.inputPrice)}</AdminTd>
-                    <AdminTd align="right" mono>{fmtPrice(c.outputPrice)}</AdminTd>
-                    <AdminTd align="right" mono>{fmtPrice(c.cacheReadPrice)}</AdminTd>
-                    <AdminTd align="right" mono>{fmtPrice(c.cacheWritePrice)}</AdminTd>
-                    <AdminTd align="right">
+                    <AdminTd dense align="right" mono>{fmtPrice(c.inputPrice)}</AdminTd>
+                    <AdminTd dense align="right" mono>{fmtPrice(c.outputPrice)}</AdminTd>
+                    <AdminTd dense align="right" mono>{fmtPrice(c.cacheReadPrice)}</AdminTd>
+                    <AdminTd dense align="right" mono>{fmtPrice(c.cacheWritePrice)}</AdminTd>
+                    <AdminTd dense align="right">
                       <button
                         type="button"
                         disabled={saving !== null || !c.hasCost}
@@ -315,7 +321,7 @@ export default function PricePickerModal({
                   <div className="flex items-center justify-between gap-2">
                     <div className="min-w-0">
                       <p className="text-sm font-medium">{c.providerName}</p>
-                      <CopyableCode className="text-xs">{c.modelId}</CopyableCode>
+                      <CopyableCode className="break-all text-xs">{c.modelId}</CopyableCode>
                     </div>
                     {c.preferred && (
                       <span className="shrink-0 rounded bg-green-100 px-1.5 py-0.5 text-[10px] font-medium text-green-700">

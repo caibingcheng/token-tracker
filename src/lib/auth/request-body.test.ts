@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { NextRequest } from "next/server";
 import {
   readJsonBodyLimited,
+  readBodyLimited,
   BodyTooLargeError,
   InvalidJsonBodyError,
   MAX_AUTH_BODY_BYTES,
@@ -98,5 +99,25 @@ describe("readJsonBodyLimited", () => {
   it("respects a custom limit", async () => {
     const req = post(JSON.stringify({ a: "0123456789" }));
     await expect(readJsonBodyLimited(req, 5)).rejects.toBeInstanceOf(BodyTooLargeError);
+  });
+});
+
+describe("readBodyLimited（非 JSON 端点复用）", () => {
+  it("reads a normal body as text", async () => {
+    expect(await readBodyLimited(post("hello"), 1024)).toBe("hello");
+    expect(await readBodyLimited(post(null), 1024)).toBe("");
+  });
+
+  it("rejects a declared content-length above the limit without reading the body", async () => {
+    const req = post(chunkedBody(4096), { "content-length": "4096" });
+    await expect(readBodyLimited(req, 1024)).rejects.toBeInstanceOf(BodyTooLargeError);
+    // 声明已超限：body 未被消费（request.bodyUsed 仍为 false）
+    expect(req.bodyUsed).toBe(false);
+  });
+
+  it("aborts a chunked body that grows past the limit", async () => {
+    const req = post(chunkedBody(8 * 1024));
+    expect(req.headers.get("content-length")).toBeNull();
+    await expect(readBodyLimited(req, 1024)).rejects.toBeInstanceOf(BodyTooLargeError);
   });
 });

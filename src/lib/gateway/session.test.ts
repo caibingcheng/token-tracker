@@ -1,10 +1,12 @@
 import { describe, it, expect } from "vitest";
 import {
   extractSessionInput,
+  extractSessionInputFromBytes,
   computeSessionId,
   buildSessionId,
   SessionStore,
 } from "./session";
+import { scanTopLevelObject } from "./json-scan";
 
 describe("extractSessionInput", () => {
   it("concatenates system messages with first user message", () => {
@@ -92,6 +94,98 @@ describe("extractSessionInput", () => {
     expect(extractSessionInput({ messages: [null, "x", 42] }, "m", 1, "openai")).toBe(
       "\u0000m\u00001\u0000openai"
     );
+  });
+});
+
+describe("extractSessionInputFromBytes（与解析路径逐点平价）", () => {
+  const bytesInput = (bodyJsonText: string, model = "m", vk = 1, protocol = "openai") => {
+    const bytes = new TextEncoder().encode(bodyJsonText);
+    const scan = scanTopLevelObject(bytes, ["messages"]);
+    return extractSessionInputFromBytes(bytes, scan.fields.get("messages"), model, vk, protocol);
+  };
+
+  it("matches parsed path: system + first user", () => {
+    const body = {
+      messages: [
+        { role: "system", content: "sys1" },
+        { role: "user", content: "hello" },
+        { role: "assistant", content: "hi" },
+        { role: "user", content: "second" },
+      ],
+    };
+    expect(bytesInput(JSON.stringify(body), "gpt-4o")).toBe(extractSessionInput(body, "gpt-4o", 1, "openai"));
+  });
+
+  it("matches parsed path: multimodal content with image blob", () => {
+    const blob = "A".repeat(50_000);
+    const body = {
+      messages: [
+        { role: "system", content: "规则" },
+        {
+          role: "user",
+          content: [
+            { type: "image_url", image_url: { url: `data:image/png;base64,${blob}` } },
+            { type: "text", text: "描述这张图" },
+          ],
+        },
+      ],
+    };
+    expect(bytesInput(JSON.stringify(body))).toBe(extractSessionInput(body, "m", 1, "openai"));
+  });
+
+  it("matches parsed path: string content with escapes + pretty-printed JSON", () => {
+    const body = {
+      messages: [
+        { role: "system", content: 'line1\nline2 "quoted" 中文' },
+        { role: "user", content: "  spaced  " },
+      ],
+    };
+    const pretty = JSON.stringify(body, null, 2);
+    expect(bytesInput(pretty)).toBe(extractSessionInput(body, "m", 1, "openai"));
+  });
+
+  it("matches parsed path: truncation rules (system tail / user head 1024)", () => {
+    const body = {
+      messages: [
+        { role: "system", content: "a".repeat(2000) },
+        { role: "user", content: "b".repeat(2000) },
+      ],
+    };
+    expect(bytesInput(JSON.stringify(body))).toBe(extractSessionInput(body, "m", 1, "openai"));
+  });
+
+  it("matches parsed path: empty / missing / non-array messages", () => {
+    expect(bytesInput(JSON.stringify({ messages: [] }))).toBe(
+      extractSessionInput({ messages: [] }, "m", 1, "openai")
+    );
+    expect(bytesInput(JSON.stringify({ foo: 1 }))).toBe(
+      extractSessionInput({ foo: 1 }, "m", 1, "openai")
+    );
+    expect(bytesInput(JSON.stringify({ messages: [null, "x", 42] }))).toBe(
+      extractSessionInput({ messages: [null, "x", 42] }, "m", 1, "openai")
+    );
+    expect(bytesInput(JSON.stringify({ messages: "not-array" }))).toBe(
+      extractSessionInput({ messages: "not-array" }, "m", 1, "openai")
+    );
+  });
+
+  it("matches parsed path: text parts only, non-object parts skipped", () => {
+    const body = {
+      messages: [
+        {
+          role: "user",
+          content: [null, 42, { type: "text", text: "t1" }, { type: "text", text: "t2" }, { type: "image_url" }],
+        },
+      ],
+    };
+    expect(bytesInput(JSON.stringify(body))).toBe(extractSessionInput(body, "m", 1, "openai"));
+  });
+
+  it("fingerprint hashes identical across paths", () => {
+    const body = { messages: [{ role: "user", content: "hi" }] };
+    const parsed = computeSessionId(extractSessionInput(body, "m", 7, "anthropic"));
+    const scanned = computeSessionId(bytesInput(JSON.stringify(body), "m", 7, "anthropic"));
+    expect(scanned).toBe(parsed);
   });
 });
 

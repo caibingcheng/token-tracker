@@ -1,5 +1,8 @@
 import type { MetadataRoute } from "next";
 
+// output: 'export' 下元数据路由需要显式声明静态（否则 build 报 dynamic not configured）
+export const dynamic = "force-static";
+
 export default function manifest(): MetadataRoute.Manifest {
   return {
     name: "Token Tracker",

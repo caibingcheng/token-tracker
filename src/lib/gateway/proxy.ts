@@ -14,7 +14,7 @@ import {
 import type { UpstreamRoute, ModelCandidate } from "./model-router";
 import { buildAuthHeaders, isEdgeBlockStatus } from "./upstream-client";
 import { joinUrlPath, sanitizePathSegments } from "./url-utils";
-import { buildSessionId, computeSessionId } from "./session";
+import { buildSessionId, computeSessionId, extractSessionInputFromBytes } from "./session";
 import type { SessionBinding } from "./session";
 import {
   parseOpenAiNonStreaming,
@@ -23,10 +23,19 @@ import {
 } from "./parsers";
 import { StreamUsageExtractor } from "./parsers/stream-usage";
 import type { ParsedUsage } from "./parsers/types";
-import { estimateInputTokens, estimateOutputTokens } from "./estimate";
+import { estimateInputTokens, estimateInputTokensFromSpans, estimateOutputTokens } from "./estimate";
 import { checkQuota, hasQuotaLimits } from "./quota";
 import type { QuotaUsage } from "./quota";
-import { rewriteModelNonStreaming, createSseModelRewriter } from "./response-rewriter";
+import { reserveInflight, getInflight } from "./quota-inflight";
+import { rewriteModelNonStreamingBytes, createSseModelRewriter } from "./response-rewriter";
+import {
+  isNonEmptyArraySpan,
+  isStringSpan,
+  parseJsonSpan,
+  scanTopLevelObject,
+  spliceBytes,
+} from "./json-scan";
+import type { ScanResult } from "./json-scan";
 import { getOutboundDispatcher } from "./proxy-dispatcher";
 import { outboundFetch } from "./outbound-fetch";
 import { applyHeaderTransforms } from "./header-transforms";
@@ -42,6 +51,29 @@ const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 流式空闲超时默�
 const DEFAULT_MAX_REQUEST_BODY_BYTES = 32 * 1024 * 1024;
 // 非流式响应整包缓冲上限：仅 usage 解析需要（流式路径 O(1) 不受影响）
 const MAX_NON_STREAMING_RESPONSE_BYTES = 50 * 1024 * 1024;
+// 大 body 分治阈值：≤1MB 保持 JSON.parse（400 契约与全部既有语义）；>1MB 顶层扫描，
+// 不物化消息树——大图 base64 请求的 V8 堆峰值（~42MB/路）与 128MB 堆顶 OOM 风险由此消除
+const FULL_PARSE_LIMIT_BYTES = 1024 * 1024;
+// scan 路径物化的顶层键：路由 model、流式标志与 stream_options 注入、会话指纹、估算容器
+const SCANNED_BODY_KEYS = ["model", "stream", "stream_options", "messages", "input", "contents"];
+
+function readScannedStreamFlag(bytes: Uint8Array, scan: ScanResult): unknown {
+  const span = scan.fields.get("stream");
+  if (!span) return undefined;
+  const t = new TextDecoder().decode(bytes.subarray(span.start, span.end));
+  return t === "true" ? true : t === "false" ? false : undefined;
+}
+
+function readScannedStringValue(bytes: Uint8Array, scan: ScanResult, key: string): string | null {
+  const span = scan.fields.get(key);
+  if (!span) return null;
+  try {
+    const v: unknown = JSON.parse(new TextDecoder().decode(bytes.subarray(span.start, span.end)));
+    return typeof v === "string" && v.length > 0 ? v : null;
+  } catch {
+    return null;
+  }
+}
 
 export function getMaxRequestBodyBytes(): number {
   const mb = Number(process.env.GATEWAY_MAX_BODY_MB);
@@ -53,13 +85,22 @@ export function getMaxRequestBodyBytes(): number {
 async function readRequestBody(request: Request): Promise<Uint8Array | null> {
   const maxBytes = getMaxRequestBodyBytes();
   const declared = request.headers.get("content-length");
-  if (declared !== null) {
-    const n = Number(declared);
-    if (Number.isFinite(n) && n > maxBytes) return null;
-  }
+  const declaredN = declared !== null ? Number(declared) : NaN;
+  if (Number.isFinite(declaredN) && declaredN > maxBytes) return null;
   const raw = request.body;
   if (!raw) {
     return new Uint8Array(await request.arrayBuffer());
+  }
+  // content-length 已知且未超限：HTTP 分帧下实际字节数 == content-length → 单趟读取，
+  // 免去 chunk 收集 + concat 的 2× 瞬时字节（大图请求峰值砍半）；
+  // chunked（无 content-length）仍走下方边读边计数（超限即中断）
+  if (declaredN >= 0 && Number.isFinite(declaredN)) {
+    try {
+      const buf = new Uint8Array(await request.arrayBuffer());
+      return buf.length > maxBytes ? null : buf; // 防御：分帧异常导致实长大于声明
+    } catch {
+      throw new Error("Failed to read request body");
+    }
   }
   const reader = raw.getReader();
   const chunks: Uint8Array[] = [];
@@ -159,6 +200,10 @@ export interface ProxyDeps {
   onUsage?: (meta: RecordUsageMeta) => Promise<void>;
   // 请求完成回调（更新 last_used_at 等）
   onComplete?: (meta: { virtualKeyId: number }) => Promise<void>;
+  // responses create 成功后的 response id 归属记录（可选；缺省则不记录，子路径不校验）
+  onResponseCreated?: (responseId: string, virtualKeyId: number) => Promise<void>;
+  // response id 归属查询（可选；返回 null = 无映射 → 放行）
+  lookupResponseOwner?: (responseId: string) => Promise<number | null>;
   // 流式空闲超时（毫秒，可选；缺省 DEFAULT_STREAM_IDLE_TIMEOUT_MS）
   resolveStreamIdleTimeoutMs?: () => Promise<number>;
   // 配额用量加载（必填依赖；实现见 proxy-deps）
@@ -247,6 +292,9 @@ export function buildUpstreamHeaders(
     "te",
     "trailer",
     "upgrade",
+    // curl 对 >1KB body 默认发 Expect: 100-continue；请求体已在网关整包缓冲，
+    // 100-continue 协商不透传——npm undici 不支持 expect 头，转发即 UND_ERR_NOT_SUPPORTED 拒连（502）
+    "expect",
     "x-api-key",
     "x-goog-api-key",
     "accept-encoding", // 强制 identity，保证响应体可解析 usage
@@ -262,6 +310,8 @@ export function buildUpstreamHeaders(
     "cf-connecting-ip",
     "true-client-ip",
     "x-client-ip",
+    // 服务端写入的 socket 对端地址（内部用途，不得透给上游，也不得让客户端值冒充）
+    "x-internal-remote-addr",
   ]);
   clientHeaders.forEach((value, key) => {
     const lower = key.toLowerCase();
@@ -298,12 +348,21 @@ function isAuthStatus(status: number): boolean {
   return status === 401 || status === 403;
 }
 
-function isNonStreamingRequestBody(bodyJson: unknown): boolean {
-  if (typeof bodyJson === "object" && bodyJson !== null) {
-    const stream = (bodyJson as Record<string, unknown>).stream;
-    if (typeof stream === "boolean") return !stream;
+// fetch 失败的 cause 链摘要：只进内部日志（502 响应仍是静态文案，不回显），
+// 用于区分 ECONNRESET / headers timeout / socket closed 等真实断点
+function describeErrorCauses(err: unknown): string {
+  const parts: string[] = [];
+  let cur: unknown = err;
+  let depth = 0;
+  while (cur && typeof cur === "object" && depth < 5) {
+    const e = cur as { name?: string; message?: string; code?: unknown; cause?: unknown };
+    const code = e.code !== undefined ? ` code=${String(e.code)}` : "";
+    const msg = depth > 0 && e.message ? ` ${e.message}` : "";
+    parts.push(`${e.name ?? "Error"}${code}${msg}`);
+    cur = e.cause;
+    depth++;
   }
-  return false;
+  return parts.length > 1 ? ` | cause: ${parts.slice(1).join(" <- ")}` : "";
 }
 
 export const PROXY_RESPONSE_HEADERS: Record<string, string> = {
@@ -326,13 +385,49 @@ export function stripRawPassthroughPrefix(path: string): string | null {
   return inner;
 }
 
+// 配额 in-flight 预留的异常安全网。
+// 预留（reserveInflight）到请求结束（onComplete）之间还有不少 await：
+// resolveUpstreamKeys 的 DB 读、session.setBinding、上游请求构造……任一处未捕获的
+// throw 都会跳过 onComplete，让 reservation 永久驻留 → 反复触发可把该 vk 的在途
+// 计数刷高，把它自己的合法请求挤成 429。包装层只做「throw 时兜底释放」：
+// 正常返回时什么也不做（成功/失败/流结束仍由 onComplete 释放，release 幂等）。
+type InflightScope = { release?: () => void };
+
+async function withInflightRelease<T>(
+  scope: InflightScope,
+  fn: () => Promise<T>
+): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    scope.release?.();
+    throw err;
+  }
+}
+
 // 核心代理流程
 export async function handleProxyRequest(
   request: Request,
   deps: ProxyDeps
 ): Promise<Response> {
+  const scope: InflightScope = {};
+  return withInflightRelease(scope, () => handleProxyRequestInner(request, deps, scope));
+}
+
+async function handleProxyRequestInner(
+  request: Request,
+  deps: ProxyDeps,
+  scope: InflightScope
+): Promise<Response> {
   const url = new URL(request.url);
   const rawPath = url.pathname;
+  // 编码斜杠/反斜杠：URL 解析不会解开 %2f，但上游（或中间反代）若解码就能跳出
+  // base 前缀（/v1/chat/completions%2f..%2f.. → /v1/chat/../../）。LLM 端点
+  // 不需要编码斜杠，一律 fail-closed 400。只查 pathname（query 里的 %2f 不影响路由）。
+  // /raw 裸透传的内层路径也在同一 pathname 里，天然覆盖。
+  if (/%2f|%5c/i.test(rawPath)) {
+    return proxyError(400, "Invalid request path", "invalid_request_error");
+  }
   // `..` 段净化：拒绝逃逸出上游 base 前缀的路径（/v1/../internal 等）
   const sanitizedPath = sanitizePathSegments(rawPath);
   if (sanitizedPath === null) {
@@ -404,43 +499,47 @@ export async function handleProxyRequest(
   }
   const contentType = request.headers.get("content-type") ?? "";
   let bodyJson: unknown = null;
-  if (bodyBuffer.length > 0 && contentType.includes("application/json")) {
+  let bodyScan: ScanResult | null = null;
+  const isJsonBody = bodyBuffer.length > 0 && contentType.includes("application/json");
+  if (isJsonBody) {
+    if (bodyBuffer.length <= FULL_PARSE_LIMIT_BYTES) {
+      try {
+        bodyJson = JSON.parse(new TextDecoder().decode(bodyBuffer));
+      } catch {
+        return proxyError(400, "Invalid JSON body", "invalid_request_error");
+      }
+    } else {
+      bodyScan = scanTopLevelObject(bodyBuffer, SCANNED_BODY_KEYS);
+      if (!bodyScan.valid) {
+        return proxyError(400, "Invalid JSON body", "invalid_request_error");
+      }
+      // 根非对象（isObject=false）不在这里报错：model 取不到 → 与 parse 路径同样
+      // 落进下方「Unable to determine model」400；深层语法交上游校验（json-scan 边界）
+    }
+  }
+  const scannedMode = bodyScan !== null && bodyJson === null;
+  // stream 标志只读一次：scan 区间在后续字节改写（stream_options 注入）前读取，避免偏移
+  const streamFlag: unknown = scannedMode
+    ? readScannedStreamFlag(bodyBuffer, bodyScan!)
+    : typeof bodyJson === "object" && bodyJson !== null
+      ? (bodyJson as Record<string, unknown>).stream
+      : undefined;
+  // 惰性全量 parse：仅分类器命中大 body 时调用（罕见配置，保留原成本）
+  let scannedJsonCache: unknown;
+  const ensureBodyJson = (): unknown => {
+    if (!scannedMode) return bodyJson;
+    if (scannedJsonCache !== undefined) return scannedJsonCache;
     try {
-      bodyJson = JSON.parse(new TextDecoder().decode(bodyBuffer));
+      scannedJsonCache = JSON.parse(new TextDecoder().decode(bodyBuffer!)); // 此处必非 null（入口已判）
     } catch {
-      return proxyError(400, "Invalid JSON body", "invalid_request_error");
+      scannedJsonCache = null;
     }
-  }
+    return scannedJsonCache;
+  };
 
-  // OpenAI chat 流式：客户端/agent 常不带 stream_options.include_usage，上游（尤其
-  // 第三方中转）因此不在流里发 usage chunk → 记成 no_usage。缺省时注入 true；
-  // 客户端显式设置（含 false）不覆盖。
-  if (
-    path === "/v1/chat/completions" &&
-    typeof bodyJson === "object" &&
-    bodyJson !== null &&
-    (bodyJson as Record<string, unknown>).stream === true
-  ) {
-    const bodyObj = bodyJson as Record<string, unknown>;
-    const existing = bodyObj.stream_options;
-    const existingObj =
-      existing && typeof existing === "object" && !Array.isArray(existing)
-        ? (existing as Record<string, unknown>)
-        : null;
-    // 显式设置（含非法值）一律保留：非法请求应交上游校验，不在网关上静默修正
-    const hasExplicit =
-      existingObj !== null &&
-      Object.prototype.hasOwnProperty.call(existingObj, "include_usage");
-    if (!hasExplicit) {
-      bodyJson = {
-        ...bodyObj,
-        stream_options: { ...(existingObj ?? {}), include_usage: true },
-      };
-      bodyBuffer = new TextEncoder().encode(JSON.stringify(bodyJson));
-    }
-  }
-
-  const model = extractRequestModel(path, bodyJson);
+  const model =
+    extractRequestModel(path, bodyJson) ??
+    (scannedMode ? readScannedStringValue(bodyBuffer, bodyScan!, "model") : null);
   if (!model) {
     return proxyError(400, "Unable to determine model from request", "invalid_request_error");
   }
@@ -463,16 +562,97 @@ export async function handleProxyRequest(
   // 请求级会话 ID：原生 header 优先，否则至多计算一次指纹；Records、路由粘性和出站变量共用。
   // Records 无原生 ID 时仍要求非空 messages，避免 Gemini / 非 chat 端点写入退化的常量指纹。
   const sessionId =
-    clientSessionId ?? buildSessionId(bodyJson, model, virtualKey.id, protocol);
+    clientSessionId ??
+    (bodyScan
+      ? computeSessionId(
+          extractSessionInputFromBytes(
+            bodyBuffer,
+            bodyScan.fields.get("messages"),
+            model,
+            virtualKey.id,
+            protocol
+          )
+        )
+      : buildSessionId(bodyJson, model, virtualKey.id, protocol));
   // 原生 ID 也需保留原指纹的 model / vk / protocol 隔离，避免跨 key、跨路由共享 binding。
   const routeSessionId = clientSessionId
     ? computeSessionId(
         `native\u0000${clientSessionId}\u0000${model}\u0000${virtualKey.id}\u0000${protocol}`
       )
     : sessionId;
-  const messages = (bodyJson as { messages?: unknown } | null)?.messages;
-  const recordSessionId =
-    clientSessionId ?? (Array.isArray(messages) && messages.length > 0 ? sessionId : null);
+  const messagesSpan = bodyScan?.fields.get("messages");
+  const hasMessages = bodyScan
+    ? messagesSpan !== undefined && isNonEmptyArraySpan(bodyBuffer, messagesSpan)
+    : (() => {
+        const m = (bodyJson as { messages?: unknown } | null)?.messages;
+        return Array.isArray(m) && m.length > 0;
+      })();
+  const recordSessionId = clientSessionId ?? (hasMessages ? sessionId : null);
+  // input 估算闭包：scan 路径捕获注入前的字节快照与区间（stream_options 注入在下方；
+  // 估算只在上游无 usage 的罕见兑底分支执行，届时不整包 parse、零解码）
+  const bodyBufferSnapshot = bodyBuffer;
+  const estimateInput = (): number =>
+    bodyScan
+      ? estimateInputTokensFromSpans(bodyBufferSnapshot, bodyScan.fields, protocol)
+      : estimateInputTokens(bodyJson, protocol);
+
+  // OpenAI chat 流式：客户端/agent 常不带 stream_options.include_usage，上游（尤其
+  // 第三方中转）因此不在流里发 usage chunk → 记成 no_usage。缺省时注入 true；
+  // 客户端显式设置（含非法值）一律保留：非法请求应交上游校验，不在网关上静默修正。
+  // 置于所有 scan 读取（model/session/messages/估算快照）之后：缺省键从根 } 前插入
+  //（既有键区间不受影响）；替换既有 stream_options 会使后续键偏移 → 置 scanSpansShifted
+  let scanSpansShifted = false;
+  if (path === "/v1/chat/completions" && streamFlag === true) {
+    if (bodyScan) {
+      const span = bodyScan.fields.get("stream_options");
+      if (!span) {
+        const prefix = bodyScan.memberCount > 0 ? "," : "";
+        bodyBuffer = spliceBytes(
+          bodyBuffer,
+          bodyScan.rootClose,
+          bodyScan.rootClose,
+          new TextEncoder().encode(`${prefix}"stream_options":{"include_usage":true}`)
+        );
+      } else {
+        const existing = parseJsonSpan(bodyBuffer, span);
+        const existingObj =
+          existing && typeof existing === "object" && !Array.isArray(existing)
+            ? (existing as Record<string, unknown>)
+            : null;
+        const hasExplicit =
+          existingObj !== null &&
+          Object.prototype.hasOwnProperty.call(existingObj, "include_usage");
+        if (!hasExplicit) {
+          bodyBuffer = spliceBytes(
+            bodyBuffer,
+            span.start,
+            span.end,
+            new TextEncoder().encode(
+              JSON.stringify({ ...(existingObj ?? {}), include_usage: true })
+            )
+          );
+          scanSpansShifted = true;
+        }
+      }
+    } else if (typeof bodyJson === "object" && bodyJson !== null) {
+      const bodyObj = bodyJson as Record<string, unknown>;
+      const existing = bodyObj.stream_options;
+      const existingObj =
+        existing && typeof existing === "object" && !Array.isArray(existing)
+          ? (existing as Record<string, unknown>)
+          : null;
+      const hasExplicit =
+        existingObj !== null &&
+        Object.prototype.hasOwnProperty.call(existingObj, "include_usage");
+      if (!hasExplicit) {
+        bodyJson = {
+          ...bodyObj,
+          stream_options: { ...(existingObj ?? {}), include_usage: true },
+        };
+        bodyBuffer = new TextEncoder().encode(JSON.stringify(bodyJson));
+      }
+    }
+  }
 
   // ---- 命名路由解析：命中后目标池整体构成 failover 链（同名自动路由完全失效） ----
   // 链首：session binding 预选 > 分类器（kind='model'）> 首个健康目标（按 priority）；
@@ -630,7 +810,7 @@ export async function handleProxyRequest(
                 targetModel: t.targetModel,
                 description: t.description,
               })),
-              bodyJson,
+              bodyJson: ensureBodyJson(),
               protocol,
             });
             if (result.routeId !== null) {
@@ -794,10 +974,31 @@ export async function handleProxyRequest(
   }
 
   // 配额检查：选上游之后、转发之前；超限直接 429 不转发上游。
-  // 无限额 vk 直接跳过（避免每次请求 3 条聚合 SQL）
+  // 无限额 vk 直接跳过（避免每次请求 3 条聚合 SQL）。
+  // in-flight 预留：token_records 在响应结束后才写入，只靠 DB 用量会被并发突发绕过
+  // （见 quota-inflight.ts），所以先预留再检查，请求结束（onComplete）时释放。
   if (hasQuotaLimits(virtualKey)) {
     const now = new Date();
-    const quotaUsage = await deps.quota.loadUsage(virtualKey.id, now);
+    // token 类限额才付估算 CPU：只有 maxRpm 的 vk 不估算（普通请求零额外开销）
+    const reservableTokens =
+      virtualKey.maxTpm != null ||
+      virtualKey.maxDailyTokens != null ||
+      virtualKey.maxMonthlyTokens != null
+        ? estimateInput()
+        : 0;
+    const release = reserveInflight(virtualKey.id, reservableTokens);
+    // 抛错兜底（见 withInflightRelease）：本次请求后续任何未捕获 throw 都会释放预留
+    scope.release = release;
+    let quotaUsage: QuotaUsage;
+    try {
+      quotaUsage = await deps.quota.loadUsage(virtualKey.id, now);
+    } catch (err) {
+      // 读失败也要释放，否则该 vk 的额度会被一个异常请求永久占住
+      release();
+      throw err;
+    }
+    // 检查口径：DB 用量 + 进程内在途（含本次），边界沿用 checkQuota 的「> limit 才超限」
+    const pending = getInflight(virtualKey.id);
     const violation = checkQuota(
       {
         virtualKeyId: virtualKey.id,
@@ -807,19 +1008,34 @@ export async function handleProxyRequest(
         maxMonthlyTokens: virtualKey.maxMonthlyTokens ?? null,
         now,
       },
-      quotaUsage
+      {
+        rpm: quotaUsage.rpm + pending.rpm,
+        tpm: quotaUsage.tpm + pending.tokens,
+        dailyTokens: quotaUsage.dailyTokens + pending.tokens,
+        monthlyTokens: quotaUsage.monthlyTokens + pending.tokens,
+      }
     );
     if (violation) {
+      release();
       return proxyError(
         429,
         `Quota exceeded (${violation.dimension}: ${violation.current} / ${violation.limit})`,
         "quota_exceeded"
       );
     }
+    // 释放挂在既有唯一完成钩子上：成功（含流结束）、各失败路径都调 onComplete
+    const prevOnComplete = deps.onComplete;
+    deps = {
+      ...deps,
+      onComplete: async (info) => {
+        release();
+        await prevOnComplete?.(info);
+      },
+    };
   }
 
   const startTime = Date.now();
-  const isNonStreaming = isNonStreamingRequestBody(bodyJson);
+  const isNonStreaming = typeof streamFlag === "boolean" ? !streamFlag : false;
 
   let lastError: { status: number; text?: string } | null = null;
   let lastResponse: Response | null = null;
@@ -844,6 +1060,20 @@ export async function handleProxyRequest(
           /^(\/v1(?:\/?beta)?\/models\/)[^/:]+/,
           `$1${hopModel}`
         );
+      } else if (scannedMode && bodyScan) {
+        // scan 路径：顶层 model 值区间切片替换，不物化树；stream_options 中段替换
+        // 造成键偏移时重扫一次（该组合极罕见）
+        const span = scanSpansShifted
+          ? scanTopLevelObject(bodyBuffer, ["model"]).fields.get("model")
+          : bodyScan.fields.get("model");
+        if (span && isStringSpan(bodyBuffer, span)) {
+          hopBodyBuffer = spliceBytes(
+            bodyBuffer,
+            span.start,
+            span.end,
+            new TextEncoder().encode(JSON.stringify(hopModel))
+          );
+        }
       } else if (bodyJson && typeof bodyJson === "object") {
         hopBodyBuffer = new TextEncoder().encode(
           JSON.stringify({ ...(bodyJson as Record<string, unknown>), model: hopModel })
@@ -950,7 +1180,7 @@ export async function handleProxyRequest(
         } catch (err) {
           lastError = {
             status: 0,
-            text: err instanceof Error ? err.message : String(err),
+            text: `${err instanceof Error ? err.message : String(err)}${describeErrorCauses(err)}`,
           };
           // 网络错误/超时 → 重试
         } finally {
@@ -1026,7 +1256,7 @@ export async function handleProxyRequest(
       return passthroughResponse(fallbackBusinessResponse, {
         meta,
         deps,
-        bodyJson,
+        estimateInput,
         protocol,
         virtualKeyId: virtualKey.id,
         virtualModelName: namedRoute?.name,
@@ -1109,12 +1339,17 @@ export async function handleProxyRequest(
       return passthroughResponse(lastResponse, {
         meta,
         deps,
-        bodyJson,
+        estimateInput,
         protocol,
         virtualKeyId: virtualKey.id,
         virtualModelName: namedRoute?.name,
         startTime,
         clientSignal: request.signal,
+        // responses create 成功：记下 response id 的 vk 归属（子路径透传时拦跨 vk retrieve）
+        onResponseCreated:
+          isResponsesCreate && deps.onResponseCreated
+            ? (id) => deps.onResponseCreated!(id, virtualKey.id)
+            : undefined,
       });
 }
 
@@ -1133,7 +1368,42 @@ async function handleSubresourcePassthrough(
     userAgent: string | null;
   }
 ): Promise<Response> {
-  const { path, url, deps, virtualKey, userAgent } = opts;
+  const scope: InflightScope = {};
+  return withInflightRelease(scope, () =>
+    handleSubresourcePassthroughInner(request, opts, scope)
+  );
+}
+
+async function handleSubresourcePassthroughInner(
+  request: Request,
+  opts: {
+    path: string;
+    url: URL;
+    deps: ProxyDeps;
+    virtualKey: VirtualKeyInfo;
+    userAgent: string | null;
+  },
+  scope: InflightScope
+): Promise<Response> {
+  const { path, url, virtualKey, userAgent } = opts;
+  // let：配额 in-flight 预留要包一层 onComplete（释放钩子），见下方配额检查
+  let deps = opts.deps;
+
+  // 归属校验：response id → 创建它的 vk。映射存在且不一致 → 403（防跨 vk
+  // retrieve/取消别人的 response）。映射不存在（升级前的存量 id / 上游侧创建 /
+  // 流式未捕获到 id）→ 放行：刻意的过渡期 fail-open，否则升级后旧 id 全部不可用。
+  // id 取 /v1/responses/ 之后的第一段（子路径 input_items/output_items 同口径）
+  const responseId = path.slice("/v1/responses/".length).split("/")[0] ?? "";
+  if (responseId && deps.lookupResponseOwner) {
+    const owner = await deps.lookupResponseOwner(responseId);
+    if (owner !== null && owner !== virtualKey.id) {
+      return proxyError(
+        403,
+        "Response belongs to another virtual key",
+        "forbidden"
+      );
+    }
+  }
 
   const upstreams = await deps.loadUpstreams();
   const chain = upstreams
@@ -1165,11 +1435,31 @@ async function handleSubresourcePassthrough(
     }
   }
 
+  // 请求体读取必须在配额 in-flight 预留**之前**（与主链同顺序）：
+  // 预留跨越读 body 的窗口时，413 / readRequestBody 抛错会直接 return/抛出，
+  // 包装后的 onComplete 永不触发 → reservation 永久留在 inflight Map，
+  // 反复发超大 body 可把该 vk 的在途计数刷高，把它自己的合法请求挤成 429。
+  const bodyBuffer = await readRequestBody(request);
+  if (bodyBuffer === null) {
+    return proxyError(413, "Request body exceeds size limit", "invalid_request_error");
+  }
+
   // 配额检查：subresource 无 model 维度，按 vk 聚合限额（RPM/TPM/Daily/Monthly）检查；
-  // 无限额 vk 直接跳过
+  // 无限额 vk 直接跳过。同样接 in-flight 预留（并发突发不能绕过 RPM）；
+  // 辅助端点不记 usage、无请求体估算口径 → 预留 token 计 0，只计请求数。
   if (deps.quota && hasQuotaLimits(virtualKey)) {
     const now = new Date();
-    const quotaUsage = await deps.quota.loadUsage(virtualKey.id, now);
+    const release = reserveInflight(virtualKey.id, 0);
+    // 抛错兜底（见 withInflightRelease）：后续 resolveUpstreamKeys 等 await 抛错也释放
+    scope.release = release;
+    let quotaUsage: QuotaUsage;
+    try {
+      quotaUsage = await deps.quota.loadUsage(virtualKey.id, now);
+    } catch (err) {
+      release();
+      throw err;
+    }
+    const pending = getInflight(virtualKey.id);
     const violation = checkQuota(
       {
         virtualKeyId: virtualKey.id,
@@ -1179,21 +1469,32 @@ async function handleSubresourcePassthrough(
         maxMonthlyTokens: virtualKey.maxMonthlyTokens ?? null,
         now,
       },
-      quotaUsage
+      {
+        rpm: quotaUsage.rpm + pending.rpm,
+        tpm: quotaUsage.tpm + pending.tokens,
+        dailyTokens: quotaUsage.dailyTokens + pending.tokens,
+        monthlyTokens: quotaUsage.monthlyTokens + pending.tokens,
+      }
     );
     if (violation) {
+      release();
       return proxyError(
         429,
         `Quota exceeded (${violation.dimension}: ${violation.current} / ${violation.limit})`,
         "quota_exceeded"
       );
     }
+    // 释放挂在既有唯一完成钩子 onComplete 上（成功 / 失败 / 流结束都调）
+    const prevOnComplete = deps.onComplete;
+    deps = {
+      ...deps,
+      onComplete: async (info) => {
+        release();
+        await prevOnComplete?.(info);
+      },
+    };
   }
 
-  const bodyBuffer = await readRequestBody(request);
-  if (bodyBuffer === null) {
-    return proxyError(413, "Request body exceeds size limit", "invalid_request_error");
-  }
   let lastError: { status: number; text?: string } | null = null;
   let fallbackBusinessResponse: Response | null = null;
 
@@ -1269,7 +1570,7 @@ async function handleSubresourcePassthrough(
         } catch (err) {
           lastError = {
             status: 0,
-            text: err instanceof Error ? err.message : String(err),
+            text: `${err instanceof Error ? err.message : String(err)}${describeErrorCauses(err)}`,
           };
           // 网络错误/超时 → 重试
         } finally {
@@ -1306,7 +1607,7 @@ async function handleSubresourcePassthrough(
           userAgent,
         },
         deps,
-        bodyJson: null,
+        estimateInput: () => 0,
         protocol: "openai",
         virtualKeyId: virtualKey.id,
         recordUsage: false, // 辅助端点不记录 usage（retrieve 重复调用会重复统计）
@@ -1339,7 +1640,7 @@ async function handleSubresourcePassthrough(
         userAgent,
       },
       deps,
-      bodyJson: null,
+      estimateInput: () => 0,
       protocol: "openai",
       virtualKeyId: virtualKey.id,
       recordUsage: false,
@@ -1366,16 +1667,18 @@ async function passthroughResponse(
   opts: {
     meta: RecordUsageMeta;
     deps: ProxyDeps;
-    bodyJson: unknown;
+    estimateInput: () => number; // input 估算兑底（scan 路径零 parse，见 handleProxyRequest）
     protocol: Protocol;
     virtualKeyId: number;
     virtualModelName?: string;
     recordUsage?: boolean; // 辅助端点等场景跳过 usage 解析与写库（默认 true）
     startTime?: number; // 请求开始时刻（与 latencyMs 同源），用于流式 TTFT 计算
     clientSignal?: AbortSignal; // 客户端请求 signal（断开检测）
+    // responses create 的 response id 归属回调（best-effort，失败不影响透传）
+    onResponseCreated?: (responseId: string) => Promise<void>;
   }
 ): Promise<Response> {
-  const { meta, deps, bodyJson, protocol, virtualKeyId, virtualModelName, recordUsage = true, startTime, clientSignal } = opts;
+  const { meta, deps, estimateInput, protocol, virtualKeyId, virtualModelName, recordUsage = true, startTime, clientSignal, onResponseCreated } = opts;
   const headers = new Headers(PROXY_RESPONSE_HEADERS);
   copyHeader(upstreamResponse.headers, headers, "content-type");
   copyHeader(upstreamResponse.headers, headers, "x-ratelimit-remaining-requests");
@@ -1390,6 +1693,12 @@ async function passthroughResponse(
   const isSuccess = upstreamResponse.status >= 200 && upstreamResponse.status < 300;
   const reader = upstreamResponse.body.getReader();
   const chunks: Uint8Array[] = [];
+  // 非流式响应字节只拼接一次（usage 扫描用字节零解码；估算兑底才 decode，同样只一次）
+  let fullBytesCache: Uint8Array | null = null;
+  const getFullBytes = (): Uint8Array => (fullBytesCache ??= concatUint8Arrays(chunks));
+  let fullTextCache: string | null = null;
+  const getFullText = (): string =>
+    (fullTextCache ??= new TextDecoder().decode(getFullBytes()));
   // 流式响应：增量解析 usage，不持有完整响应体（内存 O(1)）
   const extractor = isStreaming ? new StreamUsageExtractor(protocol) : null;
   // 流式首 chunk 到达时刻（TTFT，相对请求开始）；非流式保持 null 不写入
@@ -1443,7 +1752,8 @@ async function passthroughResponse(
         };
         try {
           if (!isStreaming && rewriter) {
-            // 非流式回写：先攒完整 body → 一次性改写 → 再 enqueue（改写失败回退原始 body）
+            // 非流式回写：先攒完整 body → 顶层 model 区间切片改写 → enqueue
+            //（不整包 parse/重序列化；扫描无 model/不合法回退原始字节）
             let totalBytes = 0;
             while (true) {
               const { done, value } = await reader.read();
@@ -1454,10 +1764,12 @@ async function passthroughResponse(
               }
               chunks.push(value);
             }
-            const fullText = new TextDecoder().decode(concatUint8Arrays(chunks));
-            const rewritten = rewriteModelNonStreaming(fullText, protocol, virtualModelName!);
-            const bytes = new TextEncoder().encode(rewritten);
-            if (bytes.length > 0) controller.enqueue(bytes);
+            const rewritten = rewriteModelNonStreamingBytes(
+              getFullBytes(),
+              protocol,
+              virtualModelName!
+            );
+            if (rewritten.length > 0) controller.enqueue(rewritten);
             responseComplete = true;
             controller.close();
           } else {
@@ -1497,7 +1809,17 @@ async function passthroughResponse(
             streamStatus = clientAborted ? "client_aborted" : "stream_interrupted";
           }
           await reader.cancel().catch(() => {});
-          controller.error(err);
+          // 不能把原始 err 交给 ReadableStream：@hono/node-server 的 handleResponseError 会把
+          // `Error: ${err.message}` 直接写进响应体（headers 未发则 500 明文，已发则追加在末尾），
+          // 超时阈值、尺寸上限这类内部文案会漏给客户端。现场留日志，客户端只看到断流。
+          // 客户端主动断连（clientAborted）是常态，不刷日志。
+          if (!clientAborted) {
+            console.warn(
+              "[gateway] upstream stream interrupted:",
+              err instanceof Error ? err.message : err
+            );
+          }
+          controller.error(new Error("stream interrupted"));
         }
       };
       pump().finally(() => onDone());
@@ -1513,27 +1835,32 @@ async function passthroughResponse(
 
   onDone = async () => {
     try {
+      // responses create：记 response id 归属（best-effort，失败不影响透传）
+      if (isSuccess && onResponseCreated) {
+        try {
+          const id = isStreaming
+            ? (extractor?.responseId ?? null)
+            : parseResponseIdFromBytes(getFullBytes());
+          if (id) await onResponseCreated(id);
+        } catch (err) {
+          deps.log?.(`[gateway] response id capture failed: ${(err as Error).message}`);
+        }
+      }
       if (isSuccess && recordUsage) {
         const parsed =
           isStreaming && extractor
             ? extractor.finish()
-            : parseUsageNonStreaming(
-                new TextDecoder().decode(concatUint8Arrays(chunks)),
-                protocol
-              );
+            : parseUsageFromBytes(getFullBytes(), protocol);
         let usage = toRecordUsage(parsed, meta, streamStatus);
         // usage 解析失败且上游流已真正读完（responseComplete）：上游（多为第三方中转）
         // 不发 usage 时按请求 messages / 流内输出文本估算兜底，记 status='estimated'。
         // 流被提前截断（含 sawTerminal 已置位但未读完）不估算：output 可能缺尾部，
         // 残缺估算值写进统计比 no_usage 更差；估算不出任何内容也保持 no_usage。
         if (!parsed && !streamStatus && responseComplete) {
-          const inputTokens = estimateInputTokens(bodyJson, protocol);
+          const inputTokens = estimateInput();
           const outputTokens = isStreaming
             ? (extractor?.contentTokens ?? 0)
-            : estimateOutputTokens(
-                new TextDecoder().decode(concatUint8Arrays(chunks)),
-                protocol
-              );
+            : estimateOutputTokens(getFullText(), protocol);
           if (inputTokens + outputTokens > 0) {
             usage = {
               ...meta,
@@ -1577,20 +1904,44 @@ export function isModelAllowedByVirtualKey(
 
 // ---- usage 解析（按上游协议选择解析器） ----
 
-function parseUsageNonStreaming(fullText: string, protocol: Protocol): ParsedUsage | null {
-  let json: unknown;
+// 非流式 usage 提取：顶层 usage / usageMetadata 区间切片后局部 parse，
+// 不整包 decode+parse（大响应体零树化）。语义与原整包 parse 等价：解析器只读顶层
+// usage 键；整包不合法 → 扫描 valid=false → null；合法但无 usage 键 → null。
+// 深层 token 宽松（json-scan 边界注释）：畸形响应按无 usage 走估算兑底，不影响记账安全。
+function parseUsageFromBytes(bytes: Uint8Array, protocol: Protocol): ParsedUsage | null {
+  const key = protocol === "gemini" ? "usageMetadata" : "usage";
+  const scan = scanTopLevelObject(bytes, [key]);
+  if (!scan.valid || !scan.isObject) return null;
+  const span = scan.fields.get(key);
+  if (!span) return null;
+  let usageJson: unknown;
   try {
-    json = JSON.parse(fullText);
+    usageJson = JSON.parse(new TextDecoder().decode(bytes.subarray(span.start, span.end)));
   } catch {
     return null;
   }
   switch (protocol) {
     case "anthropic":
-      return parseAnthropicNonStreaming(json);
+      return parseAnthropicNonStreaming({ usage: usageJson });
     case "gemini":
-      return parseGeminiNonStreaming(json);
+      return parseGeminiNonStreaming({ usageMetadata: usageJson });
     default:
-      return parseOpenAiNonStreaming(json);
+      return parseOpenAiNonStreaming({ usage: usageJson });
+  }
+}
+
+// responses create 的 response id：顶层 id 区间切片后局部 parse（同 usage，不整包树化）。
+// 非流式响应形状 {"id":"resp_...",...}；取不到或非字符串一律 null。
+function parseResponseIdFromBytes(bytes: Uint8Array): string | null {
+  const scan = scanTopLevelObject(bytes, ["id"]);
+  if (!scan.valid || !scan.isObject) return null;
+  const span = scan.fields.get("id");
+  if (!span) return null;
+  try {
+    const id: unknown = JSON.parse(new TextDecoder().decode(bytes.subarray(span.start, span.end)));
+    return typeof id === "string" && id !== "" ? id : null;
+  } catch {
+    return null;
   }
 }
 

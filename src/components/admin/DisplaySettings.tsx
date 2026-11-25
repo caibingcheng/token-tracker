@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiFetch } from "@/lib/client/api-client";
 import { linkAction, pillAction } from "./buttons";
+import { useConfirm } from "./ConfirmDialog";
 import {
   AdminMobileCard,
   AdminMobileCards,
@@ -173,6 +174,7 @@ function MobileActions({
 }
 
 export default function DisplaySettings() {
+  const [confirm, confirmDialog] = useConfirm();
   const [hiddenRules, setHiddenRules] = useState<HiddenGroupRule[]>([]);
   const [hiddenEditingIdx, setHiddenEditingIdx] = useState<number | null>(null);
   const [hiddenEditName, setHiddenEditName] = useState("");
@@ -308,7 +310,22 @@ export default function DisplaySettings() {
     if (hiddenBusy) return;
     const rule = hiddenRules[idx];
     if (!rule) return;
-    if (!window.confirm(`Delete provider alias "${rule.name.trim() || "(unnamed)"}"?`)) return;
+    const ok = await confirm({
+      title: "Delete provider alias",
+      tone: "danger",
+      confirmLabel: "Delete",
+      message: (
+        <p>
+          Delete provider alias{" "}
+          <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">
+            {rule.name.trim() || "(unnamed)"}
+          </code>
+          ? Its grouped model names revert to the un-aliased provider label in Dashboard and
+          Records.
+        </p>
+      ),
+    });
+    if (!ok) return;
     setHiddenBusy(true);
     setHiddenError(null);
     const result = await putSetting("/api/admin/settings/display", {
@@ -385,7 +402,22 @@ export default function DisplaySettings() {
     if (aliasesBusy) return;
     const rule = aliasRules[idx];
     if (!rule) return;
-    if (!window.confirm(`Delete model alias "${rule.name.trim() || "(unnamed)"}"?`)) return;
+    const ok = await confirm({
+      title: "Delete model alias",
+      tone: "danger",
+      confirmLabel: "Delete",
+      message: (
+        <p>
+          Delete model alias{" "}
+          <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">
+            {rule.name.trim() || "(unnamed)"}
+          </code>
+          ? Requests keep working, but its variants are no longer merged into one model name in
+          stats.
+        </p>
+      ),
+    });
+    if (!ok) return;
     setAliasesBusy(true);
     setAliasesError(null);
     const result = await putSetting("/api/admin/settings/aliases", {
@@ -462,7 +494,21 @@ export default function DisplaySettings() {
     if (agentAliasesBusy) return;
     const rule = agentRules[idx];
     if (!rule) return;
-    if (!window.confirm(`Delete agent alias "${rule.name.trim() || "(unnamed)"}"?`)) return;
+    const ok = await confirm({
+      title: "Delete agent alias",
+      tone: "danger",
+      confirmLabel: "Delete",
+      message: (
+        <p>
+          Delete agent alias{" "}
+          <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">
+            {rule.name.trim() || "(unnamed)"}
+          </code>
+          ? Its user agents fall back to the built-in mapping (or <code>unknown</code>) in stats.
+        </p>
+      ),
+    });
+    if (!ok) return;
     setAgentAliasesBusy(true);
     setAgentAliasesError(null);
     const result = await putSetting("/api/admin/settings/agent-aliases", {
@@ -1131,6 +1177,7 @@ export default function DisplaySettings() {
           </div>
         )}
       </div>
+      {confirmDialog}
     </div>
   );
 }

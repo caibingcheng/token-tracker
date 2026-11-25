@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { ColumnDef } from "@/lib/columns";
+import { useDismissOnEscape } from "@/hooks/useModalDismiss";
 
 // 列可见性勾选列表（Records / Audit 共用，也供移动端筛选抽屉内联使用）：
 // 勾选即回调，至少保留一列。提交顺序恒为 columns 定义顺序，与点击顺序无关。
@@ -87,6 +88,8 @@ export default function ColumnPicker<T extends string>({
     document.addEventListener("mousedown", onMouseDown);
     return () => document.removeEventListener("mousedown", onMouseDown);
   }, [open]);
+  // 键盘退出路径与外部点击对齐
+  useDismissOnEscape(open, () => setOpen(false));
 
   const ids = columns.map((column) => column.id);
 

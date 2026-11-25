@@ -2,16 +2,13 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { apiFetch } from "@/lib/client/api-client";
-import { detectRequestProtocol, type Protocol } from "@/lib/gateway/model-router";
-import {
-  simulateRoute,
-  type SimRouteResult,
-  type SimNamedRoute,
-} from "@/lib/gateway/simulate-route";
+import { type Protocol } from "@/lib/gateway/model-router";
+import { type SimNamedRoute } from "@/lib/gateway/simulate-route";
 import { CopyableCode } from "./CopyableCode";
 import PricePickerModal from "./PricePickerModal";
 import NamedRoutesPanel from "./NamedRoutesPanel";
 import { linkAction, pillAction } from "./buttons";
+import { useConfirm } from "./ConfirmDialog";
 import {
   AdminMobileCard,
   AdminMobileCards,
@@ -107,8 +104,6 @@ interface PriceRow {
   };
 }
 
-const DEFAULT_PATH = "/v1/chat/completions";
-
 type ModelsDevSource = "models.dev" | "github";
 
 function modelSourceLabel(source: ModelsDevSource): string {
@@ -198,167 +193,11 @@ function classifierDecides(route: ResolvedRoute): boolean {
   );
 }
 
-// 模拟器结果面板：命名路由短路 / 自动路由统一渲染
-function RouteSimulationResult({ result, model }: { result: SimRouteResult; model: string }) {
-  const winner = result.winner;
-  // LLM 分类器多目标：链首请求时决策，静态无确定性 winner
-  const classifierDecides =
-    result.source === "named" && result.classifier?.kind !== "priority" && result.candidates.length > 1;
-  if (result.namedRouteUnavailable) {
-    return (
-      <div className="text-sm text-red-600">
-        Named route targets unavailable: no valid upstream targets for{" "}
-        <CopyableCode className="rounded bg-white px-1 py-0.5 text-xs">{model}</CopyableCode>{" "}
-        (gateway returns 502 <code className="text-xs">named_route_unavailable</code>)
-        {result.skipped.length > 0 && (
-          <p className="mt-1 text-[11px] text-gray-500">
-            Skipped:{" "}
-            {result.skipped.map((s) => (
-              <span key={`${s.upstreamId}-${s.targetModel}`} className="mr-2">
-                {s.upstreamId === null ? "auto" : `upstream #${s.upstreamId}`} → {s.targetModel} ({s.reason})
-              </span>
-            ))}
-          </p>
-        )}
-      </div>
-    );
-  }
-  if (!winner) {
-    return (
-      <div className="text-sm text-red-600">
-        No upstream configured for{" "}
-        <CopyableCode className="rounded bg-white px-1 py-0.5 text-xs">{model}</CopyableCode>
-      </div>
-    );
-  }
-  return (
-    <div className="space-y-3">
-      <div className="rounded border border-green-200 bg-green-50 p-2">
-        <div className="mb-1 flex flex-wrap items-center gap-2 text-xs font-medium text-green-700">
-          {classifierDecides ? "Decision" : "Winning Upstream"}
-          <EffectiveBadge effective={result.effective} />
-        </div>
-        <div className="flex flex-wrap items-center gap-2 text-sm">
-          {classifierDecides ? (
-            <>
-              <span className="font-semibold">{result.classifier!.classifierModel}</span>
-              <span className="text-xs text-gray-500">
-                on {result.classifier!.classifierUpstreamName}
-              </span>
-              <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] text-indigo-700">
-                classifier decides per session
-              </span>
-            </>
-          ) : (
-            <>
-              <span className="font-semibold">{result.effective.winner?.name ?? winner.name}</span>
-              <span className="text-xs text-gray-500">priority {result.effective.winner?.priority ?? winner.priority}</span>
-              <CopyableCode className="rounded bg-white px-1.5 py-0.5 text-xs">
-                {result.effective.winner?.matchedPattern ?? winner.matchedPattern}
-              </CopyableCode>
-              <MatchTypeBadge type={(result.effective.winner ?? winner).matchType} />
-              <HealthBadges candidate={result.effective.winner ?? winner} />
-              {result.source === "named" && (
-                <span
-                  className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-medium text-indigo-700"
-                  title="Rule classifier: chain head = first healthy target by priority; zero LLM cost"
-                >
-                  rule: priority
-                </span>
-              )}
-            </>
-          )}
-        </div>
-        {result.source === "named" && (
-          <p className="mt-1 text-[11px] text-blue-700">
-            Named route: request model is rewritten to{" "}
-            <code className="text-xs">{(result.effective.winner ?? winner)?.matchedPattern}</code> before going upstream.
-          </p>
-        )}
-        {classifierDecides && (
-          <p className="mt-1 text-[11px] text-indigo-700">
-            Named route: the chain head is chosen per session by classifier{" "}
-            <code className="text-xs">{result.classifier!.classifierModel}</code> on{" "}
-            {result.classifier!.classifierUpstreamName} (first request), then pinned by session binding.
-            Candidates below = the target pool; the first entry is the fallback head when the
-            classifier is unavailable.
-          </p>
-        )}
-        {result.source === "auto" && result.effective.failover && winner && (
-          <p className="mt-1 text-[11px] text-amber-700">
-            Static winner {winner.name} is unhealthy — actual route uses fallback.
-          </p>
-        )}
-      </div>
-      {result.skipped.length > 0 && (
-        <p className="text-[11px] text-gray-500">
-          Skipped targets (disabled/missing upstream — gateway skips these):{" "}
-          {result.skipped.map((s) => (
-            <span key={`${s.upstreamId}-${s.targetModel}`} className="mr-2">
-              {s.upstreamId === null ? "auto" : `#${s.upstreamId}`} → {s.targetModel} ({s.reason})
-            </span>
-          ))}
-        </p>
-      )}
-      {result.candidates.length > 1 && (
-        <div>
-          <div className="mb-1 text-xs font-medium text-gray-600">
-            All Candidates ({result.candidates.length})
-          </div>
-          <div className="space-y-1">
-            {result.candidates.map((c) => {
-              const w = result.effective.winner;
-              const isModelVm = classifierDecides;
-              // LLM 分类器候选池无确定性 winner：priority 最小 route 标为 fallback head
-              const isWinner =
-                !isModelVm && c.upstreamId === w?.upstreamId && c.matchedPattern === w?.matchedPattern;
-              const isFallbackHead = isModelVm && c === result.candidates[0];
-              return (
-                <div
-                  key={`${c.upstreamId}:${c.matchedPattern}`}
-                  className={`flex flex-wrap items-center gap-2 rounded border px-2 py-1.5 text-sm ${
-                    isWinner
-                      ? "border-green-200 bg-green-50"
-                      : "border-gray-200 bg-white"
-                  }`}
-                >
-                  <span className={isWinner ? "font-semibold text-green-700" : ""}>{c.name}</span>
-                  <span className="text-xs text-gray-500">priority {c.priority}</span>
-                  <CopyableCode className="rounded bg-gray-100 px-1.5 py-0.5 text-xs">{c.matchedPattern}</CopyableCode>
-                  <MatchTypeBadge type={c.matchType} />
-                  <HealthBadges candidate={c} />
-                  {isFallbackHead && (
-                    <span
-                      className="ml-auto rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-medium text-indigo-700"
-                      title="Priority-min route: chain head when the classifier is unavailable"
-                    >
-                      fallback head
-                    </span>
-                  )}
-                  {isWinner && <span className="ml-auto text-xs font-medium text-green-700">winner</span>}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
 export default function ModelsPanel() {
+  const [confirm, confirmDialog] = useConfirm();
   const [data, setData] = useState<ModelsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
-  const [modelInput, setModelInput] = useState("");
-  const [pathInput, setPathInput] = useState(DEFAULT_PATH);
-  const [simulatorResult, setSimulatorResult] = useState<{
-    protocol: Protocol;
-    model: string;
-    result: SimRouteResult | null;
-  } | null>(null);
-
 
   const [expandedModels, setExpandedModels] = useState<Set<string>>(new Set());
 
@@ -502,7 +341,19 @@ export default function ModelsPanel() {
   };
 
   const refillAllPrices = async () => {
-    if (!window.confirm("Overwrite all auto-filled prices (skips manually edited rows), continue?")) return;
+    const ok = await confirm({
+      title: "Overwrite auto-filled prices",
+      tone: "warning",
+      confirmLabel: "Overwrite",
+      message: (
+        <p>
+          Overwrite every auto-filled price from the snapshot? Manually edited rows are skipped, but
+          all other rows lose their current auto values. Costs in Dashboard and Records are
+          recomputed from the new prices.
+        </p>
+      ),
+    });
+    if (!ok) return;
     setPricesBusy(true);
     setPricesError(null);
     try {
@@ -561,7 +412,19 @@ export default function ModelsPanel() {
 
   const adoptUpdate = async (row: PriceRow) => {
     if (!row.modelsDevId) return;
-    if (!window.confirm(`Adopt updated official price for "${row.model}"?`)) return;
+    const ok = await confirm({
+      title: "Adopt official price",
+      tone: "primary",
+      confirmLabel: "Adopt",
+      message: (
+        <p>
+          Replace the current price of{" "}
+          <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">{row.model}</code> with the
+          official models.dev value? Costs computed from the old price change accordingly.
+        </p>
+      ),
+    });
+    if (!ok) return;
     setPricesBusy(true);
     try {
       const res = await apiFetch("/api/admin/model-prices/select", {
@@ -583,7 +446,19 @@ export default function ModelsPanel() {
   };
 
   const deletePrice = async (row: PriceRow) => {
-    if (!window.confirm(`Delete price for "${row.model}"? Historical costs will drop to $0.`)) return;
+    const ok = await confirm({
+      title: "Delete price",
+      tone: "danger",
+      confirmLabel: "Delete",
+      message: (
+        <p>
+          Delete the price for{" "}
+          <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">{row.model}</code>? Historical
+          costs for this model drop to <strong>$0</strong> until a price is set again.
+        </p>
+      ),
+    });
+    if (!ok) return;
     try {
       const res = await apiFetch(`/api/admin/model-prices?model=${encodeURIComponent(row.model)}`, {
         method: "DELETE",
@@ -597,18 +472,6 @@ export default function ModelsPanel() {
     } catch {
       setPricesError("Network error");
     }
-  };
-
-  const runSimulation = () => {
-    const model = modelInput.trim();
-    const path = pathInput.trim() || DEFAULT_PATH;
-    if (!model || !data) return;
-    const protocol = detectRequestProtocol(path);
-    setSimulatorResult({
-      protocol,
-      model,
-      result: simulateRoute(model, protocol, data.upstreams, data.namedRoutes ?? []),
-    });
   };
 
   const toggleExpanded = (key: string) => {
@@ -644,78 +507,6 @@ export default function ModelsPanel() {
           {error}
         </div>
       )}
-
-      {/* 匹配模拟器 */}
-      <div className="rounded-lg bg-white p-4 shadow">
-        <h2 className="mb-3 text-base font-semibold">Match Simulator</h2>
-        <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr_auto] gap-3">
-          <div>
-            <label className="mb-1 block text-xs font-medium text-gray-700">Model</label>
-            <input
-              value={modelInput}
-              onChange={(e) => setModelInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && runSimulation()}
-              placeholder="e.g. gpt-4o"
-              className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            />
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-gray-700">Request Path</label>
-            <input
-              value={pathInput}
-              onChange={(e) => setPathInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && runSimulation()}
-              placeholder={DEFAULT_PATH}
-              className="w-full rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            />
-          </div>
-          <div className="flex items-end">
-            <button
-              type="button"
-              onClick={runSimulation}
-              disabled={!modelInput.trim() || !data}
-              className="w-full rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 md:w-auto min-h-[40px] md:min-h-0"
-            >
-              Test Match
-            </button>
-          </div>
-        </div>
-        {pathInput && (
-          <p className="mt-2 text-xs text-gray-500">
-            Detected protocol: {" "}
-            <span className={`rounded border px-1.5 py-0.5 ${protocolBadgeClass(detectRequestProtocol(pathInput))}`}>
-              {detectRequestProtocol(pathInput)}
-            </span>
-          </p>
-        )}
-
-        {simulatorResult && (
-          <div className="mt-4 rounded border border-gray-200 bg-gray-50 p-3">
-            <div className="mb-2 flex flex-wrap items-center gap-2">
-              <span className="text-sm text-gray-500">Result for</span>
-              <CopyableCode className="rounded bg-white px-1.5 py-0.5 text-xs">{simulatorResult.model}</CopyableCode>
-              <span className={`rounded border px-1.5 py-0.5 text-xs ${protocolBadgeClass(simulatorResult.protocol)}`}>
-                {simulatorResult.protocol}
-              </span>
-              {simulatorResult.result && (
-                <span className="text-xs text-gray-500">
-                  via{" "}
-                  {simulatorResult.result.source === "named" ? (
-                    <MatchTypeBadge type="named" />
-                  ) : (
-                    <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-600">auto</span>
-                  )}
-                </span>
-              )}
-            </div>
-            {simulatorResult.result ? (
-              <RouteSimulationResult result={simulatorResult.result} model={simulatorResult.model} />
-            ) : (
-              <div className="text-sm text-red-600">No match</div>
-            )}
-          </div>
-        )}
-      </div>
 
       <NamedRoutesPanel onChanged={() => load(true)} />
 
@@ -1377,6 +1168,7 @@ export default function ModelsPanel() {
         model={pricePickerModel ?? ""}
         onSaved={loadPrices}
       />
+      {confirmDialog}
     </div>
   );
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useDismissOnEscape } from "@/hooks/useModalDismiss";
 
 export interface ActionItem {
   label: string;
@@ -27,6 +28,8 @@ export default function ActionMenu({ label = "Actions", items }: ActionMenuProps
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
+  // 键盘退出路径与外部点击对齐
+  useDismissOnEscape(open, () => setOpen(false));
 
   return (
     <div className="relative md:hidden" ref={ref}>

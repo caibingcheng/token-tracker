@@ -5,6 +5,12 @@ DATA_DIR=/app/data
 ENV_FILE="$DATA_DIR/.b-node-env"
 DB_FILE="$DATA_DIR/token-tracker.db"
 
+# 服务进程在容器内的 uid:gid（同时决定数据目录属主）。默认 1000 = 镜像内 node 用户。
+# 宿主 uid 不是 1000（例如想让自己直接读写 ~/.token-tracker）时用 PUID/PGID 覆盖，
+# gosu 接受数字形式，容器内无需存在同名用户。
+PUID=${PUID:-1000}
+PGID=${PGID:-1000}
+
 if [ -f "$DB_FILE" ] && [ ! -f "$ENV_FILE" ]; then
   echo "ERROR: database exists but $ENV_FILE is missing." >&2
   echo "GATEWAY_SECRET encrypts virtual keys / upstream keys / sync tokens; a new secret" >&2
@@ -22,6 +28,8 @@ if [ ! -f "$ENV_FILE" ]; then
   echo "GATEWAY_SECRET=$GATEWAY_SECRET" > "$ENV_FILE"
 fi
 
-chown node:node "$DATA_DIR" "$ENV_FILE"
+# 递归 chown：既建目录属主，也能修复历史上被手工 chown 打乱的文件属主
+# （属主不对时 SQLite 报 SQLITE_CANTOPEN，表现为登录接口 500）
+chown -R "$PUID:$PGID" "$DATA_DIR"
 
-exec gosu node sh -c 'set -a; . "$0"; set +a; exec node server.js' "$ENV_FILE"
+exec gosu "$PUID:$PGID" sh -c 'set -a; . "$0"; set +a; exec node --optimize-for-size build/server.js' "$ENV_FILE"

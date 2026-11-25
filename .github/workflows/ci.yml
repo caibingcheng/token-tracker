@@ -69,3 +69,8 @@ jobs:
       - run: npm run build
         env:
           NEXT_TELEMETRY_DISABLED: 1
+
+      # 新构建链产物断言：三步（gen-routes / next build export / esbuild）任一被回退都要红
+      - run: test -f build/server.js && test -f out/index.html
+      # gen-routes 构建期就地重写生成物；改了 route 忘重跑/忘提交生成物时在这里拦下漂移
+      - run: git diff --exit-code -- src/server/routes.generated.ts

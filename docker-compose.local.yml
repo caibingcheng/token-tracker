@@ -3,8 +3,16 @@
 #   从 ghcr 拉取：docker compose -f docker-compose.local.yml up -d
 #   本地源码构建：docker compose -f docker-compose.local.yml up -d --build
 # 数据与自动生成的 GATEWAY_SECRET 均位于 ~/.token-tracker/（权限 600），本文件不含任何机密
-# 登录：免密码直接获得 admin（LOCAL_ADMIN_BYPASS=1，仅在端口绑定 127.0.0.1 且 Host 为
-# loopback 时生效；如将本文件用于非本机部署，务必删除该环境变量并改用设置向导创建 admin key）
+# 登录：LOCAL_ADMIN_BYPASS=0（默认关闭，走正常登录；DB 无 key 时首启出现设置向导）。
+# 首启向导是 fail-open：端口绑定 0.0.0.0，首启窗口内能访问到该端口的设备都可抢先注册
+# admin key（被抢注会立刻发现：向导消失、你刚设的 key 登录失败）。尽快完成首启，
+# 或在 environment 预设 ADMIN_API_KEY 直接关闭向导（生产 docker-compose.yml 即此路径）。
+# 仅确定是本机部署时可改 LOCAL_ADMIN_BYPASS=1 开启免密码直通。判定是 **Host ∧ socket 对端
+# 双条件**：Host 必须 loopback（localhost/127.x/::1）且真实对端也是 loopback —— 裸跑 /
+# host 网络下本机直连生效；docker 桥网络下本机请求的对端是网桥网关（非 loopback）、
+# 反代之后 Host 是公网域名 —— 两者都不会生效。**不要在反代之后开启**（反代回连 127.0.0.1，
+# 仅靠对端判定就会把公网流量免密放行；AND 只防得住院内网/伪造 Host，不是反代场景的逃生门）。
+# 非本机部署严禁置 1，置 1 前先读懂 src/lib/auth/local-bypass.ts
 services:
   token-tracker-local:
     image: ghcr.io/caibingcheng/token-tracker:latest
@@ -19,6 +27,10 @@ services:
     environment:
       - SQLITE_DATABASE_PATH=/app/data/token-tracker.db
       - LOCAL_ADMIN_BYPASS=0
+      # 容器内服务进程 uid:gid，也决定 ~/.token-tracker 的属主。默认 1000（镜像内 node）。
+      # 宿主 uid 不同时改这里或 export PUID/PGID（例如 uid 1001 → PUID=1001 PGID=1001）。
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
     volumes:
       - ${HOME}/.token-tracker:/app/data
       - ./scripts/local-entrypoint.sh:/usr/local/bin/local-entrypoint.sh:ro

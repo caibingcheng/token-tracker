@@ -3,6 +3,9 @@ node_modules/
 
 # Next.js
 .next/
+# 本仓两个构建产物：静态导出（next build output:'export'）与 esbuild 服务端 bundle
+out/
+build/
 # Next 自动生成，内容属实现细节（next dev 写 .next/dev/types，next build 写 .next/types）
 next-env.d.ts
 
@@ -73,3 +76,13 @@ drizzle/
 
 # Local dev tooling
 mise.toml
+
+# 本地性能基准脚手架：只保留脚本，数据/输出不入库
+/bench/data/
+/bench/out/
+/bench/docker-data/
+/bench/e2e-data/
+/bench/.state/
+**/bench/*.db
+**/bench/*.db-wal
+**/bench/*.db-shm

@@ -6,6 +6,7 @@ import { QRCodeSVG } from "qrcode.react";
 import { CopyableCode } from "./CopyableCode";
 import { useBodyScrollLock } from "@/hooks/useBodyScrollLock";
 import ModalPortal from "@/components/ModalPortal";
+import { useConfirm } from "./ConfirmDialog";
 import OtpInput from "../OtpInput";
 import {
   getLoginKeyStrength,
@@ -39,6 +40,7 @@ interface StreamTimeoutData {
 }
 
 export default function SecuritySettings() {
+  const [confirm, confirmDialog] = useConfirm();
   const [status, setStatus] = useState<TotpStatus | null>(null);
   const [pending, setPending] = useState<PendingTotp | null>(null);
   const [confirmCode, setConfirmCode] = useState("");
@@ -702,7 +704,18 @@ export default function SecuritySettings() {
         <button
           type="button"
           onClick={async () => {
-            if (!window.confirm("Revoke ALL sessions? You will be logged out.")) return;
+            const ok = await confirm({
+              title: "Revoke all sessions",
+              tone: "danger",
+              confirmLabel: "Revoke all",
+              message: (
+                <p>
+                  Every logged-in session is invalidated <strong>including this one</strong> — you
+                  will be logged out and must log in again.
+                </p>
+              ),
+            });
+            if (!ok) return;
             setBusy(true);
             setError(null);
             try {
@@ -821,6 +834,7 @@ export default function SecuritySettings() {
         </div>
         </ModalPortal>
       )}
+      {confirmDialog}
     </div>
   );
 }

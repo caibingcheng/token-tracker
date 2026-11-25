@@ -13,7 +13,9 @@ import { PROBE_PRESETS } from "@/lib/gateway/probe-config";
 import type { ModelProbeConfig, ProbeConfig } from "@/lib/gateway/probe-config";
 import type { ClassifierModelEntry } from "@/lib/gateway/classifier/types";
 import { useBodyScrollLock } from "@/hooks/useBodyScrollLock";
+import { useModalDismiss } from "@/hooks/useModalDismiss";
 import ModalPortal from "@/components/ModalPortal";
+import { useConfirm } from "./ConfirmDialog";
 import { tapAction, pillAction, statusChip } from "./buttons";
 
 export interface UpstreamProbeStatus {
@@ -70,6 +72,9 @@ const PROTOCOL_OPTIONS = [
   { value: "gemini", label: "x-goog-api-key" },
 ];
 const PROTOCOL_LABELS = new Map(PROTOCOL_OPTIONS.map((p) => [p.value, p.label]));
+
+// 确认文案里的复数后缀（1 model / 2 models）
+const plural = (n: number) => (n === 1 ? "" : "s");
 
 // 余额/用量获取方式：表单默认 off；baseUrl/name 可识别时跟随探测结果（auto 仅存量数据）
 const BALANCE_MODE_OPTIONS: Array<{ value: string; label: string }> = [
@@ -171,6 +176,8 @@ export default function UpstreamsPanel() {
   const [pickerQuery, setPickerQuery] = useState("");
   const [fetchingModels, setFetchingModels] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
+  // 新建/编辑表单折叠：有存量 upstream 时默认收起（列表优先），新建/编辑时自动展开
+  const [formOpen, setFormOpen] = useState(false);
   const [clearProxy, setClearProxy] = useState(false);
   const [probeCustom, setProbeCustom] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -205,9 +212,14 @@ export default function UpstreamsPanel() {
     const t = setInterval(() => setNow(Date.now()), hasImminentProbe ? 1_000 : 30_000);
     return () => clearInterval(t);
   }, [hasImminentProbe]);
-  const [pendingDelete, setPendingDelete] = useState<UpstreamItem | null>(null);
-  // 选型 / 删除确认弹窗打开时锁背景滚动（两弹窗不会同时开）
-  useBodyScrollLock(modelPicker !== null || pendingDelete !== null);
+  // 二次确认（删上游 / 停用 / Test all / 删 key 共用一套弹窗）
+  const [confirm, confirmDialog] = useConfirm();
+  // 选型弹窗打开时锁背景滚动（确认弹窗自己锁）
+  useBodyScrollLock(modelPicker !== null);
+  const dismissModelPicker = useModalDismiss(modelPicker !== null, () => {
+    setModelPicker(null);
+    setPickerQuery("");
+  });
   // 编辑表单中 key 启停的本地暂存（点击 Save 后才提交生效）
   const [pendingKeyEnabled, setPendingKeyEnabled] = useState<Record<number, boolean>>({});
 
@@ -427,6 +439,7 @@ export default function UpstreamsPanel() {
       setFormKeyTests({});
       setFormKeyShown({});
       setEditingId(null);
+      setFormOpen(false);
       setClearProxy(false);
       setProbeCustom(false);
       setPendingKeyEnabled({});
@@ -440,6 +453,7 @@ export default function UpstreamsPanel() {
 
   const handleEdit = (u: UpstreamItem) => {
     setEditingId(u.id);
+    setFormOpen(true);
     setForm({
       name: u.name,
       protocol: u.protocol,
@@ -475,20 +489,74 @@ export default function UpstreamsPanel() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
+  // 删除上游不可逆点：key 只存密文，删掉后必须重新粘贴原始 key 才能重建
   const handleDelete = async (u: UpstreamItem) => {
-    setPendingDelete(u);
-  };
-
-  const confirmDelete = async () => {
-    if (!pendingDelete) return;
-    setPendingDelete(null);
-    await apiFetch(`/api/admin/upstreams/${pendingDelete.id}`, {
+    const ok = await confirm({
+      title: "Delete upstream",
+      tone: "danger",
+      confirmLabel: "Delete",
+      message: (
+        <div className="space-y-2">
+          <p>
+            Delete upstream{" "}
+            <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">{u.name}</code>?
+          </p>
+          <ul className="list-disc space-y-1 pl-5 text-xs text-gray-600">
+            <li>
+              <strong>{u.keyCount} API key{plural(u.keyCount)}</strong> will be deleted with it
+              — stored keys are encrypted and cannot be exported, so re-creating this upstream
+              means pasting the original keys again.
+            </li>
+            <li>
+              <strong>{u.enabledModels.length} model config{plural(u.enabledModels.length)}</strong>{" "}
+              is removed from routing; requests for models no other upstream serves will fail
+              immediately.
+            </li>
+            <li>Usage history is kept.</li>
+          </ul>
+        </div>
+      ),
+    });
+    if (!ok) return;
+    await apiFetch(`/api/admin/upstreams/${u.id}`, {
       method: "DELETE",
     });
     loadUpstreams();
   };
 
+  // 停用立即把该上游的全部模型摘出路由；启用无需确认（无代价，可即时回滚）
   const handleToggleEnabled = async (u: UpstreamItem) => {
+    if (u.enabled) {
+      const lastEnabled = !upstreams.some((other) => other.id !== u.id && other.enabled);
+      const ok = await confirm({
+        title: "Disable upstream",
+        tone: "warning",
+        confirmLabel: "Disable",
+        message: (
+          <div className="space-y-2">
+            <p>
+              Disable{" "}
+              <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">{u.name}</code>?
+            </p>
+            <ul className="list-disc space-y-1 pl-5 text-xs text-gray-600">
+              <li>
+                Its <strong>{u.enabledModels.length} model config{plural(u.enabledModels.length)}</strong>{" "}
+                leave routing immediately — requests for models no other upstream serves will fail
+                until another upstream covers them.
+              </li>
+              <li>Nothing is deleted: keys and models are kept, Enable restores it instantly.</li>
+            </ul>
+            {lastEnabled && (
+              <p className="rounded bg-amber-50 p-2 text-xs text-amber-700">
+                This is the only enabled upstream — all gateway traffic will fail until another
+                upstream is enabled.
+              </p>
+            )}
+          </div>
+        ),
+      });
+      if (!ok) return;
+    }
     await apiFetch(`/api/admin/upstreams/${u.id}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
@@ -501,8 +569,34 @@ export default function UpstreamsPanel() {
     setPendingKeyEnabled((prev) => ({ ...prev, [key.id]: !(prev[key.id] ?? key.enabled) }));
   };
 
+  // key 与上游同样的不可逆点：只存密文，删掉要重新粘贴原始 key；删掉最后一个 active key 会立刻断流
   const handleDeleteKey = async (key: UpstreamKeyItem) => {
-    if (!confirm("Delete this key?")) return;
+    const otherActive = (keysByUpstream[key.upstreamId] ?? []).some(
+      (k) => k.id !== key.id && k.enabled
+    );
+    const ok = await confirm({
+      title: "Delete API key",
+      tone: "danger",
+      confirmLabel: "Delete",
+      message: (
+        <div className="space-y-2">
+          <p>
+            Delete key{" "}
+            <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">{key.maskedKey}</code>?
+          </p>
+          <p className="text-xs text-gray-600">
+            The stored key cannot be shown again — re-adding it requires the original key.
+          </p>
+          {!otherActive && (
+            <p className="rounded bg-amber-50 p-2 text-xs text-amber-700">
+              This is the last enabled key — the upstream cannot serve any request until another
+              key is added.
+            </p>
+          )}
+        </div>
+      ),
+    });
+    if (!ok) return;
     await apiFetch(`/api/admin/upstreams/${key.upstreamId}/keys/${key.id}`, {
       method: "DELETE",
     });
@@ -548,7 +642,29 @@ export default function UpstreamsPanel() {
     }
   };
 
+  // Test all = models × 启用 key 条真实计费请求，属于花钱操作，先确认
   const handleTestAllModels = async (u: UpstreamItem) => {
+    const modelCount = u.enabledModels.filter((m) => !m.endsWith("*")).length;
+    const requests = modelCount * Math.max(u.activeKeyCount, 0);
+    const ok = await confirm({
+      title: "Test all models",
+      tone: "warning",
+      confirmLabel: "Start test",
+      message: (
+        <div className="space-y-2">
+          <p>
+            Send a real request for every model on{" "}
+            <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">{u.name}</code>.
+          </p>
+          <p className="text-xs text-gray-600">
+            {modelCount} model{plural(modelCount)} × {u.activeKeyCount} enabled key
+            {plural(u.activeKeyCount)} = up to <strong>{requests}</strong> billed request
+            {plural(requests)} on your upstream account. Results also refresh the health flags.
+          </p>
+        </div>
+      ),
+    });
+    if (!ok) return;
     setTestingAll((prev) => ({ ...prev, [u.id]: true }));
     const allTesting = Object.fromEntries(u.enabledModels.map((m) => [m, true]));
     setTestingModels((prev) => ({ ...prev, [u.id]: allTesting }));
@@ -870,18 +986,49 @@ export default function UpstreamsPanel() {
     return <div className="h-40 flex items-center justify-center text-gray-400">Loading...</div>;
   }
 
+  // 无存量 upstream 时保持展开：首次配置不该还要多点一次；编辑态不折叠，避免看不见正在编辑的内容
+  const formExpanded = formOpen || editingId !== null || upstreams.length === 0;
+  const canToggleForm = editingId === null && upstreams.length > 0;
+
   return (
     <div className="space-y-4">
       {error && (
         <div className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-600">{error}</div>
       )}
 
-      {/* 新建/编辑表单 */}
-      <div className="rounded-lg bg-white p-4 shadow">
-        <h2 className="mb-3 text-base font-semibold">
-          {editingId ? `Edit Upstream #${editingId}` : "New Upstream"}
-        </h2>
-        <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-[1fr_200px_200px] gap-3">
+      {/* 新建/编辑表单：有存量 upstream 时默认折叠，标题行单击切换 */}
+      <div className={`rounded-lg bg-white shadow ${formExpanded ? "p-4" : "p-3"}`}>
+        <button
+          type="button"
+          onClick={() => setFormOpen(!formExpanded)}
+          disabled={!canToggleForm}
+          aria-expanded={formExpanded}
+          className={`flex w-full items-center justify-between gap-2 text-left min-h-[40px] md:min-h-0 ${
+            canToggleForm ? "cursor-pointer" : "cursor-default"
+          } ${formExpanded ? "mb-3" : ""}`}
+        >
+          <h2 className="text-base font-semibold">
+            {editingId ? `Edit Upstream #${editingId}` : "New Upstream"}
+          </h2>
+          {canToggleForm && (
+            <svg
+              className={`h-4 w-4 shrink-0 text-gray-400 transition-transform ${formExpanded ? "rotate-180" : ""}`}
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              <path
+                fillRule="evenodd"
+                d="M5.23 7.21a.75.75 0 011.06.02L10 11.06l3.71-3.83a.75.75 0 111.08 1.04l-4.25 4.39a.75.75 0 01-1.08 0L5.21 8.27a.75.75 0 01.02-1.06z"
+                clipRule="evenodd"
+              />
+            </svg>
+          )}
+        </button>
+        <form
+          onSubmit={handleSubmit}
+          className={`${formExpanded ? "" : "hidden "}grid grid-cols-1 md:grid-cols-[1fr_200px_200px] gap-3`}
+        >
           <div className="relative">
             <label className="mb-1 block text-xs text-gray-600">Name</label>
             <input
@@ -1031,17 +1178,26 @@ export default function UpstreamsPanel() {
               </span>
             </label>
             {editingId && (keysByUpstream[editingId] ?? []).length > 0 && (
-              <div className="mb-2 flex flex-wrap gap-1.5">
+              <div className="mb-2 space-y-1">
                 {(keysByUpstream[editingId] ?? []).map((k) => {
                   const effectiveEnabled = pendingKeyEnabled[k.id] ?? k.enabled;
                   return (
-                  <span
+                  <div
                     key={k.id}
                     title={`${effectiveEnabled ? "Enabled" : "Disabled"}${pendingKeyEnabled[k.id] !== undefined ? " (pending save)" : ""}${k.lastStatus ? ` · last: ${k.lastStatus}` : ""}`}
-                    className="flex items-center gap-1.5 rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-600"
+                    className="flex max-w-full flex-wrap items-center gap-2 text-xs"
                   >
                     <span className={`h-1.5 w-1.5 rounded-full ${effectiveEnabled ? "bg-green-500" : "bg-gray-300"}`} />
-                    <code>{k.maskedKey}</code>
+                    <code className="max-w-[180px] truncate rounded bg-gray-100 px-1.5 py-0.5 text-[11px]">
+                      {k.maskedKey}
+                    </code>
+                    {!effectiveEnabled && <span className={statusChip.off}>disabled</span>}
+                    <span
+                      className="text-[11px] text-gray-400"
+                      title={`Added ${new Date(k.createdAt).toLocaleString()}`}
+                    >
+                      {new Date(k.createdAt).toLocaleDateString()}
+                    </span>
                     <button
                       type="button"
                       onClick={() => toggleKeyPending(k)}
@@ -1058,7 +1214,7 @@ export default function UpstreamsPanel() {
                     >
                       ×
                     </button>
-                  </span>
+                  </div>
                   );
                 })}
               </div>
@@ -1403,6 +1559,7 @@ export default function UpstreamsPanel() {
                 type="button"
                 onClick={() => {
                   setEditingId(null);
+                  setFormOpen(false);
                   setForm(EMPTY_FORM);
                   setFormKeys([""]);
                   setFormTransforms([]);
@@ -1424,7 +1581,10 @@ export default function UpstreamsPanel() {
 
       {modelPicker && (
         <ModalPortal>
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+          {...dismissModelPicker}
+        >
           <div className="flex h-full w-full flex-col rounded-none bg-white shadow-xl md:h-auto md:max-h-[80vh] md:w-full md:max-w-2xl md:rounded-lg md:py-0">
             <div className="flex items-center justify-between border-b px-5 py-3">
               <h3 className="font-semibold">
@@ -1777,9 +1937,15 @@ export default function UpstreamsPanel() {
                     <button
                       type="button"
                       onClick={() => handleTestAllModels(u)}
-                      disabled={testingAll[u.id] || u.enabledModels.length === 0}
+                      disabled={
+                        testingAll[u.id] || u.enabledModels.length === 0 || u.activeKeyCount === 0
+                      }
                       className={pillAction.neutral}
-                      title="Test all models against this upstream"
+                      title={
+                        u.activeKeyCount === 0
+                          ? "No enabled API key — nothing to test with"
+                          : "Test all models against this upstream"
+                      }
                     >
                       {testingAll[u.id] ? "Testing..." : "Test all"}
                     </button>
@@ -1931,49 +2097,7 @@ export default function UpstreamsPanel() {
         ))}
       </div>
 
-      {pendingDelete && (
-        <ModalPortal>
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="flex h-full w-full flex-col rounded-none bg-white shadow-xl md:h-auto md:max-w-md md:rounded-lg">
-            <div className="flex items-center justify-between border-b px-5 py-3">
-              <h3 className="font-semibold">Delete upstream</h3>
-              <button
-                type="button"
-                onClick={() => setPendingDelete(null)}
-                className="flex min-h-[40px] min-w-[40px] items-center justify-center text-2xl leading-none text-gray-400 hover:text-gray-600 md:min-h-0 md:min-w-0"
-              >
-                ×
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto overscroll-contain p-5">
-              <p className="text-sm text-gray-700">
-                Delete upstream{" "}
-                <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">
-                  {pendingDelete.name}
-                </code>
-                ? Its usage records are kept in history.
-              </p>
-            </div>
-            <div className="flex items-center justify-end gap-2 border-t px-5 py-3">
-              <button
-                type="button"
-                onClick={() => setPendingDelete(null)}
-                className="rounded border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50 min-h-[40px] md:min-h-0"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={confirmDelete}
-                className="rounded bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 min-h-[40px] md:min-h-0"
-              >
-                Delete
-              </button>
-            </div>
-          </div>
-        </div>
-        </ModalPortal>
-      )}
+      {confirmDialog}
     </div>
   );
 }

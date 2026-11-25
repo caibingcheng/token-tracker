@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { estimateInputTokens, estimateOutputTokens, estimateTokens } from "./estimate";
+import {
+  estimateInputTokens,
+  estimateInputTokensFromSpans,
+  estimateOutputTokens,
+  estimateTokens,
+} from "./estimate";
+import { scanTopLevelObject } from "./json-scan";
 
 describe("estimateTokens", () => {
   it("empty string is 0", () => {
@@ -35,6 +41,63 @@ describe("estimateInputTokens", () => {
     expect(estimateInputTokens({ model: "x" }, "openai")).toBe(0);
     expect(estimateInputTokens(null, "openai")).toBe(0);
     expect(estimateInputTokens("not-object", "openai")).toBe(0);
+  });
+});
+
+describe("estimateInputTokensFromSpans（与解析路径平价）", () => {
+  const spans = (body: unknown) => {
+    const bytes = new TextEncoder().encode(JSON.stringify(body));
+    const scan = scanTopLevelObject(bytes, ["messages", "input", "contents"]);
+    return { bytes, fields: scan.fields };
+  };
+
+  it("openai messages: identical to parsed estimate", () => {
+    const body = {
+      model: "gpt-4o",
+      messages: [
+        { role: "system", content: "规则 rule" },
+        { role: "user", content: "hello world 你好" },
+      ],
+    };
+    const { bytes, fields } = spans(body);
+    expect(estimateInputTokensFromSpans(bytes, fields, "openai")).toBe(
+      estimateInputTokens(body, "openai")
+    );
+  });
+
+  it("openai sums messages + input (responses API)", () => {
+    const body = { messages: [{ role: "user", content: "abcd" }], input: "efgh" };
+    const { bytes, fields } = spans(body);
+    expect(estimateInputTokensFromSpans(bytes, fields, "openai")).toBe(
+      estimateInputTokens(body, "openai")
+    );
+  });
+
+  it("anthropic uses messages, gemini uses contents", () => {
+    const body = { messages: [{ role: "user", content: "hi there" }], contents: [] };
+    const { bytes, fields } = spans(body);
+    expect(estimateInputTokensFromSpans(bytes, fields, "anthropic")).toBe(
+      estimateInputTokens(body, "anthropic")
+    );
+    const g = { contents: [{ role: "user", parts: [{ text: "hello world" }] }] };
+    const gb = spans(g);
+    expect(estimateInputTokensFromSpans(gb.bytes, gb.fields, "gemini")).toBe(
+      estimateInputTokens(g, "gemini")
+    );
+  });
+
+  it("returns 0 when container keys are absent", () => {
+    const { bytes, fields } = spans({ model: "x" });
+    expect(estimateInputTokensFromSpans(bytes, fields, "openai")).toBe(0);
+    expect(estimateInputTokensFromSpans(new Uint8Array(0), new Map(), "openai")).toBe(0);
+  });
+
+  it("counts CJK utf-8 sequences as single tokens", () => {
+    const body = { messages: [{ role: "user", content: "你好世界" }] };
+    const { bytes, fields } = spans(body);
+    expect(estimateInputTokensFromSpans(bytes, fields, "openai")).toBe(
+      estimateInputTokens(body, "openai")
+    );
   });
 });
 

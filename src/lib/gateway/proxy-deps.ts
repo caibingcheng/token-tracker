@@ -1,5 +1,5 @@
-import { eq, and } from "drizzle-orm";
-import { db, initDatabase, upstreamsTable, upstreamKeysTable, virtualKeysTable, tokenRecords, upstreamModelHealthTable, namedRoutesTable, namedRouteTargetsTable } from "@/lib/db";
+import { eq, and, lt } from "drizzle-orm";
+import { db, initDatabase, upstreamsTable, upstreamKeysTable, virtualKeysTable, tokenRecords, upstreamModelHealthTable, namedRoutesTable, namedRouteTargetsTable, responseBindingsTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { decryptSecret, safeCompare, GatewaySecretMissingError } from "./crypto";
 import type { ProxyDeps, RecordUsageMeta } from "./proxy";
@@ -224,6 +224,43 @@ export function decryptProxyUrl(encrypted: string | null | undefined): string | 
   return decryptSecret(encrypted);
 }
 
+// responses create 的 id 归属：写入时顺手清 30 天前的旧行（best-effort，幂等）。
+// 只存 id + vk id，不存任何请求/响应内容。
+export const RESPONSE_BINDING_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+export async function saveResponseBinding(
+  responseId: string,
+  virtualKeyId: number
+): Promise<void> {
+  await initDatabase();
+  await withSkipCache(async () => {
+    const now = new Date().toISOString();
+    await db
+      .insert(responseBindingsTable)
+      .values({ responseId, virtualKeyId, createdAt: now })
+      .onConflictDoUpdate({
+        target: responseBindingsTable.responseId,
+        set: { virtualKeyId, createdAt: now },
+      });
+    const cutoff = new Date(Date.now() - RESPONSE_BINDING_TTL_MS).toISOString();
+    await db.delete(responseBindingsTable).where(lt(responseBindingsTable.createdAt, cutoff));
+  });
+}
+
+// 归属查询：null = 无映射（调用方放行，过渡期兼容存量 id）
+export async function lookupResponseBinding(responseId: string): Promise<number | null> {
+  await initDatabase();
+  return withSkipCache(async () => {
+    const row = (
+      await db
+        .select()
+        .from(responseBindingsTable)
+        .where(eq(responseBindingsTable.responseId, responseId))
+    )[0];
+    return row?.virtualKeyId ?? null;
+  });
+}
+
 // 代理路由的依赖实现（Next.js 服务端使用）
 export function createProxyDeps(): ProxyDeps {
   return {
@@ -359,6 +396,15 @@ export function createProxyDeps(): ProxyDeps {
           .set({ lastUsedAt: new Date().toISOString() })
           .where(eq(virtualKeysTable.id, virtualKeyId));
       });
+    },
+
+    // responses create 的 response id 归属（子路径透传时拦跨 vk retrieve）
+    async onResponseCreated(responseId, virtualKeyId) {
+      await saveResponseBinding(responseId, virtualKeyId);
+    },
+
+    async lookupResponseOwner(responseId) {
+      return lookupResponseBinding(responseId);
     },
 
 // 配额用量加载：共享实现见 quota-db.ts（3 条聚合 SELECT，RPM/TPM 共用 60s 窗口，
