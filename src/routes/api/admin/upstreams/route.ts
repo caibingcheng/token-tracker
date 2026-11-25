@@ -167,6 +167,7 @@ export const POST = withAuth(async (request: NextRequest) => {
           baseUrl: row.baseUrl,
           authStyle: resolveUpstreamAuthConfig(row).authStyle,
           models: parseEnabledModels(row.enabledModels),
+          enabled: row.enabled === 1,
         })),
       baseUrl
     );

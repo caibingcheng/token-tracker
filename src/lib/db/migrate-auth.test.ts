@@ -343,6 +343,33 @@ describe("migrate-preflight", async () => {
     }
   });
 
+  it("does not overwrite an existing snapshot while migrations are still incomplete", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tt-snapshot-keep-"));
+    const dbPath = join(dir, "test.db");
+    const db = new Database(dbPath);
+    try {
+      db.exec(`CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT); INSERT INTO t (v) VALUES ('first')`);
+      const snap = snapshotBeforeMigrate(db, dbPath)!;
+      // 模拟「部分迁移已生效」的当前状态
+      db.exec(`UPDATE t SET v = 'second'`);
+
+      // 上次迁移未完成 → 保留最早那份快照（回退点不能被替换）
+      expect(snapshotBeforeMigrate(db, dbPath, { keepExisting: true })).toBe(snap);
+      const kept = new Database(snap);
+      expect((kept.prepare(`SELECT v FROM t`).get() as any).v).toBe("first");
+      kept.close();
+
+      // 上次已跑通（无遗留 issues）→ 正常刷新快照
+      snapshotBeforeMigrate(db, dbPath);
+      const refreshed = new Database(snap);
+      expect((refreshed.prepare(`SELECT v FROM t`).get() as any).v).toBe("second");
+      refreshed.close();
+    } finally {
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("keeps a pre-merge copy of the old named_routes table", () => {
     withTempDb((db) => {
       db.exec(`

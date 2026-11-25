@@ -197,18 +197,26 @@ describe("simulateRoute", () => {
     expect(result.winner?.upstreamId).toBe(2);
   });
 
-  it("hop 按 target upstream 的 protocols 过滤；该面无 hop → namedRouteUnavailable（不回退自动路由）", () => {
+  it("该面无 hop 且池子在其它面有 hop → 回落自动路由", () => {
     // 目标 upstream 只接受 anthropic 面
     const upstreams = [upstream({ id: 1, protocol: "anthropic", enabledModels: ["real-model"] })];
     const routes = [named({ name: "my-alias" })];
     const openai = simulateRoute("my-alias", "openai", upstreams, routes);
-    expect(openai.source).toBe("named");
-    expect(openai.namedRouteUnavailable).toBe(true);
-    expect(openai.candidates).toHaveLength(0);
+    // 与主链一致：这条路由对 openai 面不生效，不被 name 吃掉
+    expect(openai.source).toBe("auto");
     const anthropic = simulateRoute("my-alias", "anthropic", upstreams, routes);
     expect(anthropic.source).toBe("named");
     expect(anthropic.namedRouteUnavailable).toBe(false);
     expect(anthropic.candidates.length).toBeGreaterThan(0);
+  });
+
+  it("池子完全解析不出 hop（目标 upstream 不存在）→ namedRouteUnavailable", () => {
+    const upstreams = [upstream({ id: 1, enabledModels: ["gpt-4o"] })];
+    const routes = [named({ name: "my-alias", targets: [{ id: 9, upstreamId: 99, targetModel: "gone", priority: 0 }] })];
+    const result = simulateRoute("my-alias", "openai", upstreams, routes);
+    expect(result.source).toBe("named");
+    expect(result.namedRouteUnavailable).toBe(true);
+    expect(result.candidates).toHaveLength(0);
   });
 
   it("named route shadows automatic routing for the same name", () => {

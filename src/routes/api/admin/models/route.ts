@@ -4,13 +4,12 @@ import { db, initDatabase, namedRouteTargetsTable, namedRoutesTable, upstreamsTa
 import { withAuth } from "@/lib/auth/guard";
 import {
   isProtocol,
-  normalizeUpstreamProtocols,
   parseEnabledModels,
   routeModelByProtocol,
   type Protocol,
   VALID_PROTOCOLS,
 } from "@/lib/gateway/model-router";
-import { defaultAuthStyleForProtocol, isAuthStyle } from "@/lib/gateway/auth-style";
+import { resolveUpstreamAuthConfig } from "@/lib/gateway/auth-style";
 import type { AuthStyle } from "@/lib/gateway/auth-style";
 import { simulateRoute } from "@/lib/gateway/simulate-route";
 import type { SimNamedRoute, SimClassifierInfo } from "@/lib/gateway/simulate-route";
@@ -75,14 +74,13 @@ interface WildcardInfo {
 }
 
 function toUpstreamRoute(row: any): UpstreamRoute {
+  const face = resolveUpstreamAuthConfig(row);
   return {
     id: row.id,
     name: row.name,
     protocol: row.protocol,
-    protocols: normalizeUpstreamProtocols(row.protocols, row.protocol),
-    authStyle: isAuthStyle(row.authStyle)
-      ? row.authStyle
-      : defaultAuthStyleForProtocol(row.protocol),
+    protocols: face.protocols,
+    authStyle: face.authStyle,
     baseUrl: row.baseUrl,
     priority: row.priority,
     enabled: row.enabled === 1,
@@ -115,10 +113,8 @@ export const GET = withAuth(async () => {
     id: row.id,
     name: row.name,
     protocol: isProtocol(row.protocol) ? row.protocol : "openai",
-    protocols: normalizeUpstreamProtocols(row.protocols, row.protocol),
-    authStyle: isAuthStyle(row.authStyle)
-      ? row.authStyle
-      : defaultAuthStyleForProtocol(row.protocol),
+    protocols: resolveUpstreamAuthConfig(row).protocols,
+    authStyle: resolveUpstreamAuthConfig(row).authStyle,
     baseUrl: row.baseUrl,
     priority: row.priority,
     enabled: row.enabled === 1,

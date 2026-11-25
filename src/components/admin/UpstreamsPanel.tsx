@@ -1128,6 +1128,9 @@ export default function UpstreamsPanel() {
             <div className="flex flex-wrap gap-3 pt-1">
               {FORM_PROTOCOLS.map((p) => {
                 const checked = form.protocols.includes(p.value);
+                // 第一个勾选的 = 默认面（探活端点 / 拉模型列表端）；取消时默认面会跟着变，
+                // 这里实时打 badge，避免“默认面被静默换掉”
+                const isDefault = checked && form.protocols[0] === p.value;
                 return (
                   <label key={p.value} className="flex items-center gap-1.5 text-sm text-gray-700">
                     <input
@@ -1144,10 +1147,23 @@ export default function UpstreamsPanel() {
                       }}
                     />
                     {p.short}
+                    {isDefault && (
+                      <span
+                        className="rounded border border-blue-200 bg-blue-50 px-1 py-0.5 text-[10px] font-medium text-blue-700"
+                        title="Default face: probe endpoint and model-list endpoint use this style"
+                      >
+                        default
+                      </span>
+                    )}
                   </label>
                 );
               })}
             </div>
+            <p className="mt-1 text-[11px] text-gray-500">
+              First checked face is the default one (probe + model list):
+              {" "}
+              <code className="rounded bg-gray-100 px-1">{form.protocols[0]}</code>
+            </p>
           </div>
           <div>
             <label className="mb-1 block text-xs text-gray-600">Priority (model routing)</label>

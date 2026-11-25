@@ -118,3 +118,39 @@ describe("findAuthModelConflict", () => {
     ).toBeNull();
   });
 });
+
+describe("findAuthModelConflict - enabled 行", () => {
+  it("ignores disabled records so they cannot block edits", () => {
+    const conflict = findAuthModelConflict(
+      { authStyle: "x-api-key", models: ["claude-sonnet"] },
+      [
+        {
+          name: "zen-openai",
+          baseUrl: "https://zen.example",
+          authStyle: "bearer",
+          models: ["claude-sonnet"],
+          enabled: false,
+        },
+      ],
+      "https://zen.example"
+    );
+    expect(conflict).toBeNull();
+  });
+
+  it("still reports enabled records", () => {
+    const conflict = findAuthModelConflict(
+      { authStyle: "x-api-key", models: ["claude-sonnet"] },
+      [
+        {
+          name: "zen-openai",
+          baseUrl: "https://zen.example",
+          authStyle: "bearer",
+          models: ["claude-sonnet"],
+          enabled: true,
+        },
+      ],
+      "https://zen.example"
+    );
+    expect(conflict).toContain("zen-openai");
+  });
+});

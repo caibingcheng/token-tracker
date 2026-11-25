@@ -11,6 +11,17 @@ export const MIGRATION_SNAPSHOT_SUFFIX = ".pre-migrate";
 export const LEGACY_NAMED_ROUTES_BACKUP_TABLE = "named_routes_pre_protocol_merge";
 // settings 表里的 key：降级启动时遗留的迁移问题（供 Admin banner 读，恢复正常后删掉）
 export const MIGRATION_ISSUES_KEY = "migration_issues";
+// settings 里是否还留着上次降级启动的迁移问题（= 上次迁移没跑完）
+export function hasPendingIssues(client: any): boolean {
+  try {
+    if (!hasTable(client, "settings")) return false;
+    return Boolean(
+      client.prepare(`SELECT 1 FROM settings WHERE key = ?`).get(MIGRATION_ISSUES_KEY)
+    );
+  } catch {
+    return false;
+  }
+}
 
 function tableColumns(client: any, table: string): string[] {
   return client
@@ -73,10 +84,26 @@ export function pendingMigrations(client: any): string[] {
 
 // 迁移前一致性快照：VACUUM INTO 生成独立副本（不受 WAL/半写影响），
 // 失败退回「checkpoint + 文件复制」。整体失败只警告——快照是保险，不是启动前提。
-export function snapshotBeforeMigrate(client: any, dbPath: string): string | null {
+//
+// keepExisting：上一次启动留下了未完成的迁移（settings.migration_issues 仍在）时传 true，
+// 此时**不覆盖**已有快照——否则会把「升级前」的回退点换成「部分迁移已生效」的状态。
+// 全部迁移跑通后该 key 会被清掉，下一次升级就正常刷新快照。
+export function snapshotBeforeMigrate(
+  client: any,
+  dbPath: string,
+  opts: { keepExisting?: boolean } = {}
+): string | null {
   const target = `${dbPath}${MIGRATION_SNAPSHOT_SUFFIX}`;
   try {
-    if (existsSync(target)) unlinkSync(target);
+    if (existsSync(target)) {
+      if (opts.keepExisting) {
+        console.log(
+          `[migrate] keeping the existing pre-migration snapshot (previous migrations still incomplete): ${target}`
+        );
+        return target;
+      }
+      unlinkSync(target);
+    }
     try {
       client.exec(`VACUUM INTO '${target.replace(/'/g, "''")}'`);
     } catch (vacuumErr) {

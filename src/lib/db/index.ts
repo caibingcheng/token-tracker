@@ -1,10 +1,10 @@
 import { sql } from "drizzle-orm";
-import { writeFileSync } from "node:fs";
+import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 import { wrapDatabaseClient, invalidateQueryCache } from "./cache";
 import { offsetMinutesToSqlModifiers } from "@/lib/timezone-utils";
 import { migrateColumns, migrateTokenRecordsModelColumns, migrateNamedRoutesTables, migrateNamedRouteTargetsNullableUpstream, migrateSyncInstancesTable, migrateIngestTokensTable, migrateUpstreamAuthStyleAndProtocols, migrateNamedRoutesDropProtocol } from "./migrate";
 import type { NamedRouteMergeReport } from "./migrate";
-import { MIGRATION_ISSUES_KEY, pendingMigrations, snapshotBeforeMigrate } from "./migrate-preflight";
+import { MIGRATION_ISSUES_KEY, hasPendingIssues, pendingMigrations, snapshotBeforeMigrate } from "./migrate-preflight";
 
 // 降级启动时的迁移问题清单：写进 settings（供 Admin banner 读）+ 容器日志。
 // 只有「数据整理类」迁移会进这里；schema 加列类失败仍是致命错误。
@@ -101,6 +101,7 @@ export async function initDatabase() {
         // closeDb 已复位并可能已起了新一轮 init：旧 promise 不得改状态
         if (initPromise !== p) return;
         initialized = true;
+        clearInitErrorFile();
       })
       .catch((err) => {
         if (initPromise === p) initPromise = undefined;
@@ -129,6 +130,16 @@ function writeInitErrorFile(detail: string): void {
     );
   } catch {
     // 写不了错误文件也不影响抛错
+  }
+}
+
+// 初始化成功时清掉旧面包屑，避免残留文件误导入排。
+function clearInitErrorFile(): void {
+  try {
+    const dbPath = process.env.SQLITE_DATABASE_PATH || DEFAULT_DB_PATH;
+    if (existsSync(`${dbPath}.migration-error`)) unlinkSync(`${dbPath}.migration-error`);
+  } catch {
+    // 清不掉也不影响启动
   }
 }
 
@@ -211,7 +222,7 @@ async function ensureClient() {
   const pending = pendingMigrations(client);
   if (pending.length > 0) {
     console.log(`[migrate] pending migrations: ${pending.join(", ")}`);
-    snapshotBeforeMigrate(client, dbPath);
+    snapshotBeforeMigrate(client, dbPath, { keepExisting: hasPendingIssues(client) });
   }
 
   const { drizzle } = await import("drizzle-orm/better-sqlite3");

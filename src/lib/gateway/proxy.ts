@@ -703,7 +703,8 @@ async function handleProxyRequestInner(
     return !(upDown || modelDown);
   };
 
-  {
+  // 标签化块：命名路由池里有 hop 但都不接受本请求面时，break 出去回落自动路由
+  namedRouteResolve: {
     const allRoutes = deps.loadNamedRoutes ? await deps.loadNamedRoutes() : [];
     const route = findNamedRoute(model, allRoutes);
     if (route) {
@@ -735,7 +736,10 @@ async function handleProxyRequestInner(
         description: t.description,
         priority: t.priority,
       });
-      const expandTarget = (t: NamedRouteTargetInfo): RouteHop[] =>
+      const expandTarget = (
+        t: NamedRouteTargetInfo,
+        opts: { ignoreFaceFilter?: boolean } = {}
+      ): RouteHop[] =>
         expandNamedRouteTargets({
           protocol,
           upstreams,
@@ -744,6 +748,7 @@ async function handleProxyRequestInner(
           resolveTargets: (id) => (targetsByRouteId.get(id) ?? []).map(toPoolEntry(id)),
           rootRouteId: route.id,
           log: deps.log,
+          ...opts,
         }).map((p) => ({ upstream: p.upstream, targetModel: p.targetModel }));
 
       const targets = sortNamedRouteTargets(targetsByRouteId.get(route.id) ?? []);
@@ -757,6 +762,12 @@ async function handleProxyRequestInner(
       }
       const hopsByTarget = new Map<number, RouteHop[]>();
       for (const t of targets) hopsByTarget.set(t.id, expandTarget(t));
+      // 面匹配的 hop 数（在 givenUp/健康剔除之前采样）：区分「这面本来就没 hop」
+      // 与「本来有 hop、被 givenUp 剔光了」——后者仍然要 502，不能回落自动路由
+      const faceHopCount = targets.reduce(
+        (n, t) => n + (hopsByTarget.get(t.id)?.length ?? 0),
+        0
+      );
       // 已放弃兜底的 upstream 在分类器/预选之前就从目标链剔除：
       // 否则会先付一次 LLM 分类器成本，最终选中的目标又必然被丢
       if (deps.health?.isGivenUp) {
@@ -778,6 +789,21 @@ async function handleProxyRequestInner(
       // 全部目标都解析不出 hop（upstream 全禁用/删除、auto 名不可解析、嵌套成环）→ 502
       const expandable = targets.filter((t) => (hopsByTarget.get(t.id)?.length ?? 0) > 0);
       if (expandable.length === 0) {
+        // 区分三种零 hop：
+        //   a) 本面本来就没 hop，但池子在其它面上有可用 hop
+        //      → 这条路由对本面不生效，回落自动路由（与升级前“按 name+protocol 命中”语义一致）
+        //   b) 本面有 hop，但被 givenUp 剔光 → 仍然 502（与既有「全候选均 givenUp」口径一致）
+        //   c) 池子根本解析不出 hop（配置错误/上游全失效）→ 502（名字命中即接管）
+        const hasHopForOtherFace =
+          faceHopCount === 0 &&
+          targets.some((t) => expandTarget(t, { ignoreFaceFilter: true }).length > 0);
+        if (hasHopForOtherFace) {
+          deps.log?.(
+            `[gateway] named route "${route.name}" has no hop for ${protocol}; falling back to automatic routing`
+          );
+          namedRoute = null;
+          break namedRouteResolve;
+        }
         return proxyError(
           502,
           "Named route target unavailable: no valid upstream targets",
