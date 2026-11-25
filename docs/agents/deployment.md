@@ -97,7 +97,7 @@ docker compose up -d
 
 ### GitHub Container Registry
 
-`latest` = **最近一次正式 tag 构建出的镜像**；dev tag、PR、分支 push、`workflow_dispatch` 都不更新它。
+`latest` = **最近一次正式 tag 构建出的镜像**；dev tag、PR、分支 push、`workflow_dispatch` 都不更新它。`latest` 只能由 `docker/metadata-action` 的 `type=semver` 产出（prerelease 分支不加 latest），**不要改回 `type=ref,event=tag`**：后者在默认 `flavor.latest=auto` 下无条件置 `latest=true`，且 `version.latest` 仅由首个被处理的 tag 决定，后面再加 `type=raw,value=latest,enable=false` 也覆盖不了，预发布 tag 会静默打上 `:latest`。
 
 | 触发条件 | 镜像标签 | 用途 |
 |---------|---------|------|
