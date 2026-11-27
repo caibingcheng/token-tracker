@@ -2,6 +2,15 @@
 
 > 上级文档：`AGENTS.md`。改 `/v1/*` `/v1beta/*` `/raw/*` 代理链路前必读。
 
+## 两条入口（直连 / relay）
+
+| 入口 | 决策 | 数据面 | 说明 |
+|---|---|---|---|
+| 直连（本文主体） | 中心 | 中心 → upstream | `/v1/*` `/v1beta/*` `/raw/*` 打到中心时走这条，行为一行未改 |
+| relay（sub node） | 中心（plan） | relay → upstream | 客户端 base_url 指向独立镜像，请求体不经中心；详见 `docs/agents/relay.md` |
+
+两条入口共用的只有底层原语（`model-router.ts` / `session.ts` / `estimate.ts` / `json-scan.ts` / `parsers/*` / `response-rewriter.ts` / `upstream-headers.ts` / `proxy-headers.ts` / `url-*` / `outbound-*` / `proxy-dispatcher.ts` / `lease.ts`）。**链组装不共用**：relay 的计划由 `src/lib/gateway/plan.ts` 的 `buildPlan()` 另写，一致性由 `src/lib/gateway/plan.contract.test.ts` 把 `proxy.ts` 当 oracle 钉住（同一 fixture 跑两条路径，比较真实尝试序列 / URL / realModel / 错误码 / 会话指纹）。改链组装（候选池、健康过滤、binding 置顶、分类器、givenUp、subresource 链、models 快照）时必须同步跑这个测试。
+
 - **路由**：`src/routes/v1/[...path]/route.ts` + `src/routes/v1beta/[...path]/route.ts` + `src/routes/raw/[...path]/route.ts`（文件里的 `runtime = "nodejs"`、`dynamic = "force-dynamic"` 导出对 Hono 无效，历史保留）
 - **裸透传入口 `/raw/*`**：客户端打 `/raw/<upstream base URL 之后的部分>`，`stripRawPassthroughPrefix()`（`src/lib/gateway/proxy.ts`）剥掉 `/raw` 前缀得到内层 path（内层再过一次 `sanitizePathSegments` 防 `..` 逃逸；内层为空或逃逸 → 400 `invalid_request_error`（裸 `/raw` 进不到 handler，由 Hono 路由层 404，与 `/v1` 一致）），后续协议检测 / model 提取 / 路由 / 配额 / failover / session 粘性 / 转发全部复用同一套逻辑，转发用内层 path（上游永远看不到 `/raw`）。用途：`/v1`、`/v1beta` 之外的上游端点，如 OpenRouter（`base_url=https://openrouter.ai/api`）的 `POST /alpha/decisions`（上游真实 URL `https://openrouter.ai/api/alpha/decisions`）—— 协议落 openai（注入 `Bearer`）、model 取 body.model、usage 为 responses 风格由 openai parser 归一化。**内层 path 直接拼在 upstream `base_url` 之后（只对 `/v1`、`/v1beta` 前缀 dedup）**：`base_url=https://openrouter.ai` 时客户端打 `/raw/api/alpha/decisions`，`base_url=https://openrouter.ai/api` 时打 `/raw/alpha/decisions`；两者不匹配会拼成 `/api/api/...` 被上游 404。认证层 `src/server/verify-session.ts` 只拦 `/api/*`，`/raw` 不受影响；认证走网关 proxy 内既有虚拟 key 逻辑（**不是** `withAuth`，那是 `/api/*` 管理路由的要求）。已知边界：`GET /raw/.../models` 仍被「`GET /v1/models` 并集」短路，非 POST/PUT/PATCH/DELETE 方法一律 405
 - **核心逻辑**：`src/lib/gateway/proxy.ts`（纯逻辑可单测）；依赖注入 `src/lib/gateway/proxy-deps.ts`（DB 访问；session/health 为**模块级单例**，因 `createProxyDeps()` 每请求创建）
