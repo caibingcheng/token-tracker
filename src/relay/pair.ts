@@ -28,11 +28,14 @@ const runtime: PairRuntime = {
   state: loadState(process.env.CENTER_URL ?? ""),
   code: null,
   interval: 5,
+  // 已有 device token（卷里保留的配对结果）= 启动即已配对。否则 status 会停在初值 "pairing"，
+  // /pair 页永远显示 "Pairing…"（没有 code，也不会进 polling），看起来像卡死。
   status: "pairing",
   errorDetail: null,
   lastPlanOutcome: null,
   timer: null,
 };
+if (runtime.state.deviceToken) runtime.status = "paired";
 
 export function pairRuntime(): PairRuntime {
   return runtime;
@@ -195,11 +198,13 @@ export function pairPageAllowed(remoteAddress: string | null): boolean {
 }
 
 export function renderPairPage(): string {
-  const pending = runtime.status === "pairing" && runtime.code !== null;
+  // 防御：状态机漏标（旧状态文件 / 外部改 state）时，有 token 就不能显示 "Pairing…"
+  const paired = runtime.status === "paired" || (runtime.status === "pairing" && runtime.state.deviceToken !== null);
+  const pending = runtime.status === "pairing" && runtime.code !== null && !paired;
   const headline = pending
     ? "Waiting for authorization"
-    : runtime.status === "paired"
-      ? `Paired as ${escapeHtml(deviceName())}`
+    : paired
+      ? `Paired as ${deviceName()}` // 渲染时 <h1> 会统一转义（这里再转一遍会变成 &amp;lt;）
       : runtime.status === "failed"
         ? "Pairing failed"
         : "Pairing…";
