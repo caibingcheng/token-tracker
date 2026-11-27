@@ -53,7 +53,8 @@ export const GET = withAuth(async () => {
       .select({ upstreamId: upstreamKeysTable.upstreamId, count: count() })
       .from(upstreamKeysTable)
       .groupBy(upstreamKeysTable.upstreamId);
-    // 参与路由的 key 数（enabled=1）：与 loadPlainUpstreamKeys 的过滤口径一致
+    // 参与路由的 key 数（enabled=1）。注意：包含 device 专属 key；直连路径只用通用 key
+    // （loadPlainUpstreamKeys 过滤 device_id IS NULL），per-device key 的归属在 key 列表里标注。
     const activeKeyCounts = await db
       .select({ upstreamId: upstreamKeysTable.upstreamId, count: count() })
       .from(upstreamKeysTable)
