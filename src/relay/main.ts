@@ -1,0 +1,239 @@
+// relay 入口：只挂 /v1* /v1beta* /raw*（纯透传）+ /pair（内联页）。
+// 不注册 /api/*（device 端点属于中心，relay 不做 sub node 互通），不引入会话验签。
+//
+// 构建期硬约束：本入口的 bundle 里不存在 @/lib/db / @/lib/auth / @/lib/gateway/proxy
+//（见 scripts/build-server.mjs 的第二个 build()）。启动自检只是防「拉错镜像」，
+// 真正的边界是 bundle 里没有那些代码。
+import { serve } from "@hono/node-server";
+import type { Context } from "hono";
+import { Hono } from "hono";
+import { prepare, RelayHttpError } from "./prepare";
+import { RELAY_VERSION, requestPlan, type PlanRequest } from "./plan-client";
+import { executePlan } from "./executor";
+import {
+  currentDeviceToken,
+  devicePrivateKeyPem,
+  pairPageAllowed,
+  pairRuntime,
+  recordPlanOutcome,
+  renderPairPage,
+  startPairing,
+} from "./pair";
+import { centerUrlHash, getCenterDeviceName, setCenterDeviceName } from "./state";
+import { privateUpstreamsAllowed } from "@/lib/gateway/url-guard";
+
+const CENTER_ONLY_ENV = ["SQLITE_DATABASE_PATH", "ADMIN_API_KEY", "LOCAL_ADMIN_BYPASS", "GATEWAY_SECRET"];
+const MODEL_LIST_HEADERS = { "cache-control": "no-store", "x-accel-buffering": "no" };
+
+function errorResponse(status: number, type: string, message: string): Response {
+  return new Response(JSON.stringify({ error: { message, type } }), {
+    status,
+    headers: { "content-type": "application/json", "cache-control": "no-store" },
+  });
+}
+
+// 防误拉错镜像：relay 进程里出现中心专用 env 直接拒绝启动（不是安全边界）
+function assertRelayEnv(): void {
+  const leaked = CENTER_ONLY_ENV.filter((name) => {
+    const value = process.env[name];
+    return value !== undefined && value !== "";
+  });
+  if (leaked.length > 0) {
+    console.error(
+      `[relay] refusing to start: this image is for the center (found ${leaked.join(", ")}). ` +
+        "Use the token-tracker-relay image instead."
+    );
+    process.exit(1);
+  }
+  const centerUrl = process.env.CENTER_URL?.trim();
+  if (!centerUrl) {
+    console.error("[relay] refusing to start: CENTER_URL is required");
+    process.exit(1);
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(centerUrl);
+  } catch {
+    console.error("[relay] refusing to start: CENTER_URL is not a valid URL");
+    process.exit(1);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    console.error("[relay] refusing to start: CENTER_URL must start with http(s)://");
+    process.exit(1);
+  }
+  const loopback =
+    parsed.hostname === "localhost" ||
+    parsed.hostname === "::1" ||
+    parsed.hostname.startsWith("127.");
+  // 明文 http 只在环回/内网部署下允许（device token 与 lease 都走这条链路）
+  if (parsed.protocol === "http:" && !loopback && !privateUpstreamsAllowed()) {
+    console.error(
+      "[relay] refusing to start: CENTER_URL must use https for non-loopback hosts " +
+        "(set ALLOW_PRIVATE_UPSTREAMS=true only for trusted private networks)"
+    );
+    process.exit(1);
+  }
+}
+
+assertRelayEnv();
+
+const app = new Hono({ strict: false });
+
+app.get("/pair", (c) => {
+  const remote =
+    (c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined)?.incoming?.socket
+      ?.remoteAddress ?? null;
+  if (!pairPageAllowed(remote)) {
+    return new Response(
+      "pair page is local-only (set RELAY_PAIR_PAGE=on to expose it); the code is printed in `docker logs`\n",
+      { status: 403, headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } }
+    );
+  }
+  return new Response(renderPairPage(), {
+    headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+  });
+});
+
+let policyChecked = false;
+
+async function handleProxy(c: Context): Promise<Response> {
+  const deviceToken = currentDeviceToken();
+  if (!deviceToken) {
+    return errorResponse(503, "relay_not_paired", "Relay is not paired with the center yet");
+  }
+  const url = new URL(c.req.url);
+  let prepared;
+  try {
+    prepared = await prepare(c.req.raw, url);
+  } catch (err) {
+    if (err instanceof RelayHttpError) return errorResponse(err.status, err.type, err.message);
+    throw err;
+  }
+  if (!prepared.vkFp) {
+    return errorResponse(401, "authentication_error", "Missing virtual key");
+  }
+
+  const pathname = url.pathname;
+  const responseId = pathname.startsWith("/v1/responses/")
+    ? pathname.slice("/v1/responses/".length).split("/")[0] || null
+    : null;
+  const planRequest: PlanRequest = {
+    vkFp: prepared.vkFp,
+    path: prepared.path,
+    model: prepared.model,
+    protocol: prepared.protocol,
+    stream: prepared.stream,
+    nativeSessionId: prepared.nativeSessionId,
+    sessionInput: prepared.sessionInput,
+    hasMessages: prepared.hasMessages,
+    responseId,
+    userAgent: c.req.header("user-agent")?.slice(0, 512) ?? null,
+    estimatedInputTokens: prepared.estimatedInputTokens,
+    headerNames: prepared.headerNames,
+  };
+
+  let planned;
+  try {
+    planned = await requestPlan(deviceToken, planRequest);
+  } catch (err) {
+    console.error(`[relay] plan request failed: ${err instanceof Error ? err.message : String(err)}`);
+    recordPlanOutcome("center unreachable");
+    return errorResponse(502, "center_unreachable", "Center is unreachable from this relay");
+  }
+  if (!planned.ok) {
+    recordPlanOutcome(`${planned.status} ${planned.error.error.type}`);
+    if (planned.status === 401) {
+      console.error(
+        "[relay] center rejected this device token (revoked or deleted) — re-pair this relay from /admin/devices"
+      );
+    }
+    return errorResponse(planned.status, planned.error.error.type, planned.error.error.message);
+  }
+
+  const plan = planned.plan;
+  // 中心改名（PATCH /admin/devices/:id）后无需心跳：下一次 plan 就带回来，/pair 页跟着变。
+  // 只在变化时打一行日志，避免每个请求都刷屏。
+  if (plan.device && plan.device.name !== null && plan.device.name !== getCenterDeviceName()) {
+    console.log(`[relay] center device name: "${plan.device.name}"`);
+    setCenterDeviceName(plan.device.name);
+  }
+  if (!policyChecked) {
+    policyChecked = true;
+    const localMb = Math.max(1, Math.round(Number(process.env.GATEWAY_MAX_BODY_MB ?? 32)));
+    const centerMb = plan.policy.centerMaxBodyMb;
+    if (localMb < centerMb) {
+      console.warn(
+        `[relay] warn: local maxBodyMb=${localMb} < center=${centerMb}; some requests accepted by the center will be rejected here`
+      );
+    } else if (localMb > centerMb) {
+      console.log(
+        `[relay] info: local maxBodyMb=${localMb} > center=${centerMb}; bodies ${centerMb}-${localMb}MB are accepted only via this relay`
+      );
+    }
+  }
+
+  // models 模式：快照来自中心（非通配 enabled_models ∪ enabled 命名路由名，已按 vk allowlist 过滤）
+  if (plan.modelsSnapshot !== null) {
+    const models = plan.modelsSnapshot;
+    recordPlanOutcome("ok (models)");
+    return new Response(
+      JSON.stringify({
+        object: "list",
+        data: models.map((id) => ({ id, object: "model", created: 0, owned_by: "gateway" })),
+      }),
+      { headers: { ...MODEL_LIST_HEADERS, "content-type": "application/json" } }
+    );
+  }
+
+  return executePlan({
+    plan,
+    deviceToken,
+    devicePrivateKeyPem: devicePrivateKeyPem(),
+    prepared,
+    request: c.req.raw,
+    streamIdleTimeoutMs: plan.policy.streamIdleTimeoutMinutes * 60_000,
+    onOutcome: recordPlanOutcome,
+  });
+}
+
+app.all("/v1/*", handleProxy);
+app.all("/v1beta/*", handleProxy);
+app.all("/raw/*", handleProxy);
+
+app.notFound((c) =>
+  c.req.path === "/"
+    ? c.text(`token-tracker relay ${RELAY_VERSION}\n`, 200)
+    : errorResponse(404, "not_found", "Not found")
+);
+
+const port = Number(process.env.PORT || 3000);
+const hostname = process.env.HOSTNAME || "0.0.0.0";
+
+const rt = pairRuntime();
+if (
+  rt.state.centerUrlHash &&
+  rt.state.centerUrlHash !== centerUrlHash(process.env.CENTER_URL ?? "")
+) {
+  console.warn(
+    "[relay] CENTER_URL changed since pairing — re-pair this relay if plan requests fail"
+  );
+}
+if (rt.state.deviceToken) {
+  console.log(`[relay] paired${rt.state.pairedAt ? ` at ${rt.state.pairedAt}` : ""}; waiting for requests`);
+} else {
+  void startPairing();
+}
+
+const server = serve({ fetch: app.fetch, port, hostname }, (info) => {
+  console.log(`[relay] listening on http://${hostname}:${info.port}`);
+});
+
+let closing = false;
+function shutdown() {
+  if (closing) return;
+  closing = true;
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 3000).unref();
+}
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);

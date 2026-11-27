@@ -1,0 +1,156 @@
+// relay ⇄ 中心 的两个 HTTP 调用：plan（同步，失败即返回客户端错误）与 report（异步重试）。
+// 出站统一走 outboundFetch（连接时地址校验 + dispatcher + redirect manual），不裸 fetch。
+import { outboundFetch } from "@/lib/gateway/outbound-fetch";
+import { getOutboundDispatcher } from "@/lib/gateway/proxy-dispatcher";
+
+export const RELAY_VERSION = "1.0.0";
+
+export interface PlanHopWire {
+  hopIndex: number;
+  upstreamId: number;
+  keyId: number;
+  keyLease: string;
+  leaseExpiresAt: number;
+  realModel: string | null;
+  retries: number;
+  continueOn: string[];
+  stopOn: string[];
+  passthrough: "last-4xx" | "last-business" | null;
+  timeoutMs: number | null;
+  suppressHealth: string[];
+  skipSiblingsOn: string[];
+}
+
+export interface PlanWire {
+  planId: string;
+  expiresAt: number;
+  quota: { reservedTokens: number; reservedRpm: number };
+  hops: PlanHopWire[];
+  modelsSnapshot: string[] | null;
+  /** 中心的权威设备名（可缺：旧中心不返回）；relay 只用于展示 */
+  device?: { id: number; name: string | null };
+  policy: {
+    streamIdleTimeoutMinutes: number;
+    centerMaxBodyMb: number;
+    centerMaxResponseBufferMb: number;
+  };
+}
+
+export interface PlanRequest {
+  vkFp: string;
+  path: string;
+  model: string | null;
+  protocol: string;
+  stream: boolean | undefined;
+  nativeSessionId: string | null;
+  sessionInput: string | null;
+  hasMessages: boolean;
+  responseId: string | null;
+  userAgent: string | null;
+  estimatedInputTokens: number;
+  headerNames: string[];
+}
+
+export interface PlanErrorBody {
+  error: { message: string; type: string };
+}
+
+function centerUrl(): string {
+  const url = process.env.CENTER_URL ?? "";
+  return url.replace(/\/+$/, "");
+}
+
+async function postCenter(path: string, body: unknown, deviceToken: string): Promise<Response> {
+  return outboundFetch(`${centerUrl()}${path}`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${deviceToken}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(body),
+    // 中心可能在环回/内网：sync scope 允许 loopback，私网需 ALLOW_PRIVATE_UPSTREAMS
+    scope: "sync",
+    redirect: "manual",
+    dispatcher: getOutboundDispatcher(null),
+    signal: AbortSignal.timeout(15_000),
+  });
+}
+
+export async function requestPlan(
+  deviceToken: string,
+  request: PlanRequest
+): Promise<{ ok: true; plan: PlanWire } | { ok: false; status: number; error: PlanErrorBody }> {
+  const res = await postCenter("/api/device/plan", { ...request, relayVersion: RELAY_VERSION }, deviceToken);
+  let body: unknown = null;
+  try {
+    body = await res.json();
+  } catch {
+    body = null;
+  }
+  if (res.status >= 300 && res.status < 400) {
+    return { ok: false, status: res.status, error: { error: { message: "center redirected", type: "redirect" } } };
+  }
+  if (!res.ok) {
+    const error = (body as PlanErrorBody | null)?.error;
+    return {
+      ok: false,
+      status: res.status,
+      error: {
+        error: {
+          message: error?.message ?? "plan failed",
+          type: error?.type ?? "upstream_error",
+        },
+      },
+    };
+  }
+  return { ok: true, plan: body as PlanWire };
+}
+
+export interface ReportPayload {
+  planId: string;
+  status: "ok" | "failed" | "client_aborted" | "stream_interrupted";
+  winner: { hopIndex: number; upstreamId: number; keyId: number } | null;
+  failures: {
+    hopIndex: number;
+    upstreamId: number;
+    keyId: number;
+    status: number | null;
+    bodyKind: "json" | "html" | "other" | null;
+    cause: "http" | "timeout" | "network";
+  }[];
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheRead: number;
+    cacheWrite: number;
+    hasUsage: boolean;
+  } | null;
+  latencyMs: number;
+  ttftMs: number | null;
+  responseId: string | null;
+}
+
+// fire-and-forget：指数退避 1s/4s/16s，仍失败则丢弃并本地计数（不落盘，§17）
+const reportFailures = { count: 0 };
+export function reportDroppedCount(): number {
+  return reportFailures.count;
+}
+
+export function sendReport(deviceToken: string, payload: ReportPayload): void {
+  const delays = [0, 1000, 4000, 16_000];
+  const attempt = (index: number) => {
+    if (index >= delays.length) {
+      reportFailures.count += 1;
+      console.warn(`[relay] report dropped after ${delays.length} attempts (plan ${payload.planId})`);
+      return;
+    }
+    setTimeout(() => {
+      void postCenter("/api/device/report", payload, deviceToken)
+        .then((res) => {
+          if (!res.ok) attempt(index + 1);
+        })
+        .catch(() => attempt(index + 1));
+    }, delays[index]).unref?.();
+  };
+  attempt(0);
+}

@@ -39,6 +39,27 @@ RUN cd node_modules/better-sqlite3/prebuilds \
   && ls "linux-$arch.node" > /dev/null \
   && ls
 
+# relay（sub node）：只有 build/relay.js —— 无 out/、无 better-sqlite3、无 jemalloc/gosu。
+# 同一仓库同一次 CI 产出；`docker build --target relay` 构建，默认 target 仍是中心（runner）。
+# 必须放在 runner 之前：Docker 默认 target 是最后一个 stage。
+FROM node:22-slim AS relay
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
+# relay 堆需求远小于中心（无 DB、无静态导出）；128MB 封顶对 32MB 请求体缓冲仍余量充足
+ENV NODE_OPTIONS="--max-old-space-size=128 --expose-gc --max-semi-space-size=4"
+
+# relay.state.json 唯一落盘（0600）
+RUN mkdir -p /app/data && chown node:node /app/data
+
+COPY --from=builder --chown=node:node /app/build/relay.js ./build/relay.js
+
+USER node
+EXPOSE 3000
+CMD ["node", "build/relay.js"]
+
 FROM node:22-slim AS runner
 WORKDIR /app
 
