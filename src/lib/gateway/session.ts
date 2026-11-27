@@ -72,6 +72,18 @@ function messageText(content: unknown): string | null {
   return texts.length > 0 ? texts.join("") : null;
 }
 
+// 指纹素材 → 会话指纹输入（tail 拼接，**不哈希**）：
+// `{素材}\u0000{model}\u0000{vkId}\u0000{protocol}`，素材与 model 之间无分隔符。
+// relay 侧只把素材（sessionInput）送到中心，由中心在这里补 tail —— 两条入口逐字节一致。
+export function computeSessionIdFromInput(
+  sessionInput: string,
+  model: string,
+  virtualKeyId: number,
+  protocol: string
+): string {
+  return `${sessionInput}\u0000${model}\u0000${virtualKeyId}\u0000${protocol}`;
+}
+
 // 从请求体派生会话指纹输入（不涉及任何隐私明文之外的敏感内容，最终会哈希）
 export function extractSessionInput(
   bodyJson: unknown,
@@ -96,10 +108,11 @@ export function extractSessionInput(
     }
   }
 
-  return (
-    systemTexts.join("").slice(-1024) +
-    (firstUserText ?? "").slice(0, 1024) +
-    `\u0000${model}\u0000${virtualKeyId}\u0000${protocol}`
+  return computeSessionIdFromInput(
+    systemTexts.join("").slice(-1024) + (firstUserText ?? "").slice(0, 1024),
+    model,
+    virtualKeyId,
+    protocol
   );
 }
 
@@ -181,10 +194,11 @@ export function extractSessionInputFromBytes(
     }
   }
 
-  return (
-    systemTexts.join("").slice(-1024) +
-    (firstUserText ?? "").slice(0, 1024) +
-    `\u0000${model}\u0000${virtualKeyId}\u0000${protocol}`
+  return computeSessionIdFromInput(
+    systemTexts.join("").slice(-1024) + (firstUserText ?? "").slice(0, 1024),
+    model,
+    virtualKeyId,
+    protocol
   );
 }
 
