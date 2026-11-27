@@ -11,6 +11,7 @@ export const RECORD_COLUMNS = [
   { id: "agent", label: "Agent" },
   { id: "key", label: "Key" },
   { id: "session", label: "Session" },
+  { id: "device", label: "Device" },
   { id: "tokens", label: "Tokens" },
   { id: "ttft", label: "TTFT" },
   { id: "latency", label: "Latency" },

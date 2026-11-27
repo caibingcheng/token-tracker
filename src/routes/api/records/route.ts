@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db, initDatabase } from "@/lib/db";
-import { tokenRecords } from "@/lib/db";
+import { tokenRecords, devicesTable } from "@/lib/db";
 import { sql, desc, eq, and, gte, lte, inArray, SQL } from "drizzle-orm";
 import { resolveProviderFilters, loadHiddenProviderGroups, anonymizeProvider } from "@/lib/provider-utils";
 import { normalizeModel, resolveNormalizedModelFilters } from "@/lib/model-utils";
@@ -162,6 +162,7 @@ export const GET = withAuth(async (request: NextRequest) => {
           status: tokenRecords.status,
           requestModel: tokenRecords.requestModel,
           sessionId: tokenRecords.sessionId,
+          deviceId: tokenRecords.deviceId,
           createdAt: tokenRecords.createdAt,
         })
         .from(tokenRecords)
@@ -169,6 +170,20 @@ export const GET = withAuth(async (request: NextRequest) => {
         .limit(limit)
         .offset(offset);
       const rawData = whereClause ? await query.where(whereClause) : await query;
+      // relay 设备展示名：device 被删后 token_records.device_id 置 NULL（历史保留）
+      const deviceIds = [
+        ...new Set(rawData.map((r: any) => r.deviceId).filter((id: any): id is number => typeof id === "number")),
+      ];
+      const deviceNames = new Map<number, string>();
+      if (deviceIds.length > 0) {
+        const rows = await db
+          .select({ id: devicesTable.id, name: devicesTable.name, fingerprint: devicesTable.fingerprint })
+          .from(devicesTable)
+          .where(inArray(devicesTable.id, deviceIds));
+        for (const row of rows as any[]) {
+          deviceNames.set(row.id, row.name ?? row.fingerprint.slice(0, 8));
+        }
+      }
       const data = rawData.map((record: any) => ({
         id: record.id,
         model: record.model,
@@ -184,6 +199,8 @@ export const GET = withAuth(async (request: NextRequest) => {
         status: record.status,
         requestModel: record.requestModel,
         sessionId: record.sessionId,
+        deviceId: record.deviceId ?? null,
+        deviceName: record.deviceId ? (deviceNames.get(record.deviceId) ?? null) : null,
         createdAt: record.createdAt,
         providerName: record.provider
           ? anonymizeProvider(record.provider, [], groups)
