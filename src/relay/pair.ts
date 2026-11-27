@@ -76,6 +76,18 @@ async function postCenter(path: string, body: unknown): Promise<Response> {
   });
 }
 
+/** 中心明确拒绝 device token（admin 轮换/删除/撤销）：清本地 token 并重新进入配对，自愈而非永远 401 */
+export async function recoverFromRejectedToken(reason: string): Promise<void> {
+  // 已经处于配对中（刚启动 / 上一个请求已触发）：不重复发 pair/start，否则会刷出多个码
+  if (runtime.status === "pairing" && (runtime.timer !== null || runtime.code !== null)) return;
+  console.warn(`[relay] device token rejected by center (${reason}) — clearing it and pairing again`);
+  runtime.code = null;
+  runtime.state.deviceToken = null;
+  runtime.state.pairedAt = null;
+  saveState(runtime.state);
+  await startPairing();
+}
+
 /** 首次启动 / token 失效时进入配对：打印码、按 interval 轮询，成功后落盘 */
 export async function startPairing(): Promise<void> {
   if (runtime.timer) clearTimeout(runtime.timer);
@@ -197,9 +209,24 @@ export function pairPageAllowed(remoteAddress: string | null): boolean {
   return isLoopbackHost(host) || isPrivateHost(host) || host.startsWith("::ffff:127.");
 }
 
-export function renderPairPage(): string {
+export interface PairView {
+  status: PairRuntime["status"];
+  pending: boolean;
+  paired: boolean;
+  headline: string;
+  code: string | null;
+  deviceName: string;
+  fingerprint: string;
+  center: string;
+  lastPlanOutcome: string | null;
+  errorDetail: string | null;
+}
+
+/** 页面与 /pair/status 共用同一份派生值：两者不一致会让自动刷新反复触发 */
+export function pairView(): PairView {
   // 防御：状态机漏标（旧状态文件 / 外部改 state）时，有 token 就不能显示 "Pairing…"
-  const paired = runtime.status === "paired" || (runtime.status === "pairing" && runtime.state.deviceToken !== null);
+  const paired =
+    runtime.status === "paired" || (runtime.status === "pairing" && runtime.state.deviceToken !== null);
   const pending = runtime.status === "pairing" && runtime.code !== null && !paired;
   const headline = pending
     ? "Waiting for authorization"
@@ -208,6 +235,43 @@ export function renderPairPage(): string {
       : runtime.status === "failed"
         ? "Pairing failed"
         : "Pairing…";
+  return {
+    status: runtime.status,
+    pending,
+    paired,
+    headline,
+    code: pending ? runtime.code : null,
+    deviceName: deviceName(),
+    fingerprint: runtime.state.fingerprint.slice(0, 8),
+    center: centerDisplay(),
+    lastPlanOutcome: runtime.lastPlanOutcome,
+    errorDetail: runtime.errorDetail,
+  };
+}
+
+// 页面自刷新：查 `/pair/status`，**只在派生值变化时** location.reload()。
+// 频率：配对中 2s（等授权要快）；已配对/已失败 15s（只为跟上 Last plan、中心改名、
+// token 被拒后的自动重配）。静止时不闪；纯浏览器侧轮询，relay 进程里没有新 timer。
+const AUTO_REFRESH_SCRIPT = (intervalMs: number): string => `<script>
+(() => {
+  let last = null;
+  const tick = async () => {
+    try {
+      const res = await fetch("/pair/status", { cache: "no-store" });
+      if (!res.ok) return;
+      const key = JSON.stringify(await res.json());
+      if (last === null) { last = key; return; }
+      if (key !== last) location.reload();
+    } catch { /* relay 重启中：下一轮再试 */ }
+  };
+  tick();
+  setInterval(tick, ${intervalMs});
+})();
+</script>`;
+
+export function renderPairPage(): string {
+  const view = pairView();
+  const { pending, code } = view;
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
@@ -222,15 +286,15 @@ dt{color:#6b7280}
 dd{margin:0;font-family:ui-monospace,monospace;word-break:break-all}
 p.hint{font-size:13px;color:#6b7280;margin-top:16px}
 </style></head><body><div class="card">
-<h1>${escapeHtml(headline)}</h1>
-${pending ? `<div class="code">${escapeHtml(runtime.code ?? "")}</div>` : ""}
+<h1>${escapeHtml(view.headline)}</h1>
+${pending ? `<div class="code">${escapeHtml(code ?? "")}</div>` : ""}
 <dl>
-<dt>Device</dt><dd>${escapeHtml(deviceName())}</dd>
-<dt>Fingerprint</dt><dd>${escapeHtml(runtime.state.fingerprint.slice(0, 8))}</dd>
-<dt>Center</dt><dd>${escapeHtml(centerDisplay())}</dd>
-<dt>Last plan</dt><dd>${escapeHtml(runtime.lastPlanOutcome ?? "—")}</dd>
+<dt>Device</dt><dd>${escapeHtml(view.deviceName)}</dd>
+<dt>Fingerprint</dt><dd>${escapeHtml(view.fingerprint)}</dd>
+<dt>Center</dt><dd>${escapeHtml(view.center)}</dd>
+<dt>Last plan</dt><dd>${escapeHtml(view.lastPlanOutcome ?? "—")}</dd>
 </dl>
 ${pending ? `<p class="hint">Enter this code on the center under <strong>Admin → Devices</strong>. The code disappears once paired.</p>` : ""}
-${runtime.errorDetail ? `<p class="hint">${escapeHtml(runtime.errorDetail)}</p>` : ""}
-</div></body></html>`;
+${view.errorDetail ? `<p class="hint">${escapeHtml(view.errorDetail)}</p>` : ""}
+</div>${AUTO_REFRESH_SCRIPT(view.status === "pairing" ? 2000 : 15000)}</body></html>`;
 }

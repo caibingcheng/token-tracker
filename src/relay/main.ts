@@ -15,7 +15,9 @@ import {
   devicePrivateKeyPem,
   pairPageAllowed,
   pairRuntime,
+  pairView,
   recordPlanOutcome,
+  recoverFromRejectedToken,
   renderPairPage,
   startPairing,
 } from "./pair";
@@ -77,13 +79,18 @@ function assertRelayEnv(): void {
 
 assertRelayEnv();
 
+// /pair 页的访问控制要拿对端地址（默认只允许环回/私网来源）
+function remoteAddress(c: Context): string | null {
+  return (
+    (c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined)?.incoming?.socket
+      ?.remoteAddress ?? null
+  );
+}
+
 const app = new Hono({ strict: false });
 
 app.get("/pair", (c) => {
-  const remote =
-    (c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined)?.incoming?.socket
-      ?.remoteAddress ?? null;
-  if (!pairPageAllowed(remote)) {
+  if (!pairPageAllowed(remoteAddress(c))) {
     return new Response(
       "pair page is local-only (set RELAY_PAIR_PAGE=on to expose it); the code is printed in `docker logs`\n",
       { status: 403, headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } }
@@ -92,6 +99,14 @@ app.get("/pair", (c) => {
   return new Response(renderPairPage(), {
     headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
   });
+});
+
+// /pair 页的自动刷新数据源：同一份 pairView()，页面只在派生值变化时整页重渲染
+app.get("/pair/status", (c) => {
+  if (!pairPageAllowed(remoteAddress(c))) {
+    return c.json({ error: "pair page is local-only" }, 403, { "cache-control": "no-store" });
+  }
+  return c.json(pairView(), 200, { "cache-control": "no-store" });
 });
 
 let policyChecked = false;
@@ -142,6 +157,15 @@ async function handleProxy(c: Context): Promise<Response> {
   }
   if (!planned.ok) {
     recordPlanOutcome(`${planned.status} ${planned.error.error.type}`);
+    if (planned.deviceTokenRejected) {
+      // 自愈：清楚旧 token 并重新配对（同一 fingerprint 会被中心当作 reauth，历史记录不断链）
+      void recoverFromRejectedToken(planned.error.error.message);
+      return errorResponse(
+        503,
+        "relay_unpaired",
+        "This relay is no longer authorized by the center; it is pairing again — check /pair on the relay"
+      );
+    }
     if (planned.status === 401) {
       console.error(
         "[relay] center rejected this device token (revoked or deleted) — re-pair this relay from /admin/devices"

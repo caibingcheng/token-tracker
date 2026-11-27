@@ -76,10 +76,45 @@ async function postCenter(path: string, body: unknown, deviceToken: string): Pro
   });
 }
 
+export interface PlanFailure {
+  status: number;
+  error: PlanErrorBody;
+  /** true = 中心明确拒绝 device token（轮换/删除/未授权），不是 vk 或模型问题 */
+  deviceTokenRejected?: boolean;
+}
+
+/**
+ * 解析中心返回的 plan 失败体。两种形状：
+ *   - 业务错误 `{error:{message,type}}`（planError）
+ *   - **device token 被拒** `{success:false, error:"Invalid or revoked device token"}`（withDeviceAuth）
+ * 后者以前会被归成 type=upstream_error，relay 只能给客户端一个 401 糊状错误，也无法自愈。
+ */
+export function parsePlanFailure(status: number, body: unknown): PlanFailure {
+  const raw = body !== null && typeof body === "object" ? (body as Record<string, unknown>) : null;
+  const errorObj =
+    raw && typeof raw.error === "object" && raw.error !== null
+      ? (raw.error as { message?: unknown; type?: unknown })
+      : null;
+  const deviceTokenRejected = status === 401 && raw?.success === false && typeof raw.error === "string";
+  return {
+    status,
+    error: {
+      error: {
+        message:
+          (typeof errorObj?.message === "string" ? errorObj.message : null) ??
+          (typeof raw?.error === "string" ? raw.error : null) ??
+          "plan failed",
+        type: (typeof errorObj?.type === "string" ? errorObj.type : null) ?? "upstream_error",
+      },
+    },
+    ...(deviceTokenRejected ? { deviceTokenRejected: true } : {}),
+  };
+}
+
 export async function requestPlan(
   deviceToken: string,
   request: PlanRequest
-): Promise<{ ok: true; plan: PlanWire } | { ok: false; status: number; error: PlanErrorBody }> {
+): Promise<{ ok: true; plan: PlanWire } | ({ ok: false } & PlanFailure)> {
   const res = await postCenter("/api/device/plan", { ...request, relayVersion: RELAY_VERSION }, deviceToken);
   let body: unknown = null;
   try {
@@ -91,17 +126,7 @@ export async function requestPlan(
     return { ok: false, status: res.status, error: { error: { message: "center redirected", type: "redirect" } } };
   }
   if (!res.ok) {
-    const error = (body as PlanErrorBody | null)?.error;
-    return {
-      ok: false,
-      status: res.status,
-      error: {
-        error: {
-          message: error?.message ?? "plan failed",
-          type: error?.type ?? "upstream_error",
-        },
-      },
-    };
+    return { ok: false, ...parsePlanFailure(res.status, body) };
   }
   return { ok: true, plan: body as PlanWire };
 }

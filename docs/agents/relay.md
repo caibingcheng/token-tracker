@@ -78,6 +78,7 @@ npm run seed:fake-upstream         # 把这些上游写进中心（幂等；--wi
    - **改名以中心为准**：`PATCH /api/admin/devices/:id` 改完不用重启 relay —— 下一次 plan 响应的 `device.name` 就会带回新名（relay 只存内存并更新 `/pair` 页），没有任何心跳/长轮询。
 4. relay 按 `interval`（5s，`slow_down` 会翻倍至 30s）轮询 `POST /api/device/pair/poll`，取到 `dt-` token 后落盘，配对页上的码立即消失。
 5. `fingerprint` 命中已有 device 行 → **reauth**：复用同一 `device_id`（历史记录不断链），只换 token。
+6. **`/pair` 页自己会刷新**：页面查 `GET /pair/status`（同一份 `pairView()`，不含 token/私钥），**只在派生值变化时** `location.reload()` —— 待授权→已配对、中心改名、Last plan 变化都会自动出现，静止时不闪。频率：配对中 2s，已配对/已失败 15s。浏览器侧轮询，relay 进程里没有新 timer。
 
 `/pair` 页展示白名单：码（仅 pending）、设备名（HTML 转义）、fingerprint 前 8 位、`scheme://host`、最近一次 plan 结果（状态码）。**永不**展示 device token / 私钥 / vk / upstream key。
 
@@ -105,8 +106,8 @@ plan 请求带 `relayVersion`，中心维护 `MIN_RELAY_VERSION`（`src/routes/a
 
 | 现象 | 原因 | 修法 |
 |---|---|---|
-| `503 relay_not_paired` | 还没配对 / 状态文件丢了 | 看 `docker logs` 或 `/pair` 取码，去中心 Admin → Devices 授权 |
-| plan 401 `invalid_device_token` | device 被撤销或删除 | 中心列表 Unrevoke，或重新配对；relay 日志会提示 re-pair |
+| `503 relay_not_paired` | 还没配对 / 状态文件丢了 / device token 刚被中心拒绝并清掉 | 看 `docker logs` 或 `/pair` 取码，去中心 Admin → Devices 授权 |
+| plan 401（中心回 `{success:false,error:"Invalid or revoked device token"}`） | device 被删除、或 admin 在中心点了 Rotate token（旧 token 立即失效） | **自愈**：relay 识别出这类 401 → 清本地 token、写 state、自动重新配对（`recoverFromRejectedToken`），客户端收到 `503 relay_unpaired`，`/pair` 页直接出现新码；同 fingerprint 重新授权即 reauth，记录不断链 |
 | plan 401 `invalid_api_key` | vk 指纹未命中（vk 被删/换 key，或 `key_fingerprint` 未回填） | 检查 vk；`GATEWAY_SECRET` 必须存在（回填与 lease 都需要） |
 | plan 403 `model_not_allowed` | vk 的 `enabled_models` 不含该 model | 改 vk allowlist |
 | plan 404 `model_not_found` / 400 `protocol_mismatch` | model 不在该协议的 upstream 上 | 检查 enabled_models / 协议 |
