@@ -17,6 +17,7 @@ export const tokenRecords = sqliteTable("token_records", {
   sessionId: text("session_id"), // 原生 session header 原值或网关指纹（截断 256；无法识别时 NULL；仅存储展示用，无索引）
   requestModel: text("request_model"), // 客户端原始请求名（虚拟名路由场景可追溯）
   remoteInstanceUid: text("remote_instance_uid"), // 来源实例稳定身份键（NULL = 本地记录；非 NULL = ingest 推送来源）
+  deviceId: integer("device_id"), // relay 设备 id（NULL = 本机直连或 sync 推送；与 remote_instance_uid 互斥出现）
   createdAt: text("created_at").$defaultFn(() => new Date().toISOString()),
 }, (table) => [
   index("idx_token_records_created_at").on(table.createdAt),
@@ -28,6 +29,7 @@ export const tokenRecords = sqliteTable("token_records", {
   index("idx_token_records_virtual_key_id").on(table.virtualKeyId),
   index("idx_token_records_vk_created_at").on(table.virtualKeyId, table.createdAt),
   index("idx_token_records_remote_instance_uid_created_at").on(table.remoteInstanceUid, table.createdAt),
+  index("idx_token_records_device_created_at").on(table.deviceId, table.createdAt),
 ]);
 
 export type TokenRecord = typeof tokenRecords.$inferSelect;
@@ -140,6 +142,7 @@ export const upstreamKeys = sqliteTable("upstream_keys", {
   apiKeyEncrypted: text("api_key_encrypted").notNull(),
   enabled: integer("enabled").notNull().default(1),
   lastStatus: text("last_status"),
+  deviceId: integer("device_id"), // NULL = 通用 key；非 NULL = 该 relay device 专属（只下发给该 device）
   createdAt: text("created_at").$defaultFn(() => new Date().toISOString()),
 });
 
@@ -158,8 +161,13 @@ export const virtualKeys = sqliteTable("virtual_keys", {
   maxTpm: integer("max_tpm"),
   maxDailyTokens: integer("max_daily_tokens"),
   maxMonthlyTokens: integer("max_monthly_tokens"),
+  // vk 认证索引键 = sha256("vkfp:v1:" + 明文) 的 hex（只做索引，不作为放行依据；
+  // NULL = 尚未回填，走全表解密回退）
+  keyFingerprint: text("key_fingerprint"),
   createdAt: text("created_at").$defaultFn(() => new Date().toISOString()),
-});
+}, (table) => [
+  uniqueIndex("uq_virtual_keys_key_fingerprint").on(table.keyFingerprint),
+]);
 
 export type VirtualKey = typeof virtualKeys.$inferSelect;
 export type NewVirtualKey = typeof virtualKeys.$inferInsert;
@@ -240,3 +248,67 @@ export const responseBindings = sqliteTable("response_bindings", {
 
 export type ResponseBinding = typeof responseBindings.$inferSelect;
 export type NewResponseBinding = typeof responseBindings.$inferInsert;
+
+// ---- relay（sub node）相关表 ----
+
+// 已授权设备。fingerprint 是 relay 首次启动生成的持久 UUID（u-[a-f0-9]{32}）。
+// token_hash 只存 sha256（与 ingest_tokens 可回显明文故意不同：它能换真实 upstream key）。
+export const devices = sqliteTable("devices", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  fingerprint: text("fingerprint").notNull().unique(),
+  name: text("name"),
+  publicKey: text("public_key").notNull(), // X25519 公钥（SPKI DER，base64url）
+  tokenHash: text("token_hash").unique(), // sha256(device token) hex；NULL = 已登记未授权
+  createdAt: text("created_at").notNull().$defaultFn(() => new Date().toISOString()),
+  lastSeenAt: text("last_seen_at"),
+  revokedAt: text("revoked_at"),
+}, (table) => [index("idx_devices_revoked").on(table.revokedAt)]);
+
+export type Device = typeof devices.$inferSelect;
+export type NewDevice = typeof devices.$inferInsert;
+
+// 配对会话（RFC 8628）：码本身不落库，只存 sha256。
+export const devicePairings = sqliteTable("device_pairings", {
+  codeHash: text("code_hash").primaryKey(),
+  clientSecretHash: text("client_secret_hash").notNull(),
+  fingerprint: text("fingerprint").notNull(),
+  name: text("name"),
+  publicKey: text("public_key").notNull(),
+  clientIp: text("client_ip"),
+  userAgent: text("user_agent"),
+  status: text("status").notNull().default("pending"), // pending | authorized | denied | expired
+  pollCount: integer("poll_count").notNull().default(0),
+  createdAt: text("created_at").notNull().$defaultFn(() => new Date().toISOString()),
+  expiresAt: integer("expires_at").notNull(), // epoch ms
+  consumedAt: text("consumed_at"),
+}, (table) => [index("idx_device_pairings_expires").on(table.expiresAt)]);
+
+export type DevicePairing = typeof devicePairings.$inferSelect;
+export type NewDevicePairing = typeof devicePairings.$inferInsert;
+
+// 计划与配额预留：同一 planId 的 report 靠 reported_at 幂等。
+// hops_json / request_model / user_agent / session_id 都是「plan 时定下、report 不得覆盖」的写库素材。
+export const devicePlans = sqliteTable("device_plans", {
+  planId: text("plan_id").primaryKey(),
+  deviceId: integer("device_id").notNull(),
+  virtualKeyId: integer("virtual_key_id"),
+  hopsJson: text("hops_json").notNull(), // [{hopIndex, upstreamId, keyId, realModel}]
+  mode: text("mode").notNull(),
+  protocol: text("protocol").notNull(),
+  requestModel: text("request_model"),
+  userAgent: text("user_agent"),
+  sessionId: text("session_id"),
+  recordSessionId: text("record_session_id"),
+  reservedTokens: integer("reserved_tokens").notNull().default(0),
+  reservedRpm: integer("reserved_rpm").notNull().default(1),
+  createdAt: text("created_at").notNull().$defaultFn(() => new Date().toISOString()),
+  expiresAt: integer("expires_at").notNull(), // epoch ms
+  reportedAt: text("reported_at"),
+  status: text("status"), // ok | failed | client_aborted | stream_interrupted
+}, (table) => [
+  index("idx_device_plans_expires").on(table.expiresAt),
+  index("idx_device_plans_vk").on(table.virtualKeyId, table.reportedAt),
+]);
+
+export type DevicePlan = typeof devicePlans.$inferSelect;
+export type NewDevicePlan = typeof devicePlans.$inferInsert;
