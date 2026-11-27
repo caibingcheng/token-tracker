@@ -312,3 +312,22 @@ export const devicePlans = sqliteTable("device_plans", {
 
 export type DevicePlan = typeof devicePlans.$inferSelect;
 export type NewDevicePlan = typeof devicePlans.$inferInsert;
+
+// relay ⇄ 中心 RTT 的分钟桶：aggregate（count/sum/max/last）由 relay 算好再上报，
+// 中心只做覆盖写。主键 (device_id, kind, bucket_start)：已闭合桶的内容不再变化，
+// 所以 report 重试重传同一份快照是幂等的（不会重复累加）。5h 窗口 = 300 桶/kind，
+// 过期行由 lib/device/latency.ts 惰性修剪。
+export const deviceLatencyBuckets = sqliteTable("device_latency_buckets", {
+  deviceId: integer("device_id").notNull(),
+  kind: text("kind").notNull(), // plan | report
+  bucketStart: integer("bucket_start").notNull(), // epoch ms，整分钟对齐
+  count: integer("count").notNull().default(0),
+  sumMs: integer("sum_ms").notNull().default(0),
+  maxMs: integer("max_ms").notNull().default(0),
+  lastMs: integer("last_ms").notNull().default(0),
+}, (table) => [
+  primaryKey({ columns: [table.deviceId, table.kind, table.bucketStart] }),
+  index("idx_device_latency_buckets_start").on(table.bucketStart),
+]);
+
+export type DeviceLatencyBucket = typeof deviceLatencyBuckets.$inferSelect;

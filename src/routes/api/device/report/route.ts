@@ -18,6 +18,7 @@ import { maybeSweep } from "@/lib/device/store";
 import { db, devicePlansTable, initDatabase, tokenRecords, upstreamsTable, virtualKeysTable } from "@/lib/db";
 import { invalidateQueryCache, withSkipCache } from "@/lib/db/cache";
 import { createProxyDeps, saveResponseBinding } from "@/lib/gateway/proxy-deps";
+import { parseRttBuckets, recordRttBuckets } from "@/lib/device/latency";
 
 const REPORT_BODY_LIMIT = 8 * 1024;
 const limiter = createSlidingWindowLimiter({ windowMs: 1000, max: 20 });
@@ -66,6 +67,10 @@ export const POST = withDeviceAuth(async (request: NextRequest, device: DeviceCo
   }
 
   const nowIso = new Date().toISOString();
+  // relay 自测的 RTT 分钟桶：覆盖写（已闭合桶内容不变）、重传幂等。放在 reported_at 幂等检查之前，
+  // 这样 report 重试还能把丢掉的桶补上；写失败直接 500 让 relay 退避重试（不静默丢可观测性数据）。
+  await recordRttBuckets(device.id, parseRttBuckets(body.centerRtt));
+
   const updated = await withSkipCache(async () =>
     db
       .update(devicePlansTable)

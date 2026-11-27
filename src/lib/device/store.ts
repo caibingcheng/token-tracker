@@ -25,6 +25,7 @@ import {
   sanitizeDeviceName,
   sha256Hex,
 } from "./pairing";
+import { emptyDeviceLatency, latencySummaries, sweepRttBuckets, type DeviceLatency } from "./latency";
 
 export class PairingLimitError extends Error {
   constructor() {
@@ -42,6 +43,8 @@ export interface DeviceListItem {
   revokedAt: string | null;
   status: "pending" | "active" | "revoked";
   recordCount30d: number;
+  /** relay ⇄ 中心 RTT 的 5h 概览（无样本 = 全 null） */
+  latency: DeviceLatency;
 }
 
 export interface PairingLookup {
@@ -417,6 +420,7 @@ export async function listDevices(): Promise<DeviceListItem[]> {
     const countByDevice = new Map<number, number>(
       counts.map((c: any) => [Number(c.deviceId), Number(c.n)])
     );
+    const latencyByDevice = await latencySummaries();
     return rows.map((row: any) => ({
       id: row.id,
       fingerprint: row.fingerprint,
@@ -430,6 +434,7 @@ export async function listDevices(): Promise<DeviceListItem[]> {
           ? ("active" as const)
           : ("pending" as const),
       recordCount30d: countByDevice.get(row.id) ?? 0,
+      latency: latencyByDevice.get(row.id) ?? emptyDeviceLatency(),
     }));
   });
 }
@@ -582,6 +587,8 @@ export async function maybeSweep(now: number = Date.now()): Promise<void> {
           lt(devicePlansTable.createdAt, cutoff)
         )
       );
+    // RTT 桶只保留 5h 窗口（多留一分钟给未闭合桶）
+    await sweepRttBuckets(now);
   });
 }
 

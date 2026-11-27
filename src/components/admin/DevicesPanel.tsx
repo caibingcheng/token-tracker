@@ -21,6 +21,13 @@ import {
 import { linkAction, pillAction, statusChip, tapAction } from "./buttons";
 import { useConfirm } from "./ConfirmDialog";
 
+interface RttStatsView {
+  latestMs: number | null;
+  avgMs: number | null;
+  maxMs: number | null;
+  samples: number;
+}
+
 interface DeviceItem {
   id: number;
   fingerprint: string;
@@ -30,6 +37,7 @@ interface DeviceItem {
   revokedAt: string | null;
   status: "pending" | "active" | "revoked";
   recordCount30d: number;
+  latency: { plan: RttStatsView; report: RttStatsView };
 }
 
 interface Stats {
@@ -62,6 +70,27 @@ function formatDate(iso: string | null | undefined): string {
 
 function shortFingerprint(fingerprint: string): string {
   return fingerprint.slice(0, 8);
+}
+
+function formatRtt(ms: number | null): string {
+  if (ms === null) return "—";
+  return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+}
+
+// 5h 汇总：最新 / 平均 / 最大。不做折线图 —— 个人使用下大多数分钟没有样本，
+// 稀疏散点的信息量不如三个数字（要趋势时直接看数字变化）。
+function RttCell({ plan, report }: { plan: RttStatsView; report: RttStatsView }) {
+  const title = `report RTT — latest ${formatRtt(report.latestMs)} · avg ${formatRtt(
+    report.avgMs
+  )} · max ${formatRtt(report.maxMs)}`;
+  return (
+    <div title={title}>
+      <span className="font-mono text-gray-900">{formatRtt(plan.latestMs)}</span>
+      <p className="text-xs text-gray-500">
+        avg {formatRtt(plan.avgMs)} · max {formatRtt(plan.maxMs)}
+      </p>
+    </div>
+  );
 }
 
 // 剩余时间 m:ss（用本地时钟；expiresAt 是中心侧的 epoch ms）
@@ -529,6 +558,7 @@ export default function DevicesPanel() {
                   { label: "Fingerprint" },
                   { label: "Created" },
                   { label: "Last seen" },
+                  { label: "RTT (5h)", align: "right" },
                   { label: "Status" },
                   { label: "Records (30d)", align: "right" },
                   { label: "Actions", align: "right" },
@@ -569,6 +599,9 @@ export default function DevicesPanel() {
                     </AdminTd>
                     <AdminTd>{formatDate(device.createdAt)}</AdminTd>
                     <AdminTd>{formatDate(device.lastSeenAt)}</AdminTd>
+                    <AdminTd align="right">
+                      <RttCell plan={device.latency.plan} report={device.latency.report} />
+                    </AdminTd>
                     <AdminTd>
                       <span className={device.status === "active" ? statusChip.on : statusChip.off}>
                         {STATUS_LABEL[device.status]}
@@ -643,6 +676,16 @@ export default function DevicesPanel() {
                     <div>
                       <dt className="text-gray-400">Records (30d)</dt>
                       <dd>{device.recordCount30d}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-gray-400">Latency (5h)</dt>
+                      <dd className="font-mono">
+                        {formatRtt(device.latency.plan.latestMs)}
+                        <span className="ml-1 font-sans text-gray-400">
+                          (avg {formatRtt(device.latency.plan.avgMs)} / max{" "}
+                          {formatRtt(device.latency.plan.maxMs)})
+                        </span>
+                      </dd>
                     </div>
                   </dl>
                   {renameId === device.id ? (

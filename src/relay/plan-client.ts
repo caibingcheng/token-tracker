@@ -2,6 +2,7 @@
 // 出站统一走 outboundFetch（连接时地址校验 + dispatcher + redirect manual），不裸 fetch。
 import { outboundFetch } from "@/lib/gateway/outbound-fetch";
 import { getOutboundDispatcher } from "@/lib/gateway/proxy-dispatcher";
+import { recordRtt, rttSnapshot, type RttBucketWire, type RttKind } from "./latency";
 
 export const RELAY_VERSION = "1.0.0";
 
@@ -60,7 +61,21 @@ function centerUrl(): string {
   return url.replace(/\/+$/, "");
 }
 
-async function postCenter(path: string, body: unknown, deviceToken: string): Promise<Response> {
+// kind 非空时顺便记 RTT（relay 发出 → 中心响应头到达）。不读 body：中心响应都很小，
+// 差那几毫秒不影响「链路 RTT」的判断，而读 body 会把调用方的解析语义搅在一起。
+async function postCenter(
+  path: string,
+  body: unknown,
+  deviceToken: string,
+  kind?: RttKind
+): Promise<Response> {
+  const startedAt = Date.now();
+  const response = await postCenterRaw(path, body, deviceToken);
+  if (kind) recordRtt(kind, Date.now() - startedAt);
+  return response;
+}
+
+async function postCenterRaw(path: string, body: unknown, deviceToken: string): Promise<Response> {
   return outboundFetch(`${centerUrl()}${path}`, {
     method: "POST",
     headers: {
@@ -115,7 +130,12 @@ export async function requestPlan(
   deviceToken: string,
   request: PlanRequest
 ): Promise<{ ok: true; plan: PlanWire } | ({ ok: false } & PlanFailure)> {
-  const res = await postCenter("/api/device/plan", { ...request, relayVersion: RELAY_VERSION }, deviceToken);
+  const res = await postCenter(
+    "/api/device/plan",
+    { ...request, relayVersion: RELAY_VERSION },
+    deviceToken,
+    "plan"
+  );
   let body: unknown = null;
   try {
     body = await res.json();
@@ -153,6 +173,8 @@ export interface ReportPayload {
   latencyMs: number;
   ttftMs: number | null;
   responseId: string | null;
+  /** relay 自己测的 RTT 分钟桶（由 sendReport 填充，调用方不必传） */
+  centerRtt?: RttBucketWire[];
 }
 
 // fire-and-forget：指数退避 1s/4s/16s，仍失败则丢弃并本地计数（不落盘，§17）
@@ -162,6 +184,8 @@ export function reportDroppedCount(): number {
 }
 
 export function sendReport(deviceToken: string, payload: ReportPayload): void {
+  // 桶快照只取一次：重试复用同一份（中心覆盖写，重传不会重复累加）
+  const body: ReportPayload = { ...payload, centerRtt: rttSnapshot() };
   const delays = [0, 1000, 4000, 16_000];
   const attempt = (index: number) => {
     if (index >= delays.length) {
@@ -170,7 +194,7 @@ export function sendReport(deviceToken: string, payload: ReportPayload): void {
       return;
     }
     setTimeout(() => {
-      void postCenter("/api/device/report", payload, deviceToken)
+      void postCenter("/api/device/report", body, deviceToken, "report")
         .then((res) => {
           if (!res.ok) attempt(index + 1);
         })

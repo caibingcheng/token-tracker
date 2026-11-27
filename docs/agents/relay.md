@@ -98,6 +98,16 @@ npm run seed:fake-upstream         # 把这些上游写进中心（幂等；--wi
 - **配额**：`checkQuota` 用量 = DB 聚合 + 中心在途 + **relay 预留**（`device_plans` 未上报且未过期的 `reserved_token/rpm`，见 `quota-db.ts`）。预留 TTL 10 分钟，每 60s 惰性清扫（`maybeSweep`，plan/report 请求时触发，不额外建 timer）；未上报就过期的行计入 `relay_gap_count`（`GET /api/admin/devices/stats` 可见）。
 - **responses 子资源**（`/v1/responses/{id}…`）与 `GET */models` 由 plan 分别给出「全 openai upstream 无状态遍历链」与「模型快照」，relay 本地返回，不需要 307 回中心。
 
+## 链路延迟（relay ⇄ center RTT）
+
+测的是 **relay 发出 → 中心响应头到达**，不是上游延迟（上游延迟已有 `token_records.latency_ms` / `ttft_ms`）。
+
+- **采样点**：`plan-client.postCenter()`，两个调用都记（`kind` 区分）：`plan`（含中心 `buildPlan()` + lease seal 耗时，是客户端实感那段）与 `report`（回执链路）。`pair/*` 不记。
+- **聚合**：relay 进程内 5h × 1min 桶（`src/relay/latency.ts`，300 桶/kind，纯内存，重启清零）。桶内只存 `count / sumMs / maxMs / lastMs` —— **原始样本不出 relay**。超时（15s fetch timeout throws）与负值/非有限值不计。
+- **上报**：每次 report 带 `centerRtt = [上一分钟已闭合桶, 当前分钟实时桶] × kind`（≤4 项）。report 自己的 RTT 只能在响应回来后才知道，所以它总在**下一次** report 里才被带上去（最后一次若之后无请求就留在内存里过时失效）；plan 的 RTT 无滞后。无流量 → 空数组，中心不写行。
+- **落库**：中心 `device_latency_buckets` 覆盖写（主键 device_id+kind+bucket_start），report 重试重传幂等；解析逐条自校验（分钟对齐、5h 窗口内、count/sum/max 自洽），非法项静默丢弃，绝不让 RTT 数据让一次成功的 report 失败。
+- **展示**：`/admin/devices` 的 `RTT (5h)` 列 —— plan 的 `latestMs` + `avg/max` 两行，report 的值在 tooltip；移动卡片显示 `latest (avg x / max y)`。无样本显示 `—`（不是 0ms）。不做折线图：窗口内大多数分钟没有样本，稀疏散点的信息量不如三个数字。
+
 ## 版本协商
 
 plan 请求带 `relayVersion`，中心维护 `MIN_RELAY_VERSION`（`src/routes/api/device/plan/route.ts`）；过低 → **426 `relay_too_old`**（客户端可见，提示升级 relay）。反向（中心旧、relay 新）由 relay 在 plan 收到 404 / 未知字段时提示「中心未升级」。
@@ -141,5 +151,7 @@ plan 请求带 `relayVersion`，中心维护 `MIN_RELAY_VERSION`（`src/routes/a
 | `src/routes/api/device/**` | pair/start、pair/poll、pair/lookup（会话态）、plan、report |
 | `src/routes/api/admin/devices/**` | 列表 / 配对授权 / 改名 / 撤销 / 轮换 token / 删除 / 统计 |
 | `src/relay/**` | relay 执行器与内联配对页（不得 import DB / 认证 / proxy） |
+| `src/relay/latency.ts` | relay 侧 RTT 分钟桶（5h × 1min，纯内存） |
+| `src/lib/device/latency.ts` | 中心侧 RTT 桶：解析自校验 / 覆盖写 / 5h 修剪 / 列表聚合 |
 | `src/components/admin/DevicesPanel.tsx` | `/admin/devices` 页面 |
 | `src/dev/fake-upstream/**` | 三协议模拟上游（openai / anthropic / gemini / responses）：多 key 多 model + 失败注入 + 请求日志；`npm run fake-upstream` 起进程，或 `createFakeUpstream()` 进程内用 |

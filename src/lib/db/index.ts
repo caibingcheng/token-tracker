@@ -21,6 +21,7 @@ let responseBindingsTable: any;
 let devicesTable: any;
 let devicePairingsTable: any;
 let devicePlansTable: any;
+let deviceLatencyBucketsTable: any;
 let initialized = false;
 // in-flight 初始化：并发调用 initDatabase()（多路由同时冷启动）只开一个连接、只跑一遍
 // DDL/迁移。失败置空，允许下次重试；成功则靠 initialized 短路。
@@ -312,6 +313,17 @@ async function ensureClient() {
     CREATE INDEX IF NOT EXISTS idx_device_plans_expires ON device_plans(expires_at);
     CREATE INDEX IF NOT EXISTS idx_device_plans_vk ON device_plans(virtual_key_id, reported_at);
     CREATE INDEX IF NOT EXISTS idx_device_plans_device ON device_plans(device_id, created_at);
+    CREATE TABLE IF NOT EXISTS device_latency_buckets (
+      device_id INTEGER NOT NULL,
+      kind TEXT NOT NULL,
+      bucket_start INTEGER NOT NULL,
+      count INTEGER NOT NULL DEFAULT 0,
+      sum_ms INTEGER NOT NULL DEFAULT 0,
+      max_ms INTEGER NOT NULL DEFAULT 0,
+      last_ms INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (device_id, kind, bucket_start)
+    );
+    CREATE INDEX IF NOT EXISTS idx_device_latency_buckets_start ON device_latency_buckets(bucket_start);
   `);
 
   // 存量补列必须在所有 CREATE TABLE 之后执行：全新库先建表再补列，旧库表已存在、幂等补列
@@ -430,6 +442,7 @@ async function ensureClient() {
   devicesTable = sqliteModule.devices;
   devicePairingsTable = sqliteModule.devicePairings;
   devicePlansTable = sqliteModule.devicePlans;
+  deviceLatencyBucketsTable = sqliteModule.deviceLatencyBuckets;
   console.log("[DB] SQLite initialized at:", dbPath);
 }
 
@@ -485,5 +498,5 @@ export function getDateGroupExpr(
   return sql<string>`strftime('%Y-%m-%d', ${tokenRecords.createdAt}, ${modifiers[0]}, ${modifiers[1]})`;
 }
 
-export { db, tokenRecords, upstreamsTable, upstreamKeysTable, virtualKeysTable, settingsTable, adminAuditLogsTable, upstreamModelHealthTable, namedRoutesTable, namedRouteTargetsTable, modelPricesTable, ingestTokensTable, syncInstancesTable, responseBindingsTable, devicesTable, devicePairingsTable, devicePlansTable };
+export { db, tokenRecords, upstreamsTable, upstreamKeysTable, virtualKeysTable, settingsTable, adminAuditLogsTable, upstreamModelHealthTable, namedRoutesTable, namedRouteTargetsTable, modelPricesTable, ingestTokensTable, syncInstancesTable, responseBindingsTable, devicesTable, devicePairingsTable, devicePlansTable, deviceLatencyBucketsTable };
 export type { TokenRecord, NewTokenRecord, NamedRoute, NewNamedRoute, NamedRouteTarget, NewNamedRouteTarget } from "./schema-sqlite";

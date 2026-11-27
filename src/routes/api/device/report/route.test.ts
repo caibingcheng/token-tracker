@@ -10,6 +10,7 @@ import { POST } from "./route";
 import {
   closeDb,
   db,
+  deviceLatencyBucketsTable,
   devicePlansTable,
   devicesTable,
   initDatabase,
@@ -20,6 +21,7 @@ import {
 } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { deviceTokenHash, generateDeviceToken } from "@/lib/device/pairing";
+import { listDevices } from "@/lib/device/store";
 import { healthTracker } from "@/lib/gateway/proxy-deps";
 
 const ORIG_DB = process.env.SQLITE_DATABASE_PATH;
@@ -158,6 +160,7 @@ beforeEach(async () => {
   await initDatabase();
   await withSkipCache(async () => {
     await db.delete(devicePlansTable);
+    await db.delete(deviceLatencyBucketsTable);
     await db.delete(tokenRecords);
     await db.delete(upstreamModelHealthTable);
     await db.delete(upstreamsTable);
@@ -294,5 +297,43 @@ describe("POST /api/device/report", () => {
         .where(and(eq(upstreamModelHealthTable.upstreamId, seeded.upstreamId)))
     );
     expect(rows).toEqual([]);
+  });
+
+  it("centerRtt 桶落库（覆盖写：重传不翻倍），列表返回 latency 概览", async () => {
+    const seeded = await seed();
+    const planId = await seedPlan(seeded);
+    const start = Math.floor(Date.now() / 60_000) * 60_000;
+    const body = {
+      planId,
+      status: "ok",
+      winner: winner(seeded),
+      failures: [],
+      usage,
+      latencyMs: 1200,
+      ttftMs: 300,
+      centerRtt: [{ kind: "plan", start, count: 2, sumMs: 400, maxMs: 300, lastMs: 100 }],
+    };
+    expect((await POST(reportRequest(seeded.token, body))).status).toBe(200);
+    // 第二次进 duplicate 分支，但桶是覆盖写：count 不会翻倍
+    expect((await POST(reportRequest(seeded.token, body))).status).toBe(200);
+
+    const rows = await withSkipCache(async () => db.select().from(deviceLatencyBucketsTable));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      deviceId: seeded.deviceId,
+      kind: "plan",
+      bucketStart: start,
+      count: 2,
+      sumMs: 400,
+      maxMs: 300,
+      lastMs: 100,
+    });
+
+    const list = await listDevices();
+    const latency = list.find((d) => d.id === seeded.deviceId)?.latency;
+    expect(latency?.plan.samples).toBe(2);
+    expect(latency?.plan.latestMs).toBe(100);
+    expect(latency?.plan.avgMs).toBe(200);
+    expect(latency?.report.samples).toBe(0);
   });
 });
