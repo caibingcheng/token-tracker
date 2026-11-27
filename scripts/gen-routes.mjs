@@ -25,6 +25,32 @@ function walk(dir) {
   return files.sort();
 }
 
+// 注册顺序 = 匹配优先级（Hono 按注册序尝试，先命中者胜）。
+// 1) 段数少的先（浅路径先注册）；
+// 2) 同段数时逐段比较：静态段 < [动态] < [...通配]。
+// 为什么必须显式排序：readdir 的字母序里 `[`（0x5B）排在字母前，`[id]` 会先于它的静态兄弟
+// 注册，于是 `app.all("/api/admin/devices/:id", 405)` 会把 `/api/admin/devices/stats` 吃成 405
+// （Allow: PATCH, DELETE）——新增静态子路径时必踩，且平台相关（Linux readdir 顺序不可预测）。
+function segmentRank(seg) {
+  if (/^\[\.\.\./.test(seg)) return 2;
+  if (/^\[.+\]$/.test(seg)) return 1;
+  return 0;
+}
+
+function compareRoutes(aSegs, bSegs) {
+  if (aSegs.length !== bSegs.length) return aSegs.length - bSegs.length;
+  for (let i = 0; i < aSegs.length; i++) {
+    const ra = segmentRank(aSegs[i]);
+    const rb = segmentRank(bSegs[i]);
+    if (ra !== rb) return ra - rb;
+    if (ra === 0) {
+      const cmp = aSegs[i].localeCompare(bSegs[i]);
+      if (cmp !== 0) return cmp;
+    }
+  }
+  return 0;
+}
+
 // api/admin/upstreams/[id] → /api/admin/upstreams/:id；[...path] → /*，同时收集通配段名
 function toRoute(relDir) {
   const wildcardKeys = [];
@@ -56,12 +82,19 @@ if (routeFiles.length === 0) {
   process.exit(1);
 }
 
+const entries = routeFiles
+  .map((file) => {
+    const rel = relative(ROUTES_DIR, file).replace(/\\/g, "/");
+    const relDir = dirname(rel) === "." ? "" : dirname(rel).replace(/\\/g, "/");
+    return { file, relDir, segments: relDir === "" ? [] : relDir.split("/") };
+  })
+  .sort((a, b) => compareRoutes(a.segments, b.segments));
+
 const imports = [];
 const registrations = [];
 
-routeFiles.forEach((file, i) => {
-  const rel = relative(ROUTES_DIR, file).replace(/\\/g, "/");
-  const relDir = dirname(rel) === "." ? "" : dirname(rel).replace(/\\/g, "/");
+entries.forEach(({ file, relDir }, i) => {
+  const rel = `${relDir}/route.ts`;
   const content = readFileSync(file, "utf8");
   // 先剥注释再匹配：注释/字符串里形如 `export const GET` 的字样会误注册 undefined handler
   const scan = content.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
@@ -120,4 +153,4 @@ ${registrations.join("\n")}
 `;
 
 writeFileSync(OUT_FILE, output);
-console.log(`gen-routes: ${routeFiles.length} 个 route → ${relative(ROOT, OUT_FILE)}`);
+console.log(`gen-routes: ${entries.length} 个 route → ${relative(ROOT, OUT_FILE)}`);
