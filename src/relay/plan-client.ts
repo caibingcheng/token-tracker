@@ -33,7 +33,8 @@ export interface PlanWire {
   policy: {
     streamIdleTimeoutMinutes: number;
     centerMaxBodyMb: number;
-    centerMaxResponseBufferMb: number;
+    /** 可缺：旧中心不下发（relay 用本地 50MB 兜底） */
+    centerMaxResponseBufferMb?: number;
   };
 }
 

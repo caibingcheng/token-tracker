@@ -47,13 +47,24 @@ type FinishFn = (
   extra?: { responseId?: string | null; ttftMs?: number | null; label?: string }
 ) => void;
 
-function matchesCondition(conditions: string[], status: number): boolean {
+function matchesCondition(
+  conditions: string[],
+  status: number,
+  cause?: "network" | "timeout"
+): boolean {
   for (const condition of conditions) {
     if (condition === "5xx") {
       if (status >= 500 && status < 600) return true;
       continue;
     }
-    if (condition === "network" || condition === "timeout") continue;
+    if (condition === "network") {
+      if (cause === "network") return true;
+      continue;
+    }
+    if (condition === "timeout") {
+      if (cause === "timeout") return true;
+      continue;
+    }
     if (Number(condition) === status) return true;
   }
   return false;
@@ -193,7 +204,7 @@ export async function executePlan(opts: ExecuteOptions): Promise<Response> {
     opts.onOutcome?.(extra?.label ?? status);
   };
 
-  for (const hop of plan.hops) {
+  hopLoop: for (const hop of plan.hops) {
     if (skipUpstream !== null && hop.upstreamId === skipUpstream) continue;
     const lease: LeasePayload | null = openLease(hop.keyLease, opts.devicePrivateKeyPem, {
       planId: plan.planId,
@@ -241,6 +252,9 @@ export async function executePlan(opts: ExecuteOptions): Promise<Response> {
           bodyKind: null,
           cause,
         });
+        // 重试决策读 plan 字段（与状态码同一条路径）：continueOn 不含该 cause 时
+        // plan 决定终止全链（无响应可透传，与 4xx-other 口径同）。
+        if (!matchesCondition(hop.continueOn, -1, cause)) break hopLoop;
         continue;
       }
 
@@ -298,9 +312,12 @@ export async function executePlan(opts: ExecuteOptions): Promise<Response> {
         { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0, hasUsage: false },
         { label: String(resp.status) }
       );
+      // 同尾部透传：body 可能截断，剥 content-length（见函数尾注释）
+      const passHeaders = new Headers(passthrough.headers);
+      passHeaders.delete("content-length");
       return new Response(new Blob([new Uint8Array(passthrough.bytes)]), {
         status: passthrough.status,
-        headers: passthrough.headers,
+        headers: passHeaders,
       });
     }
   }
@@ -310,8 +327,11 @@ export async function executePlan(opts: ExecuteOptions): Promise<Response> {
     : null, { label: retained ? String(retained.status) : "502" });
   if (retained) {
     // 全链耗尽但最后一份业务 4xx 还在：原响应透传 + 记一条零 token 的 no_usage
-    //（直连 fallbackBusinessResponse 路径同样会写这条记录）
+    //（直连 fallbackBusinessResponse 路径同样会写这条记录）。
+    // content-length 必须删：body 可能已按 256KB 上限截断，保留会让长度/实际字节不符
+    //（content-encoding 保留：截断的 gzip 流与连接截断同形，客户端按正常截断处理）。
     const headers = new Headers(retained.headers);
+    headers.delete("content-length");
     headers.set("cache-control", "no-store");
     return new Response(new Blob([new Uint8Array(retained.bytes)]), { status: retained.status, headers });
   }
@@ -427,7 +447,14 @@ async function passThroughSuccess(
     return new Response(stream, { status: resp.status, headers });
   }
 
-  // 非流式：整包缓冲（上限 50MB）→ model 区间改写 → 顶层 usage 切片解析
+  // 非流式：整包缓冲（上限 centerMaxResponseBufferMb，缺省/非法兑退 50MB）→ model 区间改写 → 顶层 usage 切片解析
+  // 直连用的是自己的 50MB 常量（proxy.ts），两者同值只因中心常量也是 50；这个上限护的是
+  // 上游可控数据的内存占用，策略字段异常时兑退而非放开。
+  const policyMb = opts.plan.policy.centerMaxResponseBufferMb;
+  const maxResponseBytes =
+    typeof policyMb === "number" && Number.isFinite(policyMb) && policyMb > 0 && policyMb <= 1024
+      ? policyMb * 1024 * 1024
+      : MAX_NON_STREAMING_RESPONSE_BYTES;
   const chunks: Uint8Array[] = [];
   let total = 0;
   const reader = resp.body.getReader();
@@ -436,8 +463,11 @@ async function passThroughSuccess(
       const { done, value } = await reader.read();
       if (done) break;
       total += value.length;
-      if (total > MAX_NON_STREAMING_RESPONSE_BYTES) {
+      if (total > maxResponseBytes) {
         await reader.cancel().catch(() => {});
+        // 上游已产生真实输出但读不完：与直连同口径记 stream_interrupted（超限的 throw 走同个 catch），
+        // 不发 report 会让 device_plans 预留空等到期清扫、真实 usage 丢失、健康不标。
+        finish("stream_interrupted", winner, null, { label: "stream_interrupted" });
         return errorResponse(502, "upstream_error", "Upstream response exceeds size limit");
       }
       chunks.push(value);

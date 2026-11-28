@@ -287,4 +287,117 @@ describe("executePlan", () => {
     expect(report.usage).toMatchObject({ inputTokens: 5, outputTokens: 2, hasUsage: true });
     expect(typeof report.ttftMs).toBe("number");
   });
+
+  it("continueOn 不含 network：网络失败终止全链，不试后续 hop", async () => {
+    const urls: string[] = [];
+    setOutboundFetchImpl(async (input: unknown) => {
+      urls.push(String(input));
+      throw new Error("ECONNREFUSED");
+    });
+    const res = await call(
+      planOf([hopOf({ continueOn: ["401", "429"] }), hopOf({ hopIndex: 1, upstreamId: 2, keyId: 21 })])
+    );
+    expect(res.status).toBe(502);
+    expect(urls).toHaveLength(1);
+    const report = sendReportMock.mock.calls[0]![1] as any;
+    expect(report.status).toBe("failed");
+    expect(report.failures).toHaveLength(1);
+    expect(report.failures[0]).toMatchObject({ cause: "network", status: null });
+    // 无 retained、无 winner：不写零 token 记录（usage 为 null）
+    expect(report.winner).toBeNull();
+    expect(report.usage).toBeNull();
+    expect(sendReportMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("non-streaming 响应超 centerMaxResponseBufferMb：report stream_interrupted + 502，上限可由 plan 下发调小", async () => {
+    let calls = 0;
+    setOutboundFetchImpl(async () => {
+      calls++;
+      const big = new Uint8Array(2 * 1024 * 1024);
+      return new Response(big, {
+        status: 200,
+        headers: { "content-type": "application/json", "content-length": String(big.length) },
+      });
+    });
+    const plan = planOf([hopOf()]);
+    plan.policy.centerMaxResponseBufferMb = 1; // plan 下发 1MB（默认是 50）
+    const res = await call(plan);
+    expect(res.status).toBe(502);
+    expect(calls).toBe(1);
+    // 上游已真实产生输出：必须发 report，否则预留空等到期清扫、usage 丢失
+    const report = sendReportMock.mock.calls[0]![1] as any;
+    expect(report.status).toBe("stream_interrupted");
+    expect(report.winner).toEqual({ hopIndex: 0, upstreamId: 1, keyId: 11 });
+    expect(sendReportMock).toHaveBeenCalledTimes(1);
+  });
+
+  // 截断口径：mock 带**显式** content-length + 超过 256KB 的 body（构造的 Response 不会自动补
+  // content-length，不带显式值时断言是空守卫）。bufferRetained 读到 256KB 截断，透传时
+  // content-length 必须被剥掉，否则长度/实际字节不符。
+  it("全链耗尽透传保留响应时剥掉 content-length（body 已按 256KB 截断）", async () => {
+    const padding = Buffer.alloc(300 * 1024, "x");
+    setOutboundFetchImpl(async () =>
+      new Response(JSON.stringify({ error: { message: "no" } }) + padding.toString(), {
+        status: 404,
+        headers: {
+          "content-type": "application/json",
+          "content-length": String(300 * 1024 + 23),
+        },
+      })
+    );
+    const res = await call(planOf([hopOf({ retries: 1 })]));
+    expect(res.status).toBe(404);
+    expect(res.headers.get("content-length")).toBeNull();
+    expect(res.headers.get("content-type")).toContain("json");
+    // 确认真的截断了（透传的是 256KB 而不是完整 body）
+    expect((await res.text()).length).toBeLessThan(300 * 1024);
+  });
+
+  it("4xx-other 提前透传路径同样剥 content-length", async () => {
+    setOutboundFetchImpl(async () =>
+      new Response(JSON.stringify({ error: { message: "bad param" } }), {
+        status: 400,
+        headers: { "content-type": "application/json", "content-length": "33" },
+      })
+    );
+    const res = await call(planOf([hopOf({ retries: 1 })]));
+    expect(res.status).toBe(400);
+    expect(res.headers.get("content-length")).toBeNull();
+    expect(sendReportMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("先前 hop 保留的 404 + 后续 hop 网络失败（continueOn 不含 network）→ break hopLoop 走尾部透传", async () => {
+    setOutboundFetchImpl(async (input: unknown) => {
+      if (String(input).includes("u1.")) return jsonResponse(404, { error: { message: "no" } });
+      throw new Error("ECONNREFUSED");
+    });
+    const res = await call(
+      planOf([
+        hopOf({ hopIndex: 0, upstreamId: 1, keyId: 11, retries: 1 }),
+        hopOf({ hopIndex: 1, upstreamId: 2, keyId: 21, retries: 1, continueOn: ["401", "429"] }),
+      ])
+    );
+    // 终链但不是全新失败：尾部透传 hop0 保留的业务 404 + 零 token 记录（winner = retainedBy）
+    expect(res.status).toBe(404);
+    expect(res.headers.get("content-length")).toBeNull();
+    expect(sendReportMock).toHaveBeenCalledTimes(1);
+    const report = sendReportMock.mock.calls[0]![1] as any;
+    expect(report.winner).toEqual({ hopIndex: 0, upstreamId: 1, keyId: 11 });
+    expect(report.usage).toMatchObject({ hasUsage: false });
+    expect(report.failures).toHaveLength(2);
+    expect(report.failures?.[1]).toMatchObject({ upstreamId: 2, cause: "network" });
+  });
+
+  it("旧中心不下发 centerMaxResponseBufferMb（undefined）→ 兑退 50MB 常量", async () => {
+    setOutboundFetchImpl(async () => {
+      const big = new Uint8Array(2 * 1024 * 1024); // 2MB < 50MB：正常透传
+      return new Response(big, { status: 200, headers: { "content-type": "application/json" } });
+    });
+    const plan: PlanWire = planOf([hopOf()]);
+    delete (plan.policy as { centerMaxResponseBufferMb?: number }).centerMaxResponseBufferMb;
+    const res = await call(plan);
+    expect(res.status).toBe(200);
+    const report = sendReportMock.mock.calls[0]![1] as any;
+    expect(report.status).toBe("ok");
+  });
 });
