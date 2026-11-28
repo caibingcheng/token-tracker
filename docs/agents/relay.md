@@ -79,6 +79,13 @@ npm run build && node build/relay.js \
 RELAY_STATE_PATH / RELAY_DEVICE_NAME / RELAY_PAIR_PAGE / ALLOW_PRIVATE_UPSTREAMS），支持
 `--flag value` 与 `--flag=value`，`--help` 打印用法；flag 覆盖 env，env 覆盖默认值。
 
+### 版本号
+
+两个版本，语义不同（`src/relay/version.ts`）：`RELAY_VERSION`（wire 协议版本，plan 请求带它做
+426 协商，升协议才 bump）与 `RELAY_BUILD`（发布版本，构建期由 esbuild define 注入 CI 的
+`APP_VERSION`＝git tag；tsx/本地无注入时为 `dev`）。展示位：启动日志、`GET /`、`/pair` 页与
+`/pair/status` 的 `build` 字段。**不要把 build 版本拼进 relayVersion**——`isVersionAtLeast` 只认 3 段数字。
+
 启动自检（§13.1）会拒绝以下情况：出现中心专用 env（`SQLITE_DATABASE_PATH` / `ADMIN_API_KEY` / `LOCAL_ADMIN_BYPASS` / `GATEWAY_SECRET`）、缺 `CENTER_URL`、`CENTER_URL` 非 http(s)、公网明文 http。
 
 ## 配对（RFC 8628）

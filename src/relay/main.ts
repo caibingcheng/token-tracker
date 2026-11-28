@@ -8,7 +8,7 @@ import { serve } from "@hono/node-server";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { prepare, RelayHttpError } from "./prepare";
-import { RELAY_VERSION, requestPlan, type PlanRequest } from "./plan-client";
+import { requestPlan, type PlanRequest } from "./plan-client";
 import { executePlan } from "./executor";
 import {
   currentDeviceToken,
@@ -22,6 +22,7 @@ import {
   startPairing,
 } from "./pair";
 import { centerUrlHash, getCenterDeviceName, setCenterDeviceName } from "./state";
+import { RELAY_BUILD, RELAY_VERSION } from "./version";
 import { privateUpstreamsAllowed } from "@/lib/gateway/url-guard";
 
 const CENTER_ONLY_ENV = ["SQLITE_DATABASE_PATH", "ADMIN_API_KEY", "LOCAL_ADMIN_BYPASS", "GATEWAY_SECRET"];
@@ -308,7 +309,7 @@ app.all("/raw/*", handleProxy);
 
 app.notFound((c) =>
   c.req.path === "/"
-    ? c.text(`token-tracker relay ${RELAY_VERSION}\n`, 200)
+    ? c.text(`token-tracker relay ${RELAY_VERSION} (build ${RELAY_BUILD})\n`, 200)
     : errorResponse(404, "not_found", "Not found")
 );
 
@@ -330,9 +331,8 @@ if (rt.state.deviceToken) {
 } else {
   void startPairing();
 }
-
 const server = serve({ fetch: app.fetch, port, hostname }, (info) => {
-  console.log(`[relay] listening on http://${hostname}:${info.port}`);
+  console.log(`[relay] listening on http://${hostname}:${info.port} (protocol ${RELAY_VERSION}, build ${RELAY_BUILD})`);
 });
 
 let closing = false;

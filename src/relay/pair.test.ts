@@ -76,6 +76,7 @@ describe("relay /pair 页状态", () => {
   it("pairView 与 /pair/status 同源：已配对时 code 为 null、fingerprint 只给前 8 位", async () => {
     process.env.RELAY_STATE_PATH = writeState({ deviceToken: "dt-abc" });
     const { pairView } = await import("./pair");
+    const { RELAY_BUILD } = await import("./version");
     expect(pairView()).toEqual({
       status: "paired",
       pending: false,
@@ -87,6 +88,7 @@ describe("relay /pair 页状态", () => {
       center: "http://127.0.0.1:3001",
       lastPlanOutcome: null,
       errorDetail: null,
+      build: RELAY_BUILD,
     });
   });
 

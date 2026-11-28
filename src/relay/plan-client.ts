@@ -3,8 +3,9 @@
 import { outboundFetch } from "@/lib/gateway/outbound-fetch";
 import { getOutboundDispatcher } from "@/lib/gateway/proxy-dispatcher";
 import { recordRtt, rttSnapshot, type RttBucketWire, type RttKind } from "./latency";
+import { RELAY_VERSION } from "./version";
 
-export const RELAY_VERSION = "1.0.0";
+export { RELAY_VERSION };
 
 export interface PlanHopWire {
   hopIndex: number;

@@ -4,6 +4,7 @@
 import { isLoopbackHost, isPrivateHost } from "@/lib/gateway/url-guard";
 import { getOutboundDispatcher } from "@/lib/gateway/proxy-dispatcher";
 import { outboundFetch } from "@/lib/gateway/outbound-fetch";
+import { RELAY_BUILD } from "./version";
 import {
   centerUrlHash,
   displayDeviceName,
@@ -221,6 +222,8 @@ export interface PairView {
   center: string;
   lastPlanOutcome: string | null;
   errorDetail: string | null;
+  /** 构建版本（esbuild define 注入的发布 tag，dev 环境为 "dev"） */
+  build: string;
 }
 
 /** 页面与 /pair/status 共用同一份派生值：两者不一致会让自动刷新反复触发 */
@@ -247,6 +250,7 @@ export function pairView(): PairView {
     center: centerDisplay(),
     lastPlanOutcome: runtime.lastPlanOutcome,
     errorDetail: runtime.errorDetail,
+    build: RELAY_BUILD,
   };
 }
 
@@ -293,6 +297,7 @@ ${pending ? `<div class="code">${escapeHtml(code ?? "")}</div>` : ""}
 <dt>Device</dt><dd>${escapeHtml(view.deviceName)}</dd>
 <dt>Fingerprint</dt><dd>${escapeHtml(view.fingerprint)}</dd>
 <dt>Center</dt><dd>${escapeHtml(view.center)}</dd>
+<dt>Build</dt><dd>${escapeHtml(view.build)}</dd>
 <dt>Last plan</dt><dd>${escapeHtml(view.lastPlanOutcome ?? "—")}</dd>
 </dl>
 ${pending ? `<p class="hint">Enter this code on the center under <strong>Admin → Devices</strong>. The code disappears once paired.</p>` : ""}

@@ -69,5 +69,7 @@ await build({
   format: "cjs",
   // 无 native 依赖：镜像里不需要 node_modules
   plugins: [relayGuard],
+  // 构建期注入发布版本（CI 的 Docker ARG APP_VERSION = git tag）；无值时 relay 内回落 "dev"
+  define: { __RELAY_APP_VERSION__: JSON.stringify(process.env.APP_VERSION ?? "dev") },
   logLevel: "info",
 });
