@@ -59,12 +59,25 @@ npm run seed:fake-upstream         # 把这些上游写进中心（幂等；--wi
 | env | 必填 | 说明 |
 |---|---|---|
 | `CENTER_URL` | ✅ | 中心地址。非环回主机必须 https（除非 `ALLOW_PRIVATE_UPSTREAMS=true`），启动自检 fail-closed |
-| `PORT` / `HOSTNAME` | — | 默认 `3000` / `0.0.0.0` |
+| `PORT` / `HOSTNAME` | — | 默认 `3000` / `127.0.0.1`（CLI 个人设备默认只听回环；Docker 镜像显式 `ENV HOSTNAME=0.0.0.0`，不受影响）。局域网使用时改 HOSTNAME |
 | `GATEWAY_MAX_BODY_MB` | — | 默认 32，**允许比中心大**（body 不经中心）。启动后首次 plan 会按中心 `policy.centerMaxBodyMb` 打一行 warn/info |
 | `RELAY_PAIR_PAGE` | — | `local`（默认：仅环回/私网来源可访问 `/pair`）\| `off`（只用 stdout）\| `on`（全部来源，需自知风险） |
 | `RELAY_DEVICE_NAME` | — | 展示名，默认 `relay`（hostname 常含个人信息，故不默认用 hostname）。**只在首次配对时上报给中心**；之后中心改名以中心为准（plan 响应 `device.name` 下发，relay 只存内存） |
-| `RELAY_STATE_PATH` | — | 默认 `./data/relay.state.json`（0600） |
+| `RELAY_STATE_PATH` | — | 解析优先级：env > **存量 `./data/relay.state.json`**（存在则沿用——Docker 卷里的配对凭据不丢）> OS 用户配置目录 `~/.config/token-tracker-relay/`（Windows `%APPDATA%\token-tracker-relay\`；CLI 场景状态不跟 cwd 走） |
 | `ALLOW_PRIVATE_UPSTREAMS` | — | 允许私网/环回上游与明文 http 中心（内网自建部署） |
+
+### CLI 运行（个人设备，不经 Docker）
+
+```bash
+npm run build && node build/relay.js \
+  --center https://your-center.example.com \
+  --host 0.0.0.0 --port 3001        # 局域网使用时放开监听（默认 127.0.0.1:3000）
+```
+
+仅需要 Node ≥22（bundle 无原生模块）。长选项与 env 一一映射：`--center`/`--host`/`--port`/
+`--state`/`--name`/`--pair-page`/`--allow-private-upstreams`（→ CENTER_URL / HOSTNAME / PORT /
+RELAY_STATE_PATH / RELAY_DEVICE_NAME / RELAY_PAIR_PAGE / ALLOW_PRIVATE_UPSTREAMS），支持
+`--flag value` 与 `--flag=value`，`--help` 打印用法；flag 覆盖 env，env 覆盖默认值。
 
 启动自检（§13.1）会拒绝以下情况：出现中心专用 env（`SQLITE_DATABASE_PATH` / `ADMIN_API_KEY` / `LOCAL_ADMIN_BYPASS` / `GATEWAY_SECRET`）、缺 `CENTER_URL`、`CENTER_URL` 非 http(s)、公网明文 http。
 

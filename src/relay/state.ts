@@ -4,6 +4,7 @@
 //（容器改配不需要改卷；卷丢了重新配对即可）。
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { createHash, randomBytes } from "crypto";
+import { join } from "path";
 import { dirname } from "path";
 import { generateDeviceKeypair } from "@/lib/gateway/lease";
 
@@ -17,8 +18,35 @@ export interface RelayState {
   centerUrlHash: string | null;
 }
 
+function cliConfigDir(appData: string | undefined, home: string | undefined): string {
+  if (appData) return join(appData, "token-tracker-relay"); // Windows
+  if (home) return join(home, ".config", "token-tracker-relay");
+  return "./data"; // homedir 不可得（极端环境）：回退旧默认目录
+}
+
+/**
+ * state 路径解析（优先级）：RELAY_STATE_PATH > 存量 ./data/relay.state.json（Docker 卷 /
+ * 仓库 dev 既有状态，换了默认路径会让容器里的配对凭据凭空丢失，必须兼容） >
+ * OS 用户配置目录（CLI 个人设备：状态不该跟着 cwd 走）。
+ */
+export function resolveRelayStatePath(
+  envPath: string | undefined,
+  legacyPathExists: (p: string) => boolean = existsSync,
+  env: { APPDATA?: string; HOME?: string; USERPROFILE?: string } = {
+    APPDATA: process.env.APPDATA,
+    HOME: process.env.HOME,
+    USERPROFILE: process.env.USERPROFILE,
+  }
+): string {
+  if (envPath && envPath.trim() !== "") return envPath;
+  const legacy = "./data/relay.state.json";
+  if (legacyPathExists(legacy)) return legacy;
+  const home = env.HOME ?? env.USERPROFILE;
+  return join(cliConfigDir(env.APPDATA, home), "relay.state.json");
+}
+
 export function relayStatePath(): string {
-  return process.env.RELAY_STATE_PATH || "./data/relay.state.json";
+  return resolveRelayStatePath(process.env.RELAY_STATE_PATH);
 }
 
 export function centerUrlHash(centerUrl: string): string {

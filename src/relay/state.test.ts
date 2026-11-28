@@ -1,5 +1,45 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { displayDeviceName, getCenterDeviceName, setCenterDeviceName } from "./state";
+import { join } from "path";
+import {
+  displayDeviceName,
+  getCenterDeviceName,
+  resolveRelayStatePath,
+  setCenterDeviceName,
+} from "./state";
+
+// state 路径解析：env > 存量旧默认（Docker 卷/dev 兼容）> OS 配置目录（CLI）。
+// legacy 探测用注入的谓词，测试不碰真实文件系统。
+describe("resolveRelayStatePath", () => {
+  const noEnv = {};
+  it("RELAY_STATE_PATH 最高优先（含空串视为未设置）", () => {
+    expect(resolveRelayStatePath("/custom/x.json", () => true, noEnv)).toBe("/custom/x.json");
+    expect(resolveRelayStatePath("/custom/x.json", () => false, noEnv)).toBe("/custom/x.json");
+    expect(resolveRelayStatePath("  ", () => true, noEnv)).toBe("./data/relay.state.json");
+  });
+
+  it("旧默认路径已存在 → 继续用（Docker 卷里的配对凭据不丢）", () => {
+    expect(resolveRelayStatePath(undefined, () => true, noEnv)).toBe("./data/relay.state.json");
+  });
+
+  it("旧路径不存在 → 回到 OS 配置目录（不跟 cwd 走）", () => {
+    expect(resolveRelayStatePath(undefined, () => false, { HOME: "/home/u" })).toBe(
+      join("/home/u", ".config", "token-tracker-relay", "relay.state.json")
+    );
+    expect(
+      resolveRelayStatePath(undefined, () => false, { APPDATA: "C:\\Users\\u\\AppData\\Roaming" })
+    ).toBe(join("C:\\Users\\u\\AppData\\Roaming", "token-tracker-relay", "relay.state.json"));
+    // USERPROFILE（Windows 常见）也可作为 HOME 兜底
+    expect(resolveRelayStatePath(undefined, () => false, { USERPROFILE: "C:\\Users\\u" })).toBe(
+      join("C:\\Users\\u", ".config", "token-tracker-relay", "relay.state.json")
+    );
+  });
+
+  it("homedir 不可得 → 回退旧默认目录", () => {
+    expect(resolveRelayStatePath(undefined, () => false, { APPDATA: undefined, HOME: undefined })).toBe(
+      join("./data", "relay.state.json")
+    );
+  });
+});
 
 // 设备名三源优先级：中心下发（权威）> RELAY_DEVICE_NAME（配对时的默认值）> "relay"。
 // 中心的改名靠 plan 响应下发，所以 relay 端只存内存：这里钉住优先级与空值归一化。

@@ -27,6 +27,53 @@ import { privateUpstreamsAllowed } from "@/lib/gateway/url-guard";
 const CENTER_ONLY_ENV = ["SQLITE_DATABASE_PATH", "ADMIN_API_KEY", "LOCAL_ADMIN_BYPASS", "GATEWAY_SECRET"];
 const MODEL_LIST_HEADERS = { "cache-control": "no-store", "x-accel-buffering": "no" };
 
+// ---- CLI 参数（个人设备直接 node relay.js / CLI 包装运行）----
+// 只支持长选项，映射到同名 env；env 仍可用（Docker/hosting 场景不变），显式 flag 覆盖 env。
+const CLI_USAGE = `token-tracker relay
+
+Usage: relay [--center <url>] [--host <addr>] [--port <n>] [--state <path>]
+             [--name <device-name>] [--allow-private-upstreams] [--pair-page <local|off|on>]
+
+Env equivalents: CENTER_URL / HOSTNAME / PORT / RELAY_STATE_PATH / RELAY_DEVICE_NAME /
+ALLOW_PRIVATE_UPSTREAMS / RELAY_PAIR_PAGE. Flags win over env; both win over defaults.
+Defaults: host 127.0.0.1, port 3000, state <legacy ./data/> ? legacy : user config dir.`;
+
+function readCliArgsIntoEnv(argv: string[]): void {
+  const envByFlag: Record<string, string> = {
+    "--center": "CENTER_URL",
+    "--host": "HOSTNAME",
+    "--port": "PORT",
+    "--state": "RELAY_STATE_PATH",
+    "--name": "RELAY_DEVICE_NAME",
+    "--pair-page": "RELAY_PAIR_PAGE",
+    "--allow-private-upstreams": "ALLOW_PRIVATE_UPSTREAMS",
+  };
+  for (let i = 0; i < argv.length; i++) {
+    const raw = argv[i]!;
+    if (raw === "--help" || raw === "-h") {
+      console.log(CLI_USAGE);
+      process.exit(0);
+    }
+    // --flag=value 与 --flag value 两种形状
+    const eq = raw.indexOf("=");
+    const flag = eq > 0 ? raw.slice(0, eq) : raw;
+    const envName = envByFlag[flag];
+    if (!envName) {
+      console.error(`[relay] unknown argument: ${raw}`);
+      console.error(CLI_USAGE);
+      process.exit(1);
+    }
+    const value = eq > 0 ? raw.slice(eq + 1) : argv[++i];
+    if (value === undefined || value === "") {
+      console.error(`[relay] ${flag} expects a value`);
+      process.exit(1);
+    }
+    process.env[envName] = value;
+  }
+}
+
+readCliArgsIntoEnv(process.argv.slice(2));
+
 function errorResponse(status: number, type: string, message: string): Response {
   return new Response(JSON.stringify({ error: { message, type } }), {
     status,
@@ -266,7 +313,8 @@ app.notFound((c) =>
 );
 
 const port = Number(process.env.PORT || 3000);
-const hostname = process.env.HOSTNAME || "0.0.0.0";
+// CLI 个人设备默认只听回环；Docker 镜像显式 ENV HOSTNAME=0.0.0.0（Dockerfile），不受影响
+const hostname = process.env.HOSTNAME || "127.0.0.1";
 
 const rt = pairRuntime();
 if (
