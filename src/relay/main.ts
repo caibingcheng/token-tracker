@@ -89,24 +89,39 @@ function remoteAddress(c: Context): string | null {
 
 const app = new Hono({ strict: false });
 
+// /pair 页的安全响应头：relay 是独立 Hono 实例，不走中心 src/server/security-headers.ts。
+// 页面含内联 <script>（自动刷新），所以 script-src 需要 'unsafe-inline'；
+// frame-ancestors 'none' + XFO 防 clickjacking（默认只放行环回/私网来源，但同一内网的
+// 其他网页仍可把它包成 iframe 骗管理员输码）。
+const PAIR_PAGE_HEADERS = {
+  "x-frame-options": "DENY",
+  "x-content-type-options": "nosniff",
+  "referrer-policy": "no-referrer",
+  "content-security-policy":
+    "default-src 'self'; script-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'self'; form-action 'none'",
+};
+
 app.get("/pair", (c) => {
   if (!pairPageAllowed(remoteAddress(c))) {
     return new Response(
       "pair page is local-only (set RELAY_PAIR_PAGE=on to expose it); the code is printed in `docker logs`\n",
-      { status: 403, headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } }
+      {
+        status: 403,
+        headers: { ...PAIR_PAGE_HEADERS, "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
+      }
     );
   }
   return new Response(renderPairPage(), {
-    headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+    headers: { ...PAIR_PAGE_HEADERS, "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
   });
 });
 
 // /pair 页的自动刷新数据源：同一份 pairView()，页面只在派生值变化时整页重渲染
 app.get("/pair/status", (c) => {
   if (!pairPageAllowed(remoteAddress(c))) {
-    return c.json({ error: "pair page is local-only" }, 403, { "cache-control": "no-store" });
+    return c.json({ error: "pair page is local-only" }, 403, { ...PAIR_PAGE_HEADERS, "cache-control": "no-store" });
   }
-  return c.json(pairView(), 200, { "cache-control": "no-store" });
+  return c.json(pairView(), 200, { ...PAIR_PAGE_HEADERS, "cache-control": "no-store" });
 });
 
 let policyChecked = false;

@@ -15,7 +15,18 @@ import { pollPairing } from "@/lib/device/store";
 // 码级限流（RFC 8628 的 interval 由 poll 响应的 slow_down 另外表达；这里是硬上限）
 const limiter = createSlidingWindowLimiter({ windowMs: 60 * 1000, max: 60 });
 
+// 来源地址前置限流：必须在读 body 之前扣配额，否则未认证者可用超限/坏 JSON body
+// 无限投递而不消耗任何 token。码级桶保持原语义（只在本层做粗粒度封顶）。
+const ipLimiter = createSlidingWindowLimiter({ windowMs: 60 * 1000, max: 120 });
+
 export async function POST(request: NextRequest) {
+  if (ipLimiter.hit(`ip:${getRateLimitKey(request)}`)) {
+    return NextResponse.json(
+      { success: false, error: "slow_down", interval: 30 },
+      { status: 429 }
+    );
+  }
+
   let body: Record<string, unknown>;
   try {
     body = await readJsonBodyLimited(request);

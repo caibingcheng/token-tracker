@@ -71,7 +71,8 @@ async function postCenter(path: string, body: unknown): Promise<Response> {
     body: JSON.stringify(body),
     scope: "sync",
     redirect: "manual",
-    dispatcher: getOutboundDispatcher(null),
+    // 与 plan-client 同口径：sync scope 放行 loopback，dispatcher 也要开 allowLoopback
+    dispatcher: getOutboundDispatcher(null, { allowLoopback: true }),
     signal: AbortSignal.timeout(15_000),
   });
 }

@@ -61,6 +61,8 @@ drizzle/
 *.db
 # dev 自动生成的主密钥（默认在 data/ 下已覆盖，自定义 SQLITE_DATABASE_PATH 时靠这条）
 **/.gateway-secret
+# relay 配对状态（含 device token，能换 upstream key lease）；RELAY_STATE_PATH 可指向仓库根
+relay.state.json
 
 # OpenCode
 .opencode/

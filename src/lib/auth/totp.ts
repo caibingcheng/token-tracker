@@ -1,4 +1,4 @@
-import { createHmac, randomBytes } from "crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "crypto";
 
 const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 export const TOTP_TIME_STEP_SECONDS = 30;
@@ -72,7 +72,9 @@ export function matchTotpCounter(
   const baseCounter = Math.floor(timestampMs / 1000 / TOTP_TIME_STEP_SECONDS);
   for (let w = -TOTP_WINDOW; w <= TOTP_WINDOW; w++) {
     const counter = baseCounter + w;
-    if (generateTotpCode(secret, counter * TOTP_TIME_STEP_SECONDS * 1000) === code) {
+    const expected = generateTotpCode(secret, counter * TOTP_TIME_STEP_SECONDS * 1000);
+    // 常量时间比较（两侧都已被 /^\d{6}$/ 与 padStart 约束为等长，直接喂 timingSafeEqual）
+    if (timingSafeEqual(Buffer.from(expected, "utf8"), Buffer.from(code, "utf8"))) {
       return counter;
     }
   }

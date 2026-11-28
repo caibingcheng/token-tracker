@@ -83,10 +83,12 @@ async function postCenterRaw(path: string, body: unknown, deviceToken: string): 
       "content-type": "application/json",
     },
     body: JSON.stringify(body),
-    // 中心可能在环回/内网：sync scope 允许 loopback，私网需 ALLOW_PRIVATE_UPSTREAMS
+    // 中心可能在环回/内网：sync scope 允许 loopback，私网需 ALLOW_PRIVATE_UPSTREAMS。
+    // dispatcher 必须同步开 allowLoopback，否则 CENTER_URL 用 localhost 主机名时
+    // URL 断言层放行、连接层 guarded lookup 拒绝（与 sync/pusher 同口径）。
     scope: "sync",
     redirect: "manual",
-    dispatcher: getOutboundDispatcher(null),
+    dispatcher: getOutboundDispatcher(null, { allowLoopback: true }),
     signal: AbortSignal.timeout(15_000),
   });
 }
