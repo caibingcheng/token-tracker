@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
-import { db, initDatabase, upstreamKeysTable, devicesTable } from "@/lib/db";
+import { db, initDatabase, upstreamKeysTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { withAuth } from "@/lib/auth/guard";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
@@ -36,28 +36,6 @@ export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
     if (body.lastStatus !== undefined) {
       values.lastStatus = typeof body.lastStatus === "string" ? body.lastStatus : null;
     }
-    // per-device key 归属可改（null = 改回通用 key）
-    if (body.deviceId !== undefined) {
-      if (body.deviceId === null) {
-        values.deviceId = null;
-      } else {
-        const deviceId = Number(body.deviceId);
-        if (!Number.isInteger(deviceId) || deviceId <= 0) {
-          return NextResponse.json(
-            { success: false, error: "deviceId must be a positive integer or null" },
-            { status: 400 }
-          );
-        }
-        const device = await db
-          .select({ id: devicesTable.id })
-          .from(devicesTable)
-          .where(eq(devicesTable.id, deviceId));
-        if (device.length === 0) {
-          return NextResponse.json({ success: false, error: "Device not found" }, { status: 404 });
-        }
-        values.deviceId = deviceId;
-      }
-    }
     if (Object.keys(values).length === 0) {
       return NextResponse.json({ success: false, error: "No fields to update" }, { status: 400 });
     }
@@ -73,9 +51,6 @@ export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
       details: {
         upstreamId: row.upstreamId,
         changed: Object.keys(values),
-        ...(body.deviceId !== undefined
-          ? { deviceId: values.deviceId ?? null, previousDeviceId: row.deviceId ?? null }
-          : {}),
       },
     });
     return NextResponse.json({ success: true });

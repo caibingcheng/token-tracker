@@ -86,7 +86,6 @@ export interface PlanHop {
 }
 
 export interface BuildPlanInput {
-  deviceId: number; // 已鉴权，可信；不取自请求体
   virtualKey: VirtualKeyInfo; // 已鉴权
   mode: PlanMode;
   protocol: Protocol;
@@ -106,8 +105,8 @@ export interface BuildPlanInput {
 export interface PlanDeps {
   loadUpstreams: () => Promise<UpstreamRoute[]>;
   // 与 resolveUpstreamKeys(upstreamId) 的区别：返回 key id（写 device_plans.hops_json +
-  // 做 lease 的 AAD 绑定），并按 deviceId 过滤专属 key（§12.3）
-  resolveUpstreamKeys: (upstreamId: number, deviceId: number | null) => Promise<PlanKey[]>;
+  // 做 lease 的 AAD 绑定）
+  resolveUpstreamKeys: (upstreamId: number) => Promise<PlanKey[]>;
   loadNamedRoutes?: () => Promise<NamedRouteInfo[]>;
   loadNamedRouteTargets?: (namedRouteId: number) => Promise<NamedRouteTargetInfo[]>;
   runClassifier?: RunClassifierFn;
@@ -566,7 +565,7 @@ export async function buildPlan(
   const timeoutMs = input.stream === true ? null : PLAN_NON_STREAMING_TIMEOUT_MS;
   const planHops: PlanHop[] = [];
   for (const hop of hops) {
-    const keys = await deps.resolveUpstreamKeys(hop.upstream.id, input.deviceId);
+    const keys = await deps.resolveUpstreamKeys(hop.upstream.id);
     if (keys.length === 0) continue; // 无 key 的 upstream 不产生 hop
     const hopModel = namedRoute ? hop.targetModel : model;
     const hopPath =
@@ -677,7 +676,7 @@ async function buildSubresourcePlan(
   ];
   const planHops: PlanHop[] = [];
   for (const upstream of healthy) {
-    const keys = await deps.resolveUpstreamKeys(upstream.id, input.deviceId);
+    const keys = await deps.resolveUpstreamKeys(upstream.id);
     if (keys.length === 0) continue;
     const url = `${joinUrlPath(upstream.baseUrl, pathname)}${query}`;
     const privateNetwork = requiresPrivateNetwork(upstream);

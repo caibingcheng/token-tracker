@@ -51,6 +51,18 @@ export function migrateTokenRecordsModelColumns(client: any): void {
   }
 }
 
+// upstream_keys 专用一次性迁移：删除 per-device key 的 device_id 列（功能已移除）。
+// 幂等：PRAGMA 检测驱动；列存在则 DROP（SQLite ≥ 3.35，better-sqlite3 13 已满足）。
+export function migrateDropUpstreamKeyDeviceId(client: any): void {
+  const existing: string[] = client
+    .prepare(`PRAGMA table_info(upstream_keys)`)
+    .all()
+    .map((c: any) => c.name);
+  if (existing.includes("device_id")) {
+    client.exec(`ALTER TABLE upstream_keys DROP COLUMN device_id`);
+  }
+}
+
 // sync_instances 专用迁移：旧 instance 主键结构（instance TEXT PRIMARY KEY）
 // → uid 主键 + instance_name 展示名结构。协议已破坏（旧行 name 无对应 uid），
 // 旧行直接丢弃（必然重绑重推）。幂等检测：缺少 uid 列 → 触发重建。

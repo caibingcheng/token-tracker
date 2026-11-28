@@ -168,7 +168,6 @@ export const POST = withDeviceAuth(async (request: NextRequest, device: DeviceCo
     );
 
     const input: BuildPlanInput = {
-      deviceId: device.id,
       virtualKey,
       mode,
       protocol: detectRequestProtocol(pathname),

@@ -5,7 +5,7 @@ import { join } from "path";
 import { NextRequest } from "next/server";
 import { GET, POST } from "./route";
 import { closeDb, db, devicesTable, initDatabase, upstreamKeysTable, upstreamsTable } from "@/lib/db";
-import { loadPlainUpstreamKeys, loadPlainUpstreamKeysForDevice } from "@/lib/gateway/proxy-deps";
+import { loadPlainUpstreamKeys, loadPlainUpstreamKeysWithIds } from "@/lib/gateway/proxy-deps";
 import { setAdminApiKey, getTokenEpoch, deleteSetting } from "@/lib/auth/settings";
 import { signSessionToken, keyFingerprint } from "@/lib/auth/session";
 import { withSkipCache } from "@/lib/db/cache";
@@ -145,68 +145,26 @@ describe("upstream keys route - 掩码与泄露面", () => {
     expect(res.status).toBe(401);
   });
 
-  it("per-device key：写入 device_id、列表回设备名、直连 loader 看不到", async () => {
+  it("key 列表不含 device 字段（per-device key 已移除）", async () => {
     const upstreamId = await seedUpstream();
     const token = await makeToken();
-    const device = await withSkipCache(async () =>
-      db
-        .insert(devicesTable)
-        .values({
-          fingerprint: `u-${"a".repeat(32)}`,
-          name: "laptop",
-          publicKey: "pub",
-          createdAt: new Date().toISOString(),
-        })
-        .returning({ id: devicesTable.id })
-    );
-    const deviceId = Number(device[0]!.id);
-
-    // 通用 key + 设备专属 key
-    const generic = await POST(
+    const created = await POST(
       req(`/api/admin/upstreams/${upstreamId}/keys`, "POST", token, { apiKey: "sk-generic-123456" }),
       ctx(upstreamId) as any
     );
-    expect(generic.status).toBe(201);
-    const scoped = await POST(
-      req(`/api/admin/upstreams/${upstreamId}/keys`, "POST", token, {
-        apiKey: "sk-device-123456",
-        deviceId,
-      }),
-      ctx(upstreamId) as any
-    );
-    expect(scoped.status).toBe(201);
-    expect(((await scoped.json()) as any).data.deviceId).toBe(deviceId);
+    expect(created.status).toBe(201);
+    expect(((await created.json()) as any).data.deviceId).toBeUndefined();
 
-    // 列表回设备名（UI 徽标 `device: <name>` 的数据源）
     const list = await GET(req(`/api/admin/upstreams/${upstreamId}/keys`, "GET", token), ctx(upstreamId) as any);
-    const rows = ((await list.json()) as any).data as {
-      deviceId: number | null;
-      deviceName: string | null;
-    }[];
-    expect(rows.map((r) => r.deviceId)).toEqual([null, deviceId]);
-    expect(rows[1]!.deviceName).toBe("laptop");
+    const rows = ((await list.json()) as any).data as Record<string, unknown>[];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).not.toHaveProperty("deviceId");
+    expect(rows[0]).not.toHaveProperty("deviceName");
 
-    // loader 语义（§12.3）：deviceId 缺省只返回通用 key；指定 device 时专属优先
-    await expect(loadPlainUpstreamKeysForDevice(upstreamId, null)).resolves.toEqual([
+    // loader：所有 key 都是通用 key（无 per-device 过滤，按 id 升序）
+    await expect(loadPlainUpstreamKeysWithIds(upstreamId)).resolves.toEqual([
       { id: expect.any(Number), apiKey: "sk-generic-123456" },
     ]);
-    const forDevice = await loadPlainUpstreamKeysForDevice(upstreamId, deviceId);
-    expect(forDevice.map((k) => k.apiKey)).toEqual(["sk-device-123456", "sk-generic-123456"]);
     await expect(loadPlainUpstreamKeys(upstreamId)).resolves.toEqual(["sk-generic-123456"]);
-  });
-
-  it("per-device key：未知 device 404，非法 deviceId 400", async () => {
-    const upstreamId = await seedUpstream();
-    const token = await makeToken();
-    const unknown = await POST(
-      req(`/api/admin/upstreams/${upstreamId}/keys`, "POST", token, { apiKey: "sk-x-123456", deviceId: 999 }),
-      ctx(upstreamId) as any
-    );
-    expect(unknown.status).toBe(404);
-    const invalid = await POST(
-      req(`/api/admin/upstreams/${upstreamId}/keys`, "POST", token, { apiKey: "sk-x-123456", deviceId: -1 }),
-      ctx(upstreamId) as any
-    );
-    expect(invalid.status).toBe(400);
   });
 });

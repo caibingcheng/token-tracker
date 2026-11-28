@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm";
 import { wrapDatabaseClient, invalidateQueryCache } from "./cache";
 import { offsetMinutesToSqlModifiers } from "@/lib/timezone-utils";
-import { migrateColumns, migrateTokenRecordsModelColumns, migrateNamedRoutesTables, migrateNamedRouteTargetsNullableUpstream, migrateSyncInstancesTable, migrateIngestTokensTable, backfillVirtualKeyFingerprints } from "./migrate";
+import { migrateColumns, migrateTokenRecordsModelColumns, migrateNamedRoutesTables, migrateNamedRouteTargetsNullableUpstream, migrateSyncInstancesTable, migrateIngestTokensTable, migrateDropUpstreamKeyDeviceId, backfillVirtualKeyFingerprints } from "./migrate";
 
 let db: any;
 let rawClient: any;
@@ -354,10 +354,6 @@ async function ensureClient() {
       ],
     },
     {
-      table: "upstream_keys",
-      columns: [{ name: "device_id", definition: "device_id INTEGER" }],
-    },
-    {
       table: "upstreams",
       columns: [
         { name: "health_check_model", definition: "health_check_model TEXT" },
@@ -384,6 +380,9 @@ async function ensureClient() {
 
   // named_route_targets.upstream_id 放宽可空（无 provider 目标）：NOT NULL 存量表重建（幂等）
   migrateNamedRouteTargetsNullableUpstream(client);
+
+  // upstream_keys.device_id（per-device key）已移除：存量列 DROP（幂等）
+  migrateDropUpstreamKeyDeviceId(client);
 
   // 多实例同步表专用迁移（幂等，全新库无旧结构自动跳过）：
   // - sync_instances：instance 主键 → uid 主键 + instance_name（旧行丢弃）

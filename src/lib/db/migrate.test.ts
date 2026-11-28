@@ -7,6 +7,7 @@ import {
   migrateNamedRouteTargetsNullableUpstream,
   migrateSyncInstancesTable,
   migrateIngestTokensTable,
+  migrateDropUpstreamKeyDeviceId,
   backfillVirtualKeyFingerprints,
 } from "./migrate";
 import { encryptSecret } from "@/lib/gateway/crypto";
@@ -688,24 +689,13 @@ describe("relay 设备补列与 vkFp 回填", () => {
   const RELAY_COLUMNS = [
     { table: "token_records", columns: [{ name: "device_id", definition: "device_id INTEGER" }] },
     { table: "virtual_keys", columns: [{ name: "key_fingerprint", definition: "key_fingerprint TEXT" }] },
-    { table: "upstream_keys", columns: [{ name: "device_id", definition: "device_id INTEGER" }] },
   ];
 
-  it("token_records.device_id / virtual_keys.key_fingerprint / upstream_keys.device_id 幂等添加", () => {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS upstream_keys (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        upstream_id INTEGER NOT NULL,
-        api_key_encrypted TEXT NOT NULL,
-        enabled INTEGER NOT NULL DEFAULT 1,
-        created_at TEXT
-      )
-    `);
+  it("token_records.device_id / virtual_keys.key_fingerprint 幂等添加", () => {
     migrateColumns(db, RELAY_COLUMNS);
     migrateColumns(db, RELAY_COLUMNS);
     expect(tableColumns("token_records")).toContain("device_id");
     expect(tableColumns("virtual_keys")).toContain("key_fingerprint");
-    expect(tableColumns("upstream_keys")).toContain("device_id");
   });
 
   it("backfillVirtualKeyFingerprints：回填可解密行、跳过坏密文、重跑不报错", () => {
@@ -736,5 +726,29 @@ describe("relay 设备补列与 vkFp 回填", () => {
       if (origSecret === undefined) delete process.env.GATEWAY_SECRET;
       else process.env.GATEWAY_SECRET = origSecret;
     }
+  });
+
+  it("migrateDropUpstreamKeyDeviceId：删存量 device_id 列，重跑幂等", () => {
+    // 自建表，不依赖同 describe 其他用例的建表顺序（旧库才有 device_id，新库 DDL 已无该列）
+    db.exec(`DROP TABLE IF EXISTS upstream_keys`);
+    db.exec(`CREATE TABLE upstream_keys (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      upstream_id INTEGER NOT NULL,
+      api_key_encrypted TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      last_status TEXT,
+      device_id INTEGER,
+      created_at TEXT
+    )`);
+    const columns = () =>
+      db.prepare(`PRAGMA table_info(upstream_keys)`).all().map((c: any) => c.name);
+    expect(columns()).toContain("device_id");
+
+    migrateDropUpstreamKeyDeviceId(db);
+    migrateDropUpstreamKeyDeviceId(db);
+
+    expect(columns()).not.toContain("device_id");
+    // 其它列不受影响
+    expect(columns()).toContain("api_key_encrypted");
   });
 });

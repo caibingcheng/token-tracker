@@ -19,18 +19,15 @@ import { loadQuotaUsageFromDb } from "./quota-db";
 // （createProxyDeps() 是每请求创建的，不能把状态放进 deps 实例）
 const sessionStore = new SessionStore();
 
-// 解密指定 upstream 的通用 key（device_id IS NULL，明文，按配置顺序）。
-// 直连路径（proxy）只看通用 key：per-device key 绝不能污染全局探活/分类器判定。
+// 解密指定 upstream 的 key（明文，按配置顺序）。
 export async function loadPlainUpstreamKeys(upstreamId: number): Promise<string[]> {
-  const keys = await loadPlainUpstreamKeysForDevice(upstreamId, null);
+  const keys = await loadPlainUpstreamKeysWithIds(upstreamId);
   return keys.map((k) => k.apiKey);
 }
 
-// 解密指定 upstream 的 key（带 id）：deviceId = null → 只返回通用 key（现有行为）；
-// deviceId 非空 → 通用 key + 该 device 专属 key，专属优先（per-device key 开关）。
-export async function loadPlainUpstreamKeysForDevice(
-  upstreamId: number,
-  deviceId: number | null
+// 解密指定 upstream 的 key（带 id），按 id 升序。
+export async function loadPlainUpstreamKeysWithIds(
+  upstreamId: number
 ): Promise<{ id: number; apiKey: string }[]> {
   await initDatabase();
   const rows = await db
@@ -38,17 +35,8 @@ export async function loadPlainUpstreamKeysForDevice(
     .from(upstreamKeysTable)
     .where(eq(upstreamKeysTable.upstreamId, upstreamId))
     .orderBy(upstreamKeysTable.id);
-  const scoped = rows.filter((row: any) =>
-    deviceId === null ? row.deviceId === null : row.deviceId === null || row.deviceId === deviceId
-  );
-  // 专属 key 优先（device_id IS NULL 排后）
-  scoped.sort((a: any, b: any) => {
-    const aGeneric = a.deviceId === null ? 1 : 0;
-    const bGeneric = b.deviceId === null ? 1 : 0;
-    return aGeneric - bGeneric || a.id - b.id;
-  });
   const keys: { id: number; apiKey: string }[] = [];
-  for (const row of scoped) {
+  for (const row of rows as any[]) {
     if (row.enabled !== 1) continue;
     try {
       keys.push({ id: row.id, apiKey: decryptSecret(row.apiKeyEncrypted) });

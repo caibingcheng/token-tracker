@@ -142,7 +142,6 @@ export const upstreamKeys = sqliteTable("upstream_keys", {
   apiKeyEncrypted: text("api_key_encrypted").notNull(),
   enabled: integer("enabled").notNull().default(1),
   lastStatus: text("last_status"),
-  deviceId: integer("device_id"), // NULL = 通用 key；非 NULL = 该 relay device 专属（只下发给该 device）
   createdAt: text("created_at").$defaultFn(() => new Date().toISOString()),
 });
 

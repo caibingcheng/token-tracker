@@ -72,8 +72,9 @@ npm run seed:fake-upstream         # 把这些上游写进中心（幂等；--wi
 
 1. relay 首次启动生成 X25519 密钥对 + `fingerprint`（`u-` + 32 hex）写 `data/relay.state.json`（0600）。
 2. `POST /api/device/pair/start` → 中心生成 **8 位码**（`ABCD-EFGH`，字符集排除 `0 O I 1`，TTL 600s，只存 sha256），relay 打印 `[relay] pair code …`（也可看 `/pair` 页）。
-3. 管理员在中心 **Admin → Devices** 输 8 位码（一码一格）→ **Authorize**。
-   - **只能输码、一步授权**：待授权列表（`pairingId` 快捷通道）与「先查看再授权」的中间步都已删除 —— 前者会让任意人靠发起配对把条目推进管理面（展示面/骚扰面）；码只在 relay 的日志与 `/pair` 页上，拿到码就意味着能读到日志。
+3. 管理员在中心 **Admin → Devices** 输 8 位码（一码一格）→ **Authorize** → 弹窗显示身份（name / fingerprint / IP / 码到期时间）→ 再次确认后才授权。
+   - **只能输码**：待授权列表（`pairingId` 快捷通道）已删除 —— 那个列表会让任意人靠发起配对把条目推进管理面（展示面/骚扰面）。码只在 relay 的日志与 `/pair` 页上。
+   - **授权前必须核对身份**：`POST /api/device/pair/lookup`（会话态、不消费码）拿到码对应的 device 身份，弹窗里展示 name / fingerprint / IP / 码到期时间；核对不上就取消，码 10min 后自行过期。
    - 授权后该设备以 `pending` 出现，relay 下一次 poll 拿到 token 后自动变 `active`（页面 15s 自刷一次，不用手动刷）。
    - **改名以中心为准**：`PATCH /api/admin/devices/:id` 改完不用重启 relay —— 下一次 plan 响应的 `device.name` 就会带回新名（relay 只存内存并更新 `/pair` 页），没有任何心跳/长轮询。
 4. relay 按 `interval`（5s，`slow_down` 会翻倍至 30s）轮询 `POST /api/device/pair/poll`，取到 `dt-` token 后落盘，配对页上的码立即消失。
@@ -92,7 +93,7 @@ npm run seed:fake-upstream         # 把这些上游写进中心（幂等；--wi
 - **决策全在 `src/lib/gateway/plan.ts` 的 `buildPlan()`**，与 `proxy.ts` 的链组装**刻意不共用代码**，一致性由 `plan.contract.test.ts` 用 `proxy.ts` 当 oracle 保证（同一份 fixture 跑两条路径，比较真实尝试序列）。
 - **hop = (upstream, key)**，每个 hop 带一个 `keyLease`（`src/lib/gateway/lease.ts`）：X25519 ECDH + HKDF(planId) + AES-256-GCM，AAD 绑定 `planId|upstreamId|keyId`，TTL 60s（relay 允许 ±120s 漂移）。中心只存 device 公钥，不存在能解开全部 lease 的对称密钥。
 - **hop 字段语义**（relay 不写策略 if，只读字段）：`continueOn` 决定「还能不能继续试」（429/5xx/网络 → 同 key 重试；401 → 换 key；403/404 → 见 `skipSiblingsOn`；其他 4xx → 直接透传并终止全链）、`skipSiblingsOn = ["403","404"]`（跳过该 upstream 剩余 key，与直连的 upstream 级判定一致）、`passthrough`（`last-4xx` / `last-business`）决定全链耗尽时透传哪份保留响应，并附一条零 token 的 `no_usage` 记录。
-- **per-device upstream key 已可用**：`upstream_keys.device_id` 由上游 key 表单写入（下拉「Bind new keys to a relay device」），列表标 `device: <name>`；直连路径、探活、分类器与 `fetch-models` 一律只用通用 key（`device_id IS NULL`），只有该 device 的 plan 才会拿到专属 key（专属优先）。
+- **所有 upstream key 都是通用 key**：直连、relay、探活、分类器、`fetch-models` 共用同一份链（按 id 升序）。曾经的 per-device key（`upstream_keys.device_id`）已移除 —— 它只在「多台 relay 各用不同账号」时有用，代价是多一套过滤/排序 + 删除设备后遗留孤儿 key。
 - **写库素材以中心为准**：`device_plans` 行在 plan 时定下 `realModel` / `session_id` / `record_session_id` / `request_model` / `user_agent`，report 只回 `hopIndex`。
 - **健康标记分 mode**（`src/lib/device/report.ts`）：router 的 403(json)/404 → model 级；403 html（边缘拦截）与 429/5xx 不标记；`responses-create` 的 403/404 不标记；`responses-subresource` 的 403/404 零标记；401/网络 → 同 upstream 全 key 覆盖才 `markUnhealthy`；`winner` → `markHealthy` + `markModelHealthy`。
 - **配额**：`checkQuota` 用量 = DB 聚合 + 中心在途 + **relay 预留**（`device_plans` 未上报且未过期的 `reserved_token/rpm`，见 `quota-db.ts`）。预留 TTL 10 分钟，每 60s 惰性清扫（`maybeSweep`，plan/report 请求时触发，不额外建 timer）；未上报就过期的行计入 `relay_gap_count`（`GET /api/admin/devices/stats` 可见）。
@@ -130,7 +131,7 @@ plan 请求带 `relayVersion`，中心维护 `MIN_RELAY_VERSION`（`src/routes/a
 
 ## 安全边界（必须知道）
 
-- **relay 被攻破 = 已下发的 upstream key 泄露**（60s TTL 内的 lease）。per-device upstream key（`upstream_keys.device_id`，上游 key 表单可写入、可单独吊销）能把「永久泄露」降为「可单独吊销」。
+- **relay 被攻破 = 已下发的 upstream key 泄露**（60s TTL 内的 lease）。缓解手段只能是 per-device 部署（每台 relay 用不同的 upstream key 账号，泄露后单独删 key 即可）。
 - report 无签名（同一 device token 认证），`failures` 会驱动全局健康标记 —— 伪造可把共享 upstream 打挂。已有 per-device 限流（20 rps），健康写入在中心侧记 `device_id` 可审计。
 - 中心下发的 URL 每次请求前都过 `assertOutboundUrlAllowed(url, "upstream")`；私网 upstream 还需 relay 本地 `ALLOW_PRIVATE_UPSTREAMS`（双条件，fail-closed，原因不回显客户端）。
 - 出站一律 `redirect: "manual"` + 受保护 dispatcher；不跟随 3xx（防 key 跨源泄露）。
@@ -149,8 +150,8 @@ plan 请求带 `relayVersion`，中心维护 `MIN_RELAY_VERSION`（`src/routes/a
 | `src/lib/gateway/plan.contract.test.ts` | 与 `proxy.ts` 的链组装契约（oracle 测试） |
 | `src/lib/device/*` | 配对 / token / device store / report 健康规则 / plan deps / vk 指纹解析 |
 | `src/lib/auth/device-guard.ts` | `withDeviceAuth`（device token，与 `withAuth` 平行不复用） |
-| `src/routes/api/device/**` | pair/start、pair/poll、plan、report |
-| `src/routes/api/admin/devices/**` | 列表 / 配对授权 / 改名 / 撤销 / 轮换 token / 删除 / 统计 |
+| `src/routes/api/device/**` | pair/start、pair/poll、pair/lookup（会话态：授权前身份核对）、plan、report |
+| `src/routes/api/admin/devices/**` | 列表 / 配对授权 / 改名 / 撤销 / 删除 / 统计 |
 | `src/relay/**` | relay 执行器与内联配对页（不得 import DB / 认证 / proxy） |
 | `src/relay/latency.ts` | relay 侧 RTT 分钟桶（5h × 1min，纯内存） |
 | `src/lib/device/latency.ts` | 中心侧 RTT 桶：解析自校验 / 覆盖写 / 5h 修剪 / 列表聚合 |

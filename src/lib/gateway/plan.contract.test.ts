@@ -400,7 +400,6 @@ async function runPlan(fx: Fixture, sc: Scenario): Promise<PlanRun> {
   };
 
   const input: BuildPlanInput = {
-    deviceId: 11,
     virtualKey: vk,
     mode,
     protocol,

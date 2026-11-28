@@ -61,9 +61,6 @@ export interface UpstreamKeyItem {
   maskedKey: string;
   enabled: boolean;
   lastStatus: string | null;
-  // per-device key（relay 专属）：null = 通用 key（中心直连 + 探活 + 分类器都用它）
-  deviceId?: number | null;
-  deviceName?: string | null;
   createdAt: string;
 }
 
@@ -167,9 +164,6 @@ export default function UpstreamsPanel() {
 
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [formKeys, setFormKeys] = useState<string[]>([""]);
-  // 新建 key 的 relay 归属（§12.3 per-device key）：null = 通用 key
-  const [formKeyDeviceId, setFormKeyDeviceId] = useState<number | null>(null);
-  const [devices, setDevices] = useState<{ id: number; name: string | null; fingerprint: string }[]>([]);
   const [formTransforms, setFormTransforms] = useState<HeaderTransform[]>([]);
   // per-model 探活端点表单（body 以 JSON 字符串暂存，提交时解析）
   const [formModelProbes, setFormModelProbes] = useState<
@@ -331,28 +325,6 @@ export default function UpstreamsPanel() {
     loadUpstreams();
   }, [loadUpstreams]);
 
-  // relay 设备列表（只用于「把新 key 绑到某台 relay」的下拉；未配对任何设备时不显示）
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const res = await apiFetch("/api/admin/devices");
-        const json = await res.json();
-        if (cancelled || !json.success) return;
-        setDevices(
-          (json.data as { id: number; name: string | null; fingerprint: string; revokedAt: string | null }[])
-            .filter((d) => !d.revokedAt)
-            .map((d) => ({ id: d.id, name: d.name, fingerprint: d.fingerprint }))
-        );
-      } catch {
-        // 设备下拉是可选功能：拿不到就不显示
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
@@ -452,10 +424,7 @@ export default function UpstreamsPanel() {
         const keyRes = await apiFetch(`/api/admin/upstreams/${upstreamId}/keys`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            apiKey,
-            ...(formKeyDeviceId !== null ? { deviceId: formKeyDeviceId } : {}),
-          }),
+          body: JSON.stringify({ apiKey }),
         });
         const keyJson = await keyRes.json();
         if (!keyJson.success) {
@@ -465,7 +434,6 @@ export default function UpstreamsPanel() {
       }
       setForm(EMPTY_FORM);
       setFormKeys([""]);
-      setFormKeyDeviceId(null);
       setFormTransforms([]);
       setFormModelProbes([]);
       setFormKeyTests({});
@@ -1224,14 +1192,6 @@ export default function UpstreamsPanel() {
                       {k.maskedKey}
                     </code>
                     {!effectiveEnabled && <span className={statusChip.off}>disabled</span>}
-                    {k.deviceId ? (
-                      <span
-                        className="rounded bg-blue-50 px-1.5 py-0.5 text-[11px] text-blue-700"
-                        title="Per-device key: only handed to this relay (not used by this center, probes or the classifier)"
-                      >
-                        device: {k.deviceName ?? `#${k.deviceId}`}
-                      </span>
-                    ) : null}
                     <span
                       className="text-[11px] text-gray-400"
                       title={`Added ${new Date(k.createdAt).toLocaleString()}`}
@@ -1320,27 +1280,6 @@ export default function UpstreamsPanel() {
             >
               + Add key
             </button>
-            {devices.length > 0 && (
-              <label className="mt-2 block text-xs text-gray-600">
-                Bind new keys to a relay device{" "}
-                <span className="text-gray-400">
-                  (optional; such keys are only handed to that relay — this center, probes and the
-                  classifier keep using generic keys)
-                </span>
-                <select
-                  value={formKeyDeviceId ?? ""}
-                  onChange={(e) => setFormKeyDeviceId(e.target.value === "" ? null : Number(e.target.value))}
-                  className="mt-1 w-full max-w-sm rounded border border-gray-300 px-3 py-2 text-base md:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                >
-                  <option value="">Generic (no device)</option>
-                  {devices.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.name ?? d.fingerprint.slice(0, 8)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
           </div>
           <div className="md:col-span-3">
             <label className="mb-1 block text-xs text-gray-600">
@@ -2137,14 +2076,6 @@ export default function UpstreamsPanel() {
                           disabled
                         </span>
                       )}
-                      {key.deviceId ? (
-                        <span
-                          className="rounded bg-blue-50 px-1.5 py-0.5 text-[11px] text-blue-700"
-                          title="Per-device key: only handed to this relay"
-                        >
-                          device: {key.deviceName ?? `#${key.deviceId}`}
-                        </span>
-                      ) : null}
                       {key.lastStatus && (
                         <span className="text-[11px] text-gray-400">last: {key.lastStatus}</span>
                       )}

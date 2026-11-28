@@ -86,8 +86,7 @@ export const POST = withAuth(async (request: NextRequest) => {
     }
     const keyRows = (
       await db.select().from(upstreamKeysTable).where(eq(upstreamKeysTable.upstreamId, upstreamId))
-      // 只用通用 key：per-device key（device_id 非空）是某台 relay 专属的，不得用于全局模型列表拉取
-    ).filter((row: any) => row.enabled === 1 && (row.deviceId ?? null) === null);
+    ).filter((row: any) => row.enabled === 1);
     if (keyRows.length === 0) {
       return NextResponse.json(
         { success: false, error: "No enabled API key configured for this upstream" },
