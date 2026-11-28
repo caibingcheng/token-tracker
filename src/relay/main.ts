@@ -90,7 +90,8 @@ function remoteAddress(c: Context): string | null {
 const app = new Hono({ strict: false });
 
 // /pair 页的安全响应头：relay 是独立 Hono 实例，不走中心 src/server/security-headers.ts。
-// 页面含内联 <script>（自动刷新），所以 script-src 需要 'unsafe-inline'；
+// 页面含内联 <script>（自动刷新）与内联 <style>（卡片样式），两者都需要 'unsafe-inline' ——
+// 少了 style-src 时 style-src 回落到 default-src 'self'，内联样式被拒，页面退化成裸文字。
 // frame-ancestors 'none' + XFO 防 clickjacking（默认只放行环回/私网来源，但同一内网的
 // 其他网页仍可把它包成 iframe 骗管理员输码）。
 const PAIR_PAGE_HEADERS = {
@@ -98,7 +99,7 @@ const PAIR_PAGE_HEADERS = {
   "x-content-type-options": "nosniff",
   "referrer-policy": "no-referrer",
   "content-security-policy":
-    "default-src 'self'; script-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'self'; form-action 'none'",
+    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'self'; form-action 'none'",
 };
 
 app.get("/pair", (c) => {
