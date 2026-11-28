@@ -248,8 +248,9 @@ async function handleProxy(c: Context): Promise<Response> {
       );
     }
     if (planned.status === 401) {
+      // 走到这里只可能是业务 401（vk 拒绝）：device token 被拒已在上面两个分支提前返回
       console.error(
-        "[relay] center rejected this device token (revoked or deleted) — re-pair this relay from /admin/devices"
+        `[relay] plan 401 ${planned.error.error.type}: ${planned.error.error.message}`
       );
     }
     return errorResponse(planned.status, planned.error.error.type, planned.error.error.message);
