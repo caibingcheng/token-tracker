@@ -110,6 +110,7 @@ app.get("/pair/status", (c) => {
 });
 
 let policyChecked = false;
+let revokedLogged = false;
 
 async function handleProxy(c: Context): Promise<Response> {
   const deviceToken = currentDeviceToken();
@@ -156,6 +157,22 @@ async function handleProxy(c: Context): Promise<Response> {
     return errorResponse(502, "center_unreachable", "Center is unreachable from this relay");
   }
   if (!planned.ok) {
+    if (planned.deviceRevoked) {
+      // 被 admin 撤销 ≠ token 无效：保留 token，中心 unrevoke 后下一次请求就自动恢复。
+      // （以前一律清 token + 重新配对，导致 unrevoke 后 relay 已把凭证丢掉，永远连不上）
+      if (!revokedLogged) {
+        revokedLogged = true;
+        console.warn(
+          "[relay] this device is revoked on the center — keeping the token; unrevoke it under Admin → Devices to recover"
+        );
+      }
+      recordPlanOutcome("revoked");
+      return errorResponse(
+        503,
+        "relay_revoked",
+        "This relay device was revoked on the center; unrevoke it in Admin → Devices"
+      );
+    }
     recordPlanOutcome(`${planned.status} ${planned.error.error.type}`);
     if (planned.deviceTokenRejected) {
       // 自愈：清楚旧 token 并重新配对（同一 fingerprint 会被中心当作 reauth，历史记录不断链）
@@ -175,6 +192,8 @@ async function handleProxy(c: Context): Promise<Response> {
   }
 
   const plan = planned.plan;
+  // 恢复后重置：下次再被撤销时还能打一行提示
+  revokedLogged = false;
   // 中心改名（PATCH /admin/devices/:id）后无需心跳：下一次 plan 就带回来，/pair 页跟着变。
   // 只在变化时打一行日志，避免每个请求都刷屏。
   if (plan.device && plan.device.name !== null && plan.device.name !== getCenterDeviceName()) {

@@ -96,6 +96,8 @@ export interface PlanFailure {
   error: PlanErrorBody;
   /** true = 中心明确拒绝 device token（轮换/删除/未授权），不是 vk 或模型问题 */
   deviceTokenRejected?: boolean;
+  /** true = 该 device 被撤销（reason=revoked）：**不清 token**，中心 unrevoke 后自动恢复 */
+  deviceRevoked?: boolean;
 }
 
 /**
@@ -123,6 +125,7 @@ export function parsePlanFailure(status: number, body: unknown): PlanFailure {
       },
     },
     ...(deviceTokenRejected ? { deviceTokenRejected: true } : {}),
+    ...(deviceTokenRejected && raw?.reason === "revoked" ? { deviceRevoked: true } : {}),
   };
 }
 

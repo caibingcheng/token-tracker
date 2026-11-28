@@ -74,16 +74,20 @@ describe("withDeviceAuth", () => {
     expect((await handler(req("dt-" + "a".repeat(30)))).status).toBe(401);
   });
 
-  it("未知 token → 401", async () => {
+  it("未知 token → 401（reason:invalid）", async () => {
     await seedDevice();
-    expect((await handler(req(generateDeviceToken()))).status).toBe(401);
+    const res = await handler(req(generateDeviceToken()));
+    expect(res.status).toBe(401);
+    expect((await res.json()) as { reason: string }).toMatchObject({ reason: "invalid" });
   });
 
-  it("已撤销 → 401（每次直读 DB，不进查询缓存）", async () => {
+  it("已撤销 → 401 且 reason:revoked（relay 据此保留 token，unrevoke 后自动恢复）", async () => {
     const token = await seedDevice({ revokedAt: new Date().toISOString() });
     const res = await handler(req(token));
     expect(res.status).toBe(401);
-    expect(((await res.json()) as { error: string }).error).toContain("Invalid or revoked");
+    const body = (await res.json()) as { error: string; reason: string };
+    expect(body.error).toContain("Invalid or revoked");
+    expect(body.reason).toBe("revoked");
   });
 
   it("last_seen_at 异步刷新（不阻塞响应）", async () => {

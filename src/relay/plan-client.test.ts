@@ -95,4 +95,23 @@ describe("parsePlanFailure", () => {
     const failure = parsePlanFailure(502, null);
     expect(failure.error.error).toEqual({ message: "plan failed", type: "upstream_error" });
   });
+
+  it("reason:revoked → deviceRevoked（relay 保留 token，不重新配对）", () => {
+    const revoked = parsePlanFailure(401, {
+      success: false,
+      error: "Invalid or revoked device token",
+      reason: "revoked",
+    });
+    expect(revoked.deviceTokenRejected).toBe(true);
+    expect(revoked.deviceRevoked).toBe(true);
+
+    // 旧中心 / 未知 token：无 reason → 不当作 revoked，仍走自愈重配
+    const invalid = parsePlanFailure(401, {
+      success: false,
+      error: "Invalid or revoked device token",
+      reason: "invalid",
+    });
+    expect(invalid.deviceTokenRejected).toBe(true);
+    expect(invalid.deviceRevoked).toBeUndefined();
+  });
 });

@@ -23,8 +23,13 @@ export type DeviceHandler = (
   device: DeviceContext
 ) => Promise<Response> | Response;
 
-export function invalidDeviceToken(message = "Invalid or revoked device token") {
-  return NextResponse.json({ success: false, error: message }, { status: 401 });
+export function invalidDeviceToken(reason: "invalid" | "revoked" = "invalid") {
+  // reason 让 relay 能区分「token 无效（清 token 重新配对）」与「设备被撤销（保留 token，
+  // 中心 unrevoke 后自动恢复）」。message 保持不变（不向客户端泄露设备是否存在）。
+  return NextResponse.json(
+    { success: false, error: "Invalid or revoked device token", reason },
+    { status: 401 }
+  );
 }
 
 function extractBearerToken(request: Request): string | null {
@@ -42,7 +47,8 @@ export function withDeviceAuth(handler: DeviceHandler): (request: NextRequest) =
     if (!token || !isDeviceTokenShaped(token)) return invalidDeviceToken();
 
     const device = await getDeviceByTokenHash(deviceTokenHash(token));
-    if (!device || device.revokedAt) return invalidDeviceToken();
+    if (!device) return invalidDeviceToken("invalid");
+    if (device.revokedAt) return invalidDeviceToken("revoked");
 
     // fire-and-forget：只用于列表展示，失败不影响请求
     touchDeviceLastSeen(device.id).catch(() => {});
