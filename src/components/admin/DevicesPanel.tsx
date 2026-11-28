@@ -159,7 +159,7 @@ export default function DevicesPanel() {
     };
   }, [load]);
 
-  function applyChars(start: number, raw: string) {
+  function applyChars(start: number, raw: string, fromPaste = false) {
     const chars = raw.toUpperCase().replace(/[^A-Z0-9]/g, "");
     const next = [...digits];
     if (chars.length === 0) {
@@ -171,6 +171,10 @@ export default function DevicesPanel() {
       }
       return;
     }
+    // 末位已有值（8 位已输满）：忽略键入，想改必须先退格删掉。
+    // 不能只拦单字符：焦点已在末格时不会重新触发 onFocus，input 拿到的是追加后的两字符串。
+    // 粘贴是例外（用户主动贴整码）。
+    if (!fromPaste && start === CODE_LENGTH - 1 && next[start] !== "") return;
     let pos = start;
     for (const ch of chars) {
       if (pos >= CODE_LENGTH) break;
@@ -350,7 +354,7 @@ export default function DevicesPanel() {
                 onChange={(e) => applyChars(index, e.target.value)}
                 onPaste={(e) => {
                   e.preventDefault();
-                  applyChars(index, e.clipboardData.getData("text"));
+                  applyChars(index, e.clipboardData.getData("text"), true);
                 }}
                 onKeyDown={(e) => {
                   if (e.key === "Backspace" && digit === "" && index > 0) {

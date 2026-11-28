@@ -35,6 +35,11 @@ export default function OtpInput({ value, onChange, disabled, autoFocus }: OtpIn
   const handleChange = (index: number, raw: string) => {
     const digits = raw.replace(/\D/g, "");
     if (!digits) return;
+    // 末位已有值（6 位已输满）：忽略新输入。
+    // 注意不能只拦「单字符」：焦点本来就在末格时不会重新触发 onFocus，input 拿到的是
+    // 追加后的 "12"（两字符）—— 只看长度仍会走进替换分支，于是末位被默默换掉。
+    // 预期是先退格删掉再输。整串 autofill / 粘贴各有独立路径（onPaste）。
+    if (index === OTP_LENGTH - 1 && chars[index] !== "") return;
     // 格子已有值时 onChange 返回「旧值 + 新值」：普通键入只取末位（替换语义）；
     // 多位数字串只来自粘贴/自动填充（paste 有独立路径，此处兜底 SMS autofill 直接落入 input）
     const incoming = chars[index] && digits.length > 1 ? digits.slice(-1) : digits;
