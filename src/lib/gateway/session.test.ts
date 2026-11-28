@@ -3,6 +3,7 @@ import {
   extractSessionInput,
   extractSessionInputFromBytes,
   computeSessionId,
+  computeSessionIdFromInput,
   buildSessionId,
   SessionStore,
 } from "./session";
@@ -221,6 +222,30 @@ describe("computeSessionId / buildSessionId", () => {
   it("hashes deterministically across computes", () => {
     const input = extractSessionInput({ messages: [] }, "m", 7, "anthropic");
     expect(computeSessionId(input)).toBe(computeSessionId(input));
+  });
+});
+
+describe("computeSessionIdFromInput（relay 与直连共用同一套 tail 拼接）", () => {
+  it("与 buildSessionId / extractSessionInput 逐字节相等", () => {
+    const body = {
+      messages: [
+        { role: "system", content: "sys" },
+        { role: "user", content: "hi" },
+      ],
+    };
+    const expected = buildSessionId(body, "gpt-4o", 7, "openai");
+    // 素材 = system 尾部 + 首条 user 头部（中间无分隔符）
+    const material = `syshi`.slice(0, 1024);
+    expect(computeSessionId(computeSessionIdFromInput(material, "gpt-4o", 7, "openai"))).toBe(
+      expected
+    );
+    expect(computeSessionIdFromInput(material, "gpt-4o", 7, "openai")).toBe(
+      extractSessionInput(body, "gpt-4o", 7, "openai")
+    );
+  });
+
+  it("素材与 model 之间无分隔符（直接相接）", () => {
+    expect(computeSessionIdFromInput("abc", "m", 1, "openai")).toBe("abc\u0000m\u00001\u0000openai");
   });
 });
 

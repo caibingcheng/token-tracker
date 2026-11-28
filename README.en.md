@@ -53,9 +53,16 @@ I've tried a number of existing solutions (LiteLLM, NEW API, OmniRoute — all g
 - `uid` is the stable identity key (instances can be renamed at any time); the ingest token is bound by TOFU on first push; A labels sources as `remote/{instance}/{original provider}` and prices pushed models itself
 - B can trigger push / skip / reset manually; A can inspect watermarks, cascade-delete one instance's history, revoke/unbind tokens
 
+**Relay (sub node): request bodies bypass the center**
+
+- Separate image `token-tracker-relay` (~85MB, no SQLite, no pages); point the client `base_url` at it and request/response bodies go **relay → upstream** directly — the center only issues a plan (≤8KB) and receives one report
+- Routing / quotas / health / pricing / accounting stay in the center: the relay just loops over the plan's hop list, so rule changes only require redeploying the center
+- Pairing uses an 8-character code (enter it under `Admin → Devices`), tokens are stored as sha256 only; accounting fields (realModel / session_id / request_model) are fixed at plan time and the report only sends `hopIndex`
+- Upstream keys are sealed into 60s leases with X25519 + AES-256-GCM; the center stores only device public keys
+
 **Admin UI & interface**
 
-- Sections for upstreams / virtual keys / named routes / model pricing / sync / audit logs
+- Sections for upstreams / virtual keys / named routes / model pricing / sync / devices / audit logs
 - Model alias normalization (display-level rollup), provider anonymization groups
 - Configurable column visibility for the Records / Audit tables, plus action filtering and pagination for audit logs
 - Collapsible desktop sidebar (icon-only); on mobile a bottom tab bar, card views for tables, and full-screen modals — installable as a PWA (no Service Worker, offline not enabled)
@@ -66,6 +73,7 @@ I've tried a number of existing solutions (LiteLLM, NEW API, OmniRoute — all g
 - All secrets stored AES-256-GCM encrypted; virtual keys accepted via headers only (`?key=` removed so keys never reach query logs)
 - SSRF protection (address classification at save time plus a connection-time DNS lookup guard against DNS rebinding), XFF spoofing protection, rate-limited login/setup
 - Audit log for every admin action. Deployment notes: [Security & Deployment](./docs/security.md)
+- **Relay security boundary**: a compromised relay (sub node) leaks the upstream keys already handed out (60s lease TTL). The center stores only device public keys — no key exists that can open every lease. To shrink the blast radius, give that device a dedicated upstream key (`upstream_keys.device_id`, revocable on its own; no Admin UI for it yet). Reported `failures` drive global health marks, bounded by a per-device 20 rps limit
 
 ## Quick Start (Docker)
 

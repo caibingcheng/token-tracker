@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "dev": "node scripts/dev.mjs",
+    "dev:relay": "node scripts/dev-relay.mjs",
     "build": "node scripts/gen-routes.mjs && next build && node scripts/build-server.mjs",
     "start": "node --env-file-if-exists=.env --env-file-if-exists=.env.production --env-file-if-exists=.env.local --env-file-if-exists=.env.production.local build/server.js",
     "lint": "eslint .",
@@ -11,7 +12,9 @@
     "db:studio": "drizzle-kit studio",
     "db:migrate-to-sqlite": "tsx scripts/migrate-pg-to-sqlite.ts",
     "seed:demo": "tsx scripts/seed-demo-data.ts",
-    "test": "vitest run"
+    "seed:fake-upstream": "tsx scripts/seed-fake-upstreams.ts",
+    "test": "vitest run",
+    "fake-upstream": "tsx src/dev/fake-upstream/cli.ts"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.11",

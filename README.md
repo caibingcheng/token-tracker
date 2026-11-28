@@ -53,9 +53,16 @@
 - `uid` 是稳定身份键（实例可随时改名），ingest token 首次推送 TOFU 绑定；A 侧来源标为 `remote/{实例}/{原 provider}`，推送模型的定价在 A 侧统一
 - B 侧可手动推送/跳过/重置，A 侧可看水位、级联清理某实例历史、吊销/解绑 token
 
+**relay（sub node）：请求体不经中心**
+
+- 独立镜像 `token-tracker-relay`（~85MB，无 SQLite/无页面）；客户端 base_url 指向它，请求体与响应体**直接走 relay → upstream**，中心只下发执行计划（≤8KB）并收一次结果回报
+- 路由/配额/健康/定价/写库仍在中心：relay 只按 plan 的 hop 列表哑循环，改规则只改中心
+- 配对用 8 位码（`Admin → Devices` 输码授权），token 只存 sha256；realModel / session_id / request_model 等写库素材在 plan 时定下，report 只回 `hopIndex`
+- upstream key 用 X25519 + AES-256-GCM 封成 60s lease，中心只存设备公钥
+
 **管理面板与界面**
 
-- upstreams / 虚拟 keys / 命名路由 / 模型定价 / 同步 / 审计日志分区
+- upstreams / 虚拟 keys / 命名路由 / 模型定价 / 同步 / 设备 / 审计日志分区
 - 模型别名归一化（展示层聚合）、Provider 匿名化分组
 - Records / Audit 表格列可见性可配，审计日志按 action 筛选 + 分页
 - 桌面侧栏可收起为图标栏；移动端为底栏导航 + 表格卡片视图 + 全屏弹窗，可安装为 PWA（无 Service Worker，离线未启用）
@@ -66,6 +73,7 @@
 - 所有密钥 AES-256-GCM 加密落库；虚拟 key 只接受 header（`?key=` 已移除，防 query 日志泄露）
 - SSRF 防护（保存时地址分类 + 连接时 DNS lookup 校验，防 DNS rebinding）、XFF 伪造防护、登录/设置限流
 - 审计日志记录全部管理操作。部署注意事项见 [安全与部署](./docs/security.md)
+- **relay 的安全边界**：relay（sub node）被攻破 = **已下发的 upstream key 泄露**（lease TTL 60s）；中心只存设备公钥，不存在能解开全部 lease 的密钥。要缩短泄露面就给该设备配置专属 upstream key（`upstream_keys.device_id`，可单独吊销；当前无 Admin 写入 UI）；report 的 failures 会驱动全局健康标记，已受每 device 20 rps 限流约束
 
 ## 快速开始（Docker）
 

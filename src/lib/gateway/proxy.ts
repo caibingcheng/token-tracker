@@ -12,8 +12,8 @@ import {
   expandNamedRouteTargets,
 } from "./model-router";
 import type { UpstreamRoute, ModelCandidate } from "./model-router";
-import { buildAuthHeaders, isEdgeBlockStatus } from "./upstream-client";
-import { joinUrlPath, sanitizePathSegments } from "./url-utils";
+import { isEdgeBlockStatus } from "./upstream-client";
+import { joinUrlPath, sanitizePathSegments, stripRawPassthroughPrefix } from "./url-utils";
 import { buildSessionId, computeSessionId, extractSessionInputFromBytes } from "./session";
 import type { SessionBinding } from "./session";
 import {
@@ -38,8 +38,6 @@ import {
 import type { ScanResult } from "./json-scan";
 import { getOutboundDispatcher } from "./proxy-dispatcher";
 import { outboundFetch } from "./outbound-fetch";
-import { applyHeaderTransforms } from "./header-transforms";
-import type { HeaderTransform, HeaderTransformContext } from "./header-transforms";
 import { parseClassifierModels } from "./classifier/types";
 import type { ClassifierKind, ClassifierModelEntry, ClassifierUsage } from "./classifier/types";
 
@@ -229,104 +227,15 @@ export interface ProxyDeps {
   log?: (message: string) => void;
 }
 
-// 从请求头中提取客户端原生会话 ID；请求内只调用一次，供 Records 与路由粘性共用。
-// 保留原有 generic header，并覆盖 Claude Code / Codex / OpenCode / session affinity 常见形式。
-const SESSION_ID_HEADERS = [
-  "x-claude-code-session-id",
-  "x-opencode-session",
-  "session-id",
-  "x-session-id",
-  "session_id",
-  "x-session-affinity",
-  "x-conversation-id",
-] as const;
-export const MAX_SESSION_ID_LENGTH = 256;
+// 客户端凭证 / 原生会话 header 的提取：实现已搬到 proxy-headers.ts（relay 也要用，
+// 但 relay 不得 import proxy.ts）；这里保留同名导出，调用方与历史测试不受影响。
+import { extractSessionId, extractVirtualKeyToken } from "./proxy-headers";
+export { MAX_SESSION_ID_LENGTH, extractSessionId, extractVirtualKeyToken } from "./proxy-headers";
 
-export function extractSessionId(headers: Headers): string | null {
-  for (const name of SESSION_ID_HEADERS) {
-    const raw = headers.get(name);
-    if (raw === null) continue;
-    const trimmed = raw.trim();
-    if (trimmed === "") continue;
-    return trimmed.slice(0, MAX_SESSION_ID_LENGTH);
-  }
-  return null;
-}
-
-// 从请求头中提取虚拟 key token。
-// 只认三个 header：Authorization: Bearer / x-api-key / x-goog-api-key。
-// **不再支持 `?key=` query 认证**：query string 会进访问日志、反代日志、Referer、浏览器历史，
-// 虚拟 key 泄露面太大（Gemini 风格客户端请改用 x-goog-api-key header）。
-export function extractVirtualKeyToken(headers: Headers): string | null {
-  const authorization = headers.get("authorization");
-  if (authorization && authorization.startsWith("Bearer ")) {
-    const token = authorization.slice("Bearer ".length).trim();
-    if (token) return token;
-  }
-  const apiKey = headers.get("x-api-key");
-  if (apiKey) return apiKey;
-  const googKey = headers.get("x-goog-api-key");
-  if (googKey) return googKey;
-  return null;
-}
-
-// 构造发往上游的请求头：剔除客户端认证/传输头，按协议注入真实 key，
-// 最后一棒应用 upstream header transforms（fill/override 自定义出站 header）
-export function buildUpstreamHeaders(
-  clientHeaders: Headers,
-  protocol: Protocol,
-  apiKey: string,
-  transforms?: HeaderTransform[],
-  transformContext?: HeaderTransformContext
-): Headers {
-  const headers = new Headers();
-  const SKIP = new Set([
-    "host",
-    "authorization",
-    "content-length",
-    "connection",
-    "keep-alive",
-    "transfer-encoding",
-    "proxy-authorization",
-    "proxy-connection",
-    "te",
-    "trailer",
-    "upgrade",
-    // curl 对 >1KB body 默认发 Expect: 100-continue；请求体已在网关整包缓冲，
-    // 100-continue 协商不透传——npm undici 不支持 expect 头，转发即 UND_ERR_NOT_SUPPORTED 拒连（502）
-    "expect",
-    "x-api-key",
-    "x-goog-api-key",
-    "accept-encoding", // 强制 identity，保证响应体可解析 usage
-    // 客户端可控的源信息/会话头一律不透明传给上游（防伪造 IP 溯源、会话窃取）
-    "x-forwarded-for",
-    "x-forwarded-proto",
-    "x-forwarded-host",
-    "x-forwarded-port",
-    "x-real-ip",
-    "forwarded",
-    "via",
-    "cookie",
-    "cf-connecting-ip",
-    "true-client-ip",
-    "x-client-ip",
-    // 服务端写入的 socket 对端地址（内部用途，不得透给上游，也不得让客户端值冒充）
-    "x-internal-remote-addr",
-  ]);
-  clientHeaders.forEach((value, key) => {
-    const lower = key.toLowerCase();
-    if (SKIP.has(lower)) return;
-    headers.set(key, value);
-  });
-  headers.set("accept-encoding", "identity");
-  for (const [key, value] of Object.entries(buildAuthHeaders(protocol, apiKey))) {
-    headers.set(key, value);
-  }
-  if (transforms && transforms.length > 0 && transformContext) {
-    applyHeaderTransforms(headers, transforms, transformContext);
-  }
-  return headers;
-}
+// 构造发往上游的请求头：实现已搬到 upstream-headers.ts（relay 也要用，
+// 但 relay 不得 import proxy.ts）；保留同名导出，调用方与历史测试不受影响。
+import { buildUpstreamHeaders } from "./upstream-headers";
+export { buildUpstreamHeaders } from "./upstream-headers";
 
 export function isStreamingResponse(headers: Headers): boolean {
   const contentType = headers.get("content-type")?.toLowerCase() ?? "";
@@ -370,20 +279,9 @@ export const PROXY_RESPONSE_HEADERS: Record<string, string> = {
   "x-accel-buffering": "no",
 };
 
-// /raw 裸透传入口前缀：客户端打 /raw/<upstream base URL 之后的部分>，网关剥掉前缀后原样拼到 base URL（上游永远看不到 /raw），
-// 用于 /v1、/v1beta 之外的上游端点（如 OpenRouter 的 /alpha/*，base = https://openrouter.ai/api）。
-const RAW_PASSTHROUGH_PREFIX = "/raw";
-
-// 剥离 /raw 前缀：非 /raw 路径原样返回；内层路径再过一次净化（防 .. 逃逸），
-// 空内层路径（/raw、/raw/）或逃逸路径返回 null（调用方 400）。
-export function stripRawPassthroughPrefix(path: string): string | null {
-  if (path !== RAW_PASSTHROUGH_PREFIX && !path.startsWith(`${RAW_PASSTHROUGH_PREFIX}/`)) {
-    return path;
-  }
-  const inner = sanitizePathSegments(path.slice(RAW_PASSTHROUGH_PREFIX.length));
-  if (inner === null || inner === "/") return null;
-  return inner;
-}
+// /raw 裸透传入口前缀的剥离在 url-utils（relay 也用它做协议检测，单一实现防漂移）；
+// 这里保留原有导出名，proxy / plan route 的 import 不变。
+export { stripRawPassthroughPrefix };
 
 // 配额 in-flight 预留的异常安全网。
 // 预留（reserveInflight）到请求结束（onComplete）之间还有不少 await：
@@ -1970,13 +1868,15 @@ function dedupeByUpstreamId(candidates: ModelCandidate[]): UpstreamRoute[] {
 }
 
 // `?key=` 已不再作为认证方式；转发前仍剔除以防客户端把 key 混在 query 里透给上游
-function stripQueryKey(url: URL): string {
+// （plan.ts 复用：relay 的 lease URL 必须与直连同一口径）
+export function stripQueryKey(url: URL): string {
   url.searchParams.delete("key");
   const qs = url.searchParams.toString();
   return qs ? `?${qs}` : "";
 }
 
-function collectEnabledModels(upstreams: UpstreamRoute[], manualNames: string[] = []): string[] {
+// （plan.ts 复用：models 模式的快照必须与直连逐字同口径）
+export function collectEnabledModels(upstreams: UpstreamRoute[], manualNames: string[] = []): string[] {
   const result = new Set<string>(manualNames);
   for (const upstream of upstreams) {
     if (upstream.enabled === false) continue;

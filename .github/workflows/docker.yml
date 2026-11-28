@@ -81,6 +81,17 @@ jobs:
             type=raw,value=dev,enable=${{ github.ref_type == 'tag' && contains(github.ref_name, '-') }}
             type=sha,format=short
 
+      # relay 镜像：同一仓库、同一 commit、同一 tag 前缀（<image>-relay）
+      - name: Extract metadata (relay)
+        id: meta-relay
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-relay
+          tags: |
+            type=semver,pattern={{version}},prefix=v
+            type=raw,value=dev,enable=${{ github.ref_type == 'tag' && contains(github.ref_name, '-') }}
+            type=sha,format=short
+
       # 先只构建并 load 到本地 runner，smoke test 通过后才推送
       - name: Build image
         uses: docker/build-push-action@v7
@@ -127,30 +138,83 @@ jobs:
             exit 1
           fi
 
+      - name: Build relay image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: relay
+          load: true
+          push: false
+          build-args: |
+            APP_VERSION=${{ github.ref_name }}
+          tags: ${{ steps.meta-relay.outputs.tags }}
+          labels: ${{ steps.meta-relay.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # relay 镜像自检：必须能起、/pair 可访问、/api/* 一律 404（device 端点只属于中心）
+      - name: Smoke test relay image
+        env:
+          RELAY_TAGS: ${{ steps.meta-relay.outputs.tags }}
+        run: |
+          set -euo pipefail
+          image="$(printf '%s' "$RELAY_TAGS" | tr ',' '\n' | head -n1)"
+          docker run -d --name smoke-relay \
+            -p 127.0.0.1:3100:3000 \
+            -e CENTER_URL=http://127.0.0.1:9/ \
+            -e RELAY_STATE_PATH=/tmp/relay.state.json \
+            "$image"
+          ok=0
+          for _ in $(seq 1 30); do
+            if curl -fsS -o /dev/null http://127.0.0.1:3100/pair; then
+              ok=1
+              break
+            fi
+            sleep 1
+          done
+          api_status="$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:3100/api/device/plan || true)"
+          docker logs smoke-relay 2>&1 | tail -n 20 || true
+          docker rm -f smoke-relay >/dev/null 2>&1 || true
+          if [ "$ok" != 1 ]; then
+            echo "::error::relay smoke test failed: /pair never served"
+            exit 1
+          fi
+          if [ "$api_status" != "404" ]; then
+            echo "::error::relay must not expose /api/* (got $api_status)"
+            exit 1
+          fi
+
       # 浮动标签（latest / dev）最后推：部分推送失败时不会让浮动标签先指向新镜像
       - name: Push image
         env:
           IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+          RELAY_TAGS: ${{ steps.meta-relay.outputs.tags }}
         run: |
           set -euo pipefail
-          # metadata-action 的 tags 输出可能是逗号或换行分隔，统一成每行一个并去掉空项
-          tags="$(printf '%s' "$IMAGE_TAGS" | tr ',' '\n' | grep -v '^[[:space:]]*$' || true)"
-          if [ -z "$tags" ]; then
-            echo "::error::no image tags to push (metadata output was empty)"
-            exit 1
-          fi
-          while IFS= read -r t; do
-            case "$t" in
-              *:latest|*:dev) continue ;;
-            esac
-            echo "Pushing $t"
-            docker push "$t"
-          done <<< "$tags"
-          while IFS= read -r t; do
-            case "$t" in
-              *:latest|*:dev) ;;
-              *) continue ;;
-            esac
-            echo "Pushing $t"
-            docker push "$t"
-          done <<< "$tags"
+          push_tags() {
+            # metadata-action 的 tags 输出可能是逗号或换行分隔，统一成每行一个并去掉空项
+            local tags
+            tags="$(printf '%s' "$1" | tr ',' '\n' | grep -v '^[[:space:]]*$' || true)"
+            if [ -z "$tags" ]; then
+              echo "::error::no image tags to push (metadata output was empty)"
+              exit 1
+            fi
+            # 先推带版本/sha 的固定标签，再推浮动标签（latest / dev）
+            while IFS= read -r t; do
+              case "$t" in
+                *:latest|*:dev) continue ;;
+              esac
+              echo "Pushing $t"
+              docker push "$t"
+            done <<< "$tags"
+            while IFS= read -r t; do
+              case "$t" in
+                *:latest|*:dev) ;;
+                *) continue ;;
+              esac
+              echo "Pushing $t"
+              docker push "$t"
+            done <<< "$tags"
+          }
+          push_tags "$IMAGE_TAGS"
+          push_tags "$RELAY_TAGS"

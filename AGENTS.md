@@ -14,7 +14,11 @@
 
 ```bash
 npm run dev                 # 双进程 dev：页面 :3000（next dev HMR）+ API :3001（Hono）同源 rewrite；3000 被占用时 DEV_WEB_PORT=3xxx
-npm run build               # 生产构建（gen-routes + next build 静态导出 + esbuild bundle）
+npm run dev:relay           # relay（sub node）dev：tsx watch 跑 src/relay/main.ts，默认 CENTER_URL=:3001 / PORT=3010
+                            #   自动剥离中心专用 env（否则镜像启动自检会拒绝）；先起 npm run dev，再去 /admin/devices 输码
+npm run fake-upstream       # 模拟上游：:4010，openai/anthropic/gemini/responses 四种形状 + 多 key 多 model + 失败注入
+npm run seed:fake-upstream  # 把模拟上游写成中心的 upstream + key + 一个 vk（幂等；--with-broken 加 401/503 故障项）
+npm run build               # 生产构建（gen-routes + next build 静态导出 + esbuild bundle ×2）
 npm run lint                # ESLint 9 flat config（Next 16 起 next lint 已移除）
 npm test                    # vitest 单元测试（src/**/*.test.ts）
 npx drizzle-kit studio      # Drizzle Studio（SQLite）
@@ -33,6 +37,7 @@ docker compose up -d                                 # 本地运行
 | 新增或修改 `/api/*` 路由、认证、TOTP、recovery codes | `docs/agents/api-routes.md` |
 | `/v1/*` `/v1beta/*` `/raw/*` 代理链路、model 路由、failover、探活、usage 解析、header transforms、出站代理 | `docs/agents/gateway.md` |
 | 多实例同步（push / ingest / 水位 / uid） | `docs/agents/sync.md` |
+| 改 relay / sub node / `/api/device/*` / `/admin/devices` | `docs/agents/relay.md` |
 | 统计口径、Dashboard/Records 聚合、延迟统计、Dashboard 组件清单、定价、models.dev、model 归一化、Provider 匿名化、Agent 派生、时区、查询缓存 | `docs/agents/data-conventions.md` |
 | UI / 组件 / 新增表格弹窗 / 移动端适配 | `docs/agents/deployment.md` |
 | env、Dockerfile、docker-compose、GHCR 发布流程、安全响应头 | `docs/agents/deployment.md` |
@@ -40,6 +45,8 @@ docker compose up -d                                 # 本地运行
 
 ## 硬约束（红线，任何改动都适用）
 
+- **relay（sub node）不得 import db/auth/proxy**：`src/relay/**` 只能复用 `src/lib/gateway/` 下的纯逻辑模块（`session` / `estimate` / `json-scan` / `parsers/*` / `response-rewriter` / `header-transforms` / `url-*` / `outbound-*` / `proxy-dispatcher` / `upstream-headers` / `proxy-headers` / `lease` / `vk-fingerprint`）与 `model-router` 的 model 提取。`scripts/build-server.mjs` 的 relay entry 用 esbuild plugin 在构建期拦中心模块（解析到就构建失败），CI 再断言 `build/relay.js` 里没有 `better-sqlite3` / `initDatabase`。改链组装（候选池/健康/binding/分类器/givenUp/subresource/models）后必须跑 `src/lib/gateway/plan.contract.test.ts`（把 `proxy.ts` 当 oracle）
+- **device 端点按认证类别登记**：`/api/device/**` 里 `pair/start`、`pair/poll` 是公开例外（guard-scan `exempt` + `VERIFY_EXCLUDED` + `api-routes.md` 接口表，三处同步），`plan`/`report` 由 `withDeviceAuth` 包（也在 `VERIFY_EXCLUDED`：它们不用会话 token），`pair/lookup` 是**会话态**（`withAuth`，**不放** exempt；授权前身份核对，仍需在 `api-routes.md` 登记 + guard-scan 专项断言）。只改一处会被验签层拦成 401
 - **路由注册**：route handler 在 `src/routes/**/route.ts`（与 URL 路径镜像，`src/app` 只放静态导出页面）；新增/移动后 `npm run dev` / `npm run build` 自动跑 `scripts/gen-routes.mjs` 重建 `src/server/routes.generated.ts`（手改无效）。服务端是 Hono（`src/server/index.ts`），route 文件里的 `from "next/server"` 由别名指到 `src/server/next-shim.ts`（tsconfig paths / vitest alias；esbuild 读 tsconfig），扩 next/server API 面必须先补 shim，否则 tsc 不报、运行时才炸
 
 - **认证**：新增 `/api/*` 路由**默认**必须用 `withAuth` 包裹（`src/lib/auth/guard.ts`），否则 `src/lib/auth/guard-scan.test.ts` 静态扫描测试失败。公开例外必须先 review 泄露面，并**三处同步登记**：`guard-scan.test.ts` 的 `exempt`、`src/server/verify-session.ts` 的 `VERIFY_EXCLUDED`、`docs/agents/api-routes.md` 接口表（写明公开理由与返回字段）—— 只改 `exempt` 会被验签层拦成 401。当前登记的唯一公开只读例外是 `/api/cli`（只返回全时段聚合 summary + today，无 provider/model/agent 维度，进程内快照限流）。除 login/setup/logout 与已登记例外，`/api/*` 只接受**会话 token**，原始 API key 不能直接调；脚本/curl 必须先 `POST /api/auth/login` 换 token，再带 `X-API-Key: <token>`

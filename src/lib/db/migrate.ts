@@ -1,5 +1,7 @@
 // 存量表不会通过 CREATE TABLE IF NOT EXISTS 补列，
 // 通过 PRAGMA table_info 检测缺失列并 ALTER TABLE 添加。
+import { decryptSecret } from "@/lib/gateway/crypto";
+import { virtualKeyFingerprint } from "@/lib/gateway/vk-fingerprint";
 export interface MigrateColumn {
   name: string;
   definition: string;
@@ -46,6 +48,18 @@ export function migrateTokenRecordsModelColumns(client: any): void {
       `UPDATE token_records SET model = target_model WHERE target_model IS NOT NULL`
     );
     client.exec(`ALTER TABLE token_records DROP COLUMN target_model`);
+  }
+}
+
+// upstream_keys 专用一次性迁移：删除 per-device key 的 device_id 列（功能已移除）。
+// 幂等：PRAGMA 检测驱动；列存在则 DROP（SQLite ≥ 3.35，better-sqlite3 13 已满足）。
+export function migrateDropUpstreamKeyDeviceId(client: any): void {
+  const existing: string[] = client
+    .prepare(`PRAGMA table_info(upstream_keys)`)
+    .all()
+    .map((c: any) => c.name);
+  if (existing.includes("device_id")) {
+    client.exec(`ALTER TABLE upstream_keys DROP COLUMN device_id`);
   }
 }
 
@@ -211,4 +225,27 @@ export function migrateNamedRouteTargetsNullableUpstream(client: any): void {
       ON named_route_targets(named_route_id, upstream_id, upstream_model);
     CREATE INDEX IF NOT EXISTS idx_named_route_targets_named_route ON named_route_targets(named_route_id);
   `);
+}
+
+// vk 认证索引键回填（幂等）：只处理 key_fingerprint IS NULL 的行。
+// GATEWAY_SECRET 缺失 → 跳过（resolveVirtualKey 保留全表解密回退，功能不受影响）；
+// 单行解密失败也不阻塞（该行保持 NULL，继续走回退路径）。
+// 指纹只做索引，不作为放行依据 —— 命中后仍由 resolveVirtualKey 做 safeCompare 复核。
+export function backfillVirtualKeyFingerprints(client: any): void {
+  const rows: { id: number; api_key_encrypted: string }[] = client
+    .prepare(`SELECT id, api_key_encrypted FROM virtual_keys WHERE key_fingerprint IS NULL`)
+    .all();
+  if (rows.length === 0) return;
+
+  const update = client.prepare(
+    `UPDATE virtual_keys SET key_fingerprint = ? WHERE id = ? AND key_fingerprint IS NULL`
+  );
+  for (const row of rows) {
+    try {
+      const plain = decryptSecret(row.api_key_encrypted);
+      update.run(virtualKeyFingerprint(plain), row.id);
+    } catch {
+      // GATEWAY_SECRET 缺失或该行密文损坏：保持 NULL
+    }
+  }
 }

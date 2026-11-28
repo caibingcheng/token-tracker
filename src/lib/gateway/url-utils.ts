@@ -31,3 +31,22 @@ export function sanitizePathSegments(path: string): string | null {
   const joined = "/" + out.join("/");
   return hadTrailingSlash && joined !== "/" ? joined + "/" : joined;
 }
+
+// /raw 裸透传入口前缀：客户端打 /raw/<upstream base URL 之后的部分>，网关剥掉前缀后
+// 原样拼到 base URL（上游永远看不到 /raw），用于 /v1、/v1beta 之外的端点（如 OpenRouter
+// 的 /alpha/*，base = https://openrouter.ai/api）。
+// 中心（proxy.ts / plan route）与 relay（prepare.ts）共用：relay 侧的协议检测、model
+// 提取与 usage 解析都必须在剥前缀后的内层 path 上做，否则 /raw 上的 anthropic/gemini
+// 端点会被当成 openai。
+const RAW_PASSTHROUGH_PREFIX = "/raw";
+
+// 非 /raw 路径原样返回；内层路径再过一次净化（防 .. 逃逸），
+// 空内层路径（/raw、/raw/）或逃逸路径返回 null（调用方 400）。
+export function stripRawPassthroughPrefix(path: string): string | null {
+  if (path !== RAW_PASSTHROUGH_PREFIX && !path.startsWith(`${RAW_PASSTHROUGH_PREFIX}/`)) {
+    return path;
+  }
+  const inner = sanitizePathSegments(path.slice(RAW_PASSTHROUGH_PREFIX.length));
+  if (inner === null || inner === "/") return null;
+  return inner;
+}

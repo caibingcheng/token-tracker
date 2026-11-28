@@ -71,6 +71,13 @@ jobs:
           NEXT_TELEMETRY_DISABLED: 1
 
       # 新构建链产物断言：三步（gen-routes / next build export / esbuild）任一被回退都要红
-      - run: test -f build/server.js && test -f out/index.html
+      - run: test -f build/server.js && test -f out/index.html && test -f build/relay.js
+      # relay bundle 不得包含中心专用模块（构建期 plugin 已拦，这里是第二道断言）
+      - name: relay bundle must not contain center-only modules
+        run: |
+          if grep -q "better-sqlite3" build/relay.js || grep -q "initDatabase" build/relay.js; then
+            echo "::error::build/relay.js contains center-only code (better-sqlite3 / initDatabase)"
+            exit 1
+          fi
       # gen-routes 构建期就地重写生成物；改了 route 忘重跑/忘提交生成物时在这里拦下漂移
       - run: git diff --exit-code -- src/server/routes.generated.ts

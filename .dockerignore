@@ -40,6 +40,7 @@ secret.*
 # SQLite 库、主密钥、models.dev 缓存都在这里，绝不进镜像
 data/
 **/.gateway-secret
+relay.state.json
 # 构建不需要的内部文档与脚本以外的素材（bench 仅本机压测）
 bench/
 # 内部文档；不进构建上下文（scripts/ 必须在上下文里：npm run build 依赖 gen-routes/build-server）

@@ -20,6 +20,8 @@ export interface Record {
   cacheWrite: number;
   requestModel?: string | null;
   sessionId?: string | null;
+  deviceId?: number | null;
+  deviceName?: string | null;
   latencyMs?: number | null;
   ttftMs?: number | null;
   status?: string | null;
@@ -409,6 +411,9 @@ export default function RecordsTable({
                   {show("session") && (
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Session</th>
                   )}
+                  {show("device") && (
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Device</th>
+                  )}
                   {show("tokens") && (
                     <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Tokens</th>
                   )}
@@ -469,6 +474,11 @@ export default function RecordsTable({
                       ) : (
                         "-"
                       )}
+                    </td>
+                    )}
+                    {show("device") && (
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {record.deviceName ?? (record.deviceId ? `#${record.deviceId}` : "-")}
                     </td>
                     )}
                     {show("tokens") && (
@@ -543,6 +553,13 @@ export default function RecordsTable({
               if (show("latency")) details.push({ label: "Latency", value: latencyTitle(record.latencyMs) });
               if (show("session")) {
                 details.push({ label: "Session", value: record.sessionId || "-", breakAll: true });
+              }
+              if (show("device")) {
+                details.push({
+                  label: "Device",
+                  value: record.deviceName ?? (record.deviceId ? `#${record.deviceId}` : "-"),
+                  breakAll: true,
+                });
               }
               if (show("date")) {
                 details.push({ label: "Time", value: dateTitle(record.createdAt), breakAll: true });

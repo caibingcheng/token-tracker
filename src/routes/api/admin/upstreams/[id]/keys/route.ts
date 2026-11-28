@@ -42,6 +42,7 @@ export const GET = withAuth(async (request: NextRequest, ctx: any) => {
       .from(upstreamKeysTable)
       .where(eq(upstreamKeysTable.upstreamId, upstreamId))
       .orderBy(upstreamKeysTable.id);
+    // per-device key 功能已移除：所有 key 都是通用 key（直连/relay 共用）
     try {
       return NextResponse.json({
         success: true,

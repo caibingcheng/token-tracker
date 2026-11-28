@@ -52,6 +52,16 @@ function IconSync() {
     </svg>
   );
 }
+function IconDevices() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="15" aria-hidden="true" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="4" width="20" height="12" rx="2" />
+      <line x1="8" y1="20" x2="16" y2="20" />
+      <line x1="12" y1="16" x2="12" y2="20" />
+    </svg>
+  );
+}
+
 function IconAudit() {
   return (
     <svg xmlns="http://www.w3.org/2000/svg" width="15" aria-hidden="true" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -75,6 +85,7 @@ export const ADMIN_SECTIONS: AdminSection[] = [
   { id: "security", label: "Security", description: "Admin key, TOTP, session policy", Icon: IconSecurity },
   { id: "display", label: "Display", description: "Aliases, provider anonymization", Icon: IconDisplay },
   { id: "sync", label: "Sync", description: "Multi-instance push and ingest", Icon: IconSync },
+  { id: "devices", label: "Devices", description: "Relay sub nodes, pairing, tokens", Icon: IconDevices },
   { id: "audit", label: "Audit", description: "Admin operation log", Icon: IconAudit },
 ];
 

@@ -60,6 +60,33 @@ describe("routes.generated.ts（注册完整性）", () => {
     expect(BARE.map((l) => l.pattern).sort()).toEqual(["/raw", "/v1", "/v1beta"]);
   });
 
+  it("静态子路径先于同层的动态段注册（否则 app.all(':id') 会把它吃成 405）", () => {
+    // 回归：`[id]` 的 405 兜底是 `app.all(pattern)`，Hono 按注册序匹配 → 同段数的静态兄弟
+    // （如 /api/admin/devices/stats vs /api/admin/devices/:id）必须先注册，否则浏览器拿到
+    // 405（Allow: PATCH, DELETE）。readdir 的字母序会把 `[` 排在字母前，所以 codegen
+    // 必须显式排序（段数 → 静态 < 动态 < 通配）。
+    const patterns = [...new Set(ON.map((l) => l.pattern))];
+    const firstIndex = (pattern: string) =>
+      Math.min(...ON.filter((l) => l.pattern === pattern).map((l) => l.index));
+    const isStatic = (segment: string) => !segment.startsWith(":") && segment !== "*";
+    const violations: string[] = [];
+    for (const a of patterns) {
+      for (const b of patterns) {
+        if (a === b) continue;
+        const as = a.split("/");
+        const bs = b.split("/");
+        if (as.length !== bs.length) continue;
+        let i = 0;
+        while (i < as.length && as[i] === bs[i]) i++;
+        if (i === as.length) continue;
+        if (isStatic(as[i]!) && !isStatic(bs[i]!)) {
+          if (firstIndex(a) > firstIndex(b)) violations.push(`${a} 必须排在 ${b} 之前`);
+        }
+      }
+    }
+    expect(violations).toEqual([]);
+  });
+
   it("405 的 Allow 与 OPTIONS 的 Allow 一致，且覆盖该 pattern 实际注册的全部方法", () => {
     const optionsAllow = new Map(
       [...SOURCE.matchAll(/app\.on\("OPTIONS", "([^"]+)", \(c\) => c\.body\(null, 204, \{ Allow: "([^"]+)" \}\)/g)].map(

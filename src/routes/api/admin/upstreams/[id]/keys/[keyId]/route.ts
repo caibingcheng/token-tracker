@@ -48,7 +48,10 @@ export const PATCH = withAuth(async (request: NextRequest, ctx: any) => {
       targetId: keyId,
       ip,
       userAgent,
-      details: { upstreamId: row.upstreamId, changed: Object.keys(values) },
+      details: {
+        upstreamId: row.upstreamId,
+        changed: Object.keys(values),
+      },
     });
     return NextResponse.json({ success: true });
   });

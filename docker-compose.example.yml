@@ -30,3 +30,26 @@ services:
     #   resources:
     #     limits:
     #       memory: 1g
+
+  # === relay（sub node）：可选，请求体不经中心 ===
+  # 镜像：ghcr.io/caibingcheng/token-tracker-relay:latest（同一 tag 前缀）
+  # 客户端 base_url 指向它（而非中心），每请求向中心要一次执行计划。
+  # 首次启动：docker logs 读 8 位码（或 http://host:3002/pair）→ 中心 Admin → Devices 输码授权。
+  # 建议与中心同机/内网（每请求 +1 次 plan 往返，跨公网会多 1 RTT）。
+  # token-tracker-relay:
+  #   image: ghcr.io/caibingcheng/token-tracker-relay:latest
+  #   container_name: token-tracker-relay
+  #   restart: unless-stopped
+  #   ports:
+  #     - "3002:3000"
+  #   environment:
+  #     - CENTER_URL=http://token-tracker:3000
+  #     - RELAY_DEVICE_NAME=laptop
+  #     # 同机/内网用明文 http 与私网上游时需要；公网部署请改用 https 并保持默认
+  #     - ALLOW_PRIVATE_UPSTREAMS=true
+  #     # /pair 页默认仅环回/私网可访问（local）；公网 relay 不要改成 on
+  #     - RELAY_PAIR_PAGE=local
+  #     # body 上限本端权威，允许比中心大（body 不经中心）
+  #     - GATEWAY_MAX_BODY_MB=32
+  #   volumes:
+  #     - ./relay-data:/app/data

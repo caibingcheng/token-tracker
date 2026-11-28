@@ -2,6 +2,7 @@ import { eq, and, lt } from "drizzle-orm";
 import { db, initDatabase, upstreamsTable, upstreamKeysTable, virtualKeysTable, tokenRecords, upstreamModelHealthTable, namedRoutesTable, namedRouteTargetsTable, responseBindingsTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { decryptSecret, safeCompare, GatewaySecretMissingError } from "./crypto";
+import { virtualKeyFingerprint } from "./vk-fingerprint";
 import type { ProxyDeps, RecordUsageMeta } from "./proxy";
 import type { UpstreamRoute, NamedRoute, NamedRouteTarget } from "./model-router";
 import { parseEnabledModels } from "./model-router";
@@ -18,19 +19,27 @@ import { loadQuotaUsageFromDb } from "./quota-db";
 // （createProxyDeps() 是每请求创建的，不能把状态放进 deps 实例）
 const sessionStore = new SessionStore();
 
-// 解密指定 upstream 的所有启用 key（明文，按配置顺序）
+// 解密指定 upstream 的 key（明文，按配置顺序）。
 export async function loadPlainUpstreamKeys(upstreamId: number): Promise<string[]> {
+  const keys = await loadPlainUpstreamKeysWithIds(upstreamId);
+  return keys.map((k) => k.apiKey);
+}
+
+// 解密指定 upstream 的 key（带 id），按 id 升序。
+export async function loadPlainUpstreamKeysWithIds(
+  upstreamId: number
+): Promise<{ id: number; apiKey: string }[]> {
   await initDatabase();
   const rows = await db
     .select()
     .from(upstreamKeysTable)
     .where(eq(upstreamKeysTable.upstreamId, upstreamId))
     .orderBy(upstreamKeysTable.id);
-  const keys: string[] = [];
-  for (const row of rows) {
+  const keys: { id: number; apiKey: string }[] = [];
+  for (const row of rows as any[]) {
     if (row.enabled !== 1) continue;
     try {
-      keys.push(decryptSecret(row.apiKeyEncrypted));
+      keys.push({ id: row.id, apiKey: decryptSecret(row.apiKeyEncrypted) });
     } catch (err) {
       // GATEWAY_SECRET 缺失必须向上传播（fail-closed），不能吞掉降级为"无 key"
       if (err instanceof GatewaySecretMissingError) throw err;
@@ -183,7 +192,7 @@ const healthPersistence: HealthPersistence = {
 
 const healthTracker = new HealthTracker(probeUpstream, healthPersistence);
 
-export { healthTracker };
+export { healthTracker, sessionStore };
 
 // 加载全部命名路由（SELECT 走现有 10s 查询缓存，命中即短路自动路由）
 export async function loadNamedRoutes(): Promise<NamedRoute[]> {
@@ -269,6 +278,33 @@ export function createProxyDeps(): ProxyDeps {
     async resolveVirtualKey(token) {
       await initDatabase();
       return withSkipCache(async () => {
+        // ① 指纹索引命中 → 仍用 safeCompare 复核（指纹只做索引，不作为放行依据）
+        const fingerprint = virtualKeyFingerprint(token);
+        const indexed = await db
+          .select()
+          .from(virtualKeysTable)
+          .where(eq(virtualKeysTable.keyFingerprint, fingerprint));
+        for (const row of indexed) {
+          try {
+            if (safeCompare(decryptSecret(row.apiKeyEncrypted), token)) {
+              return {
+                id: row.id,
+                name: row.name,
+                enabled: row.enabled === 1,
+                enabledModels: row.enabledModels,
+                maxRpm: row.maxRpm ?? null,
+                maxTpm: row.maxTpm ?? null,
+                maxDailyTokens: row.maxDailyTokens ?? null,
+                maxMonthlyTokens: row.maxMonthlyTokens ?? null,
+              };
+            }
+          } catch (err) {
+            if (err instanceof GatewaySecretMissingError) throw err;
+          }
+        }
+
+        // ② 指纹未命中，或命中但复核失败 → 回退全表解密比对（保留既有行为，
+        //    未回填指纹的库（key_fingerprint IS NULL）也走这条）
         const rows = await db.select().from(virtualKeysTable);
         for (const row of rows) {
           try {

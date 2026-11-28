@@ -24,6 +24,7 @@ import {
   clearRecoveryCodes,
   clearRecoveryCodeReminder,
 } from "@/lib/auth/recovery-codes";
+import { readJsonBodyLimited, BodyTooLargeError } from "@/lib/auth/request-body";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 
 const PENDING_SECRET_KEY = "totp_pending_secret";
@@ -40,9 +41,15 @@ export const GET = withAuth(async () => {
 export const POST = withAuth(async (request: NextRequest) => {
   let body: Record<string, unknown> = {};
   try {
-    body = await request.json();
-  } catch {
-    // 无 body 视为生成 secret
+    body = await readJsonBodyLimited(request);
+  } catch (err) {
+    if (err instanceof BodyTooLargeError) {
+      return NextResponse.json(
+        { success: false, error: "Request body too large" },
+        { status: 413 }
+      );
+    }
+    // 无 body / 坏 JSON 视为生成 secret（与原先一致）
   }
 
   if (typeof body.code === "string" && body.code) {
@@ -141,8 +148,14 @@ export const POST = withAuth(async (request: NextRequest) => {
 export const DELETE = withAuth(async (request: NextRequest) => {
   let body: Record<string, unknown>;
   try {
-    body = await request.json();
-  } catch {
+    body = await readJsonBodyLimited(request);
+  } catch (err) {
+    if (err instanceof BodyTooLargeError) {
+      return NextResponse.json(
+        { success: false, error: "Request body too large" },
+        { status: 413 }
+      );
+    }
     return NextResponse.json({ success: false, error: "Invalid JSON body" }, { status: 400 });
   }
 

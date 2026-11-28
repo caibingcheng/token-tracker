@@ -4,7 +4,8 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { NextRequest } from "next/server";
 import { GET, POST } from "./route";
-import { closeDb, db, initDatabase, upstreamKeysTable, upstreamsTable } from "@/lib/db";
+import { closeDb, db, devicesTable, initDatabase, upstreamKeysTable, upstreamsTable } from "@/lib/db";
+import { loadPlainUpstreamKeys, loadPlainUpstreamKeysWithIds } from "@/lib/gateway/proxy-deps";
 import { setAdminApiKey, getTokenEpoch, deleteSetting } from "@/lib/auth/settings";
 import { signSessionToken, keyFingerprint } from "@/lib/auth/session";
 import { withSkipCache } from "@/lib/db/cache";
@@ -38,6 +39,7 @@ beforeEach(async () => {
   await withSkipCache(async () => {
     await db.delete(upstreamKeysTable);
     await db.delete(upstreamsTable);
+    await db.delete(devicesTable);
   });
   await deleteSetting("token_epoch").catch(() => {});
   await setAdminApiKey(ADMIN_KEY);
@@ -141,5 +143,28 @@ describe("upstream keys route - 掩码与泄露面", () => {
     const upstreamId = await seedUpstream();
     const res = await GET(req(`/api/admin/upstreams/${upstreamId}/keys`, "GET"), ctx(upstreamId) as any);
     expect(res.status).toBe(401);
+  });
+
+  it("key 列表不含 device 字段（per-device key 已移除）", async () => {
+    const upstreamId = await seedUpstream();
+    const token = await makeToken();
+    const created = await POST(
+      req(`/api/admin/upstreams/${upstreamId}/keys`, "POST", token, { apiKey: "sk-generic-123456" }),
+      ctx(upstreamId) as any
+    );
+    expect(created.status).toBe(201);
+    expect(((await created.json()) as any).data.deviceId).toBeUndefined();
+
+    const list = await GET(req(`/api/admin/upstreams/${upstreamId}/keys`, "GET", token), ctx(upstreamId) as any);
+    const rows = ((await list.json()) as any).data as Record<string, unknown>[];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).not.toHaveProperty("deviceId");
+    expect(rows[0]).not.toHaveProperty("deviceName");
+
+    // loader：所有 key 都是通用 key（无 per-device 过滤，按 id 升序）
+    await expect(loadPlainUpstreamKeysWithIds(upstreamId)).resolves.toEqual([
+      { id: expect.any(Number), apiKey: "sk-generic-123456" },
+    ]);
+    await expect(loadPlainUpstreamKeys(upstreamId)).resolves.toEqual(["sk-generic-123456"]);
   });
 });

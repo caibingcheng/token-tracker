@@ -41,7 +41,14 @@ export type AuditAction =
   | "sync_config_deleted"
   | "sync_triggered"
   | "sync_skip"
-  | "sync_reset";
+  | "sync_reset"
+  // relay 设备（sub node）
+  | "device_paired"
+  | "device_pairing_denied"
+  | "device_renamed"
+  | "device_revoked"
+  | "device_unrevoked"
+  | "device_deleted";
 
 export type AuditTargetType =
   | "upstream"
@@ -50,7 +57,8 @@ export type AuditTargetType =
   | "named_route"
   | "system"
   | "ingest_token"
-  | "sync";
+  | "sync"
+  | "device";
 
 export interface AuditLogInput {
   action: AuditAction;

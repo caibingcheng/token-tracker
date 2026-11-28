@@ -48,6 +48,17 @@
   - `src/lib/audit-columns`：审计日志表可见列 id 列表（默认全列、已知 id 校验、按定义序归一、坏 JSON/空值回退全列）
   - `src/lib/gateway/probe`：探活请求构造（三协议 + responses 双风格）+ 出站头（基线常量 + 注入 key + transforms 应用，override/fill/disabled、变量展开含单次探测内恒定的临时 sessionId）+ 双风格回退判定 + 3xx 不跟随（redirect manual）
   - `src/lib/gateway/quota`：配额窗口计算与超限判定（rpm/tpm/daily/monthly）
+  - `src/lib/gateway/lease`：relay lease 封装（X25519 ECDH + HKDF(planId) + AES-256-GCM）——seal→open 往返、临时公钥不复用、**AAD 篡改（换 planId/upstreamId/keyId）全部失败**、错私钥/坏 wire/非 v1 前缀 fail-closed、过期判定 ±120s
+  - `src/lib/gateway/plan.contract`（**relay 契约基础**）：同一份 fixture + 同一份 deps 假实现分别跑 `handleProxyRequest`（oracle，记录真实 outbound 尝试序列）与 `buildPlan()`，断言命名路由 priority+健康稳定重排+pinHop、givenUp 剔除、嵌套 auto 展开（exact > wildcard）、分类器命中置顶/已有 binding 不调分类器、binding 失效回退、单目标跳分类器、无 key 不产生 hop、passthrough 语义、四个错误码、同名自动路由 overridden、自动路由 binding 置顶、responses-subresource（全 openai 链/零健康标记/恒 60s/reservedTokens=0/429-5xx 保留/givenUp 兜底/归属 403）、models 快照、session 四组合与直连逐字节相等
+  - `src/lib/device/pairing`：配对码字符集/格式/归一化、码与 device token 只存 sha256、展示名清洗
+  - `src/lib/device/report`：report → 健康标记分 mode（router 403/404 → model 级；403 html / 429 / 5xx 不标；401+网络错误要同 upstream 全 key 覆盖才 markUnhealthy；responses-create 的 403/404 不标；subresource 零标记；winner → markHealthy+markModelHealthy；伪造 hopIndex 丢弃）
+  - `src/lib/auth/device-guard`：device token 放行/撤销 401/未知 401/形状校验/`last_seen_at` 异步刷新
+  - `src/routes/api/device/pair/{start,poll}`：码格式与落库哈希、每 IP pending ≤ 3、**限流先于读 body**、pending 428 → authorize → 一次取 token → 复用 400、reauth 复用 device 行、错 secret 3 次作废、slow_down 翻倍、expired_token、lookup 只读不消费码
+  - `src/routes/api/device/plan`：device token 401 / vk 指纹 401 / 版本过低 426 / allowlist 403 / 配额 429 / model_not_found 404 / 正常 plan（lease 用设备私钥可解、AAD 绑定正确、URL 与 hop 一致、落库素材与配额预留）/ models 模式快照 / body 超 8KB 413
+  - `src/routes/api/device/report`：usage 写 `token_records`（device_id + plan 行的 session/request_model）、幂等（重复只生效一次）、planId 不存在/跨 device 404、client_aborted 不写 usage、router 404 → model 级标记、responses-create 404 → 零标记
+  - `src/routes/api/admin/devices*`：列表状态派生与 30 天记录数、改名/撤销/解除撤销落库 + 审计、删除（清 `device_plans`，`token_records.device_id` 置 NULL 保留记录）、统计块、全部未带会话 token 401（rotate-token 已删除，不再有对应用例）
+  - `src/relay/prepare` / `src/relay/executor`：model/stream/会话素材/vkFp/headerNames 提取、413 与坏 JSON、query key 剔除、hop model 改写（gemini 不动 body）、404 换 hop 而 429/5xx 同 key 重试、3xx 视为失败、私网双条件跳过（不污染健康）、last-4xx 透传、流式 usage + ttft
+  - `src/lib/db/migrate`（补）：relay 补列幂等（device_id / key_fingerprint）+ vkFp 回填（可解密行回填、坏密文跳过、重跑不报错）
   - `src/lib/gateway/quota-inflight`：进程内 in-flight 预留（按 vk 隔离、幂等释放、非法 token 估算归零）；`proxy.test` 的 quota 段另有「maxRpm=2 时第 3 个并发在途请求 429、请求结束（body 读完触发 onComplete）后额度恢复」用例
   - `src/lib/gateway/upstream-client`：模型列表拉取 + 3xx 不跟随（redirect manual，防 key 跨源泄露）
   - `src/lib/gateway/response-rewriter`：响应体模型名改写
@@ -90,4 +101,13 @@
   - `src/routes/api/admin/sync/config/route.test`：DELETE 集成——401、清除项（target_url/token/bound_uid/last_error/last_attempt）与保留项（cursor/dropped/epoch/uid/instance/last_success）逐项断言、幂等 no-op、审计 `sync_config_deleted` 含 cursor 快照
   - `src/lib/model-prices-service.test`：可见性（近期流量 30 天窗口、推送模型行集含全历史 + 来源标注、active 判定、`inactive` 与默认可见性口径对齐、**uid 等值 + instance_name LIKE 兜底**、改名后历史行仍可发现）、徽标语义（跨快照源不判定 removed/hasUpdate、同源快照下 removed/hasUpdate、无快照不误报下架、无价条目不列下架、modelsDevId 为 null 不判定、removed/inactive 排序末尾含 active 的红 removed 行）、**无价候选与 zeroNoPrice**（仅提供 input 的条目按 no_price 不标 hasUpdate/diff、快照无价 + 已存价含 0 → `status.zeroNoPrice` 而显式 0/0 有价行与快照有价行不误报、未定价行候选全无价 → unmatched 而非 confirm）
 - 新增纯逻辑模块（如解析器、路由匹配、加密）时应同步提交单测
+- **模拟上游（`src/dev/fake-upstream/`）**：需要「真实 HTTP 上游」的测试（relay 透传、key 轮换、failover、流式 idle、usage 解析）用它，不要 mock fetch。
+  - 进程内：`const up = await createFakeUpstream({ keys, models }); up.url` 直接当 baseUrl；`up.requests` 断言收到的每个请求（key / model / body / status），`up.reset()` 清空日志与 `failFirst` 计数，`afterAll` 里 `await up.close()`（端口随机，不抢 4010）
+  - 独立进程：`npm run fake-upstream`（默认 `127.0.0.1:4010`，三协议各 2 个 model + 6 个 key，含固定 401 / 首次 503 的 key），`--config file.json --port 40xx`；控制面 `GET /__fake/requests` / `POST /__fake/reset`
+  - 能力：openai（`/v1/chat/completions`，含 SSE）/ anthropic（`/v1/messages`，含 `message_start…message_stop`）/ gemini（`/v1beta/models/<m>:generateContent|:streamGenerateContent`）/ responses（`/v1/responses`），各自 usage 字段形状（`prompt_tokens_details.cached_tokens` / `cache_read_input_tokens` / `usageMetadata` / `input_tokens_details`）+ `GET /v1/models`、`/v1beta/models`（按 key 白名单过滤）
+  - 多 key / 多 model 语义：`keys[].protocols` 限定协议、`keys[].models` 限定 model、`fail` 恒失败、`failFirst` 前 N 次失败（默认 1）、`latencyMs` 延迟；model 声明了 `protocol` 时会被端点校验（防配置错）；`keys: []` = 不校验 key
+  - 自测：`src/dev/fake-upstream/server.test.ts`（三协议非流式+流式、401/403/404 形状、协议/model 白名单、failFirst、models 列表过滤、控制面）
+- **host 侧接入（种子 + 集成测试）**：
+  - `npm run seed:fake-upstream`（`scripts/seed-fake-upstreams.ts`）：把 fake 上游写成中心的 4 条 upstream（openai/anthropic/gemini/responses，baseUrl 指向 `:4010`）+ 对应 key + 一个 vk `fake-host-demo`。幂等（同名跳过，`--force` 先删后建），`--base-url` 换地址（容器内用 `http://host.docker.internal:4010`），`--with-broken` 追加恒 401 上游与首次 503 上游（验 failover）。**需要 `ALLOW_PRIVATE_UPSTREAMS=true`**（环回 baseUrl）；`GATEWAY_SECRET` 自动按 dev 口径解析（`.env*` → 缺则读 `<db 目录>/.gateway-secret`，与 `npm run dev` 同一把），**库已存在但密钥缺失时直接报错**而不是换新密钥。中途失败不留半成品（建了 upstream 没写 key 会回滚删除）；已有空上游会在输出里单独报「无 key」提示 `--force` 重建
+  - `src/lib/gateway/proxy.fake-upstream.test.ts`：真实 HTTP 上游 + 真实 DB + `createProxyDeps()`，不 mock fetch —— 三协议非流式/流式的 usage 落库（含「`input_tokens` 不含 cache」口弸：OpenAI 的 `prompt_tokens` 含 cache）、401 换 key、跨 upstream failover、上游 403 passthrough、中心侧 403/404 不打上游
 - **`bench/` 脚本要在 Linux 原生的 `node_modules` 下跑**（WSL 里跑 `/mnt/c` 的那份会报「esbuild installed for another platform」）。`bench/docker-bench.sh` 不 `set -e`，建库/seed 失败后会静默用空库跑完整轮压测，表现为所有网关请求 401「Invalid or revoked virtual key」。正确姿势：`git archive HEAD | tar -x -C ~/tt && cd ~/tt && npm ci` 后在 `~/tt` 里跑

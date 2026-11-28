@@ -1,5 +1,5 @@
 import { sql, inArray, and } from "drizzle-orm";
-import { db, initDatabase, tokenRecords } from "@/lib/db";
+import { db, initDatabase, tokenRecords, devicePlansTable } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import type { QuotaUsage } from "./quota";
 
@@ -52,11 +52,31 @@ export async function loadQuotaUsageFromDb(
         )
     )[0];
 
+    // relay 预留（§12.1 第三项）：未上报且未过期的 device_plans 算在途。
+    // 未启用 relay 时该表恒空 → 与升级前完全等价；上报后 reported_at 置位即释放，不会双计。
+    const relayRow = (
+      await db
+        .select({
+          rpm: sql<number>`COUNT(*)`,
+          tokens: sql<number>`COALESCE(SUM(${devicePlansTable.reservedTokens}), 0)`,
+        })
+        .from(devicePlansTable)
+        .where(
+          and(
+            sql`${devicePlansTable.virtualKeyId} = ${virtualKeyId}`,
+            sql`${devicePlansTable.reportedAt} IS NULL`,
+            sql`${devicePlansTable.expiresAt} > ${now.getTime()}`
+          )
+        )
+    )[0];
+    const relayRpm = Number(relayRow?.rpm ?? 0);
+    const relayTokens = Number(relayRow?.tokens ?? 0);
+
     return {
-      rpm: Number(windowRow?.rpm ?? 0),
-      tpm: Number(windowRow?.tpm ?? 0),
-      dailyTokens: Number(dayRow?.tokens ?? 0),
-      monthlyTokens: Number(monthRow?.tokens ?? 0),
+      rpm: Number(windowRow?.rpm ?? 0) + relayRpm,
+      tpm: Number(windowRow?.tpm ?? 0) + relayTokens,
+      dailyTokens: Number(dayRow?.tokens ?? 0) + relayTokens,
+      monthlyTokens: Number(monthRow?.tokens ?? 0) + relayTokens,
     };
   });
 }

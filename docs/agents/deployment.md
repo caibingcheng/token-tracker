@@ -7,6 +7,8 @@
 - **安全响应头**（生产 = `src/server/security-headers.ts` Hono 中间件全局下发；dev = `next.config.js` dev 分支 `headers()`）：`X-Frame-Options: DENY`（点击劫持）、`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、`Permissions-Policy`（禁 camera/mic/geolocation）、CSP：`default-src 'self'` + `script-src 'self' 'unsafe-inline'`（**dev 模式额外放行 `unsafe-eval`**，生产不放松；`unsafe-inline` 因 Next bootstrap/styled-jsx 需要）+ `frame-ancestors 'none'` + `object-src 'none'`；`poweredByHeader: false`（不暴露 x-powered-by 框架身份）。Hono 侧另补缓存头（`src/server/security-headers.ts`）：`/_next/static/*` immutable（365d）、HTML 壳与 public 文件 no-cache、`/api` `/v1*` `/raw` `/ingest` 不干预（透传保留上游头）；no-cache 的校验器由 `src/server/static-cache.ts` 提供（弱 ETag `size-mtime` + `If-None-Match`/`If-Modified-Since` → 304，`serveStatic` 本身不返 304）。**响应压缩**由 `src/server/compress.ts` 下发（gzip/deflate，`hono/compress`，原 Next `compression()` 的替代）：除 `/v1` `/v1beta` `/raw`（SSE 透传不能攒批）与 `text/event-stream` 外都压；反代再压会因已有 `Content-Encoding` 而跳过
 - **PWA 可安装性**：`src/app/manifest.ts`（manifest + 图标），无 Service Worker（离线能力未启用）；移动端底栏 `MobileTabBar.tsx`（`md:hidden`，只有 Dashboard / Records / Admin 三项导航，无登出）
 - **依赖与工具链**：Next 16（App Router，Turbopack 构建）+ React 19 + undici 8 + **better-sqlite3 13（N-API）**（均要求 **Node >= 22.19**，`node:22-slim` 浮动 tag 当前 22.23.x 即可，本地开发建议同版本；better-sqlite3 13 起为 N-API 预编译，无需 node-gyp 编译，并修复了 Node 24 退出期 `RemoveEnvironmentCleanupHook` native abort）。`next lint` 在 Next 16 已移除 → `npm run lint` = `eslint .`，规则集为 `eslint.config.mjs`（flat config，eslint-config-next 16 的 core-web-vitals + typescript 预设；`no-explicit-any` 与 React Compiler 系列规则按升级前基线显式关闭）。`tsconfig.json` 排除 `**/*.test.ts`（Next 16 的构建期类型检查会覆盖测试文件，测试类型由 vitest/esbuild 负责，与 Next 14 行为对齐）
+- **两个镜像（同一仓库 / 同一次 CI）**：`token-tracker`（默认 target `runner`，bundle + `out/` + better-sqlite3，~130–150MB）与 `token-tracker-relay`（`docker build --target relay`，**只有** `build/relay.js`，无 `out/`、无 sqlite、无 jemalloc/gosu，~85MB）。publish 工作流建两条并推同一 tag 前缀的两个仓库名（`<image>` 与 `<image>-relay`），relay 镜像另有 smoke test（能起 + `/pair` 200 + `/api/*` 必须 404）。relay 的 Dockerfile stage 必须放在 `runner` **之前**（Docker 默认 target = 最后一个 stage）
+- **`GATEWAY_MAX_BODY_MB` 在 relay 上的语义**：relay 本地 env 权威，**允许设得比中心大**（body 不经中心，中心上限不再约束；中心只在 plan 响应里回 `policy.centerMaxBodyMb` 供启动时 warn/info 提示）。请求体读取顺序与中心一致：content-length 先判 → 单趟 arrayBuffer → chunked 边读边计
 - **Docker 构建**：三段式 —— deps（`npm ci --ignore-scripts` + swc 预检）→ builder（`npm run build` = gen-routes + `next build`（`output:'export'` → `out/`）+ esbuild bundle（`build/server.js`，external 仅 better-sqlite3）+ better-sqlite3 prebuild 按 `process.arch` 裁到当前架构）→ runner（只拷 `build/` + `out/` + `node_modules/better-sqlite3`）+ base `node:22-slim` + `ENV NODE_OPTIONS=--max-old-space-size=128 --expose-gc --max-semi-space-size=4`（生产内存控制：old space 上限 128MB —— V8 的 major GC 触发阈值随上限缩放，256MB 下同一混合负载 heapTotal 涨到 200MB 且空闲不回落，128MB 封顶约 90MB；young gen 双 semi-space 默认 16MB×2=32MB 常驻，4MB×2=8MB 省约 24MB；`src/instrumentation.node.ts` 每 30 秒检查 RSS，>80MB 时 full GC 归还内存（server entry 启动时调 `registerNode()`））+ `CMD node --optimize-for-size build/server.js`（实测混合压测峰值 RSS 220MB → 182MB，代价是吞吐降约 9%；该 V8 flag 不能放进 `NODE_OPTIONS`）+ `PRAGMA cache_size=-2000`（`src/lib/db/index.ts`，SQLite 页缓存是 SQLite 自己 malloc 的 native 内存，better-sqlite3 编译期默认 -16000≈15.6MB，30 万行库跑 dashboard 全表聚合的 cgroup anon 从 +29.8MB 降到 +9.1MB，耗时不变）+ jemalloc（`LD_PRELOAD` 替换 glibc malloc，native 分配回收更彻底，防长跑 RSS 碎片爬升；构建期软链到架构无关路径）；镜像体积：运行面 = esbuild bundle（~2.2MB）+ `out/` 静态导出 + 单架构 better-sqlite3（8 个 prebuild 在 builder 裁到 `linux-$arch.node`，必须在 builder 裁 —— COPY 之后删只加 whiteout），无 node_modules 全量、无 `.next`（旧 standalone 的 sharp/`outputFileTracingExcludes` 排除逻辑随 standalone 一并移除）；npm/corepack 18MB 来自基础镜像层，`RUN rm` 不会减小 `docker images` SIZE，要砍需自制基座；构建时长：`npm ci --ignore-scripts`（better-sqlite3 13 靠 `prebuilds/` 加载，`binding.gyp` 只会让 npm 白跑一次 node-gyp rebuild；esbuild 平台二进制来自 optionalDeps，不依赖 postinstall）+ deps/builder 两个 stage 均无 `python3 make g++`；docker-compose.example.yml 含 `TRUSTED_PROXY` 与可选 `deploy.memory` 注释；runner 另把根目录 `legacy-server.js` 装成 `/app/server.js`——**不是入口，是报错翻译器**（v1.6.0 起入口为 `build/server.js`；换镜像时只要容器按旧配置重建——面板/编排的「升级镜像」、写死 command 的 compose / docker run / systemd unit / K8s manifest——CMD 就不会跟新镜像更新，仍是 `node server.js`；没它用户只看到 `Cannot find module '/app/server.js'`），脚本只打印中文修法后 `exit 1`，行为仍是启动失败→编排层回滚；不要删，也不要改成能跑起来的转发（旧命令少了 `--optimize-for-size`，转发等于把配置过时藏起来）
 - **TOTP 绑定二维码**：`qrcode.react`（^4.2.0）渲染 otpauth:// URI
 - **`scripts/test_gateway.py`**：手动端到端网关测试脚本（虚拟 key → 代理请求 → 校验透传/写库），不入 vitest，仅供本地联调
@@ -94,6 +96,25 @@ docker compose up -d
 ```
 
 - SQLite 数据库文件在首次 API 请求时由 `initDatabase()` 自动创建（含新表与存量补列），无需手动迁移
+
+### relay（sub node）部署
+
+```bash
+# 与中心同机/内网最佳（每请求 +1 次 plan 往返，跨公网会多 1 RTT）
+docker run -d \
+  --name token-tracker-relay \
+  -p 3002:3000 \
+  -e CENTER_URL=http://token-tracker:3000 \
+  -e RELAY_DEVICE_NAME=laptop \
+  -e ALLOW_PRIVATE_UPSTREAMS=true \
+  -v /opt/token-tracker-relay/data:/app/data \
+  ghcr.io/caibingcheng/token-tracker-relay:latest
+# 然后：docker logs 读 8 位码（或访问 http://host:3002/pair）→ 中心 Admin → Devices 输码授权
+```
+
+- 卷里只有 `relay.state.json`（0600）；丢了重新配对即可（同 fingerprint 复用 device 行，历史记录不断链）
+- 公网 relay：`CENTER_URL` 必须 https，且 `/pair` 保持默认 `RELAY_PAIR_PAGE=local`（码泄露 + 弱 admin key 会组合成爆破链）
+- 故障排查（401/426/413/502、`relay_gap_count`）见 `docs/agents/relay.md`
 
 ### GitHub Container Registry
 

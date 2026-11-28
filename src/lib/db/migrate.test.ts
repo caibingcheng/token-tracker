@@ -1,6 +1,17 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import Database from "better-sqlite3";
-import { migrateColumns, migrateTokenRecordsModelColumns, migrateNamedRoutesTables, migrateNamedRouteTargetsNullableUpstream, migrateSyncInstancesTable, migrateIngestTokensTable } from "./migrate";
+import {
+  migrateColumns,
+  migrateTokenRecordsModelColumns,
+  migrateNamedRoutesTables,
+  migrateNamedRouteTargetsNullableUpstream,
+  migrateSyncInstancesTable,
+  migrateIngestTokensTable,
+  migrateDropUpstreamKeyDeviceId,
+  backfillVirtualKeyFingerprints,
+} from "./migrate";
+import { encryptSecret } from "@/lib/gateway/crypto";
+import { virtualKeyFingerprint } from "@/lib/gateway/vk-fingerprint";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -671,5 +682,73 @@ describe("migrateIngestTokensTable", () => {
     // 不重复重建：两张表迁移后行数不变
     const count: any = db5.prepare(`SELECT COUNT(*) AS c FROM ingest_tokens`).get();
     expect(count.c).toBe(2);
+  });
+});
+
+describe("relay 设备补列与 vkFp 回填", () => {
+  const RELAY_COLUMNS = [
+    { table: "token_records", columns: [{ name: "device_id", definition: "device_id INTEGER" }] },
+    { table: "virtual_keys", columns: [{ name: "key_fingerprint", definition: "key_fingerprint TEXT" }] },
+  ];
+
+  it("token_records.device_id / virtual_keys.key_fingerprint 幂等添加", () => {
+    migrateColumns(db, RELAY_COLUMNS);
+    migrateColumns(db, RELAY_COLUMNS);
+    expect(tableColumns("token_records")).toContain("device_id");
+    expect(tableColumns("virtual_keys")).toContain("key_fingerprint");
+  });
+
+  it("backfillVirtualKeyFingerprints：回填可解密行、跳过坏密文、重跑不报错", () => {
+    const origSecret = process.env.GATEWAY_SECRET;
+    process.env.GATEWAY_SECRET = "0123456789abcdef0123456789abcdef";
+    try {
+      const plain = "vk-backfill-plain";
+      db.prepare(
+        `INSERT INTO virtual_keys (name, api_key_encrypted, enabled) VALUES (?, ?, 1)`
+      ).run("bf-ok", encryptSecret(plain));
+      db.prepare(
+        `INSERT INTO virtual_keys (name, api_key_encrypted, enabled) VALUES (?, ?, 1)`
+      ).run("bf-bad", "not-a-valid-ciphertext");
+
+      backfillVirtualKeyFingerprints(db);
+      backfillVirtualKeyFingerprints(db);
+
+      const ok: any = db
+        .prepare(`SELECT key_fingerprint FROM virtual_keys WHERE name = 'bf-ok'`)
+        .get();
+      expect(ok.key_fingerprint).toBe(virtualKeyFingerprint(plain));
+      const bad: any = db
+        .prepare(`SELECT key_fingerprint FROM virtual_keys WHERE name = 'bf-bad'`)
+        .get();
+      // 解密失败不阻塞启动，也不写脏值（仍走全表解密回退）
+      expect(bad.key_fingerprint).toBeNull();
+    } finally {
+      if (origSecret === undefined) delete process.env.GATEWAY_SECRET;
+      else process.env.GATEWAY_SECRET = origSecret;
+    }
+  });
+
+  it("migrateDropUpstreamKeyDeviceId：删存量 device_id 列，重跑幂等", () => {
+    // 自建表，不依赖同 describe 其他用例的建表顺序（旧库才有 device_id，新库 DDL 已无该列）
+    db.exec(`DROP TABLE IF EXISTS upstream_keys`);
+    db.exec(`CREATE TABLE upstream_keys (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      upstream_id INTEGER NOT NULL,
+      api_key_encrypted TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      last_status TEXT,
+      device_id INTEGER,
+      created_at TEXT
+    )`);
+    const columns = () =>
+      db.prepare(`PRAGMA table_info(upstream_keys)`).all().map((c: any) => c.name);
+    expect(columns()).toContain("device_id");
+
+    migrateDropUpstreamKeyDeviceId(db);
+    migrateDropUpstreamKeyDeviceId(db);
+
+    expect(columns()).not.toContain("device_id");
+    // 其它列不受影响
+    expect(columns()).toContain("api_key_encrypted");
   });
 });

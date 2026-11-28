@@ -16,6 +16,7 @@ import {
   clearRecoveryCodeReminder,
 } from "@/lib/auth/recovery-codes";
 import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
+import { readJsonBodyLimited, BodyTooLargeError } from "@/lib/auth/request-body";
 
 // GET：恢复码剩余数量与登录提醒标记（reminder 供 Security 面板横幅展示）
 export const GET = withAuth(async () => {
@@ -31,8 +32,14 @@ export const GET = withAuth(async () => {
 export const POST = withAuth(async (request: NextRequest) => {
   let body: Record<string, unknown> = {};
   try {
-    body = await request.json();
-  } catch {
+    body = await readJsonBodyLimited(request);
+  } catch (err) {
+    if (err instanceof BodyTooLargeError) {
+      return NextResponse.json(
+        { success: false, error: "Request body too large" },
+        { status: 413 }
+      );
+    }
     // 无 body 视为缺少 currentCode
   }
 

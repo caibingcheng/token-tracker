@@ -53,6 +53,18 @@ function createNextConfig(isDev) {
         ],
       },
     ];
+    // Next 16 默认只允许 dev origin（localhost）访问 /_next/* dev 资源，用 127.0.0.1 或
+    // 局域网 IP 打开页面会被当成 cross-origin：HMR WebSocket 与字体被拦（控制台报
+    // "Blocked cross-origin request to Next.js dev resource /_next/hmr"），页面还停在旧 chunk。
+    // 手机/局域网调试再追加 DEV_ALLOWED_ORIGINS（逗号分隔 host，不带端口）。
+    config.allowedDevOrigins = [
+      'localhost',
+      '127.0.0.1',
+      ...(process.env.DEV_ALLOWED_ORIGINS || '')
+        .split(',')
+        .map((host) => host.trim())
+        .filter(Boolean),
+    ];
     config.rewrites = async () => {
       const api = `http://127.0.0.1:${DEV_API_PORT}`;
       return [

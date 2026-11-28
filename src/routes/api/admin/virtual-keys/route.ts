@@ -13,6 +13,7 @@ import { recordAuditLog, extractClientInfo } from "@/lib/admin/audit";
 import { hasQuotaLimits } from "@/lib/gateway/quota";
 import { loadQuotaUsageBatch } from "@/lib/gateway/quota-db";
 import { isReservedRemoteName, REMOTE_NAME_PREFIX } from "@/lib/ingest/validate";
+import { virtualKeyFingerprint } from "@/lib/gateway/vk-fingerprint";
 
 function gatewaySecretError() {
   return NextResponse.json(
@@ -180,6 +181,7 @@ export const POST = withAuth(async (request: NextRequest) => {
         .values({
           name,
           apiKeyEncrypted: encrypted,
+          keyFingerprint: virtualKeyFingerprint(plainKey),
           enabled: 1,
           comment: comment || null,
           enabledModels: enabledModels ?? '["*"]',

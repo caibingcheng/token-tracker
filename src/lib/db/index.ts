@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm";
 import { wrapDatabaseClient, invalidateQueryCache } from "./cache";
 import { offsetMinutesToSqlModifiers } from "@/lib/timezone-utils";
-import { migrateColumns, migrateTokenRecordsModelColumns, migrateNamedRoutesTables, migrateNamedRouteTargetsNullableUpstream, migrateSyncInstancesTable, migrateIngestTokensTable } from "./migrate";
+import { migrateColumns, migrateTokenRecordsModelColumns, migrateNamedRoutesTables, migrateNamedRouteTargetsNullableUpstream, migrateSyncInstancesTable, migrateIngestTokensTable, migrateDropUpstreamKeyDeviceId, backfillVirtualKeyFingerprints } from "./migrate";
 
 let db: any;
 let rawClient: any;
@@ -18,6 +18,10 @@ let modelPricesTable: any;
 let ingestTokensTable: any;
 let syncInstancesTable: any;
 let responseBindingsTable: any;
+let devicesTable: any;
+let devicePairingsTable: any;
+let devicePlansTable: any;
+let deviceLatencyBucketsTable: any;
 let initialized = false;
 // in-flight 初始化：并发调用 initDatabase()（多路由同时冷启动）只开一个连接、只跑一遍
 // DDL/迁移。失败置空，允许下次重试；成功则靠 initialized 短路。
@@ -262,6 +266,64 @@ async function ensureClient() {
       virtual_key_id INTEGER,
       created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     );
+    CREATE TABLE IF NOT EXISTS devices (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      fingerprint TEXT NOT NULL UNIQUE,
+      name TEXT,
+      public_key TEXT NOT NULL,
+      token_hash TEXT UNIQUE,
+      created_at TEXT NOT NULL,
+      last_seen_at TEXT,
+      revoked_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_devices_revoked ON devices(revoked_at);
+    CREATE TABLE IF NOT EXISTS device_pairings (
+      code_hash TEXT PRIMARY KEY,
+      client_secret_hash TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      name TEXT,
+      public_key TEXT NOT NULL,
+      client_ip TEXT,
+      user_agent TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      poll_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      consumed_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_device_pairings_expires ON device_pairings(expires_at);
+    CREATE TABLE IF NOT EXISTS device_plans (
+      plan_id TEXT PRIMARY KEY,
+      device_id INTEGER NOT NULL,
+      virtual_key_id INTEGER,
+      hops_json TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      protocol TEXT NOT NULL,
+      request_model TEXT,
+      user_agent TEXT,
+      session_id TEXT,
+      record_session_id TEXT,
+      reserved_tokens INTEGER NOT NULL DEFAULT 0,
+      reserved_rpm INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      reported_at TEXT,
+      status TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_device_plans_expires ON device_plans(expires_at);
+    CREATE INDEX IF NOT EXISTS idx_device_plans_vk ON device_plans(virtual_key_id, reported_at);
+    CREATE INDEX IF NOT EXISTS idx_device_plans_device ON device_plans(device_id, created_at);
+    CREATE TABLE IF NOT EXISTS device_latency_buckets (
+      device_id INTEGER NOT NULL,
+      kind TEXT NOT NULL,
+      bucket_start INTEGER NOT NULL,
+      count INTEGER NOT NULL DEFAULT 0,
+      sum_ms INTEGER NOT NULL DEFAULT 0,
+      max_ms INTEGER NOT NULL DEFAULT 0,
+      last_ms INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (device_id, kind, bucket_start)
+    );
+    CREATE INDEX IF NOT EXISTS idx_device_latency_buckets_start ON device_latency_buckets(bucket_start);
   `);
 
   // 存量补列必须在所有 CREATE TABLE 之后执行：全新库先建表再补列，旧库表已存在、幂等补列
@@ -276,6 +338,7 @@ async function ensureClient() {
         { name: "user_agent", definition: "user_agent TEXT" },
         { name: "session_id", definition: "session_id TEXT" },
         { name: "remote_instance_uid", definition: "remote_instance_uid TEXT" },
+        { name: "device_id", definition: "device_id INTEGER" },
       ],
     },
     {
@@ -287,6 +350,7 @@ async function ensureClient() {
         { name: "max_tpm", definition: "max_tpm INTEGER" },
         { name: "max_daily_tokens", definition: "max_daily_tokens INTEGER" },
         { name: "max_monthly_tokens", definition: "max_monthly_tokens INTEGER" },
+        { name: "key_fingerprint", definition: "key_fingerprint TEXT" },
       ],
     },
     {
@@ -317,6 +381,9 @@ async function ensureClient() {
   // named_route_targets.upstream_id 放宽可空（无 provider 目标）：NOT NULL 存量表重建（幂等）
   migrateNamedRouteTargetsNullableUpstream(client);
 
+  // upstream_keys.device_id（per-device key）已移除：存量列 DROP（幂等）
+  migrateDropUpstreamKeyDeviceId(client);
+
   // 多实例同步表专用迁移（幂等，全新库无旧结构自动跳过）：
   // - sync_instances：instance 主键 → uid 主键 + instance_name（旧行丢弃）
   // - ingest_tokens：bound_instance → bound_uid（行回迁 + bound_uid 置 NULL）
@@ -327,7 +394,14 @@ async function ensureClient() {
     CREATE INDEX IF NOT EXISTS idx_token_records_virtual_key_id ON token_records(virtual_key_id);
     CREATE INDEX IF NOT EXISTS idx_token_records_vk_created_at ON token_records(virtual_key_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_token_records_remote_instance_uid_created_at ON token_records(remote_instance_uid, created_at);
+    CREATE INDEX IF NOT EXISTS idx_token_records_device_created_at ON token_records(device_id, created_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_virtual_keys_key_fingerprint ON virtual_keys(key_fingerprint);
   `);
+
+  // vk 指纹回填（幂等，只处理 key_fingerprint IS NULL 的行）：指纹只用于认证索引，
+  // 缺失时 resolveVirtualKey 走全表解密回退，功能不受影响；解密失败的行保持 NULL。
+  // GATEWAY_SECRET 缺失时静默跳过（不阻塞启动）。
+  backfillVirtualKeyFingerprints(client);
 
   // 模块状态最后一次性提交：DDL/迁移任一步抛错时 db 保持 undefined，下次 initDatabase
   // 才能重试；否则 `if (db) return` 会短路，带着残缺 schema 报初始化成功。
@@ -364,6 +438,10 @@ async function ensureClient() {
   ingestTokensTable = sqliteModule.ingestTokens;
   syncInstancesTable = sqliteModule.syncInstances;
   responseBindingsTable = sqliteModule.responseBindings;
+  devicesTable = sqliteModule.devices;
+  devicePairingsTable = sqliteModule.devicePairings;
+  devicePlansTable = sqliteModule.devicePlans;
+  deviceLatencyBucketsTable = sqliteModule.deviceLatencyBuckets;
   console.log("[DB] SQLite initialized at:", dbPath);
 }
 
@@ -419,5 +497,5 @@ export function getDateGroupExpr(
   return sql<string>`strftime('%Y-%m-%d', ${tokenRecords.createdAt}, ${modifiers[0]}, ${modifiers[1]})`;
 }
 
-export { db, tokenRecords, upstreamsTable, upstreamKeysTable, virtualKeysTable, settingsTable, adminAuditLogsTable, upstreamModelHealthTable, namedRoutesTable, namedRouteTargetsTable, modelPricesTable, ingestTokensTable, syncInstancesTable, responseBindingsTable };
+export { db, tokenRecords, upstreamsTable, upstreamKeysTable, virtualKeysTable, settingsTable, adminAuditLogsTable, upstreamModelHealthTable, namedRoutesTable, namedRouteTargetsTable, modelPricesTable, ingestTokensTable, syncInstancesTable, responseBindingsTable, devicesTable, devicePairingsTable, devicePlansTable, deviceLatencyBucketsTable };
 export type { TokenRecord, NewTokenRecord, NamedRoute, NewNamedRoute, NamedRouteTarget, NewNamedRouteTarget } from "./schema-sqlite";

@@ -72,11 +72,27 @@ function messageText(content: unknown): string | null {
   return texts.length > 0 ? texts.join("") : null;
 }
 
+// 会话隔离项：直连用 vk 的数值 id，relay 只知道 vk 指纹（sha256(token)）——两者都稳定且
+// 唯一标识同一个 vk，只是取值不同（同一 vk 混用直连与 relay 时会得到两个指纹，可接受）。
+export type SessionScope = number | string;
+
+// 指纹素材 → 会话指纹输入（tail 拼接，**不哈希**）：
+// `{素材}\u0000{model}\u0000{scope}\u0000{protocol}`，素材与 model 之间无分隔符。
+// relay 侧可以自己算完再把指纹送到中心（不再传 system/首条 user 明文）。
+export function computeSessionIdFromInput(
+  sessionInput: string,
+  model: string,
+  virtualKeyId: SessionScope,
+  protocol: string
+): string {
+  return `${sessionInput}\u0000${model}\u0000${virtualKeyId}\u0000${protocol}`;
+}
+
 // 从请求体派生会话指纹输入（不涉及任何隐私明文之外的敏感内容，最终会哈希）
 export function extractSessionInput(
   bodyJson: unknown,
   model: string,
-  virtualKeyId: number,
+  virtualKeyId: SessionScope,
   protocol: string
 ): string {
   const systemTexts: string[] = [];
@@ -96,10 +112,11 @@ export function extractSessionInput(
     }
   }
 
-  return (
-    systemTexts.join("").slice(-1024) +
-    (firstUserText ?? "").slice(0, 1024) +
-    `\u0000${model}\u0000${virtualKeyId}\u0000${protocol}`
+  return computeSessionIdFromInput(
+    systemTexts.join("").slice(-1024) + (firstUserText ?? "").slice(0, 1024),
+    model,
+    virtualKeyId,
+    protocol
   );
 }
 
@@ -146,7 +163,7 @@ export function extractSessionInputFromBytes(
   bytes: Uint8Array,
   messagesSpan: ValueSpan | undefined,
   model: string,
-  virtualKeyId: number,
+  virtualKeyId: SessionScope,
   protocol: string
 ): string {
   const systemTexts: string[] = [];
@@ -181,10 +198,11 @@ export function extractSessionInputFromBytes(
     }
   }
 
-  return (
-    systemTexts.join("").slice(-1024) +
-    (firstUserText ?? "").slice(0, 1024) +
-    `\u0000${model}\u0000${virtualKeyId}\u0000${protocol}`
+  return computeSessionIdFromInput(
+    systemTexts.join("").slice(-1024) + (firstUserText ?? "").slice(0, 1024),
+    model,
+    virtualKeyId,
+    protocol
   );
 }
 
@@ -195,7 +213,7 @@ export function computeSessionId(input: string): string {
 export function buildSessionId(
   bodyJson: unknown,
   model: string,
-  virtualKeyId: number,
+  virtualKeyId: SessionScope,
   protocol: string
 ): string {
   return computeSessionId(extractSessionInput(bodyJson, model, virtualKeyId, protocol));
