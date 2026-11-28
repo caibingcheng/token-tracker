@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { NextRequest } from "next/server";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { POST } from "./route";
 import {
   closeDb,
@@ -252,6 +252,61 @@ describe("POST /api/device/report", () => {
     }
     const rows = await withSkipCache(async () => db.select().from(tokenRecords));
     expect(rows).toHaveLength(0);
+  });
+
+  it("client_aborted / stream_interrupted 带 winner → 仍写一条记录（status 用中断态，与直连同口径）", async () => {
+    const seeded = await seed();
+    for (const status of ["client_aborted", "stream_interrupted"]) {
+      const planId = await seedPlan(seeded);
+      const res = await POST(
+        reportRequest(seeded.token, {
+          planId,
+          status,
+          winner: winner(seeded),
+          failures: [],
+          usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0, hasUsage: false },
+        })
+      );
+      expect(res.status).toBe(200);
+    }
+    const rows = await withSkipCache(async () => db.select().from(tokenRecords));
+    expect(rows.map((r) => r.status).sort()).toEqual(["client_aborted", "stream_interrupted"]);
+    // 中断行不估算：零 token
+    expect(rows.every((r) => r.inputTokens === 0 && r.outputTokens === 0)).toBe(true);
+  });
+
+  it("client_aborted 但无 winner（不知落点）→ 不写行", async () => {
+    const seeded = await seed();
+    const planId = await seedPlan(seeded);
+    const res = await POST(
+      reportRequest(seeded.token, { planId, status: "client_aborted", winner: null, failures: [], usage })
+    );
+    expect(res.status).toBe(200);
+    const rows = await withSkipCache(async () => db.select().from(tokenRecords));
+    expect(rows).toHaveLength(0);
+  });
+
+  it("estimated 标志 → 写 status='estimated'；无标志 → no_usage", async () => {
+    const seeded = await seed();
+    const zero = { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0, hasUsage: false };
+    for (const [estimated, expected] of [
+      [true, "estimated"],
+      [false, "no_usage"],
+    ] as const) {
+      await POST(
+        reportRequest(seeded.token, {
+          planId: await seedPlan(seeded),
+          status: "ok",
+          winner: winner(seeded),
+          failures: [],
+          usage: { ...zero, estimated },
+        })
+      );
+      const [row] = await withSkipCache(async () =>
+        db.select().from(tokenRecords).orderBy(desc(tokenRecords.id)).limit(1)
+      );
+      expect(row?.status).toBe(expected);
+    }
   });
 
   it("router：404 → model 级健康标记", async () => {

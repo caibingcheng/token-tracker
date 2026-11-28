@@ -72,13 +72,17 @@ function messageText(content: unknown): string | null {
   return texts.length > 0 ? texts.join("") : null;
 }
 
+// 会话隔离项：直连用 vk 的数值 id，relay 只知道 vk 指纹（sha256(token)）——两者都稳定且
+// 唯一标识同一个 vk，只是取值不同（同一 vk 混用直连与 relay 时会得到两个指纹，可接受）。
+export type SessionScope = number | string;
+
 // 指纹素材 → 会话指纹输入（tail 拼接，**不哈希**）：
-// `{素材}\u0000{model}\u0000{vkId}\u0000{protocol}`，素材与 model 之间无分隔符。
-// relay 侧只把素材（sessionInput）送到中心，由中心在这里补 tail —— 两条入口逐字节一致。
+// `{素材}\u0000{model}\u0000{scope}\u0000{protocol}`，素材与 model 之间无分隔符。
+// relay 侧可以自己算完再把指纹送到中心（不再传 system/首条 user 明文）。
 export function computeSessionIdFromInput(
   sessionInput: string,
   model: string,
-  virtualKeyId: number,
+  virtualKeyId: SessionScope,
   protocol: string
 ): string {
   return `${sessionInput}\u0000${model}\u0000${virtualKeyId}\u0000${protocol}`;
@@ -88,7 +92,7 @@ export function computeSessionIdFromInput(
 export function extractSessionInput(
   bodyJson: unknown,
   model: string,
-  virtualKeyId: number,
+  virtualKeyId: SessionScope,
   protocol: string
 ): string {
   const systemTexts: string[] = [];
@@ -159,7 +163,7 @@ export function extractSessionInputFromBytes(
   bytes: Uint8Array,
   messagesSpan: ValueSpan | undefined,
   model: string,
-  virtualKeyId: number,
+  virtualKeyId: SessionScope,
   protocol: string
 ): string {
   const systemTexts: string[] = [];
@@ -209,7 +213,7 @@ export function computeSessionId(input: string): string {
 export function buildSessionId(
   bodyJson: unknown,
   model: string,
-  virtualKeyId: number,
+  virtualKeyId: SessionScope,
   protocol: string
 ): string {
   return computeSessionId(extractSessionInput(bodyJson, model, virtualKeyId, protocol));

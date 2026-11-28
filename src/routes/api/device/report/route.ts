@@ -28,6 +28,18 @@ function badRequest(message: string) {
   return NextResponse.json({ error: { message, type: "invalid_request_error" } }, { status: 400 });
 }
 
+// 写库 status：中断态优先（直连也把中断 status 写进行），其余按 usage 来源分。
+// relay 在无 usage 且响应完整时已自行估算（与直连 estimate.ts 同口径），中心只信它的标志。
+function recordStatusOf(
+  reportStatus: string,
+  usage: { hasUsage: boolean; estimated: boolean }
+): string | null {
+  if (reportStatus === "client_aborted" || reportStatus === "stream_interrupted") {
+    return reportStatus;
+  }
+  return usage.hasUsage ? null : usage.estimated ? "estimated" : "no_usage";
+}
+
 function intOrNull(value: unknown): number | null {
   const n = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(n) || n < 0) return null;
@@ -107,9 +119,11 @@ export const POST = withDeviceAuth(async (request: NextRequest, device: DeviceCo
     }
   }
 
-  // usage 只写 ok；client_aborted / stream_interrupted 按现状不估算、不写 usage（只留状态行）。
-  // 例外：业务 4xx 透传（status=failed + 零 token 的 hasUsage:false）也要写一条 no_usage 行
-  // —— 直连在 fallbackBusinessResponse / lastResponse 路径上同样会写。
+  // usage 写库口径与直连一致：
+  // - ok → 真 usage / estimated / no_usage（业务 4xx 透传的零 token 也写 no_usage）
+  // - client_aborted / stream_interrupted → 仍写一条记录，status 用中断态（直连在
+  //   toRecordUsage(parsed, meta, interruptStatus) 路径上同样会写；只丢这一行会让两端的
+  //   「请求数」对不上，且丢已解析到的 usage）
   if (usage !== null && plan.virtualKeyId !== null) {
     const winnerHop = winner ? hops.find((h) => h.hopIndex === winner.hopIndex) ?? null : null;
     if (winnerHop) {
@@ -138,7 +152,7 @@ export const POST = withDeviceAuth(async (request: NextRequest, device: DeviceCo
           outputTokens: usage.outputTokens,
           cacheRead: usage.cacheRead,
           cacheWrite: usage.cacheWrite,
-          status: usage.hasUsage ? null : "no_usage",
+          status: recordStatusOf(status, usage),
           latencyMs: intOrNull(body.latencyMs),
           ttftMs: intOrNull(body.ttftMs),
           virtualKeyId: plan.virtualKeyId,
@@ -226,6 +240,7 @@ function parseUsage(value: unknown): {
   cacheRead: number;
   cacheWrite: number;
   hasUsage: boolean;
+  estimated: boolean;
 } | null {
   if (typeof value !== "object" || value === null) return null;
   const u = value as Record<string, unknown>;
@@ -235,5 +250,6 @@ function parseUsage(value: unknown): {
     cacheRead: intOrNull(u.cacheRead) ?? 0,
     cacheWrite: intOrNull(u.cacheWrite) ?? 0,
     hasUsage: u.hasUsage === true,
+    estimated: u.estimated === true,
   };
 }

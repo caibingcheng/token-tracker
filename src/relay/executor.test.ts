@@ -29,7 +29,7 @@ function preparedOf(over: Partial<PreparedRequest> = {}): PreparedRequest {
     model: "my-route",
     stream: false,
     nativeSessionId: null,
-    sessionInput: "hi",
+    sessionFingerprint: null,
     hasMessages: true,
     estimatedInputTokens: 10,
     vkFp: "f".repeat(64),
@@ -286,6 +286,141 @@ describe("executePlan", () => {
     expect(report.status).toBe("ok");
     expect(report.usage).toMatchObject({ inputTokens: 5, outputTokens: 2, hasUsage: true });
     expect(typeof report.ttftMs).toBe("number");
+  });
+
+  it("body 改写：按 plan.injectIncludeUsage 注入（中心显式 false → 不注入；旧中心不下发 → 本地兜底）", async () => {
+    const sentBodies: string[] = [];
+    setOutboundFetchImpl(async (_input: unknown, init?: { body?: unknown }) => {
+      const body = init?.body;
+      sentBodies.push(
+        body instanceof Uint8Array ? new TextDecoder().decode(body) : String(body ?? "")
+      );
+      return jsonResponse(200, { choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } });
+    });
+
+    // 中心显式要求注入
+    await call(
+      planOf([hopOf({ realModel: "my-route" })], { injectIncludeUsage: true }),
+      preparedOf({ stream: true })
+    );
+    expect(JSON.parse(sentBodies[0]!).stream_options).toEqual({ include_usage: true });
+
+    // 中心显式不注入：body 原样
+    sentBodies.length = 0;
+    await call(
+      planOf([hopOf({ realModel: "my-route" })], { injectIncludeUsage: false }),
+      preparedOf({ stream: true })
+    );
+    expect(JSON.parse(sentBodies[0]!).stream_options).toBeUndefined();
+
+    // 旧中心不下发：非流式 chat 不走注入（本地兜底规则 = 流式 chat 才补）
+    sentBodies.length = 0;
+    await call(planOf([hopOf({ realModel: "my-route" })]), preparedOf({ stream: false }));
+    expect(JSON.parse(sentBodies[0]!).stream_options).toBeUndefined();
+  });
+
+  it("上游不发 usage（非流式）→ 按请求/响应文本估算，report 带 estimated 标志", async () => {
+    setOutboundFetchImpl(async () =>
+      jsonResponse(200, {
+        model: "gpt-a",
+        choices: [{ message: { role: "assistant", content: "hello world" } }],
+      })
+    );
+    const res = await call(planOf([hopOf({ realModel: "my-route" })]));
+    expect(res.status).toBe(200);
+    const report = sendReportMock.mock.calls[0]![1] as any;
+    expect(report.status).toBe("ok");
+    // input 用 relay 预先估的请求值（与直连 estimateInputTokens 同口径）
+    expect(report.usage).toMatchObject({
+      inputTokens: 10,
+      cacheRead: 0,
+      cacheWrite: 0,
+      hasUsage: false,
+      estimated: true,
+    });
+    expect(report.usage.outputTokens).toBeGreaterThan(0);
+  });
+
+  it("上游不发 usage chunk（流式）→ 按流内内容字符估算，同样带 estimated", async () => {
+    const sse =
+      'data: {"choices":[{"delta":{"content":"hello "}}]}\n\n' +
+      'data: {"choices":[{"delta":{"content":"world"}}]}\n\n' +
+      "data: [DONE]\n\n";
+    setOutboundFetchImpl(
+      async () =>
+        new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } })
+    );
+    const res = await call(planOf([hopOf({ realModel: "my-route" })]), preparedOf({ stream: true }));
+    await res.text();
+    await new Promise((r) => setTimeout(r, 10));
+    const report = sendReportMock.mock.calls[0]![1] as any;
+    expect(report.status).toBe("ok");
+    expect(report.usage).toMatchObject({ inputTokens: 10, cacheRead: 0, hasUsage: false, estimated: true });
+    // "hello world" = 11 ASCII → ceil(11/4) = 3（整段字符后统一取整，不逐 delta）
+    expect(report.usage.outputTokens).toBe(3);
+  });
+
+  it("已见 [DONE] 后客户端断开 → 记 ok，usage 不丢（与直连 isAbortAfterComplete 同口径）", async () => {
+    const abort = new AbortController();
+    const enc = new TextEncoder();
+    setOutboundFetchImpl(async () => {
+      const body = new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'));
+          c.enqueue(enc.encode('data: {"usage":{"prompt_tokens":5,"completion_tokens":2}}\n\n'));
+          c.enqueue(enc.encode("data: [DONE]\n\n"));
+          // 刻意不 close：模拟上游未收尾、客户端拿到 [DONE] 就挂断
+        },
+      });
+      return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+    });
+    const req = new Request("http://relay.local/v1/chat/completions", {
+      method: "POST",
+      signal: abort.signal,
+    });
+    const res = await call(planOf([hopOf({ realModel: "my-route" })]), preparedOf({ stream: true }), req);
+    const clientReader = res.body!.getReader();
+    // 读到 [DONE] 段（三段各一个 chunk）后客户端才挂断
+    await clientReader.read();
+    await clientReader.read();
+    await clientReader.read();
+    abort.abort();
+    await new Promise((r) => setTimeout(r, 20));
+    const report = sendReportMock.mock.calls[0]![1] as any;
+    expect(report.status).toBe("ok");
+    expect(report.usage).toMatchObject({ inputTokens: 5, outputTokens: 2, hasUsage: true });
+  });
+
+  it("未见终止事件就断开 → client_aborted，但仍上报零 token usage（中心写中断行）", async () => {
+    const abort = new AbortController();
+    const enc = new TextEncoder();
+    setOutboundFetchImpl(async () => {
+      const body = new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'));
+        },
+      });
+      return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+    });
+    const req = new Request("http://relay.local/v1/chat/completions", {
+      method: "POST",
+      signal: abort.signal,
+    });
+    const res = await call(planOf([hopOf({ realModel: "my-route" })]), preparedOf({ stream: true }), req);
+    await res.body!.getReader().read();
+    abort.abort();
+    await new Promise((r) => setTimeout(r, 20));
+    const report = sendReportMock.mock.calls[0]![1] as any;
+    expect(report.status).toBe("client_aborted");
+    // 不估算（残缺），但上报零 token + winner，中心才能写一条带中断 status 的行
+    expect(report.usage).toEqual({
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      hasUsage: false,
+    });
+    expect(report.winner).not.toBeNull();
   });
 
   it("弱匹配：hop 缺 continueOn/retries/skipSiblingsOn → 兜底默认可用", async () => {

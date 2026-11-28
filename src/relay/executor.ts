@@ -6,12 +6,14 @@ import { isLeaseExpired, openLease, type LeasePayload } from "@/lib/gateway/leas
 import { getOutboundDispatcher } from "@/lib/gateway/proxy-dispatcher";
 import { outboundFetch } from "@/lib/gateway/outbound-fetch";
 import { assertOutboundUrlAllowed, privateUpstreamsAllowed } from "@/lib/gateway/url-guard";
+import { stripRawPassthroughPrefix } from "@/lib/gateway/url-utils";
 import { buildUpstreamHeaders } from "@/lib/gateway/upstream-headers";
 import {
   createSseModelRewriter,
   rewriteModelNonStreamingBytes,
 } from "@/lib/gateway/response-rewriter";
 import { StreamUsageExtractor } from "@/lib/gateway/parsers/stream-usage";
+import { estimateOutputTokens } from "@/lib/gateway/estimate";
 import {
   parseAnthropicNonStreaming,
   parseGeminiNonStreaming,
@@ -19,7 +21,7 @@ import {
 } from "@/lib/gateway/parsers";
 import type { ParsedUsage } from "@/lib/gateway/parsers/types";
 import { scanTopLevelObject } from "@/lib/gateway/json-scan";
-import { rewriteBodyModel, type PreparedRequest } from "./prepare";
+import { ensureIncludeUsage, rewriteBodyModel, type PreparedRequest } from "./prepare";
 import { sendReport, type PlanHopWire, type PlanWire, type ReportPayload } from "./plan-client";
 
 const MAX_NON_STREAMING_RESPONSE_BYTES = 50 * 1024 * 1024;
@@ -166,6 +168,34 @@ function toUsage(parsed: ParsedUsage | null): ReportPayload["usage"] {
   };
 }
 
+// 估算兑底（与直连 proxy.ts 同口径）：上游（尤其第三方中转）不发 usage 时按请求
+// messages 估 input、按响应文本/流内累计字符估 output，记 estimated 让中心写 status='estimated'。
+// 合计为 0 时仍返回 null（中心写 no_usage）。
+function toEstimatedUsage(
+  inputTokens: number,
+  outputTokens: number
+): ReportPayload["usage"] {
+  if (inputTokens + outputTokens <= 0) return null;
+  return { inputTokens, outputTokens, cacheRead: 0, cacheWrite: 0, hasUsage: false, estimated: true };
+}
+
+// 中断（client_aborted / stream_interrupted）的 usage：不估算（output 可能缺尾部），
+// 但已解析到的值照用；一条都没解析到则上报零 token（中心据此写一条带中断 status 的记录，
+// 与直连 toRecordUsage(parsed, meta, interruptStatus) 同口径）。
+function toInterruptUsage(parsed: ParsedUsage | null): ReportPayload["usage"] {
+  if (parsed) return toUsage(parsed);
+  return { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0, hasUsage: false };
+}
+
+// 成功路径的 usage 归一：上游给了真值就不估算（估算要整包 decode，不能无谓跑）
+function resolveSuccessUsage(
+  parsed: ParsedUsage | null,
+  estimate: () => number,
+  estimatedInputTokens: number
+): ReportPayload["usage"] {
+  return parsed ? toUsage(parsed) : toEstimatedUsage(estimatedInputTokens, estimate());
+}
+
 // 保留的失败响应：最多读 256KB（§10.1.1），其余取消，避免把大错误体全拉进内存
 async function bufferRetained(resp: Response): Promise<{ bytes: Uint8Array; headers: Headers; status: number }> {
   const chunks: Uint8Array[] = [];
@@ -199,7 +229,15 @@ async function bufferRetained(resp: Response): Promise<{ bytes: Uint8Array; head
 }
 
 export async function executePlan(opts: ExecuteOptions): Promise<Response> {
-  const { plan, prepared, request } = opts;
+  const { plan, prepared: rawPrepared, request } = opts;
+  // body 改写指令由中心下发（plan.injectIncludeUsage）；旧中心不下发时按本地同一条规则
+  // 兜底（弱匹配），否则新 relay + 旧中心会退回大量 no_usage。 /raw 先剥前缀，
+  // 与中心 resolveBodyDirectives 的判定同口径。
+  const innerPath = stripRawPassthroughPrefix(rawPrepared.path.split("?")[0] ?? "");
+  const injectIncludeUsage =
+    plan.injectIncludeUsage ??
+    (innerPath === "/v1/chat/completions" && rawPrepared.stream === true);
+  const prepared = injectIncludeUsage ? ensureIncludeUsage(rawPrepared) : rawPrepared;
   const hops = plan.hops.map(normalizeHop);
   const startTime = Date.now();
   const failures: Failure[] = [];
@@ -294,7 +332,7 @@ export async function executePlan(opts: ExecuteOptions): Promise<Response> {
       }
 
       if (is2xx(resp.status)) {
-        return await passThroughSuccess(resp, hop, opts, finish, startTime);
+        return await passThroughSuccess(resp, hop, { ...opts, prepared }, finish, startTime);
       }
 
       failures.push({
@@ -390,7 +428,10 @@ async function passThroughSuccess(
   const isStreaming = (resp.headers.get("content-type") ?? "").toLowerCase().includes("text/event-stream");
 
   if (!resp.body) {
-    finish("ok", winner, toUsage(null), { label: "ok" });
+    // 2xx 但无响应体：拿不到 usage，与直连同口径走估算兑底（input 仍有值 → estimated）
+    finish("ok", winner, resolveSuccessUsage(null, () => 0, prepared.estimatedInputTokens), {
+      label: "ok",
+    });
     return new Response(null, { status: resp.status, headers });
   }
 
@@ -404,11 +445,15 @@ async function passThroughSuccess(
     let responseComplete = false;
     let interrupted = false;
     let clientAborted = false;
+    // 响应完整后才断开（已见 [DONE] / response.completed / message_stop）不算 client_aborted
+    // ——客户端拿到终止事件就挂断是常态，与直连 proxy.ts 的 isAbortAfterComplete 同口径。
+    // 少了这层会把「正常收尾」记成 client_aborted 并丢掉这条 usage。
+    const isAbortAfterComplete = () => responseComplete || extractor.sawTerminal;
 
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         opts.request.signal.addEventListener("abort", () => {
-          if (!responseComplete) clientAborted = true;
+          if (!isAbortAfterComplete()) clientAborted = true;
           void reader.cancel().catch(() => {});
         });
         const pump = async () => {
@@ -437,7 +482,7 @@ async function passThroughSuccess(
             responseComplete = true;
             controller.close();
           } catch {
-            interrupted = true;
+            if (!isAbortAfterComplete()) interrupted = true;
             await reader.cancel().catch(() => {});
             controller.error(new Error("stream interrupted"));
           }
@@ -448,10 +493,16 @@ async function passThroughSuccess(
             : interrupted
               ? "stream_interrupted"
               : "ok";
+          // 不估算：中断时 output 可能缺尾部，残缺估算值写进统计比零更好？不——与直连
+          // 同口径「中断不估算」；但已解析到的 usage 仍然上报（直连 toRecordUsage 也沿用
+          // 已解析值），中心据此写一条带中断 status 的记录（不再整行丢弃）。
+          const parsed = extractor.finish();
           finish(
             status,
             winner,
-            status === "ok" ? toUsage(extractor.finish()) : null,
+            status === "ok"
+              ? resolveSuccessUsage(parsed, () => extractor.contentTokens, prepared.estimatedInputTokens)
+              : toInterruptUsage(parsed),
             {
               ttftMs,
               responseId: extractor.responseId ?? null,
@@ -461,7 +512,7 @@ async function passThroughSuccess(
         });
       },
       cancel() {
-        if (!responseComplete) clientAborted = true;
+        if (!isAbortAfterComplete()) clientAborted = true;
         void reader.cancel().catch(() => {});
       },
     });
@@ -488,14 +539,15 @@ async function passThroughSuccess(
         await reader.cancel().catch(() => {});
         // 上游已产生真实输出但读不完：与直连同口径记 stream_interrupted（超限的 throw 走同个 catch），
         // 不发 report 会让 device_plans 预留空等到期清扫、真实 usage 丢失、健康不标。
-        finish("stream_interrupted", winner, null, { label: "stream_interrupted" });
+        // 零 token 上报：中心仍写一条带中断 status 的记录（与直连一致）。
+        finish("stream_interrupted", winner, toInterruptUsage(null), { label: "stream_interrupted" });
         return errorResponse(502, "upstream_error", "Upstream response exceeds size limit");
       }
       chunks.push(value);
     }
   } catch {
     await reader.cancel().catch(() => {});
-    finish("stream_interrupted", winner, null, { label: "stream_interrupted" });
+    finish("stream_interrupted", winner, toInterruptUsage(null), { label: "stream_interrupted" });
     return errorResponse(502, "upstream_error", "Upstream response interrupted");
   }
   const bytes = new Uint8Array(total);
@@ -507,7 +559,11 @@ async function passThroughSuccess(
   const rewritten = virtualModel
     ? rewriteModelNonStreamingBytes(bytes, prepared.protocol, virtualModel)
     : bytes;
-  const usage = toUsage(usageFromBytes(bytes, prepared.protocol));
+  const usage = resolveSuccessUsage(
+    usageFromBytes(bytes, prepared.protocol),
+    () => estimateOutputTokens(new TextDecoder().decode(bytes), prepared.protocol),
+    prepared.estimatedInputTokens
+  );
   const responseId = responseIdFromBytes(bytes);
   finish("ok", winner, usage, { responseId, label: "ok" });
   return new Response(new Blob([new Uint8Array(rewritten)]), { status: resp.status, headers });

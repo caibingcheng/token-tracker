@@ -93,7 +93,10 @@ export interface BuildPlanInput {
   model: string | null; // responses-*/models 模式为 null
   responseId: string | null; // 仅 responses-subresource
   nativeSessionId: string | null; // 原生 header 原值（已截断 256）
-  sessionInput: string | null; // 指纹素材（system 尾 1024 + 首条 user 前 1024，无分隔符）
+  /** relay 本地算好的指纹（sha256 hex，隔离项用 vk 指纹）；有值时优先于 sessionInput */
+  sessionFingerprint?: string | null;
+  /** @deprecated 旧 relay 送指纹素材，中心自己算（新 relay 只发 sessionFingerprint） */
+  sessionInput: string | null;
   hasMessages: boolean;
   stream: boolean | undefined;
   userAgent: string | null;
@@ -191,15 +194,20 @@ export async function buildPlan(
   // 会话指纹：subresource 无 model，直连侧用 path 当 model 项（buildSessionId(null, path, ...)），
   // 这里同口径（且用去 query 的 pathname）—— header transforms 的 ${var.sessionId} 两条入口必须相等
   const sessionModel = input.model ?? pathname;
-  // 指纹原值（body 素材派生）：routeSessionId / recordSessionId 的基底
-  const fingerprint = computeSessionId(
-    computeSessionIdFromInput(
-      input.sessionInput ?? "",
-      sessionModel,
-      virtualKey.id,
-      protocol
-    )
-  );
+  // 指纹原值（body 素材派生）：routeSessionId / recordSessionId 的基底。
+  // 优先用 relay 本地算好的值（隔离项是 vk 指纹）——这样 system/首条 user 明文只留在 relay；
+  // 旧 relay 未发指纹时按素材在中心算（弱匹配）。
+  const relayFingerprint = normalizeSessionFingerprint(input.sessionFingerprint);
+  const fingerprint =
+    relayFingerprint ??
+    computeSessionId(
+      computeSessionIdFromInput(
+        input.sessionInput ?? "",
+        sessionModel,
+        virtualKey.id,
+        protocol
+      )
+    );
   // 直连侧名为 sessionId 的请求级值：原生 header 优先，否则指纹（header transforms 的 ${var.sessionId}）
   const useNativeSession =
     input.nativeSessionId !== null &&
@@ -714,6 +722,13 @@ async function buildSubresourcePlan(
   };
 }
 
+// relay 送来的指纹只接受 sha256 hex（64 位）：它会进 binding 键与 token_records.session_id
+// （展示层与 header transforms），不接受任意字符串。
+function normalizeSessionFingerprint(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  return /^[0-9a-f]{64}$/i.test(value) ? value.toLowerCase() : null;
+}
+
 function splitPlanPath(path: string): { pathname: string; query: string } {
   const q = path.indexOf("?");
   const pathname = q >= 0 ? path.slice(0, q) : path;
@@ -729,6 +744,17 @@ function splitPlanPath(path: string): { pathname: string; query: string } {
     }
   }
   return { pathname, query };
+}
+
+// relay 的 body 改写指令：决策在中心，relay 只机械应用（与「relay 不写策略 if」一致）。
+// 唯一一项：OpenAI chat 流式补 `stream_options.include_usage: true` —— 与直连
+// proxy.ts 的注入条件逐条相等（只 openai chat completions 流式；不看 method）。
+// 字段可缺（弱匹配）：旧 relay 读到会忽略，旧中心不下发时 relay 本地兜底同一条规则。
+export function resolveBodyDirectives(
+  path: string,
+  stream: boolean | undefined
+): { injectIncludeUsage: boolean } {
+  return { injectIncludeUsage: splitPlanPath(path).pathname === "/v1/chat/completions" && stream === true };
 }
 
 // 预留 token：仅 vk 配了 token 类限额才付估算成本（与直连「只有 maxRpm 的 vk 不估算」一致）

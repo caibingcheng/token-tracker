@@ -14,7 +14,7 @@ import { createSlidingWindowLimiter } from "@/lib/device/rate-limit";
 import { createPlanDeps } from "@/lib/device/plan-deps";
 import { resolveVirtualKeyByFingerprint } from "@/lib/device/vk";
 import { maybeSweep } from "@/lib/device/store";
-import { buildPlan, resolvePlanMode } from "@/lib/gateway/plan";
+import { buildPlan, resolveBodyDirectives, resolvePlanMode } from "@/lib/gateway/plan";
 import type { BuildPlanInput, PlanMode } from "@/lib/gateway/plan";
 import { getMaxRequestBodyBytes, stripRawPassthroughPrefix } from "@/lib/gateway/proxy";
 import { detectRequestProtocol } from "@/lib/gateway/model-router";
@@ -177,6 +177,8 @@ export const POST = withDeviceAuth(async (request: NextRequest, device: DeviceCo
         : null,
       responseId: optionalString(body.responseId, 256),
       nativeSessionId: optionalString(body.nativeSessionId, 256),
+      // 会话指纹：新 relay 在本地算好（隔离项 = vk 指纹）后上送；旧 relay 发素材，中心自己算
+      sessionFingerprint: optionalString(body.sessionFingerprint, 64),
       sessionInput: typeof body.sessionInput === "string" ? body.sessionInput.slice(0, 2048) : null,
       hasMessages: body.hasMessages === true,
       stream: optionalBoolean(body.stream),
@@ -289,6 +291,9 @@ export const POST = withDeviceAuth(async (request: NextRequest, device: DeviceCo
           centerMaxBodyMb: Math.floor(getMaxRequestBodyBytes() / (1024 * 1024)),
           centerMaxResponseBufferMb: POLICY_CENTER_MAX_RESPONSE_BUFFER_MB,
         },
+        // body 改写指令：决策在中心，relay 只应用。可缺（弱匹配：旧 relay 忽略它，
+        // 旧中心不下发时 relay 自己按同一条规则兜底）
+        ...resolveBodyDirectives(input.path, input.stream),
       },
       { headers: { "cache-control": "no-store" } }
     );

@@ -115,6 +115,12 @@ RELAY_STATE_PATH / RELAY_DEVICE_NAME / RELAY_PAIR_PAGE / ALLOW_PRIVATE_UPSTREAMS
 - **hop 字段语义**（relay 不写策略 if，只读字段）：`continueOn` 决定「还能不能继续试」（429/5xx/网络 → 同 key 重试；401 → 换 key；403/404 → 见 `skipSiblingsOn`；其他 4xx → 直接透传并终止全链）、`skipSiblingsOn = ["403","404"]`（跳过该 upstream 剩余 key，与直连的 upstream 级判定一致）、`passthrough`（`last-4xx` / `last-business`）决定全链耗尽时透传哪份保留响应，并附一条零 token 的 `no_usage` 记录。
 - **所有 upstream key 都是通用 key**：直连、relay、探活、分类器、`fetch-models` 共用同一份链（按 id 升序）。曾经的 per-device key（`upstream_keys.device_id`）已移除 —— 它只在「多台 relay 各用不同账号」时有用，代价是多一套过滤/排序 + 删除设备后遗留孤儿 key。
 - **写库素材以中心为准**：`device_plans` 行在 plan 时定下 `realModel` / `session_id` / `record_session_id` / `request_model` / `user_agent`，report 只回 `hopIndex`。
+- **会话指纹在 relay 本地算**：`prepare.ts` 用 `computeSessionId(extractSessionInput(...))` 算好 64 位 sha256 再上送 `sessionFingerprint`（plan 请求不再携带 system / 首条 user 明文）。隔离项用 **vk 指纹**（`virtualKeyFingerprint(token)`，relay 唯一知道的 vk 身份）而不是中心的数值 vk id —— 两者都稳定且唯一，只是取值不同：同一 vk 混用直连与 relay 时两条入口的 `session_id` 不相等，粘性不跨入口共享（可接受）。中心用 `normalizeSessionFingerprint()` 只接受 sha256 hex，否则回退按旧字段 `sessionInput` 自算（弱匹配）。
+- **usage 口径与直连对齐（relay 侧两件事，缺一个就大量 `no_usage`）**：
+  1. plan 下发 `injectIncludeUsage`（`resolveBodyDirectives()`，`src/lib/gateway/plan.ts`）→ `prepare.ts` 的 `ensureIncludeUsage()` 对 `POST /v1/chat/completions` + `stream === true` **注入 `stream_options.include_usage: true`**（客户端已显式设置则原样保留）。**决策在中心、relay 只应用**；字段可缺（弱匹配）：旧中心不下发时 relay 本地按同一条规则兜底。不注入时第三方中转多半不在流里发 usage chunk。
+  2. `executor.ts` 在成功但解析不到 usage 时**按请求 body 估 input（`estimatedInputTokens`）+ 响应文本估 output**（流式用 `StreamUsageExtractor.contentTokens` 的流内字符累计，非流式 `estimateOutputTokens`），report 带 `usage.estimated: true`，中心据此写 `status='estimated'`；合计为 0 才落 `no_usage`。中断（`client_aborted` / `stream_interrupted`）不估算，但**仍上报**已解析到的 usage 或零 token（中心写一条带中断 status 的行，与直连 `toRecordUsage(parsed, meta, interruptStatus)` 同口径）。
+  3. **「响应完整后再断开」不算 `client_aborted`**：`executor.ts` 用 `responseComplete || extractor.sawTerminal`（与直连 `isAbortAfterComplete` 同形）。客户端拿到 `[DONE]` 就挂断是常态，少了这层会把正常收尾记成中断并丢掉这条 usage。
+- **`/raw` 裸透传的协议口径**：`prepare.ts` 先用 `stripRawPassthroughPrefix()`（已从 `proxy.ts` 搬到 `url-utils.ts`，中心/relay 单一实现）剥前缀，协议检测 / model 提取 / usage 解析全在内层 path 上做——否则 `/raw` 上的 anthropic、gemini 端点会被当成 openai，解析与估算口径双双错位。method 白名单也与直连对齐（只 POST/PUT/PATCH，`GET …/models` 与 `/v1/responses/{id}` 系列例外，其余 405）。
 - **健康标记分 mode**（`src/lib/device/report.ts`）：router 的 403(json)/404 → model 级；403 html（边缘拦截）与 429/5xx 不标记；`responses-create` 的 403/404 不标记；`responses-subresource` 的 403/404 零标记；401/网络 → 同 upstream 全 key 覆盖才 `markUnhealthy`；`winner` → `markHealthy` + `markModelHealthy`。
 - **配额**：`checkQuota` 用量 = DB 聚合 + 中心在途 + **relay 预留**（`device_plans` 未上报且未过期的 `reserved_token/rpm`，见 `quota-db.ts`）。预留 TTL 10 分钟，每 60s 惰性清扫（`maybeSweep`，plan/report 请求时触发，不额外建 timer）；未上报就过期的行计入 `relay_gap_count`（`GET /api/admin/devices/stats` 可见）。
 - **responses 子资源**（`/v1/responses/{id}…`）与 `GET */models` 由 plan 分别给出「全 openai upstream 无状态遍历链」与「模型快照」，relay 本地返回，不需要 307 回中心。
@@ -154,6 +160,8 @@ plan 请求带 `relayVersion`，中心维护 `MIN_RELAY_VERSION`（`src/routes/a
 | plan 429 `rate_limited` | 每 device plan/report >20 rps | 降低并发（进程内限流，不占 vk 配额） |
 | 413 | 本地 `GATEWAY_MAX_BODY_MB` 小于请求体 | 调大本端值（body 不经中心，中心上限不再约束） |
 | `502 upstream_error` | 全链失败且无可透传的 4xx | 看 relay 日志（不回显内网地址/上游名） |
+| 全部记录都是 `no_usage`（无 token） | relay 未注入 `stream_options.include_usage`，也未做估算兑底（旧版 relay 两件都没做）；或上游确实不发 usage 且估算合计为 0 | relay 与中心同批升级（report 的 `usage.estimated` 由中心转成 `status='estimated'`） |
+| 中断请求在 Records 里完全看不到 | 旧版 relay 中断时 `usage: null`、中心整行丢弃（直连会写零 token 状态行） | 同批升级；新版上报零 token + 中断 status |
 | `relay_gap_count` 增长 | relay 崩溃/断网导致 report 丢失 | 丢失即丢失（无本地库）；该 vk 配额最多紧 10 分钟 |
 
 ## 安全边界（必须知道）
@@ -165,7 +173,7 @@ plan 请求带 `relayVersion`，中心维护 `MIN_RELAY_VERSION`（`src/routes/a
 
 ## 已知限制
 
-- **LLM 分类器在 relay 上退化**：分类器需要请求 body 生成摘要，而 relay 只送 `sessionInput`（≤2KB）。当前 `kind='model'` 的命名路由在 relay 流量上按 priority 选链首。要真正对齐需在 plan 请求里加分类器摘要字段（**待定**）。
+- **LLM 分类器在 relay 上退化**：分类器需要请求 body 生成摘要，而 relay 只送会话指纹与 model（不送 body）。当前 `kind='model'` 的命名路由在 relay 流量上按 priority 选链首。要真正对齐需在 plan 请求里加分类器摘要字段（**待定**）。
 - **devices 列表不显示 token 前缀**：中心只存 `sha256(token)`，哈希不可反推且表里无前缀列，所以按 `name` + `fingerprint` 前 8 位 + `last_seen_at` 识别（**确定不做前缀列**）。
 
 ## 相关代码

@@ -252,6 +252,46 @@ describe("POST /api/device/plan", () => {
     expect(row!.recordSessionId).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  it("relay 上送 sessionFingerprint → 直接用作 route/record session（不再收明文素材）", async () => {
+    const seeded = await seed();
+    const fingerprint = "a".repeat(64);
+    const res = await POST(
+      planRequest(
+        seeded.token,
+        chatPlan({ sessionFingerprint: fingerprint, sessionInput: null })
+      )
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    const row = await withSkipCache(async () => {
+      const rows = await db
+        .select()
+        .from(devicePlansTable)
+        .where(eq(devicePlansTable.planId, body.planId));
+      return rows[0];
+    });
+    expect(row!.sessionId).toBe(fingerprint);
+    expect(row!.recordSessionId).toBe(fingerprint);
+  });
+
+  it("非法 sessionFingerprint（非 sha256 hex）→ 回退按 sessionInput 自算", async () => {
+    const seeded = await seed();
+    const res = await POST(
+      planRequest(seeded.token, chatPlan({ sessionFingerprint: "not-a-hash" }))
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    const row = await withSkipCache(async () => {
+      const rows = await db
+        .select()
+        .from(devicePlansTable)
+        .where(eq(devicePlansTable.planId, body.planId));
+      return rows[0];
+    });
+    expect(row!.sessionId).toMatch(/^[0-9a-f]{64}$/);
+    expect(row!.sessionId).not.toBe("not-a-hash");
+  });
+
   it("models 模式：返回快照、无 hop、reservedRpm=0", async () => {
     const seeded = await seed();
     const res = await POST(

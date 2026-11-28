@@ -1,4 +1,4 @@
-// relay 侧唯一读 body 的地方：model / stream / 会话素材 / token 估算 / vkFp / 客户端 header 名。
+// relay 侧唯一读 body 的地方：model / stream / 会话指纹 / token 估算 / vkFp / 客户端 header 名。
 //
 // 大 body 分治与中心同口径：≤1MB 整包 JSON.parse；>1MB 顶层扫描（json-scan），不物化消息树
 // —— 否则最大那批请求正好在 relay 上把内存吃掉，与方案动机对撞（§10.2）。
@@ -10,15 +10,17 @@ import {
 import {
   isNonEmptyArraySpan,
   scanTopLevelObject,
+  spliceBytes,
   type ScanResult,
 } from "@/lib/gateway/json-scan";
 import {
-  computeSessionIdFromInput,
+  computeSessionId,
   extractSessionInput,
   extractSessionInputFromBytes,
 } from "@/lib/gateway/session";
 import { estimateInputTokens, estimateInputTokensFromSpans } from "@/lib/gateway/estimate";
 import { extractVirtualKeyToken, MAX_SESSION_ID_LENGTH } from "@/lib/gateway/proxy-headers";
+import { stripRawPassthroughPrefix } from "@/lib/gateway/url-utils";
 import { virtualKeyFingerprint } from "@/lib/gateway/vk-fingerprint";
 
 const FULL_PARSE_LIMIT_BYTES = 1024 * 1024;
@@ -50,7 +52,7 @@ export interface PreparedRequest {
   model: string | null;
   stream: boolean | undefined;
   nativeSessionId: string | null;
-  sessionInput: string | null;
+  sessionFingerprint: string | null;
   hasMessages: boolean;
   estimatedInputTokens: number;
   vkFp: string | null;
@@ -162,21 +164,29 @@ function nativeSessionIdOf(headers: Headers): string | null {
   return null;
 }
 
-// 指纹素材 = extractSessionInput 去掉尾部 \u0000model\u0000vkId\u0000protocol（relay 不知道 vk ID）
-function sessionInputOf(
+// 会话指纹（sha256）：素材（system + 首条 user）在 relay 本地提取后直接哈希，隔离项用
+// vk 指纹（relay 唯一知道的 vk 身份）而不是中心的数值 vk id —— 中心不再需要接收
+// system/首条 user 明文，plan 请求也不再携带 sessionInput。
+// 同一 vk 混用直连与 relay 会得到两个指纹（隔离项取值不同），仅影响粘性不跨入口共享。
+function sessionFingerprintOf(
   bodyJson: unknown,
   bodyScan: ScanResult | null,
   bodyBuffer: Uint8Array,
   model: string,
-  protocol: Protocol
+  protocol: Protocol,
+  vkFp: string
 ): string {
-  // vk id 用 0 占位：只借它的 tail 拼接来剥离后缀，值与中心无关
-  const joined =
+  return computeSessionId(
     bodyScan !== null
-      ? extractSessionInputFromBytes(bodyBuffer, bodyScan.fields.get("messages"), model, 0, protocol)
-      : extractSessionInput(bodyJson, model, 0, protocol);
-  const suffix = computeSessionIdFromInput("", model, 0, protocol); // "\u0000model\u00000\u0000protocol"
-  return joined.endsWith(suffix) ? joined.slice(0, joined.length - suffix.length) : joined;
+      ? extractSessionInputFromBytes(
+          bodyBuffer,
+          bodyScan.fields.get("messages"),
+          model,
+          vkFp,
+          protocol
+        )
+      : extractSessionInput(bodyJson, model, vkFp, protocol)
+  );
 }
 
 function hasMessagesOf(bodyJson: unknown, bodyScan: ScanResult | null, bodyBuffer: Uint8Array): boolean {
@@ -190,7 +200,15 @@ function hasMessagesOf(bodyJson: unknown, bodyScan: ScanResult | null, bodyBuffe
 
 export async function prepare(request: Request, url: URL): Promise<PreparedRequest> {
   const path = stripQueryKey(url.pathname + url.search);
-  const pathname = url.pathname;
+  // /raw 裸透传：协议检测 / model 提取 /（后续）usage 解析都必须在剥前缀后的内层 path 上做
+  // ——与直连 stripRawPassthroughPrefix 同一实现。不剥前缀时 /raw 上的 anthropic/gemini
+  // 端点会被当成 openai（协议错→usage 解析错位→估算口径也错）。
+  // 内层 path 非法（空 / 逃逸）→ 400（与直连同口径）；中心 plan 会再净化一次。
+  const innerPath = stripRawPassthroughPrefix(url.pathname);
+  if (innerPath === null) {
+    throw new RelayHttpError(400, "invalid_request_error", "Invalid request path");
+  }
+  const pathname = innerPath;
   const protocol = detectRequestProtocol(pathname);
   const headerNames: string[] = [];
   request.headers.forEach((_value, key) => {
@@ -209,7 +227,7 @@ export async function prepare(request: Request, url: URL): Promise<PreparedReque
       model: null,
       stream: undefined,
       nativeSessionId: null,
-      sessionInput: null,
+      sessionFingerprint: null,
       hasMessages: false,
       estimatedInputTokens: 0,
       vkFp,
@@ -252,9 +270,10 @@ export async function prepare(request: Request, url: URL): Promise<PreparedReque
     (bodyScan !== null ? readScannedStringValue(bodyBuffer, bodyScan, "model") : null);
 
   const nativeSessionId = nativeSessionIdOf(request.headers);
-  const sessionInput =
-    model !== null && nativeSessionId === null
-      ? sessionInputOf(bodyJson, bodyScan, bodyBuffer, model, protocol)
+  // 原生 header 优先（与直连同口径）：有原生 id 时不再算指纹
+  const sessionFingerprint =
+    model !== null && nativeSessionId === null && vkFp !== null
+      ? sessionFingerprintOf(bodyJson, bodyScan, bodyBuffer, model, protocol, vkFp)
       : null;
 
   const estimatedInputTokens =
@@ -264,6 +283,8 @@ export async function prepare(request: Request, url: URL): Promise<PreparedReque
         : estimateInputTokens(bodyJson, protocol)
       : 0;
 
+  const hasMessages = hasMessagesOf(bodyJson, bodyScan, bodyBuffer);
+
   return {
     method: request.method,
     path,
@@ -271,8 +292,8 @@ export async function prepare(request: Request, url: URL): Promise<PreparedReque
     model,
     stream: typeof streamFlag === "boolean" ? streamFlag : undefined,
     nativeSessionId,
-    sessionInput,
-    hasMessages: hasMessagesOf(bodyJson, bodyScan, bodyBuffer),
+    sessionFingerprint,
+    hasMessages,
     estimatedInputTokens,
     vkFp,
     headerNames,
@@ -282,8 +303,7 @@ export async function prepare(request: Request, url: URL): Promise<PreparedReque
   };
 }
 
-/** 按 hop 的真实 model 改写 body（gemini 的 path 改写已烘进 plan 的 url，不动 body） */
-export function rewriteBodyModel(prepared: PreparedRequest, realModel: string | null): Uint8Array {
+/** 按 hop 的真实 model 改写 body（gemini 的 path 改写已烘进 plan 的 url，不动 body） */export function rewriteBodyModel(prepared: PreparedRequest, realModel: string | null): Uint8Array {
   if (realModel === null) return prepared.bodyBuffer;
   if (prepared.protocol === "gemini") return prepared.bodyBuffer;
   const { bodyScan, bodyBuffer, bodyJson } = prepared;
@@ -303,4 +323,47 @@ export function rewriteBodyModel(prepared: PreparedRequest, realModel: string | 
     );
   }
   return bodyBuffer;
+}
+
+// OpenAI chat 流式补 `stream_options.include_usage: true`（与直连 proxy.ts 同口径）：
+// 客户端/agent 常不带它，上游（尤其第三方中转）因此不在流里发 usage chunk，中心只能记
+// no_usage。何时调用由中心的 plan 决定（resolveBodyDirectives），relay 不写策略 if。
+// 必须在所有 scan 读取（model / session / messages / 估算）之后、rewriteBodyModel 之前：
+// - ≤1MB 走 parse：重建 bodyJson + bodyBuffer（直连同样重建）
+// - >1MB 走 scan：只在缺 stream_options 键时从根 } 前追加（既有键区间不受影响）；
+//   已有该键但缺 include_usage 时不动（大 body 罕见，落 executor 的估算兜底）
+// 幂等：显式设置（含非法值）一律保留，返回原对象。
+export function ensureIncludeUsage(prepared: PreparedRequest): PreparedRequest {
+  const { bodyScan } = prepared;
+  if (bodyScan !== null) {
+    if (bodyScan.fields.has("stream_options") || bodyScan.rootClose < 0) return prepared;
+    const prefix = bodyScan.memberCount > 0 ? "," : "";
+    return {
+      ...prepared,
+      bodyBuffer: spliceBytes(
+        prepared.bodyBuffer,
+        bodyScan.rootClose,
+        bodyScan.rootClose,
+        new TextEncoder().encode(`${prefix}"stream_options":{"include_usage":true}`)
+      ),
+    };
+  }
+  const { bodyJson } = prepared;
+  if (typeof bodyJson !== "object" || bodyJson === null || Array.isArray(bodyJson)) return prepared;
+  const bodyObj = bodyJson as Record<string, unknown>;
+  const existing = bodyObj.stream_options;
+  const existingObj =
+    existing && typeof existing === "object" && !Array.isArray(existing)
+      ? (existing as Record<string, unknown>)
+      : null;
+  // 客户端显式设置（含非法值）一律保留：非法请求交上游校验，不在网关上静默修正
+  if (existingObj !== null && Object.prototype.hasOwnProperty.call(existingObj, "include_usage")) {
+    return prepared;
+  }
+  const nextJson = { ...bodyObj, stream_options: { ...(existingObj ?? {}), include_usage: true } };
+  return {
+    ...prepared,
+    bodyJson: nextJson,
+    bodyBuffer: new TextEncoder().encode(JSON.stringify(nextJson)),
+  };
 }

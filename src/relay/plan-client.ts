@@ -31,6 +31,8 @@ export interface PlanWire {
   quota?: { reservedTokens: number; reservedRpm: number };
   hops: PlanHopWire[];
   modelsSnapshot?: string[];
+  /** body 改写指令（可缺：旧中心不下发时 relay 本地兜底）：OpenAI chat 流式补 include_usage */
+  injectIncludeUsage?: boolean;
   /** 中心的权威设备名（可缺：旧中心不返回）；relay 只用于展示 */
   device?: { id: number; name: string | null };
   /** 可缺（弱匹配）：旧中心不下发时 relay 用本地默认 */
@@ -49,7 +51,10 @@ export interface PlanRequest {
   protocol: string;
   stream: boolean | undefined;
   nativeSessionId: string | null;
-  sessionInput: string | null;
+  /** relay 本地算好的会话指纹（sha256）；可缺（旧 relay 发 sessionInput，中心兼容两者） */
+  sessionFingerprint: string | null;
+  /** @deprecated 旧 relay 把 system/首条 user 素材明文送上来用；新 relay 只发指纹 */
+  sessionInput?: string | null;
   hasMessages: boolean;
   responseId: string | null;
   userAgent: string | null;
@@ -179,6 +184,8 @@ export interface ReportPayload {
     cacheRead: number;
     cacheWrite: number;
     hasUsage: boolean;
+    /** 上游未发 usage，本端按请求/响应文本估算（中心据此写 status='estimated'） */
+    estimated?: boolean;
   } | null;
   latencyMs: number;
   ttftMs: number | null;

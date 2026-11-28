@@ -19,7 +19,7 @@ const planRequest: PlanRequest = {
   protocol: "openai",
   stream: false,
   nativeSessionId: null,
-  sessionInput: null,
+  sessionFingerprint: null,
   hasMessages: true,
   responseId: null,
   userAgent: "agent/1.0",

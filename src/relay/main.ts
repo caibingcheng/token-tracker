@@ -24,6 +24,7 @@ import {
 import { centerUrlHash, getCenterDeviceName, setCenterDeviceName } from "./state";
 import { RELAY_BUILD, RELAY_VERSION } from "./version";
 import { privateUpstreamsAllowed } from "@/lib/gateway/url-guard";
+import { stripRawPassthroughPrefix } from "@/lib/gateway/url-utils";
 
 const CENTER_ONLY_ENV = ["SQLITE_DATABASE_PATH", "ADMIN_API_KEY", "LOCAL_ADMIN_BYPASS", "GATEWAY_SECRET"];
 const MODEL_LIST_HEADERS = { "cache-control": "no-store", "x-accel-buffering": "no" };
@@ -182,6 +183,15 @@ async function handleProxy(c: Context): Promise<Response> {
     return errorResponse(503, "relay_not_paired", "Relay is not paired with the center yet");
   }
   const url = new URL(c.req.url);
+  const method = c.req.method.toUpperCase();
+  // method 白名单与直连 proxy.ts 同口径：GET /…/models 与 /v1/responses/{id} 系列（retrieve /
+  // cancel / delete …）例外，其余只收 POST/PUT/PATCH。不拦会把客户端误用拖成 plan 400
+  // “Unable to determine model”，与直连的 405 对不上。
+  const isModelsGet = method === "GET" && url.pathname.endsWith("/models");
+  const isResponsesSub = url.pathname.startsWith("/v1/responses/");
+  if (!["POST", "PUT", "PATCH"].includes(method) && !isModelsGet && !isResponsesSub) {
+    return errorResponse(405, "method_not_allowed", "Method not allowed");
+  }
   let prepared;
   try {
     prepared = await prepare(c.req.raw, url);
@@ -193,7 +203,8 @@ async function handleProxy(c: Context): Promise<Response> {
     return errorResponse(401, "authentication_error", "Missing virtual key");
   }
 
-  const pathname = url.pathname;
+  // responses 子资源的 response id 要在剥掉 /raw 前缀后的内层 path 上取（与直连同口径）
+  const pathname = stripRawPassthroughPrefix(url.pathname) ?? url.pathname;
   const responseId = pathname.startsWith("/v1/responses/")
     ? pathname.slice("/v1/responses/".length).split("/")[0] || null
     : null;
@@ -204,7 +215,7 @@ async function handleProxy(c: Context): Promise<Response> {
     protocol: prepared.protocol,
     stream: prepared.stream,
     nativeSessionId: prepared.nativeSessionId,
-    sessionInput: prepared.sessionInput,
+    sessionFingerprint: prepared.sessionFingerprint,
     hasMessages: prepared.hasMessages,
     responseId,
     userAgent: c.req.header("user-agent")?.slice(0, 512) ?? null,

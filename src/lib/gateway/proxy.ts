@@ -13,7 +13,7 @@ import {
 } from "./model-router";
 import type { UpstreamRoute, ModelCandidate } from "./model-router";
 import { isEdgeBlockStatus } from "./upstream-client";
-import { joinUrlPath, sanitizePathSegments } from "./url-utils";
+import { joinUrlPath, sanitizePathSegments, stripRawPassthroughPrefix } from "./url-utils";
 import { buildSessionId, computeSessionId, extractSessionInputFromBytes } from "./session";
 import type { SessionBinding } from "./session";
 import {
@@ -279,20 +279,9 @@ export const PROXY_RESPONSE_HEADERS: Record<string, string> = {
   "x-accel-buffering": "no",
 };
 
-// /raw 裸透传入口前缀：客户端打 /raw/<upstream base URL 之后的部分>，网关剥掉前缀后原样拼到 base URL（上游永远看不到 /raw），
-// 用于 /v1、/v1beta 之外的上游端点（如 OpenRouter 的 /alpha/*，base = https://openrouter.ai/api）。
-const RAW_PASSTHROUGH_PREFIX = "/raw";
-
-// 剥离 /raw 前缀：非 /raw 路径原样返回；内层路径再过一次净化（防 .. 逃逸），
-// 空内层路径（/raw、/raw/）或逃逸路径返回 null（调用方 400）。
-export function stripRawPassthroughPrefix(path: string): string | null {
-  if (path !== RAW_PASSTHROUGH_PREFIX && !path.startsWith(`${RAW_PASSTHROUGH_PREFIX}/`)) {
-    return path;
-  }
-  const inner = sanitizePathSegments(path.slice(RAW_PASSTHROUGH_PREFIX.length));
-  if (inner === null || inner === "/") return null;
-  return inner;
-}
+// /raw 裸透传入口前缀的剥离在 url-utils（relay 也用它做协议检测，单一实现防漂移）；
+// 这里保留原有导出名，proxy / plan route 的 import 不变。
+export { stripRawPassthroughPrefix };
 
 // 配额 in-flight 预留的异常安全网。
 // 预留（reserveInflight）到请求结束（onComplete）之间还有不少 await：
