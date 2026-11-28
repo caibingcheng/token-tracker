@@ -81,6 +81,16 @@ describe("withAuth static scan (防漏保障第三层)", () => {
     expect(uncovered).toEqual([]);
   });
 
+  it("pair/lookup 是会话态接口：用 withAuth，不得用 withDeviceAuth", () => {
+    const content = readFileSync(
+      join(process.cwd(), "src/routes/api/device/pair/lookup/route.ts"),
+      "utf8"
+    );
+    expect(content).toContain("withAuth");
+    // 只查「调用」，注释里提到该中间件不算违规
+    expect(content).not.toMatch(/withDeviceAuth\s*\(/);
+  });
+
   it("login route must not use withAuth (it accepts raw API key)", () => {
     const login = readFileSync(join(API_DIR, "auth/login/route.ts"), "utf8");
     expect(login).not.toContain("withAuth");

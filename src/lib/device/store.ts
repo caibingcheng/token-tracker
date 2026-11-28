@@ -47,6 +47,14 @@ export interface DeviceListItem {
   latency: DeviceLatency;
 }
 
+export interface PairingLookup {
+  name: string | null;
+  fingerprint: string;
+  clientIp: string | null;
+  createdAt: string;
+  expiresAt: number;
+}
+
 export type PollResult =
   | { state: "pending" }
   | { state: "slow_down"; interval: number }
@@ -231,6 +239,31 @@ export async function pollPairing(input: {
       deviceId: device.id,
       name: device.name ?? row.name ?? null,
       fingerprint: device.fingerprint,
+    };
+  });
+}
+
+// 授权前的身份确认（不消费码，不改状态）：会话态接口 /api/device/pair/lookup 用
+export async function lookupPairing(code: string): Promise<PairingLookup | null> {
+  await initDatabase();
+  return withSkipCache(async () => {
+    const normalized = normalizePairingCode(code);
+    if (!normalized) return null;
+    const rows = await db
+      .select()
+      .from(devicePairingsTable)
+      .where(eq(devicePairingsTable.codeHash, pairingCodeHash(normalized)));
+    const row = rows[0];
+    if (!row) return null;
+    // 只有「仍可授权」（pending 且未过期）的码才展示身份：否则 UI 会把一个其实授权不了的
+    // 会话摆给管理员看，点 Authorize 后才拿到泛化的 404，错误来得太晚
+    if (row.status !== "pending" || row.expiresAt <= Date.now()) return null;
+    return {
+      name: row.name ?? null,
+      fingerprint: row.fingerprint,
+      clientIp: row.clientIp ?? null,
+      createdAt: row.createdAt,
+      expiresAt: row.expiresAt,
     };
   });
 }

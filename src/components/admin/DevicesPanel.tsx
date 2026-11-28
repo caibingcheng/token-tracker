@@ -51,6 +51,38 @@ interface Stats {
 /** 配对码长度（ABCD-EFGH：8 位，字符集排除 0 O I 1，连字符只用于展示） */
 const CODE_LENGTH = 8;
 
+/** /api/device/pair/lookup 返回：授权前给管理员看的设备身份（不含 token / 私钥） */
+interface PairingLookup {
+  name: string | null;
+  fingerprint: string;
+  clientIp: string | null;
+  createdAt: string;
+  expiresAt: number;
+}
+
+function PairingIdentity({ device }: { device: PairingLookup }) {
+  return (
+    <dl className="grid grid-cols-1 gap-2 text-sm text-gray-700">
+      <div>
+        <dt className="text-xs uppercase text-gray-500">Name</dt>
+        <dd className="break-words">{device.name ?? "—"}</dd>
+      </div>
+      <div>
+        <dt className="text-xs uppercase text-gray-500">Fingerprint</dt>
+        <dd className="break-all font-mono text-xs">{device.fingerprint}</dd>
+      </div>
+      <div>
+        <dt className="text-xs uppercase text-gray-500">Request IP</dt>
+        <dd className="font-mono text-xs">{device.clientIp ?? "—"}</dd>
+      </div>
+      <div>
+        <dt className="text-xs uppercase text-gray-500">Code expires</dt>
+        <dd>{formatDate(new Date(device.expiresAt).toISOString())}</dd>
+      </div>
+    </dl>
+  );
+}
+
 function formatDate(iso: string | null | undefined): string {
   if (!iso) return "—";
   try {
@@ -198,6 +230,31 @@ export default function DevicesPanel() {
     setPairingBusy(true);
     setPairingError(null);
     try {
+      // 1) 先查这个码背后是哪台设备（不消费码），让管理员核对身份
+      const lookRes = await apiFetch("/api/device/pair/lookup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code }),
+      });
+      const lookBody = (await lookRes.json().catch(() => ({}))) as {
+        success?: boolean;
+        data?: PairingLookup;
+        error?: string;
+      };
+      if (!lookRes.ok || !lookBody.success || !lookBody.data) {
+        setPairingError(lookBody.error ?? "Unknown or expired pairing code");
+        return;
+      }
+      const device = lookBody.data;
+      const ok = await confirm({
+        title: "Authorize this relay?",
+        message: <PairingIdentity device={device} />,
+        confirmLabel: "Authorize",
+        tone: "primary",
+      });
+      if (!ok) return;
+
+      // 2) 核对后再真正授权（码一次性，授权后 relay 下次 poll 取 token）
       const res = await apiFetch("/api/admin/devices", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
