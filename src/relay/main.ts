@@ -267,8 +267,10 @@ async function handleProxy(c: Context): Promise<Response> {
   if (!policyChecked) {
     policyChecked = true;
     const localMb = Math.max(1, Math.round(Number(process.env.GATEWAY_MAX_BODY_MB ?? 32)));
-    const centerMb = plan.policy.centerMaxBodyMb;
-    if (localMb < centerMb) {
+    const centerMb = plan.policy?.centerMaxBodyMb;
+    if (typeof centerMb !== "number" || !Number.isFinite(centerMb)) {
+      // 旧中心不下发：跳过对比（弱匹配）
+    } else if (localMb < centerMb) {
       console.warn(
         `[relay] warn: local maxBodyMb=${localMb} < center=${centerMb}; some requests accepted by the center will be rejected here`
       );
@@ -280,7 +282,8 @@ async function handleProxy(c: Context): Promise<Response> {
   }
 
   // models 模式：快照来自中心（非通配 enabled_models ∪ enabled 命名路由名，已按 vk allowlist 过滤）
-  if (plan.modelsSnapshot !== null) {
+  // != null 同时容缺（旧中心不下发 → 非 models 模式照常执行）
+  if (plan.modelsSnapshot != null) {
     const models = plan.modelsSnapshot;
     recordPlanOutcome("ok (models)");
     return new Response(
@@ -298,7 +301,7 @@ async function handleProxy(c: Context): Promise<Response> {
     devicePrivateKeyPem: devicePrivateKeyPem(),
     prepared,
     request: c.req.raw,
-    streamIdleTimeoutMs: plan.policy.streamIdleTimeoutMinutes * 60_000,
+    streamIdleTimeoutMs: (plan.policy?.streamIdleTimeoutMinutes ?? 30) * 60_000,
     onOutcome: recordPlanOutcome,
   });
 }

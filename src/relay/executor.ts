@@ -47,6 +47,26 @@ type FinishFn = (
   extra?: { responseId?: string | null; ttftMs?: number | null; label?: string }
 ) => void;
 
+// 弱匹配兜底：中心少发字段的 hop 按标准路由语义默认（同 plan.ts 的 ROUTER_CONTINUE_ON /
+// SKIP_SIBLINGS_ON；retries 是每 key 总尝试次数，标同 plan.ts 的 MAX_RETRY=2），
+// passthrough 缺省不透传。保证「只要满足基础功能就能用」。
+const DEFAULT_CONTINUE_ON = ["401", "403", "404", "429", "5xx", "network", "timeout"];
+const DEFAULT_SKIP_SIBLINGS_ON = ["403", "404"];
+const DEFAULT_RETRIES = 2;
+
+function normalizeHop(hop: PlanHopWire): Required<PlanHopWire> {
+  return {
+    ...hop,
+    retries: Math.max(1, Math.floor(Number.isFinite(hop.retries) ? (hop.retries as number) : DEFAULT_RETRIES)),
+    continueOn: Array.isArray(hop.continueOn) ? hop.continueOn : [...DEFAULT_CONTINUE_ON],
+    stopOn: Array.isArray(hop.stopOn) ? hop.stopOn : [],
+    passthrough: hop.passthrough ?? null,
+    timeoutMs: hop.timeoutMs ?? null,
+    suppressHealth: Array.isArray(hop.suppressHealth) ? hop.suppressHealth : [],
+    skipSiblingsOn: Array.isArray(hop.skipSiblingsOn) ? hop.skipSiblingsOn : [...DEFAULT_SKIP_SIBLINGS_ON],
+  };
+}
+
 function matchesCondition(
   conditions: string[],
   status: number,
@@ -180,6 +200,7 @@ async function bufferRetained(resp: Response): Promise<{ bytes: Uint8Array; head
 
 export async function executePlan(opts: ExecuteOptions): Promise<Response> {
   const { plan, prepared, request } = opts;
+  const hops = plan.hops.map(normalizeHop);
   const startTime = Date.now();
   const failures: Failure[] = [];
   let retained: { bytes: Uint8Array; headers: Headers; status: number } | null = null;
@@ -204,7 +225,7 @@ export async function executePlan(opts: ExecuteOptions): Promise<Response> {
     opts.onOutcome?.(extra?.label ?? status);
   };
 
-  hopLoop: for (const hop of plan.hops) {
+  hopLoop: for (const hop of hops) {
     if (skipUpstream !== null && hop.upstreamId === skipUpstream) continue;
     const lease: LeasePayload | null = openLease(hop.keyLease, opts.devicePrivateKeyPem, {
       planId: plan.planId,
@@ -450,7 +471,7 @@ async function passThroughSuccess(
   // 非流式：整包缓冲（上限 centerMaxResponseBufferMb，缺省/非法兑退 50MB）→ model 区间改写 → 顶层 usage 切片解析
   // 直连用的是自己的 50MB 常量（proxy.ts），两者同值只因中心常量也是 50；这个上限护的是
   // 上游可控数据的内存占用，策略字段异常时兑退而非放开。
-  const policyMb = opts.plan.policy.centerMaxResponseBufferMb;
+  const policyMb = opts.plan.policy?.centerMaxResponseBufferMb;
   const maxResponseBytes =
     typeof policyMb === "number" && Number.isFinite(policyMb) && policyMb > 0 && policyMb <= 1024
       ? policyMb * 1024 * 1024

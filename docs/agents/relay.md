@@ -129,9 +129,16 @@ RELAY_STATE_PATH / RELAY_DEVICE_NAME / RELAY_PAIR_PAGE / ALLOW_PRIVATE_UPSTREAMS
 - **落库**：中心 `device_latency_buckets` 覆盖写（主键 device_id+kind+bucket_start），report 重试重传幂等；解析逐条自校验（分钟对齐、5h 窗口内、count/sum/max 自洽），非法项静默丢弃，绝不让 RTT 数据让一次成功的 report 失败。
 - **展示**：`/admin/devices` 的 `RTT (5h)` 列 —— plan 的 `latestMs` + `avg/max` 两行，report 的值在 tooltip；移动卡片显示 `latest (avg x / max y)`。无样本显示 `—`（不是 0ms）。不做折线图：窗口内大多数分钟没有样本，稀疏散点的信息量不如三个数字。
 
-## 版本协商
+## 版本协商（弱匹配）
 
 plan 请求带 `relayVersion`，中心维护 `MIN_RELAY_VERSION`（`src/routes/api/device/plan/route.ts`）；过低 → **426 `relay_too_old`**（客户端可见，提示升级 relay）。反向（中心旧、relay 新）由 relay 在 plan 收到 404 / 未知字段时提示「中心未升级」。
+
+**弱匹配原则：只锁底线，不锁逐版本一致**——
+
+- `MIN_RELAY_VERSION` 只在**破坏性协议变更**时 bump：字段改名、语义翻转、旧的必填能力移除。新增字段（如 policy/response buffer 上限）不 bump；
+- relay 比 MIN 新：直接放行（`isVersionAtLeast` 只判下限）；中心比 relay 新：多出的字段 relay 忽略，少发的字段 relay 兜底可用——plan/hop/policy 字段在 `plan-client.ts` 全部可缺省，executor 用 `normalizeHop` 补默认（continueOn/skipSiblingsOn 同标准路由语义、retries=2、passthrough=null）,main.ts 对缺省 policy 用本地默认（idle 30min、跳过 maxBodyMb 对比）；
+- 功能可用性由「字段在不在」决定，不由版本号决定：中心想启用新行为就下发新字段，老 relay 自动得到旧语义，新 relay 自动得到新语义；
+- `RELAY_BUILD`（发布 tag）只用于展示，不参与协商；不要拼进 `relayVersion`（`isVersionAtLeast` 只认 3 段数字）。
 
 ## 故障排查
 

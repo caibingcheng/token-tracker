@@ -14,26 +14,29 @@ export interface PlanHopWire {
   keyLease: string;
   leaseExpiresAt: number;
   realModel: string | null;
-  retries: number;
-  continueOn: string[];
-  stopOn: string[];
-  passthrough: "last-4xx" | "last-business" | null;
-  timeoutMs: number | null;
-  suppressHealth: string[];
-  skipSiblingsOn: string[];
+  /** 可缺（弱匹配）：旧中心不下发时 executor 用兜底默认值 */
+  retries?: number;
+  continueOn?: string[];
+  stopOn?: string[];
+  passthrough?: "last-4xx" | "last-business" | null;
+  timeoutMs?: number | null;
+  suppressHealth?: string[];
+  skipSiblingsOn?: string[];
 }
 
 export interface PlanWire {
   planId: string;
   expiresAt: number;
-  quota: { reservedTokens: number; reservedRpm: number };
+  /** 可缺（弱匹配）：配额在 plan 时已预留，relay 本就不消费 */
+  quota?: { reservedTokens: number; reservedRpm: number };
   hops: PlanHopWire[];
-  modelsSnapshot: string[] | null;
+  modelsSnapshot?: string[];
   /** 中心的权威设备名（可缺：旧中心不返回）；relay 只用于展示 */
   device?: { id: number; name: string | null };
-  policy: {
-    streamIdleTimeoutMinutes: number;
-    centerMaxBodyMb: number;
+  /** 可缺（弱匹配）：旧中心不下发时 relay 用本地默认 */
+  policy?: {
+    streamIdleTimeoutMinutes?: number;
+    centerMaxBodyMb?: number;
     /** 可缺：旧中心不下发（relay 用本地 50MB 兜底） */
     centerMaxResponseBufferMb?: number;
   };

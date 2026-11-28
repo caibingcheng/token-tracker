@@ -288,6 +288,33 @@ describe("executePlan", () => {
     expect(typeof report.ttftMs).toBe("number");
   });
 
+  it("弱匹配：hop 缺 continueOn/retries/skipSiblingsOn → 兜底默认可用", async () => {
+    // 兜底 continueOn 含 429 → 同 key 重试一次后成功，全链可用
+    let calls = 0;
+    setOutboundFetchImpl(async () => {
+      calls++;
+      if (calls === 1) return jsonResponse(429, { error: { message: "slow" } });
+      return jsonResponse(200, { choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } });
+    });
+    const base = hopOf();
+    const minimalHop = {
+      hopIndex: 0,
+      upstreamId: 1,
+      keyId: 11,
+      keyLease: base.keyLease,
+      leaseExpiresAt: base.leaseExpiresAt,
+      realModel: "gpt-a",
+    } as PlanWire["hops"][number];
+    const plan = planOf([minimalHop]);
+    const res = await call(plan);
+    expect(res.status).toBe(200);
+    expect(calls).toBe(2);
+    const report = sendReportMock.mock.calls[0]![1] as any;
+    expect(report.winner).toEqual({ hopIndex: 0, upstreamId: 1, keyId: 11 });
+    expect(report.failures).toHaveLength(1);
+    expect(report.failures[0]).toMatchObject({ status: 429 });
+  });
+
   it("continueOn 不含 network：网络失败终止全链，不试后续 hop", async () => {
     const urls: string[] = [];
     setOutboundFetchImpl(async (input: unknown) => {
