@@ -47,20 +47,6 @@ export interface DeviceListItem {
   latency: DeviceLatency;
 }
 
-export interface PairingLookup {
-  name: string | null;
-  fingerprint: string;
-  clientIp: string | null;
-  createdAt: string;
-  expiresAt: number;
-}
-
-/** 待授权配对（/admin/devices 的列表）：pairingId = code_hash，
- * 会话态可见、不足以反推 8 位码，用于列表里一键授权/拒绝（免手输码）。 */
-export interface PendingPairing extends PairingLookup {
-  pairingId: string;
-}
-
 export type PollResult =
   | { state: "pending" }
   | { state: "slow_down"; interval: number }
@@ -249,38 +235,11 @@ export async function pollPairing(input: {
   });
 }
 
-// admin「输码 → 看设备 → 授权」中的查看步骤：不消费码，不改状态
-export async function lookupPairing(code: string): Promise<PairingLookup | null> {
-  await initDatabase();
-  return withSkipCache(async () => {
-    const normalized = normalizePairingCode(code);
-    if (!normalized) return null;
-    const rows = await db
-      .select()
-      .from(devicePairingsTable)
-      .where(eq(devicePairingsTable.codeHash, pairingCodeHash(normalized)));
-    const row = rows[0];
-    if (!row) return null;
-    return {
-      name: row.name ?? null,
-      fingerprint: row.fingerprint,
-      clientIp: row.clientIp ?? null,
-      createdAt: row.createdAt,
-      expiresAt: row.expiresAt,
-    };
-  });
-}
-
 // admin 授权：登记/复用 devices 行，配对会话置 authorized（token 由 poll 一次性取走）。
-// 定位配对会话支持两种方式：`pairingId`（= code_hash，列表里一键授权）或 `code`（手输）。
-async function findPairingRow(input: { code?: string; pairingId?: string }) {
-  if (input.pairingId) {
-    const rows = await db
-      .select()
-      .from(devicePairingsTable)
-      .where(eq(devicePairingsTable.codeHash, input.pairingId));
-    return rows[0] ?? null;
-  }
+// 定位配对会话：只按 8 位码（码本身不落库，用 hash 查）。
+// 以前的 `pairingId`(= code_hash) 快捷通道随「待授权列表」一起删除：那个列表会把未鉴权的
+// 配对请求直接展示给管理员，是可被任意人触发的展示面；授权现在只能靠读出 relay 打印的码。
+async function findPairingRow(input: { code?: string }) {
   const normalized = normalizePairingCode(input.code ?? "");
   if (!normalized) return null;
   const rows = await db
@@ -292,7 +251,6 @@ async function findPairingRow(input: { code?: string; pairingId?: string }) {
 
 export async function authorizePairing(input: {
   code?: string;
-  pairingId?: string;
   name?: string | null;
 }): Promise<
   | { ok: true; deviceId: number; fingerprint: string; name: string | null; reauth: boolean }
@@ -345,7 +303,7 @@ export async function authorizePairing(input: {
   });
 }
 
-export async function denyPairing(input: { code?: string; pairingId?: string }): Promise<boolean> {
+export async function denyPairing(input: { code?: string }): Promise<boolean> {
   await initDatabase();
   return withSkipCache(async () => {
     const row = await findPairingRow(input);
@@ -356,31 +314,6 @@ export async function denyPairing(input: { code?: string; pairingId?: string }):
       .where(eq(devicePairingsTable.codeHash, row.codeHash));
     pollState.delete(row.codeHash);
     return true;
-  });
-}
-
-export async function listPendingPairings(): Promise<PendingPairing[]> {
-  await initDatabase();
-  return withSkipCache(async () => {
-    const now = nowMs();
-    const rows = await db
-      .select()
-      .from(devicePairingsTable)
-      .where(
-        and(
-          eq(devicePairingsTable.status, "pending"),
-          sql`${devicePairingsTable.expiresAt} > ${now}`
-        )
-      )
-      .orderBy(desc(devicePairingsTable.createdAt));
-    return rows.map((row: any) => ({
-      pairingId: row.codeHash,
-      name: row.name ?? null,
-      fingerprint: row.fingerprint,
-      clientIp: row.clientIp ?? null,
-      createdAt: row.createdAt,
-      expiresAt: row.expiresAt,
-    }));
   });
 }
 
@@ -459,22 +392,6 @@ export async function setDeviceRevoked(id: number, revoked: boolean): Promise<bo
       .set({ revokedAt: revoked ? new Date().toISOString() : null })
       .where(eq(devicesTable.id, id));
     return true;
-  });
-}
-
-export async function rotateDeviceToken(
-  id: number
-): Promise<{ token: string } | null> {
-  await initDatabase();
-  return withSkipCache(async () => {
-    const rows = await db.select().from(devicesTable).where(eq(devicesTable.id, id));
-    if (!rows[0]) return null;
-    const token = generateDeviceToken();
-    await db
-      .update(devicesTable)
-      .set({ tokenHash: deviceTokenHash(token) })
-      .where(eq(devicesTable.id, id));
-    return { token };
   });
 }
 

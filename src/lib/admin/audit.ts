@@ -48,7 +48,6 @@ export type AuditAction =
   | "device_renamed"
   | "device_revoked"
   | "device_unrevoked"
-  | "device_token_rotated"
   | "device_deleted";
 
 export type AuditTargetType =

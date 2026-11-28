@@ -72,9 +72,9 @@ npm run seed:fake-upstream         # 把这些上游写进中心（幂等；--wi
 
 1. relay 首次启动生成 X25519 密钥对 + `fingerprint`（`u-` + 32 hex）写 `data/relay.state.json`（0600）。
 2. `POST /api/device/pair/start` → 中心生成 **8 位码**（`ABCD-EFGH`，字符集排除 `0 O I 1`，TTL 600s，只存 sha256），relay 打印 `[relay] pair code …`（也可看 `/pair` 页）。
-3. 管理员在中心 **Admin → Devices** 输码 → 看到 name / fingerprint / IP → Authorize（或 Deny）。
-   - 页面每 3s 自动拉一次待授权列表，**relay 一发起配对就出现**，可直接点 Authorize（内部用 `pairingId`=code_hash，无需输码）；输码框保留给「relay 在另一个网络、只能看日志」的场景。
-   - 授权后该设备以 `pending` 出现，relay 下一次 poll 拿到 token 后自动变 `active`（同样靠轮询，不用刷新页）。
+3. 管理员在中心 **Admin → Devices** 输 8 位码（一码一格）→ **Authorize**。
+   - **只能输码、一步授权**：待授权列表（`pairingId` 快捷通道）与「先查看再授权」的中间步都已删除 —— 前者会让任意人靠发起配对把条目推进管理面（展示面/骚扰面）；码只在 relay 的日志与 `/pair` 页上，拿到码就意味着能读到日志。
+   - 授权后该设备以 `pending` 出现，relay 下一次 poll 拿到 token 后自动变 `active`（页面 15s 自刷一次，不用手动刷）。
    - **改名以中心为准**：`PATCH /api/admin/devices/:id` 改完不用重启 relay —— 下一次 plan 响应的 `device.name` 就会带回新名（relay 只存内存并更新 `/pair` 页），没有任何心跳/长轮询。
 4. relay 按 `interval`（5s，`slow_down` 会翻倍至 30s）轮询 `POST /api/device/pair/poll`，取到 `dt-` token 后落盘，配对页上的码立即消失。
 5. `fingerprint` 命中已有 device 行 → **reauth**：复用同一 `device_id`（历史记录不断链），只换 token。
@@ -117,7 +117,8 @@ plan 请求带 `relayVersion`，中心维护 `MIN_RELAY_VERSION`（`src/routes/a
 | 现象 | 原因 | 修法 |
 |---|---|---|
 | `503 relay_not_paired` | 还没配对 / 状态文件丢了 / device token 刚被中心拒绝并清掉 | 看 `docker logs` 或 `/pair` 取码，去中心 Admin → Devices 授权 |
-| plan 401（中心回 `{success:false,error:"Invalid or revoked device token"}`） | device 被删除、或 admin 在中心点了 Rotate token（旧 token 立即失效） | **自愈**：relay 识别出这类 401 → 清本地 token、写 state、自动重新配对（`recoverFromRejectedToken`），客户端收到 `503 relay_unpaired`，`/pair` 页直接出现新码；同 fingerprint 重新授权即 reauth，记录不断链 |
+| plan 401 `reason:"revoked"`（设备被 admin 撤销） | admin 在 `/admin/devices` 点了 Revoke | **保留 token**：客户端收到 `503 relay_revoked`，relay 不重新配对；中心点 Unrevoke 后下一次请求自动恢复（以前一律清 token 重配，导致 unrevoke 后永远连不上） |
+| plan 401（中心回 `{success:false,error:"Invalid or revoked device token"}` 且无 `reason`） | device 被删除（token_hash 无对应行）/ 中心是旧版本 | **自愈**：relay 清本地 token、写 state、自动重新配对（`recoverFromRejectedToken`），客户端收到 `503 relay_unpaired`，`/pair` 页直接出现新码；同 fingerprint 重新授权即 reauth，记录不断链 |
 | plan 401 `invalid_api_key` | vk 指纹未命中（vk 被删/换 key，或 `key_fingerprint` 未回填） | 检查 vk；`GATEWAY_SECRET` 必须存在（回填与 lease 都需要） |
 | plan 403 `model_not_allowed` | vk 的 `enabled_models` 不含该 model | 改 vk allowlist |
 | plan 404 `model_not_found` / 400 `protocol_mismatch` | model 不在该协议的 upstream 上 | 检查 enabled_models / 协议 |
@@ -148,7 +149,7 @@ plan 请求带 `relayVersion`，中心维护 `MIN_RELAY_VERSION`（`src/routes/a
 | `src/lib/gateway/plan.contract.test.ts` | 与 `proxy.ts` 的链组装契约（oracle 测试） |
 | `src/lib/device/*` | 配对 / token / device store / report 健康规则 / plan deps / vk 指纹解析 |
 | `src/lib/auth/device-guard.ts` | `withDeviceAuth`（device token，与 `withAuth` 平行不复用） |
-| `src/routes/api/device/**` | pair/start、pair/poll、pair/lookup（会话态）、plan、report |
+| `src/routes/api/device/**` | pair/start、pair/poll、plan、report |
 | `src/routes/api/admin/devices/**` | 列表 / 配对授权 / 改名 / 撤销 / 轮换 token / 删除 / 统计 |
 | `src/relay/**` | relay 执行器与内联配对页（不得 import DB / 认证 / proxy） |
 | `src/relay/latency.ts` | relay 侧 RTT 分钟桶（5h × 1min，纯内存） |

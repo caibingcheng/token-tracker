@@ -1,14 +1,13 @@
 "use client";
 
 // Admin Devices tab：relay（sub node）设备管理。
-// - 配对：输码 → 看设备信息 → 授权 / 拒绝（码是中心生成的 8 位码，relay 只负责展示）
-// - 列表：改名 / 撤销 / 解除撤销 / 轮换 token / 删除（删设备不删历史记录，device_id 置 NULL）
+// - 配对：输 8 位码（一码一格）→ 直接授权（码是中心生成的 8 位码，relay 只负责展示）
+// - 列表：改名 / 撤销 / 解除撤销 / 删除（删设备不删历史记录，device_id 置 NULL）
 // - 统计：待授权配对数、预留泄漏计数（relay_gap_count）、plan/report 每分钟速率
 // 约定：桌面 table + md:hidden 卡片双轨，触摸区 ≥40px（见 components/admin/table.tsx）。
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/client/api-client";
-import { copyText } from "@/lib/clipboard";
 import {
   AdminMobileCard,
   AdminMobileCards,
@@ -49,15 +48,8 @@ interface Stats {
   activeDevices: number;
 }
 
-interface PairingLookup {
-  name: string | null;
-  fingerprint: string;
-  clientIp: string | null;
-  createdAt: string;
-  expiresAt: number;
-  /** 仅 /pairings 列表返回：= code_hash，用于列表里一键授权（免手输码） */
-  pairingId?: string;
-}
+/** 配对码长度（ABCD-EFGH：8 位，字符集排除 0 O I 1，连字符只用于展示） */
+const CODE_LENGTH = 8;
 
 function formatDate(iso: string | null | undefined): string {
   if (!iso) return "—";
@@ -93,13 +85,6 @@ function RttCell({ plan, report }: { plan: RttStatsView; report: RttStatsView })
   );
 }
 
-// 剩余时间 m:ss（用本地时钟；expiresAt 是中心侧的 epoch ms）
-function remainingLabel(expiresAt: number, now: number): string {
-  const seconds = Math.max(0, Math.round((expiresAt - now) / 1000));
-  const m = Math.floor(seconds / 60);
-  return `${m}:${String(seconds % 60).padStart(2, "0")}`;
-}
-
 const STATUS_LABEL: Record<DeviceItem["status"], string> = {
   pending: "pending",
   active: "active",
@@ -109,21 +94,14 @@ const STATUS_LABEL: Record<DeviceItem["status"], string> = {
 export default function DevicesPanel() {
   const [devices, setDevices] = useState<DeviceItem[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
-  const [pending, setPending] = useState<PairingLookup[]>([]);
-  // 轮询退避：待授权列表拿不到（如路由未注册 404/405、服务重启中）时不要每 3s 刷屏 Console
-  const pollFailedRef = useRef(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  // 待授权列表自己的加载错误（例如 API 未重启导致 404）：不静默吞咽，否则页面只会
-  // 一直显示「No pending」，让人以为配对没发出来
-  const [pendingError, setPendingError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  // 倒计时基准时钟（仅在有 pending 时每秒走，避免无意义重渲染）
-  const [now, setNow] = useState(() => Date.now());
 
-  // 配对表单
-  const [code, setCode] = useState("");
-  const [pairing, setPairing] = useState<PairingLookup | null>(null);
+  // 配对码：一码一格（粘贴 / 输错 / 退格都在格间移动）
+  const [digits, setDigits] = useState<string[]>(() => Array(CODE_LENGTH).fill(""));
+  const digitRefs = useRef<Array<HTMLInputElement | null>>([]);
+  const code = digits.join("");
   const [pairingBusy, setPairingBusy] = useState(false);
   const [pairingError, setPairingError] = useState<string | null>(null);
 
@@ -136,17 +114,12 @@ export default function DevicesPanel() {
   const load = useCallback(async (opts?: { silent?: boolean }) => {
     if (!opts?.silent) setLoading(true);
     try {
-      const [listRes, statsRes, pendingRes] = await Promise.all([
+      const [listRes, statsRes] = await Promise.all([
         apiFetch("/api/admin/devices"),
         apiFetch("/api/admin/devices/stats"),
-        apiFetch("/api/admin/devices/pairings"),
       ]);
       const listBody = (await listRes.json()) as { success?: boolean; data?: DeviceItem[]; error?: string };
       const statsBody = (await statsRes.json()) as { success?: boolean; data?: Stats };
-      const pendingBody = (await pendingRes.json().catch(() => ({}))) as {
-        success?: boolean;
-        data?: PairingLookup[];
-      };
       if (!listRes.ok || !listBody.success) {
         setError(listBody.error ?? "Failed to load devices");
       } else {
@@ -154,18 +127,6 @@ export default function DevicesPanel() {
         setError(null);
       }
       if (statsRes.ok && statsBody.success) setStats(statsBody.data ?? null);
-      if (pendingRes.ok && pendingBody.success) {
-        setPending(pendingBody.data ?? []);
-        setPendingError(null);
-        pollFailedRef.current = false;
-      } else {
-        pollFailedRef.current = true;
-        setPendingError(
-          pendingRes.status === 404 || pendingRes.status === 405
-            ? `failed to load pending requests (HTTP ${pendingRes.status}) — restart the center so the new routes register`
-            : `failed to load pending requests (HTTP ${pendingRes.status})`
-        );
-      }
     } catch {
       setError("Failed to load devices");
     } finally {
@@ -177,8 +138,8 @@ export default function DevicesPanel() {
     void load();
   }, [load]);
 
-  // 自动刷新：relay 一发起配对就会出现待授权请求，配对成功（poll 拿到 token）后设备状态
-  // 自动从 pending 变 active。页面不可见时跳过；失败时退避到 15s（不刷屏）。
+  // 列表自动刷新（15s）：relay 拿到 token 后状态从 pending 变 active，不用手动刷页。
+  // 页面不可见时跳过。没有更快的轮询需求了 —— 配对靠输码，不靠待授权列表推送。
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -189,7 +150,7 @@ export default function DevicesPanel() {
           await load({ silent: true });
         }
         schedule();
-      }, pollFailedRef.current ? 15_000 : 3_000);
+      }, 15_000);
     };
     schedule();
     return () => {
@@ -198,70 +159,56 @@ export default function DevicesPanel() {
     };
   }, [load]);
 
-  useEffect(() => {
-    if (pending.length === 0) return;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [pending.length]);
+  function applyChars(start: number, raw: string) {
+    const chars = raw.toUpperCase().replace(/[^A-Z0-9]/g, "");
+    const next = [...digits];
+    if (chars.length === 0) {
+      // 当前格被删空（Backspace，或选中后键入了非法字符）：只清空，不移动焦点。
+      // 以前这里直接 return，导致输入框被 React 受控回填，满格后怎么按都删不掉。
+      if (next[start] !== "") {
+        next[start] = "";
+        setDigits(next);
+      }
+      return;
+    }
+    let pos = start;
+    for (const ch of chars) {
+      if (pos >= CODE_LENGTH) break;
+      next[pos] = ch;
+      pos += 1;
+    }
+    setDigits(next);
+    digitRefs.current[Math.min(pos, CODE_LENGTH - 1)]?.focus();
+  }
 
-  async function lookup() {
-    setPairingError(null);
-    setPairing(null);
-    const trimmed = code.trim();
-    if (trimmed === "") {
-      setPairingError("Enter the 8-character code shown by the relay");
+  function resetCode() {
+    setDigits(Array(CODE_LENGTH).fill(""));
+    digitRefs.current[0]?.focus();
+  }
+
+  async function authorizeRelay() {
+    if (code.length !== CODE_LENGTH) {
+      setPairingError("Enter the full 8-character code");
       return;
     }
     setPairingBusy(true);
-    try {
-      const res = await apiFetch("/api/device/pair/lookup", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code: trimmed }),
-      });
-      const body = (await res.json()) as { success?: boolean; data?: PairingLookup; error?: string };
-      if (!res.ok || !body.success) {
-        setPairingError(body.error ?? "Unknown or expired code");
-        return;
-      }
-      setPairing(body.data ?? null);
-    } catch {
-      setPairingError("Lookup failed");
-    } finally {
-      setPairingBusy(false);
-    }
-  }
-
-  async function decidePairing(
-    action: "authorize" | "deny",
-    target?: { pairingId?: string; code?: string }
-  ) {
-    setPairingBusy(true);
     setPairingError(null);
     try {
-      const payload = target?.pairingId
-        ? { action, pairingId: target.pairingId }
-        : { action, code: (target?.code ?? code).trim() };
       const res = await apiFetch("/api/admin/devices", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ action: "authorize", code }),
       });
       const body = (await res.json()) as { success?: boolean; error?: string };
       if (!res.ok || !body.success) {
-        setPairingError(body.error ?? "Failed to update pairing");
+        setPairingError(body.error ?? "Failed to authorize this code");
         return;
       }
-      setNotice(
-        action === "authorize"
-          ? "Device authorized — the relay will pick up its token on the next poll"
-          : "Pairing request denied"
-      );
-      setPairing(null);
-      setCode("");
+      setNotice("Device authorized — the relay will pick up its token on the next poll");
+      resetCode();
       await load({ silent: true });
     } catch {
-      setPairingError("Failed to update pairing");
+      setPairingError("Failed to authorize this code");
     } finally {
       setPairingBusy(false);
     }
@@ -287,13 +234,14 @@ export default function DevicesPanel() {
       title: revoked ? "Revoke this device?" : "Re-enable this device?",
       message: revoked ? (
         <ul className="list-disc pl-5 text-sm text-gray-700">
-          <li>「{device.name ?? shortFingerprint(device.fingerprint)}」的 plan / report 立即 401</li>
-          <li>已下发的 key lease 仍可用到 60s TTL 结束（撤销不等于立即断开在途请求）</li>
-          <li>历史记录保留，device 归属不变</li>
+          <li>Plan and report requests from this relay start failing with 401 immediately.</li>
+          <li>Already issued key leases stay valid until their 60s TTL expires.</li>
+          <li>Its token is kept, so re-enabling restores the relay without re-pairing.</li>
         </ul>
       ) : (
         <p className="text-sm text-gray-700">
-          恢复后该设备可用现有 token 继续请求；若 token 已泄露，请先轮换 token。
+          The relay keeps working with its existing token. Delete the device instead if the token may
+          have leaked.
         </p>
       ),
       confirmLabel: revoked ? "Revoke" : "Re-enable",
@@ -313,41 +261,14 @@ export default function DevicesPanel() {
     await load();
   }
 
-  async function rotate(device: DeviceItem) {
-    const ok = await confirm({
-      title: "Rotate device token?",
-      message: (
-        <p className="text-sm text-gray-700">
-          旧 token 立即失效，relay 需要重新配对（或手动更新 <code>relay.state.json</code>）。新 token
-          只显示一次。
-        </p>
-      ),
-      confirmLabel: "Rotate",
-      tone: "warning",
-    });
-    if (!ok) return;
-    const res = await apiFetch(`/api/admin/devices/${device.id}/rotate-token`, { method: "POST" });
-    const body = (await res.json().catch(() => ({}))) as {
-      success?: boolean;
-      data?: { token: string };
-      error?: string;
-    };
-    if (!res.ok || !body.success || !body.data) {
-      setError(body.error ?? "Rotate failed");
-      return;
-    }
-    setNotice(`New token for ${device.name ?? shortFingerprint(device.fingerprint)}: ${body.data.token}`);
-    await load();
-  }
-
   async function remove(device: DeviceItem) {
     const ok = await confirm({
       title: "Delete this device?",
       message: (
         <ul className="list-disc pl-5 text-sm text-gray-700">
-          <li>删除后该设备的 plan / report 立即 401</li>
-          <li>未完成的 plan 行一并清除</li>
-          <li>已写入的 token_records <strong>保留</strong>，仅把 device 归属置空</li>
+          <li>Plan and report requests from this relay start failing with 401 immediately.</li>
+          <li>Its unfinished plan rows are removed.</li>
+          <li>Usage records are <strong>kept</strong> — only the device attribution is cleared.</li>
         </ul>
       ),
       confirmLabel: "Delete",
@@ -369,8 +290,8 @@ export default function DevicesPanel() {
 
       <AdminTableCard title={<h2 className="text-base font-semibold text-gray-900">Relay devices</h2>}>
         <p className="text-sm text-gray-500">
-          Relay（sub node）把请求体直接打给上游，只向中心要执行计划与回报结果。码由中心生成：在
-          relay 的 <code>docker logs</code> 或 <code>/pair</code> 页面读出 8 位码后在此授权。
+          A relay forwards request bodies straight to the upstream and only asks the center for a plan
+          and reports the outcome. Pairing codes are generated by the center.
         </p>
         {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
         {notice && <p className="mt-3 break-all text-sm text-green-700">{notice}</p>}
@@ -402,141 +323,64 @@ export default function DevicesPanel() {
         )}
       </AdminTableCard>
 
-      <AdminTableCard
-        title={
-          <h2 className="text-base font-semibold text-gray-900">
-            Pending pairing requests{pending.length > 0 ? ` (${pending.length})` : ""}
-          </h2>
-        }
-        actions={<span className="text-xs text-gray-400">auto-refresh every 3s</span>}
-      >
-        <p className="text-sm text-gray-500">
-          A relay shows up here right after it starts (its code is also printed in{" "}
-          <code>docker logs</code> or on its <code>/pair</code> page). Authorize here, or enter the code
-          below if the relay is on another network.
-        </p>
-        {pendingError && <p className="mt-3 text-sm text-red-600">{pendingError}</p>}
-        {pending.length === 0 ? (
-          <p className="mt-3 text-sm text-gray-400">
-            No pending pairing requests — start the relay (or <code>npm run dev:relay</code>) and it will
-            show up here within a few seconds.
-          </p>
-        ) : (
-          <div className="mt-3 space-y-2">
-            {pending.map((p) => (
-              <div
-                key={p.pairingId ?? `${p.fingerprint}-${p.createdAt}`}
-                className="flex flex-col gap-2 rounded border border-gray-200 bg-gray-50 p-3 md:flex-row md:items-center md:justify-between"
-              >
-                <div className="grid min-w-0 flex-1 grid-cols-1 gap-x-4 gap-y-1 text-sm md:grid-cols-4">
-                  <div className="min-w-0">
-                    <p className="text-xs uppercase text-gray-500">Name</p>
-                    <p className="truncate text-gray-900">{p.name ?? "—"}</p>
-                  </div>
-                  <div className="min-w-0">
-                    <p className="text-xs uppercase text-gray-500">Fingerprint</p>
-                    <p className="truncate font-mono text-xs text-gray-900" title={p.fingerprint}>
-                      {shortFingerprint(p.fingerprint)}
-                    </p>
-                  </div>
-                  <div className="min-w-0">
-                    <p className="text-xs uppercase text-gray-500">IP</p>
-                    <p className="truncate font-mono text-xs text-gray-900">{p.clientIp ?? "—"}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase text-gray-500">Expires in</p>
-                    <p className="tabular-nums text-gray-900">{remainingLabel(p.expiresAt, now)}</p>
-                  </div>
-                </div>
-                <div className="flex shrink-0 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => void decidePairing("authorize", { pairingId: p.pairingId })}
-                    disabled={pairingBusy || !p.pairingId}
-                    className={pillAction.primary}
-                  >
-                    Authorize
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void decidePairing("deny", { pairingId: p.pairingId })}
-                    disabled={pairingBusy || !p.pairingId}
-                    className={pillAction.danger}
-                  >
-                    Deny
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </AdminTableCard>
-
       <AdminTableCard title={<h2 className="text-base font-semibold text-gray-900">Pair a new relay</h2>}>
-        <div className="flex flex-col gap-3 md:flex-row md:items-end">
-          <label className="flex-1 text-sm text-gray-700">
+        <p className="text-sm text-gray-500">
+          Read the pairing code from the relay logs (<code>docker logs</code>) or its <code>/pair</code>{" "}
+          page. The code expires in 10 minutes.
+        </p>
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            void authorizeRelay();
+          }}
+          className="mt-4 flex flex-wrap items-center gap-2"
+        >
+          <label htmlFor="pairing-code-0" className="sr-only">
             Pairing code
-            <input
-              value={code}
-              onChange={(e) => setCode(e.target.value.toUpperCase())}
-              placeholder="ABCD-EFGH"
-              autoComplete="off"
-              spellCheck={false}
-              className="mt-1 w-full rounded border border-gray-300 px-3 py-2 font-mono text-sm uppercase tracking-widest"
-            />
           </label>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={() => void lookup()}
-              disabled={pairingBusy}
-              className={pillAction.primary}
-            >
-              Look up
-            </button>
-          </div>
-        </div>
+          {digits.map((digit, index) => (
+            <Fragment key={index}>
+              {index === 4 && <span className="px-0.5 text-gray-400">-</span>}
+              <input
+                id={index === 0 ? "pairing-code-0" : undefined}
+                ref={(el) => {
+                  digitRefs.current[index] = el;
+                }}
+                value={digit}
+                onChange={(e) => applyChars(index, e.target.value)}
+                onPaste={(e) => {
+                  e.preventDefault();
+                  applyChars(index, e.clipboardData.getData("text"));
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Backspace" && digit === "" && index > 0) {
+                    e.preventDefault();
+                    const next = [...digits];
+                    next[index - 1] = "";
+                    setDigits(next);
+                    digitRefs.current[index - 1]?.focus();
+                  }
+                }}
+                onFocus={(e) => e.target.select()}
+                autoComplete="off"
+                autoCapitalize="characters"
+                spellCheck={false}
+                inputMode="text"
+                maxLength={1}
+                // h-10 与右侧按钮等高（触摸区 ≥40px）；手机上按钮换行独占一行
+                className="h-10 w-8 rounded border border-gray-300 text-center font-mono text-lg uppercase focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 sm:w-9"
+              />
+            </Fragment>
+          ))}
+          <button
+            type="submit"
+            disabled={pairingBusy || code.length !== CODE_LENGTH}
+            className={`${pillAction.primary} h-10 w-full px-4 sm:ml-1 sm:w-auto`}
+          >
+            {pairingBusy ? "Authorizing…" : "Authorize"}
+          </button>
+        </form>
         {pairingError && <p className="mt-3 text-sm text-red-600">{pairingError}</p>}
-        {pairing && (
-          <div className="mt-4 rounded border border-gray-200 bg-gray-50 p-3 text-sm">
-            <dl className="grid grid-cols-1 gap-2 md:grid-cols-4">
-              <div>
-                <dt className="text-xs uppercase text-gray-500">Name</dt>
-                <dd className="text-gray-900">{pairing.name ?? "—"}</dd>
-              </div>
-              <div>
-                <dt className="text-xs uppercase text-gray-500">Fingerprint</dt>
-                <dd className="font-mono text-xs text-gray-900">{pairing.fingerprint}</dd>
-              </div>
-              <div>
-                <dt className="text-xs uppercase text-gray-500">Request IP</dt>
-                <dd className="font-mono text-xs text-gray-900">{pairing.clientIp ?? "—"}</dd>
-              </div>
-              <div>
-                <dt className="text-xs uppercase text-gray-500">Expires</dt>
-                <dd className="text-gray-900">{formatDate(new Date(pairing.expiresAt).toISOString())}</dd>
-              </div>
-            </dl>
-            <div className="mt-3 flex gap-2">
-              <button
-                type="button"
-                onClick={() => void decidePairing("authorize")}
-                disabled={pairingBusy}
-                className={pillAction.primary}
-              >
-                Authorize
-              </button>
-              <button
-                type="button"
-                onClick={() => void decidePairing("deny")}
-                disabled={pairingBusy}
-                className={pillAction.danger}
-              >
-                Deny
-              </button>
-            </div>
-          </div>
-        )}
       </AdminTableCard>
 
       <AdminTableCard
@@ -547,7 +391,7 @@ export default function DevicesPanel() {
           <p className="px-6 py-8 text-center text-sm text-gray-400">Loading…</p>
         ) : devices.length === 0 ? (
           <p className="px-6 py-8 text-center text-sm text-gray-400">
-            No relay device yet — authorize a request above (or enter its code) and it will appear here
+            No relay device yet — pair one with the code above.
           </p>
         ) : (
           <>
@@ -619,13 +463,6 @@ export default function DevicesPanel() {
                           }}
                         >
                           Rename
-                        </button>
-                        <button
-                          type="button"
-                          className={linkAction.neutral}
-                          onClick={() => void rotate(device)}
-                        >
-                          Rotate token
                         </button>
                         <button
                           type="button"
@@ -724,13 +561,6 @@ export default function DevicesPanel() {
                       </button>
                       <button
                         type="button"
-                        className={tapAction.neutral}
-                        onClick={() => void rotate(device)}
-                      >
-                        Rotate token
-                      </button>
-                      <button
-                        type="button"
                         className={device.revokedAt ? tapAction.primary : tapAction.warning}
                         onClick={() => void setRevoked(device, device.revokedAt === null)}
                       >
@@ -749,17 +579,6 @@ export default function DevicesPanel() {
               ))}
             </AdminMobileCards>
           </>
-        )}
-        {notice && notice.startsWith("New token") && (
-          <div className="border-t border-gray-100 px-6 py-3">
-            <button
-              type="button"
-              className={pillAction.neutral}
-              onClick={() => void copyText(notice)}
-            >
-              Copy new token
-            </button>
-          </div>
         )}
       </AdminTableCard>
     </div>

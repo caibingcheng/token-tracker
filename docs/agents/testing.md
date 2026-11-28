@@ -53,7 +53,7 @@
   - `src/lib/device/pairing`：配对码字符集/格式/归一化、码与 device token 只存 sha256、展示名清洗
   - `src/lib/device/report`：report → 健康标记分 mode（router 403/404 → model 级；403 html / 429 / 5xx 不标；401+网络错误要同 upstream 全 key 覆盖才 markUnhealthy；responses-create 的 403/404 不标；subresource 零标记；winner → markHealthy+markModelHealthy；伪造 hopIndex 丢弃）
   - `src/lib/auth/device-guard`：device token 放行/撤销 401/未知 401/形状校验/`last_seen_at` 异步刷新
-  - `src/routes/api/device/pair/{start,poll}`：码格式与落库哈希、每 IP pending ≤ 3、**限流先于读 body**、pending 428 → authorize → 一次取 token → 复用 400、reauth 复用 device 行、错 secret 3 次作废、slow_down 翻倍、expired_token、lookup 只读不消费码
+  - `src/routes/api/device/pair/{start,poll}`：码格式与落库哈希、每 IP pending ≤ 3、**限流先于读 body**、pending 428 → authorize → 一次取 token → 复用 400、reauth 复用 device 行、错 secret 3 次作废、slow_down 翻倍、expired_token
   - `src/routes/api/device/plan`：device token 401 / vk 指纹 401 / 版本过低 426 / allowlist 403 / 配额 429 / model_not_found 404 / 正常 plan（lease 用设备私钥可解、AAD 绑定正确、URL 与 hop 一致、落库素材与配额预留）/ models 模式快照 / body 超 8KB 413
   - `src/routes/api/device/report`：usage 写 `token_records`（device_id + plan 行的 session/request_model）、幂等（重复只生效一次）、planId 不存在/跨 device 404、client_aborted 不写 usage、router 404 → model 级标记、responses-create 404 → 零标记
   - `src/routes/api/admin/devices*`：列表状态派生与 30 天记录数、改名/撤销/解除撤销落库 + 审计、轮换 token（旧 token 立即失效）、删除（清 `device_plans`，`token_records.device_id` 置 NULL 保留记录）、统计块、全部未带会话 token 401

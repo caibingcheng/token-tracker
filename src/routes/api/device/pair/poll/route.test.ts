@@ -1,5 +1,5 @@
 // /api/device/pair/poll + 配对闭环：pending 428 → authorize → 一次取 token → 复用 400；
-// 未知码 428 / 错 secret 428 且 3 次作废；slow_down；lookup 不消费码
+// 未知码 428 / 错 secret 428 且 3 次作废；slow_down
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
@@ -7,18 +7,14 @@ import { join } from "path";
 import { NextRequest } from "next/server";
 import { eq } from "drizzle-orm";
 import { POST as poll } from "./route";
-import { POST as lookup } from "../../pair/lookup/route";
 import { POST as start } from "../../pair/start/route";
 import { closeDb, db, devicesTable, devicePairingsTable, initDatabase } from "@/lib/db";
 import { withSkipCache } from "@/lib/db/cache";
 import { authorizePairing, pollPairing, resetDeviceSweeperForTests } from "@/lib/device/store";
 import { isDeviceTokenShaped, normalizePairingCode, pairingCodeHash } from "@/lib/device/pairing";
-import { setAdminApiKey, getTokenEpoch } from "@/lib/auth/settings";
-import { keyFingerprint, signSessionToken } from "@/lib/auth/session";
 
 const ORIG_DB = process.env.SQLITE_DATABASE_PATH;
 const ORIG_SECRET = process.env.GATEWAY_SECRET;
-const ADMIN_KEY = "test-admin-key-123456";
 let dir: string;
 let ipCounter = 0;
 
@@ -160,43 +156,6 @@ describe("配对闭环", () => {
     const res = await poll(pollReq(code));
     expect(res.status).toBe(400);
     expect(((await res.json()) as any).error).toBe("expired_token");
-  });
-
-  it("pair/lookup 需会话 token；只读不消费码", async () => {
-    await setAdminApiKey(ADMIN_KEY);
-    const token = signSessionToken(
-      await getTokenEpoch(),
-      keyFingerprint(ADMIN_KEY),
-      60 * 60 * 1000
-    );
-    const code = await begin();
-
-    const res = await lookup(
-      new NextRequest("http://localhost/api/device/pair/lookup", {
-        method: "POST",
-        headers: { "content-type": "application/json", "X-API-Key": token },
-        body: JSON.stringify({ code }),
-      })
-    );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as any;
-    expect(body.data.fingerprint).toBe(`u-${"a".repeat(32)}`);
-    expect(body.data.name).toBe("laptop");
-
-    // 不消费：仍能 authorize 并取 token
-    expect((await authorizePairing({ code })).ok).toBe(true);
-    resetDeviceSweeperForTests();
-    expect((await poll(pollReq(code))).status).toBe(200);
-
-    // 未带会话 token → 401
-    const unauthorized = await lookup(
-      new NextRequest("http://localhost/api/device/pair/lookup", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ code }),
-      })
-    );
-    expect(unauthorized.status).toBe(401);
   });
 });
 

@@ -8,9 +8,7 @@ import { NextRequest } from "next/server";
 import { eq } from "drizzle-orm";
 import { GET as listDevices, POST as pairingAction } from "./route";
 import { PATCH, DELETE } from "./[id]/route";
-import { POST as rotateToken } from "./[id]/rotate-token/route";
 import { GET as stats } from "./stats/route";
-import { GET as pendingPairings } from "./pairings/route";
 import {
   adminAuditLogsTable,
   closeDb,
@@ -26,7 +24,7 @@ import { withSkipCache } from "@/lib/db/cache";
 import { setAdminApiKey, getTokenEpoch } from "@/lib/auth/settings";
 import { keyFingerprint, signSessionToken } from "@/lib/auth/session";
 import { deviceTokenHash, generateDeviceToken } from "@/lib/device/pairing";
-import { getDeviceByTokenHash, startPairing } from "@/lib/device/store";
+import { startPairing } from "@/lib/device/store";
 
 const ORIG_DB = process.env.SQLITE_DATABASE_PATH;
 const ORIG_SECRET = process.env.GATEWAY_SECRET;
@@ -101,7 +99,7 @@ async function audits() {
 }
 
 describe("/api/admin/devices", () => {
-  it("未带会话 token → 401（列表/统计/改名/轮换/删除均如此）", async () => {
+  it("未带会话 token → 401（列表/统计/改名/删除均如此）", async () => {
     const device = await seedDevice("laptop");
     expect((await listDevices(req("/api/admin/devices", "GET"))).status).toBe(401);
     expect((await stats(req("/api/admin/devices/stats", "GET"))).status).toBe(401);
@@ -110,10 +108,6 @@ describe("/api/admin/devices", () => {
     ).toBe(401);
     expect(
       (await DELETE(req(`/api/admin/devices/${device.id}`, "DELETE"), ctx(device.id))).status
-    ).toBe(401);
-    expect(
-      (await rotateToken(req(`/api/admin/devices/${device.id}/rotate-token`, "POST"), ctx(device.id)))
-        .status
     ).toBe(401);
     expect((await pairingAction(req("/api/admin/devices", "POST", { code: "ABCD-EFGH" }))).status).toBe(
       401
@@ -174,22 +168,6 @@ describe("/api/admin/devices", () => {
     expect(JSON.parse(rows[0]!.details!)).toEqual({ from: "laptop", to: "macbook" });
   });
 
-  it("轮换 token：旧 token 立即失效，新 token 可用", async () => {
-    const device = await seedDevice("laptop");
-    const sessionToken = await token();
-    const res = await rotateToken(
-      req(`/api/admin/devices/${device.id}/rotate-token`, "POST", undefined, sessionToken),
-      ctx(device.id)
-    );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as any;
-    expect(body.data.token).toMatch(/^dt-/);
-
-    expect(await getDeviceByTokenHash(deviceTokenHash(device.deviceToken))).toBeNull();
-    expect(await getDeviceByTokenHash(deviceTokenHash(body.data.token))).not.toBeNull();
-    expect((await audits())[0]!.action).toBe("device_token_rotated");
-  });
-
   it("删除设备：清 device_plans，token_records.device_id 置 NULL（记录保留）", async () => {
     const device = await seedDevice("laptop");
     const sessionToken = await token();
@@ -227,7 +205,7 @@ describe("/api/admin/devices", () => {
     expect((await audits())[0]!.action).toBe("device_deleted");
   });
 
-  it("待授权列表（pairingId）+ 列表里一键授权/拒绝（免手输码）", async () => {
+  it("授权 / 拒绝只能靠输码（没有待授权列表通道）", async () => {
     const sessionToken = await token();
     const base = {
       publicKey: "pub",
@@ -249,24 +227,9 @@ describe("/api/admin/devices", () => {
     expect(first.code).toMatch(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
     expect(second.code).not.toBe(first.code);
 
-    // relay 一发起配对，管理面就能看到（不需要人去读日志里的码）
-    const listRes = await pendingPairings(
-      req("/api/admin/devices/pairings", "GET", undefined, sessionToken)
-    );
-    expect(listRes.status).toBe(200);
-    const list = ((await listRes.json()) as any).data as { pairingId: string; name: string }[];
-    expect(list).toHaveLength(2);
-    expect(list[0]!.pairingId).toMatch(/^[0-9a-f]{64}$/);
-    const byName = new Map(list.map((p) => [p.name, p.pairingId]));
-
-    // 用 pairingId 授权（无需输码）
+    // 授权只能靠 relay 打印的码（待授权列表已删除：未鉴权的配对请求不该进管理面）
     const authorize = await pairingAction(
-      req(
-        "/api/admin/devices",
-        "POST",
-        { pairingId: byName.get("relay-a"), action: "authorize" },
-        sessionToken
-      )
+      req("/api/admin/devices", "POST", { code: first.code, action: "authorize" }, sessionToken)
     );
     expect(authorize.status).toBe(200);
     const devices = await withSkipCache(async () => db.select().from(devicesTable));
@@ -275,30 +238,30 @@ describe("/api/admin/devices", () => {
     // 授权后 token 还没被 poll 取走 → devices 行 token_hash 仍为 NULL（列表显示 pending）
     expect(devices[0]!.tokenHash).toBeNull();
 
-    // 用 pairingId 拒绝
+    // 用码拒绝
     const deny = await pairingAction(
-      req(
-        "/api/admin/devices",
-        "POST",
-        { pairingId: byName.get("relay-b"), action: "deny" },
-        sessionToken
-      )
+      req("/api/admin/devices", "POST", { code: second.code, action: "deny" }, sessionToken)
     );
     expect(deny.status).toBe(200);
-    const remaining = await pendingPairings(
-      req("/api/admin/devices/pairings", "GET", undefined, sessionToken)
-    );
-    expect(((await remaining.json()) as any).data).toEqual([]);
     expect((await audits()).map((r: any) => r.action)).toEqual([
       "device_paired",
       "device_pairing_denied",
     ]);
 
-    // 两者都不给 → 400
+    // 不给码 → 400；旧的 pairingId 参数已不是入口（缺 code 一样 400）
     const empty = await pairingAction(
       req("/api/admin/devices", "POST", { action: "authorize" }, sessionToken)
     );
     expect(empty.status).toBe(400);
+    const legacy = await pairingAction(
+      req(
+        "/api/admin/devices",
+        "POST",
+        { pairingId: "a".repeat(64), action: "authorize" },
+        sessionToken
+      )
+    );
+    expect(legacy.status).toBe(400);
   });
 
   it("统计块：设备数 / 活跃数 / plan 速率 / 预留泄漏", async () => {

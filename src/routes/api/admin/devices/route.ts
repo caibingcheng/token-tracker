@@ -34,16 +34,14 @@ export const POST = withAuth(async (request: NextRequest) => {
     throw err;
   }
   const code = typeof body.code === "string" ? body.code : "";
-  const pairingId =
-    typeof body.pairingId === "string" && body.pairingId !== "" ? body.pairingId.slice(0, 64) : undefined;
   const action = body.action === "deny" ? "deny" : "authorize";
   const { ip, userAgent } = extractClientInfo(request);
-  if (!code && !pairingId) {
-    return NextResponse.json({ success: false, error: "code or pairingId is required" }, { status: 400 });
+  if (!code) {
+    return NextResponse.json({ success: false, error: "code is required" }, { status: 400 });
   }
 
   if (action === "deny") {
-    const ok = await denyPairing({ code, pairingId });
+    const ok = await denyPairing({ code });
     if (!ok) {
       return NextResponse.json(
         { success: false, error: "Unknown or expired pairing code" },
@@ -55,15 +53,15 @@ export const POST = withAuth(async (request: NextRequest) => {
       targetType: "device",
       ip,
       userAgent,
-      // 不记码/不记 code_hash：只说拒绝了哪台设备
-      details: { pairingSource: pairingId ? "list" : "code" },
+      // 不记码、不记 code_hash：只说拒绝了哪台设备
+      details: {},
     });
     invalidateQueryCache();
     return NextResponse.json({ success: true });
   }
 
   const name = typeof body.name === "string" ? sanitizeDeviceName(body.name, "relay") : undefined;
-  const result = await authorizePairing({ code, pairingId, name });
+  const result = await authorizePairing({ code, name });
   if (!result.ok) {
     return NextResponse.json(
       {
